@@ -59,3 +59,4 @@ virtio-rng-pci,rng=objrng0,id=rng0,bus=pcie.0
 name=opt/org.tianocore/UninstallMemAttrProtocol,string=y
 -rtc
 base=localtime,clock=host,driftfix=slew
+

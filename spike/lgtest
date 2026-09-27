@@ -168,9 +168,12 @@ frame_index_rate() {
 
 # Print the spike VM's QEMU arguments (after argv[0]), one per line, built from
 # dockur's captured command line. The capture is authoritative: only what the
-# spec lets differ changes. The emulated display, HMP monitor and pid file are
-# dropped, the tap netdev becomes passt on the same id, /storage/ paths point
-# at work/vm, and Looking Glass, SPICE and QMP are added. Used by run.
+# spec lets differ changes. The emulated display, the HMP monitor socket and
+# the pid file are dropped, the tap netdev becomes passt on the same id,
+# /storage/ paths point at work/vm, and Looking Glass, SPICE and QMP are added.
+# The capture's `-serial mon:stdio` stays, so HMP is still on the terminal that
+# runs the VM (Ctrl-A x kills the VM). Fails on a leftover container path or a
+# network listener. Used by run.
 #   vm_args <capture> <gateway> <setup 0|1> <expose-loopback 0|1>
 vm_args() {
   local capture=$1 gw=$2 setup=$3 expose=$4 i arg loopback=,map-host-loopback=none
@@ -192,10 +195,17 @@ vm_args() {
         continue
         ;;
     esac
-    out+=("${arg//\/storage\//$WORK/vm/}")
+    # Fail closed on a container path the rewrite below would miss.
+    [[ $arg != */run/shm* && ${arg//\/storage\//} != */storage* ]] ||
+      die "capture: no rewrite rule for container path in: $arg"
+    # The inner quotes keep a & in $WORK literal (bash 5.2 patsub_replacement).
+    out+=("${arg//\/storage\//"$WORK/vm/"}")
   done
+  # Fail closed on a network listener that would now bind on the host.
+  # Options match only at a boundary, so vmport=off is not port=.
+  local listener='^-(vnc|gdb|s|incoming)$|(^|,)(port|vnc|websocket)=|(^|[,=])(tcp|telnet|udp):'
   for arg in "${out[@]}"; do
-    [[ $arg != */run/shm* ]] || die "capture: no rewrite rule for container path in: $arg"
+    [[ ! $arg =~ $listener ]] || die "capture: refusing a network listener: $arg"
   done
   out+=(
     -object "memory-backend-file,id=ivshmem,share=on,mem-path=$RUN/ivshmem,size=128M"
@@ -219,8 +229,6 @@ vm_args() {
   printf '%s\n' "${out[@]}"
 }
 
-# --- subcommands ---
-
 # Download <url> to <dst> unless a verified copy is already there, then check
 # its SHA-256. Stops on a mismatch.
 download() {
@@ -231,6 +239,8 @@ download() {
   mv -f -- "$dst.part" "$dst"
   verify_sha256 "$dst" "$sum" || die "stopping: $url does not match its pin"
 }
+
+# --- subcommands ---
 
 # fetch: download the pins, unpack the client source, fill work/setup with
 # everything the guest needs (the setup disk that `run --setup` attaches).
@@ -299,7 +309,8 @@ cmd_capture() {
 
 # run [--setup] [--expose-loopback]: start the spike VM in the foreground.
 # --setup adds a GTK display and the setup disk; --expose-loopback is the
-# positive control for the security check.
+# positive control for the security check. The terminal carries the guest
+# serial port and the HMP monitor (Ctrl-A c toggles, Ctrl-A x kills the VM).
 cmd_run() {
   local setup=0 expose=0 gw out
   local -a args
@@ -314,6 +325,8 @@ cmd_run() {
   [[ -z $(qemu_cmdlines) ]] || die "refusing: a QEMU process is already running"
   [[ -s $WORK/dockur-cmdline.txt ]] || die "missing $WORK/dockur-cmdline.txt; run lgtest capture first"
   [[ -f $WORK/vm/data.img ]] || die "missing $WORK/vm; run lgtest prepare first"
+  [[ ! $WORK/vm/data.img -ef ${LGTEST_SOURCE:-$HOME/.windows}/data.img ]] ||
+    die "refusing: $WORK/vm/data.img is the live omarchy-windows-vm disk"
   ((!setup)) || [[ -d $WORK/setup ]] || die "missing $WORK/setup; run lgtest fetch first"
   gw=$(ip -4 route show default | awk '{ print $3; exit }')
   [[ -n $gw ]] || die "no IPv4 default route; passt needs one to forward DNS"

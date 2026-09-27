@@ -316,6 +316,9 @@ joined() {
 @test "vm_args: keeps the capture, swaps tap for passt, rewrites paths" {
   run vm_args "$FIX/dockur-cmdline.txt" 192.168.1.1 0 0
   assert_success
+  # argv[0] and the capture's trailing blank line are dropped.
+  assert_line --index 0 -- -nodefaults
+  refute_line ""
   local j
   j=$(joined)
   # Kept from the capture as-is.
@@ -368,6 +371,34 @@ joined() {
   run vm_args "$T/cap" 192.168.1.1 0 0
   assert_failure
   assert_output --partial "/run/shm/x.sock"
+}
+
+@test "vm_args: a /storage path it cannot rewrite fails" {
+  { cat "$FIX/dockur-cmdline.txt"; printf -- '-virtfs\nlocal,path=/storage,mount_tag=s\n'; } >"$T/cap"
+  run vm_args "$T/cap" 192.168.1.1 0 0
+  assert_failure
+  assert_output --partial "path=/storage"
+}
+
+@test "vm_args: a replayed network listener fails" {
+  local extra
+  for extra in '-vnc\n:1' '-gdb\ntcp::1234' '-s' '-incoming\ndefer' \
+    '-chardev\nsocket,id=m,host=127.0.0.1,port=4444,server=on' \
+    '-serial\ntelnet:127.0.0.1:5555,server=on' '-serial\nudp:127.0.0.1:5556' \
+    '-spice\nport=5930,disable-ticketing=on' '-object\nsecret,id=v,vnc=:2' \
+    '-chardev\nsocket,id=w,path=/x,websocket=on'; do
+    { cat "$FIX/dockur-cmdline.txt"; printf -- "$extra\n"; } >"$T/cap"
+    run vm_args "$T/cap" 192.168.1.1 0 0
+    assert_failure
+    assert_output --partial "listener"
+  done
+}
+
+@test "vm_args: a work path with & is copied literally" {
+  WORK='/x/a&b'
+  run vm_args "$FIX/dockur-cmdline.txt" 192.168.1.1 0 0
+  assert_success
+  assert_line "file=/x/a&b/vm/data.img,id=data3,format=raw,cache=none,aio=native,discard=unmap,detect-zeroes=on,if=none"
 }
 
 # --- frame_index_rate ---
