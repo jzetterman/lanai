@@ -37,6 +37,49 @@ verify_sha256() {
   fi
 }
 
+# Print the command line of every QEMU process, one argument per line, with a
+# blank line after each process. Matches on argv[0], bare or with a path, so a
+# shell that only mentions QEMU is ignored. Empty output means no QEMU runs.
+# LGTEST_PROC swaps /proc for a fixture tree.
+qemu_cmdlines() {
+  local f argv0
+  for f in "${LGTEST_PROC:-/proc}"/[0-9]*/cmdline; do
+    argv0=""
+    IFS= read -r -d '' argv0 <"$f" 2>/dev/null || [[ -n $argv0 ]] || continue
+    [[ ${argv0##*/} == qemu-system-x86_64 ]] || continue
+    tr '\0' '\n' <"$f" 2>/dev/null || continue
+    echo
+  done
+  return 0
+}
+
+# Print host CPU busy time in seconds from the `cpu` line of /proc/stat:
+# user + nice + system + irq + softirq. Guest time already sits inside user
+# and nice; idle, iowait and steal are not host work. LGTEST_STAT swaps the file.
+host_busy_seconds() {
+  local hz
+  hz=$(getconf CLK_TCK)
+  awk -v hz="$hz" '$1 == "cpu" { printf "%.2f\n", ($2 + $3 + $4 + $7 + $8) / hz; found = 1 }
+    END { exit !found }' "${LGTEST_STAT:-/proc/stat}"
+}
+
+# Print the median busy seconds of the baseline rows (<length>,<busy_seconds>)
+# whose length is <seconds>. Fails when there are none. Used by measure.
+baseline_median() {
+  local csv=$1 secs=$2
+  [[ -r $csv ]] || {
+    echo "lgtest: no baseline file $csv" >&2
+    return 1
+  }
+  awk -F, -v s="$secs" '$1 == s { print $2 }' "$csv" | sort -g |
+    awk -v s="$secs" '{ v[NR] = $1 }
+      END {
+        if (NR == 0) { print "lgtest: no " s " s baseline rows" > "/dev/stderr"; exit 1 }
+        m = (NR % 2) ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2
+        printf "%.2f\n", m
+      }'
+}
+
 usage() {
   cat <<'EOF'
 usage: lgtest <command> [args]
