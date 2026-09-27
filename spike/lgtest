@@ -53,19 +53,30 @@ qemu_cmdlines() {
   return 0
 }
 
-# True if any process holds a lock on <img>. /proc/locks names a file as
-# <maj>:<min>:<inode> with the device in %02x:%02x. The device comes from
-# findmnt, because on btrfs stat reports the subvolume's device, which never
-# matches /proc/locks. LGTEST_LOCKS swaps /proc/locks for a fixture.
+# Print the maj:min of the filesystem that holds <path>, trimmed. Used to
+# check reflink eligibility and to match /proc/locks.
+mount_dev() {
+  local dev
+  dev=$(findmnt -no MAJ:MIN -T "$1" | head -n1) || return 1
+  dev=${dev//[[:space:]]/}
+  [[ $dev == *:* ]] || return 1
+  printf '%s\n' "$dev"
+}
+
+# Return 0 if any process holds a lock on <img>, 1 if none does, and 2 if it
+# cannot tell. /proc/locks names a file as <maj>:<min>:<inode> with the device
+# in %02x:%02x. The device comes from findmnt, because on btrfs stat reports
+# the subvolume's device, which never matches /proc/locks. LGTEST_LOCKS swaps
+# /proc/locks for a fixture.
 disk_locked() {
-  local img=$1 ino dev maj min
+  local img=$1 locks=${LGTEST_LOCKS:-/proc/locks} ino dev maj min
+  [[ -r $locks ]] || return 2
   ino=$(stat -c %i -- "$img") || return 2
-  dev=$(findmnt -no MAJ:MIN -T "$img" | head -n1)
-  IFS=: read -r maj min <<<"${dev//[[:space:]]/}"
-  [[ -n $maj && -n $min ]] || return 2
+  dev=$(mount_dev "$img") || return 2
+  IFS=: read -r maj min <<<"$dev"
   dev=$(printf '%02x:%02x' "$maj" "$min")
   awk -v want="$dev:$ino" '{ for (i = 1; i <= NF; i++) if ($i == want) found = 1 }
-    END { exit !found }' "${LGTEST_LOCKS:-/proc/locks}"
+    END { exit !found }' "$locks"
 }
 
 # Copy a stopped dockur VM's storage dir <src> to <dst> without writing to it:
@@ -73,12 +84,14 @@ disk_locked() {
 # while any QEMU runs or the disk is locked, and when <dst> exists. Builds in
 # <dst>.tmp and renames at the end, so a failure leaves no half copy.
 prepare_copy() {
-  local src=$1 dst=$2
+  local src=$1 dst=$2 rc=0
   [[ -z $(qemu_cmdlines) ]] || die "refusing: a QEMU process is running; stop the VM first"
-  if disk_locked "$src/data.img"; then
-    die "refusing: $src/data.img is locked by another process"
-  fi
+  disk_locked "$src/data.img" || rc=$?
+  ((rc != 0)) || die "refusing: $src/data.img is locked by another process"
+  ((rc == 1)) || die "refusing: cannot check locks on $src/data.img"
   [[ ! -e $dst ]] || die "refusing: $dst already exists"
+  # Every step checks its own status (`|| exit 1`), because errexit is off
+  # when a caller runs this in an `if` or `||` list; the trap then cleans up.
   (
     tmp=$dst.tmp
     trap 'rm -rf -- "$tmp"' EXIT
@@ -264,9 +277,9 @@ cmd_build() {
 cmd_prepare() {
   local src=${LGTEST_SOURCE:-$HOME/.windows} a b
   mkdir -p "$WORK"
-  a=$(findmnt -no MAJ:MIN -T "$WORK")
-  b=$(findmnt -no MAJ:MIN -T "$src/data.img") || die "cannot find $src/data.img"
-  [[ ${a//[[:space:]]/} == "${b//[[:space:]]/}" ]] ||
+  a=$(mount_dev "$WORK") || die "cannot find the filesystem of $WORK"
+  b=$(mount_dev "$src/data.img") || die "cannot find $src/data.img"
+  [[ $a == "$b" ]] ||
     die "refusing: $WORK and $src are on different filesystems, so a reflink is impossible"
   prepare_copy "$src" "$WORK/vm"
   echo "copied $src to $WORK/vm"

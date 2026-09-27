@@ -119,9 +119,8 @@ spike
 
 # Print a file's filesystem device the way /proc/locks writes it (%02x:%02x).
 locks_dev() {
-  local d maj min
-  d=$(findmnt -no MAJ:MIN -T "$1")
-  IFS=: read -r maj min <<<"${d//[[:space:]]/}"
+  local maj min
+  IFS=: read -r maj min <<<"$(mount_dev "$1")"
   printf '%02x:%02x' "$maj" "$min"
 }
 
@@ -232,6 +231,16 @@ quiet_host() {
   assert_output --partial "is locked"
   refute_output --partial "QEMU process"
   assert [ ! -e "$T/dst" ]
+}
+
+@test "prepare_copy: refuses when it cannot check locks" {
+  make_src "$T/src"
+  quiet_host
+  LGTEST_LOCKS=$T/missing-locks run prepare_copy "$T/src" "$T/dst"
+  assert_failure
+  assert_output --partial "cannot check locks"
+  assert [ ! -e "$T/dst" ]
+  assert [ ! -e "$T/dst.tmp" ]
 }
 
 @test "prepare_copy: refuses when the destination exists" {
