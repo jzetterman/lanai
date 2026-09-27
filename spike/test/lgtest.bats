@@ -1,11 +1,12 @@
 #!/usr/bin/env bats
 # Tests for the lgtest functions that guard the live disk or produce a decision number.
+# shellcheck disable=SC2030,SC2031
 
 bats_load_library bats-support
 bats_load_library bats-assert
 
 setup() {
-  # shellcheck source=../lgtest
+  # shellcheck source-path=SCRIPTDIR source=../lgtest
   source "$BATS_TEST_DIRNAME/../lgtest"
   FIX=$BATS_TEST_DIRNAME/fixtures
   # Temp dirs live in spike/work so they sit on the repo's btrfs filesystem.
@@ -387,7 +388,7 @@ joined() {
     '-serial\ntelnet:127.0.0.1:5555,server=on' '-serial\nudp:127.0.0.1:5556' \
     '-spice\nport=5930,disable-ticketing=on' '-object\nsecret,id=v,vnc=:2' \
     '-chardev\nsocket,id=w,path=/x,websocket=on'; do
-    { cat "$FIX/dockur-cmdline.txt"; printf -- "$extra\n"; } >"$T/cap"
+    { cat "$FIX/dockur-cmdline.txt"; printf '%b\n' "$extra"; } >"$T/cap"
     run vm_args "$T/cap" 192.168.1.1 0 0
     assert_failure
     assert_output --partial "listener"
