@@ -186,24 +186,300 @@ vm_args() {
   done
   out+=(
     -object "memory-backend-file,id=ivshmem,share=on,mem-path=$RUN/ivshmem,size=128M"
-    -device ivshmem-plain,memdev=ivshmem
+    -device "ivshmem-plain,memdev=ivshmem"
     -spice "unix=on,addr=$RUN/spice.sock,disable-ticketing=on"
     -device virtio-serial-pci
-    -chardev spicevmc,id=vdagent,name=vdagent
-    -device virtserialport,chardev=vdagent,name=com.redhat.spice.0
-    -chardev spicevmc,id=usbredir0,name=usbredir
-    -device usb-redir,chardev=usbredir0
+    -chardev "spicevmc,id=vdagent,name=vdagent"
+    -device "virtserialport,chardev=vdagent,name=com.redhat.spice.0"
+    -chardev "spicevmc,id=usbredir0,name=usbredir"
+    -device "usb-redir,chardev=usbredir0"
     -qmp "unix:$RUN/qmp.sock,server=on,wait=off"
     -pidfile "$RUN/qemu.pid"
   )
   if ((setup)); then
     out+=(-vga virtio -display gtk
       -drive "if=none,id=setup,file=fat:$WORK/setup,format=raw,readonly=on"
-      -device usb-storage,drive=setup)
+      -device "usb-storage,drive=setup")
   else
     out+=(-vga none -display none)
   fi
   printf '%s\n' "${out[@]}"
+}
+
+# --- subcommands ---
+
+# Download <url> to <dst> unless a verified copy is already there, then check
+# its SHA-256. Stops on a mismatch.
+download() {
+  local url=$1 dst=$2 sum=$3
+  if [[ -f $dst ]] && verify_sha256 "$dst" "$sum"; then return 0; fi
+  echo "downloading $url"
+  curl -fL --proto '=https' --tlsv1.2 -o "$dst.part" "$url"
+  mv -f -- "$dst.part" "$dst"
+  verify_sha256 "$dst" "$sum" || die "stopping: $url does not match its pin"
+}
+
+# fetch: download the pins, unpack the client source, fill work/setup with
+# everything the guest needs (the setup disk that `run --setup` attaches).
+cmd_fetch() {
+  local dl=$WORK/dl
+  local src=$dl/looking-glass-$LG_BUILD-source.tar.gz idd=$dl/looking-glass-$LG_BUILD-idd.zip
+  local msi=$dl/${VDAGENT_URL##*/}
+  mkdir -p "$dl"
+  download "$LG_SOURCE_URL" "$src" "$LG_SOURCE_SHA"
+  download "$LG_IDD_URL" "$idd" "$LG_IDD_SHA"
+  download "$VDAGENT_URL" "$msi" "$VDAGENT_SHA"
+  rm -rf -- "$WORK/src" "$WORK/setup"
+  mkdir -p "$WORK/src" "$WORK/setup"
+  tar -xf "$src" -C "$WORK/src"
+  unzip -q "$idd" -d "$WORK/setup"
+  cp -- "$msi" "$ASSETS/rdp-60fps.reg" "$ASSETS/scroll.ps1" "$ASSETS/frame-index.html" "$WORK/setup/"
+  # Excel workbook for task 2: 20,000 rows by 12 columns, same every run.
+  LC_ALL=C awk 'BEGIN {
+    srand(20260927)
+    for (r = 1; r <= 20000; r++) {
+      line = r
+      for (c = 2; c <= 12; c++) line = line "," int(rand() * 100000)
+      print line
+    }
+  }' >"$WORK/setup/scroll.csv"
+  echo "fetched; guest files in $WORK/setup"
+}
+
+# build: configure and build the Looking Glass client (Wayland only). Fails if
+# cmake disables USB audio, which task 7 needs.
+cmd_build() {
+  local srcdir=$WORK/src/looking-glass-$LG_BUILD/client log=$WORK/configure.log
+  [[ -d $srcdir ]] || die "missing $srcdir; run lgtest fetch first"
+  cmake -S "$srcdir" -B "$WORK/build" -DENABLE_X11=no 2>&1 | tee "$log"
+  if grep -q "disabling USB audio support" "$log"; then
+    die "cmake disabled USB audio support; see $log for the missing dependency"
+  fi
+  cmake --build "$WORK/build" -j "$(nproc)"
+  [[ -x $WORK/build/looking-glass-client ]] || die "build finished without looking-glass-client"
+  echo "built $WORK/build/looking-glass-client"
+}
+
+# prepare: reflink-copy the stopped omarchy-windows-vm storage to work/vm.
+cmd_prepare() {
+  local src=${LGTEST_SOURCE:-$HOME/.windows} a b
+  mkdir -p "$WORK"
+  a=$(findmnt -no MAJ:MIN -T "$WORK")
+  b=$(findmnt -no MAJ:MIN -T "$src/data.img") || die "cannot find $src/data.img"
+  [[ ${a//[[:space:]]/} == "${b//[[:space:]]/}" ]] ||
+    die "refusing: $WORK and $src are on different filesystems, so a reflink is impossible"
+  prepare_copy "$src" "$WORK/vm"
+  echo "copied $src to $WORK/vm"
+}
+
+# capture: save the running omarchy-windows-vm QEMU command line for run.
+cmd_capture() {
+  local out n
+  out=$(qemu_cmdlines)
+  [[ -n $out ]] || die "no QEMU is running; start omarchy-windows-vm first"
+  n=$(awk 'BEGIN { RS = "" } END { print NR }' <<<"$out")
+  [[ $n == 1 ]] || die "found $n QEMU processes; expected only omarchy-windows-vm"
+  mkdir -p "$WORK"
+  printf '%s\n\n' "$out" >"$WORK/dockur-cmdline.txt"
+  echo "saved $WORK/dockur-cmdline.txt"
+}
+
+# run [--setup] [--expose-loopback]: start the spike VM in the foreground.
+# --setup adds a GTK display and the setup disk; --expose-loopback is the
+# positive control for the security check.
+cmd_run() {
+  local setup=0 expose=0 gw out
+  local -a args
+  while (($#)); do
+    case $1 in
+      --setup) setup=1 ;;
+      --expose-loopback) expose=1 ;;
+      *) die "run: unknown option $1" ;;
+    esac
+    shift
+  done
+  [[ -z $(qemu_cmdlines) ]] || die "refusing: a QEMU process is already running"
+  [[ -s $WORK/dockur-cmdline.txt ]] || die "missing $WORK/dockur-cmdline.txt; run lgtest capture first"
+  [[ -f $WORK/vm/data.img ]] || die "missing $WORK/vm; run lgtest prepare first"
+  ((!setup)) || [[ -d $WORK/setup ]] || die "missing $WORK/setup; run lgtest fetch first"
+  gw=$(ip -4 route show default | awk '{ print $3; exit }')
+  [[ -n $gw ]] || die "no IPv4 default route; passt needs one to forward DNS"
+  out=$(vm_args "$WORK/dockur-cmdline.txt" "$gw" "$setup" "$expose")
+  mapfile -t args <<<"$out"
+  rm -rf -- "$RUN"
+  mkdir -m 700 -- "$RUN"
+  # QEMU starts passt, which writes its pid file under TMPDIR.
+  TMPDIR=$RUN exec qemu-system-x86_64 "${args[@]}"
+}
+
+# client: start the Looking Glass client against the running spike VM.
+cmd_client() {
+  local bin=$WORK/build/looking-glass-client
+  [[ -x $bin ]] || die "missing $bin; run lgtest build first"
+  exec "$bin" -f "$RUN/ivshmem" spice:host="$RUN/spice.sock" spice:port=0 win:setGuestRes=yes
+}
+
+# rdp: connect to the spike VM the way omarchy-windows-vm connects, minus the
+# credentials (FreeRDP prompts for them). RDP_ARGS are read from the
+# omarchy-windows-vm on PATH so the flags stay in step with Omarchy.
+cmd_rdp() {
+  local vm krb=$HOME/.config/windows/krb5.conf pct a
+  local -a args
+  vm=$(command -v omarchy-windows-vm) || die "omarchy-windows-vm not found on PATH"
+  mapfile -t args < <(awk '
+    /^[[:space:]]*RDP_ARGS=\($/ { on = 1; next }
+    on && /^[[:space:]]*\)$/ { exit }
+    on { sub(/^[[:space:]]+/, ""); gsub(/^"|"$/, ""); if ($0 !~ /^\/(u|p|v):/) print }' "$vm")
+  ((${#args[@]})) || die "could not read RDP_ARGS from $vm"
+  for a in "${args[@]}"; do
+    [[ $a != *'$'* ]] || die "unexpected variable in RDP_ARGS: $a"
+  done
+  args+=(/v:127.0.0.1:13389)
+  # Omarchy's scale logic: 180 from 170%, 140 from 130%, else Windows' 100.
+  pct=$(hyprctl monitors -j | jq -r '.[] | select(.focused == true) | .scale' | awk '{ print int($1 * 100) }')
+  if ((pct >= 170)); then
+    args+=(/scale:180)
+  elif ((pct >= 130)); then
+    args+=(/scale:140)
+  fi
+  mkdir -p "${krb%/*}"
+  [[ -f $krb ]] || printf '[libdefaults]\n  dns_lookup_kdc = false\n  dns_lookup_realm = false\n' >"$krb"
+  # No password in these arguments, so they can go on the command line; stdin
+  # stays free for FreeRDP's credential prompts.
+  KRB5_CONFIG=$krb exec xfreerdp3 "${args[@]}"
+}
+
+# baseline: append one 60 s idle measurement (no VM running) to baseline.csv.
+cmd_baseline() {
+  local a b
+  [[ -z $(qemu_cmdlines) ]] || die "refusing: a QEMU process is running; the baseline needs an idle host"
+  mkdir -p "$WORK"
+  echo "measuring 60 s of idle host CPU; leave the machine alone"
+  a=$(host_busy_seconds)
+  sleep 60
+  b=$(host_busy_seconds)
+  b=$(awk -v a="$a" -v b="$b" 'BEGIN { printf "%.2f", b - a }')
+  echo "60,$b" >>"$WORK/baseline.csv"
+  echo "baseline: $b busy seconds over 60 s"
+}
+
+# measure <label> --task ... : time one task run and append a row to
+# results.csv with raw busy seconds and, when baseline rows of the same length
+# exist, busy seconds minus the idle median.
+cmd_measure() {
+  local label=${1:-} task="" transport="" mode="" res="" scale="" hz="" secs=60
+  local base="" a b busy idle="" n csv=$WORK/results.csv
+  [[ $label =~ ^[A-Za-z0-9._-]+$ ]] || die "measure: <label> must be letters, digits, dot, dash or underscore"
+  shift
+  while (($#)); do
+    (($# >= 2)) || die "measure: $1 needs a value"
+    case $1 in
+      --task) task=$2 ;;
+      --transport) transport=$2 ;;
+      --mode) mode=$2 ;;
+      --res) res=$2 ;;
+      --scale) scale=$2 ;;
+      --hz) hz=$2 ;;
+      --seconds) secs=$2 ;;
+      *) die "measure: unknown option $1" ;;
+    esac
+    shift 2
+  done
+  [[ $task =~ ^[1-8]$ ]] || die "measure: --task must be 1-8"
+  [[ $transport =~ ^(lg|rdp|rdp-real)$ ]] || die "measure: --transport must be lg, rdp or rdp-real"
+  [[ $mode =~ ^(fullscreen|tiled)$ ]] || die "measure: --mode must be fullscreen or tiled"
+  [[ $res =~ ^[0-9]+x[0-9]+$ ]] || die "measure: --res must be WxH"
+  [[ $scale =~ ^[0-9]+$ ]] || die "measure: --scale must be a percentage"
+  [[ $hz =~ ^[0-9]+$ ]] || die "measure: --hz must be a number"
+  [[ $secs =~ ^[1-9][0-9]*$ ]] || die "measure: --seconds must be a positive number"
+  if [[ -f $WORK/baseline.csv ]]; then
+    base=$(baseline_median "$WORK/baseline.csv" "$secs" 2>/dev/null) || base=""
+  fi
+  if [[ $task == [45] && -z $base ]]; then
+    die "refusing: task $task needs $secs s baseline rows; run lgtest baseline first"
+  fi
+  for n in 3 2 1; do
+    echo "$n"
+    sleep 1
+  done
+  echo "go ($secs s)"
+  a=$(host_busy_seconds)
+  sleep "$secs"
+  b=$(host_busy_seconds)
+  busy=$(awk -v a="$a" -v b="$b" 'BEGIN { printf "%.2f", b - a }')
+  [[ -z $base ]] || idle=$(awk -v x="$busy" -v m="$base" 'BEGIN { printf "%.2f", x - m }')
+  [[ -f $csv ]] || echo "time,label,task,transport,mode,res,scale,hz,seconds,busy_s,busy_minus_idle_s" >"$csv"
+  echo "$(date -Iseconds),$label,$task,$transport,$mode,$res,$scale,$hz,$secs,$busy,$idle" >>"$csv"
+  echo "done: $busy busy seconds${idle:+, $idle over idle}"
+}
+
+# record <label> [seconds] [--region WxH+X+Y]: record the monitor (or a region)
+# at 120 fps after a 3 s pause to focus the viewer.
+cmd_record() {
+  local label=${1:-} secs=10 region="" rc=0
+  local -a target=(-w HDMI-A-1)
+  [[ $label =~ ^[A-Za-z0-9._-]+$ ]] || die "record: <label> must be letters, digits, dot, dash or underscore"
+  shift
+  while (($#)); do
+    case $1 in
+      --region)
+        region=${2:-}
+        shift 2 || die "record: --region needs WxH+X+Y"
+        ;;
+      *)
+        secs=$1
+        shift
+        ;;
+    esac
+  done
+  [[ $secs =~ ^[1-9][0-9]*$ ]] || die "record: seconds must be a positive number"
+  if [[ -n $region ]]; then
+    [[ $region =~ ^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$ ]] || die "record: --region must be WxH+X+Y"
+    target=(-w region -region "$region")
+  fi
+  mkdir -p "$WORK/rec"
+  echo "recording $secs s in 3 s; focus the viewer"
+  sleep 3
+  timeout -s INT "$secs" gpu-screen-recorder "${target[@]}" -f 120 -cursor no \
+    -o "$WORK/rec/$label.mp4" || rc=$?
+  ((rc == 0 || rc == 124)) || die "gpu-screen-recorder failed (exit $rc)"
+  echo "$WORK/rec/$label.mp4"
+}
+
+# snap <label>: write the middle frame of a recording as a PNG, to pick a crop.
+cmd_snap() {
+  local clip=$WORK/rec/${1:-}.mp4 dur
+  [[ -f $clip ]] || die "no recording $clip"
+  dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$clip")
+  ffmpeg -v error -ss "$(awk -v d="$dur" 'BEGIN { print d / 2 }')" -i "$clip" \
+    -frames:v 1 -y "${clip%.mp4}.png"
+  echo "${clip%.mp4}.png"
+}
+
+# frames <label> <w:h:x:y>: print the frame-index count for a recording.
+cmd_frames() {
+  local clip=$WORK/rec/${1:-}.mp4
+  [[ -f $clip ]] || die "no recording $clip"
+  [[ ${2:-} =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9]+$ ]] || die "frames: crop must be w:h:x:y"
+  frame_index_rate "$clip" "$2"
+}
+
+# stop: ask the guest to power down over QMP, wait for QEMU to exit, and
+# delete the shared-memory file.
+cmd_stop() {
+  local pid i
+  [[ -S $RUN/qmp.sock && -s $RUN/qemu.pid ]] || die "no spike VM state in $RUN; is it running?"
+  pid=$(<"$RUN/qemu.pid")
+  { printf '%s\n' '{"execute":"qmp_capabilities"}' '{"execute":"system_powerdown"}'; sleep 1; } |
+    socat - "UNIX-CONNECT:$RUN/qmp.sock" >/dev/null
+  echo "powering down QEMU $pid"
+  for ((i = 0; i < 300; i++)); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  ! kill -0 "$pid" 2>/dev/null || die "QEMU $pid still runs after 300 s"
+  rm -f -- "$RUN/ivshmem"
+  echo "stopped"
 }
 
 usage() {
@@ -222,6 +498,9 @@ main() {
   local cmd=${1:-help}
   shift || true
   case $cmd in
+    fetch | build | prepare | capture | run | client | rdp | baseline | measure | record | snap | frames | stop)
+      "cmd_$cmd" "$@"
+      ;;
     help | -h | --help) usage ;;
     *)
       usage >&2
