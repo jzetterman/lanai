@@ -33,10 +33,14 @@ Governing spec: [spec.md](spec.md). Status: approved 2026-09-27.
   Windows' 30 fps cap on RDP sessions. It goes on the spike copy only; the real VM
   keeps Omarchy's default.
 - `spike/assets/results-template.md`: copied to `docs/spike/results.md` at test time.
-  Rows per task, mode and transport; the eight rating columns; a task-1 latency log;
-  the decision checklist; a `scroll.ps1` log (keys sent and achieved rate per run); a
-  notes field (DNS form, held-key repeat under Looking Glass, and a manual touchpad
-  scroll on the web page per transport: smooth, steppy or laggy).
+  A Runs table with measured values only (one row per task, mode and transport, with
+  the transport that went first in each pair); a Ratings table (one row per mode and
+  transport, the eight rating columns); CPU runs for tasks 4 and 5, one row per run,
+  with the task-4 "Stats for nerds" resolution and codec check; a task-1 latency log;
+  a `scroll.ps1` log (keys sent and achieved rate per run); a Security check table
+  (step 6); a notes field (DNS form, held-key repeat under Looking Glass, and a manual
+  touchpad scroll on the web page per transport: smooth, steppy or laggy); the
+  decision checklist.
 - `spike/work/` (gitignored): downloads, client build, VM copy, recordings, CSV output,
   test temp dirs.
 - Runtime state in `$XDG_RUNTIME_DIR/lgtest/` (`$RUN` below): `ivshmem`, `spice.sock`,
@@ -97,15 +101,17 @@ unless `stat -f -c %T` on their temp dir says `btrfs`.
 | Function | Behavior | Tests |
 |---|---|---|
 | `verify_sha256 <file> <sum>` | 0 on match; on mismatch, delete the file and fail | match; mismatch deletes and fails |
-| `disk_locked <img>` | true if a line in `$LGTEST_LOCKS` has the image's inode and the device from `findmnt -no MAJ:MIN -T <img>` (trimmed, formatted `%02x:%02x`). On btrfs, `stat`'s device is the subvolume's and never matches `/proc/locks` | fixture lines built at test time from the temp image's `stat -c %i` and findmnt device, in the real `OFDLCK ADVISORY READ -1 00:1d:<ino> 100 101` format: match; no lock line; same inode, other device; an inode that is a prefix of another (123 vs 1234). **Live:** hold `flock` on a btrfs temp file and check against the real `/proc/locks` |
+| `disk_locked <img>` | returns 2 if it cannot tell (locks file or image unreadable). Otherwise true if a line in `$LGTEST_LOCKS` has the image's inode and the device from `findmnt -no MAJ:MIN -T <img>` (trimmed, formatted `%02x:%02x`). On btrfs, `stat`'s device is the subvolume's and never matches `/proc/locks` | fixture lines built at test time from the temp image's `stat -c %i` and findmnt device, in the real `OFDLCK ADVISORY READ -1 00:1d:<ino> 100 101` format: match; no lock line; same inode, other device; an inode that is a prefix of another (123 vs 1234). **Live:** hold `flock` on a btrfs temp file and check against the real `/proc/locks` |
 | `qemu_cmdlines` | print the command line of every process in `$LGTEST_PROC` whose argv[0] is `qemu-system-x86_64`, bare or with a path | matches bare `qemu-system-x86_64 -name Windows,process=windows` and a full path; ignores a shell whose arguments mention `qemu-system-x86_64` |
 | `host_busy_seconds` | from the `cpu` line of `$LGTEST_STAT`: user + nice + system + irq + softirq, divided by `getconf CLK_TCK`. Guest time is already inside user and nice; steal is not host work | a real 10-field `cpu` line gives the known value |
 | `baseline_median <csv> <seconds>` | median of the baseline rows whose length matches; fail if there are none | odd count; even count (mean of the middle two); rows of other lengths ignored; no matching rows fails |
-| `prepare_copy <src> <dst>` | refuse, with a message naming the reason, if `qemu_cmdlines` finds a QEMU or `disk_locked`; refuse if `dst` exists; delete a stale `dst.tmp`; copy into `dst.tmp`: create `data.img`, set `+C` only if `lsattr` shows `C` on the source, then `cp --reflink=always`; plain `cp` for `windows.rom`, `windows.vars`, `windows.mac`; then `mv -T dst.tmp dst`. A trap removes `dst.tmp` on failure | "locked" and "QEMU running" fixtures each give their own refusal message; refuses when `dst` exists; on btrfs with a source built as touch, `chattr +C`, write 1 MiB: the copy has the `C` flag and `filefrag -v` shows shared extents; a failed copy leaves no `dst` and no `dst.tmp`; a rerun after a failure succeeds |
-| `frame_index_rate <clip> <w:h:x:y>` | `ffmpeg -i <clip> -fps_mode passthrough -vf crop=<w:h:x:y>,scale=1:1:flags=area -pix_fmt rgb24 -f rawvideo -`, then the counting rule above | ffmpeg-generated clips through libx264 yuv420p, each checked within ±1 advance/s: 60 steps/s at 60 fps (N frames give N − 1 advances); 30 steps/s at 60 fps (repeats); 60 steps/s with every 4th frame dropped (skips); one 50/50 blended frame (unreadable, no fake advance); a 30-then-60 fps variable-rate clip (no frames lost) |
+| `prepare_copy <src> <dst>` | refuse, with a message naming the reason, if `qemu_cmdlines` finds a QEMU, if `disk_locked`, or if `disk_locked` cannot tell (fail closed); refuse if `dst` exists; delete a stale `dst.tmp`; copy into `dst.tmp`: create `data.img`, set `+C` only if `lsattr` shows `C` on the source, then `cp --reflink=always`; plain `cp` for `windows.rom`, `windows.vars`, `windows.mac`; then `mv -T dst.tmp dst`. A trap removes `dst.tmp` on failure | "locked" and "QEMU running" fixtures each give their own refusal message; a missing locks file gives a "cannot check locks" refusal; refuses when `dst` exists; on btrfs with a source built as touch, `chattr +C`, write 1 MiB: the copy has the `C` flag and `filefrag -v` shows shared extents; a failed copy leaves no `dst` and no `dst.tmp`; a rerun after a failure succeeds |
+| `frame_index_rate <clip> <w:h:x:y>` | `ffmpeg -i <clip> -fps_mode passthrough -vf crop=<w:h:x:y>,scale=1:1:flags=area -pix_fmt rgb24 -f rawvideo -`, then the counting rule above | ffmpeg-generated clips through libx264 yuv420p, each checked within ±1 advance/s: 60 steps/s at 60 fps (N frames give N − 1 advances); 30 steps/s at 60 fps (repeats); 60 steps/s with every 4th frame dropped (skips); one 50/50 blended frame (unreadable, no fake advance); a 30-then-60 fps variable-rate clip (no frames lost); a white border around the stepping center, cropped `8:8:4:4` (only the crop is read) |
+| `vm_args <capture> <gw> <setup> <expose>` | `run`'s argument builder: from the capture, drop `-display`, `-vga`, `-monitor` and `-pidfile` with their values; turn the tap `-netdev` into passt on the capture's netdev id; rewrite `/storage/` to `$WORK/vm/`; add the display, SPICE, QMP and pid file flags below. Fail closed on a leftover container path (`/run/shm`, `/storage`) or a network listener (`-vnc`, `-gdb`, `-s`, `-incoming`, `port=`, `vnc=`, `websocket=`, `tcp:`, `telnet:`, `udp:`) | against a copy of the real capture: flags kept as captured, passt on `hostnet0`, paths rewritten, no container paths, no emulated display; `--setup` adds GTK and the setup disk; `--expose-loopback` drops only the loopback mapping; a leftover `/run/shm` or `/storage` path fails; each listener form fails; a `&` in the work path stays literal |
 
 `run`, `client`, `rdp`, `stop`, `build`, `record` and `snap` are thin wrappers. The real
-run tests them.
+run tests them. `measure`, `snap` and `frames` also get argument tests (task 8's
+default length, the task 4 baseline refusal, label rules, a missing clip).
 
 ## Subcommands
 
@@ -118,14 +124,20 @@ run tests them.
   Result: `work/build/looking-glass-client`.
 - `prepare`: `prepare_copy "${LGTEST_SOURCE:-$HOME/.windows}" work/vm`.
 - `capture`: while the real `omarchy-windows-vm` runs, save `qemu_cmdlines` to
-  `work/dockur-cmdline.txt`. The command line holds no password.
+  `work/dockur-cmdline.txt`. Refuse unless exactly one QEMU runs. The command line
+  holds no password.
 - `run [--setup]`: refuse if `qemu_cmdlines` finds any QEMU (two 16 GiB VMs exhaust the
-  host, and a second VM pollutes CPU numbers). Clear stale files in `$RUN`. Start QEMU
+  host, and a second VM pollutes CPU numbers). Refuse if `work/vm/data.img` is the
+  source disk itself (`-ef`). Clear stale files in `$RUN`. Start QEMU
   in the foreground with `TMPDIR=$RUN`, so passt's pid file lands there instead of
   `/tmp`. **The capture is authoritative:** start from `work/dockur-cmdline.txt` and
   change only what the spec allows (display, network, the RDP frame-rate setting, file
   paths). The flags below are the expected result; if the capture differs, follow the
-  capture.
+  capture. `vm_args` does the rewrite. The real capture differs in small ways, and
+  `run` follows it: the disk has `bootindex=3`, the netdev id is `hostnet0`, and
+  `-enable-kvm`, a second `-rtc` and `-serial mon:stdio` stay. dockur's monitor socket
+  is dropped, but `-serial mon:stdio` keeps HMP on the terminal that runs the VM
+  (Ctrl-A x kills the VM).
   - `-nodefaults`, `-machine q35,accel=kvm,hpet=off,vmport=off,smm=off,graphics=off,dump-guest-core=off`,
     `-global kvm-pit.lost_tick_policy=discard`,
     `-global ICH9-LPC.disable_s3=1 -global ICH9-LPC.disable_s4=1`,
@@ -141,8 +153,9 @@ run tests them.
   - network, IPv4 only like dockur's NAT:
     `GW=$(ip -4 route show default | awk '{print $3; exit}')`; fail with a clear message
     if it is empty (no IPv4 default route). Then
-    `-netdev passt,id=net0,ipv6=off,map-host-loopback=none,dns-forward=$GW,tcp-ports=127.0.0.1/13389:3389,udp-ports=127.0.0.1/13389:3389`
-    and `-device virtio-net-pci,netdev=net0,romfile=,mac=<copied MAC>`.
+    `-netdev passt,id=hostnet0,ipv6=off,map-host-loopback=none,dns-forward=$GW,tcp-ports=127.0.0.1/13389:3389,udp-ports=127.0.0.1/13389:3389`
+    (the id follows the capture) and the captured
+    `-device virtio-net-pci,id=net0,netdev=hostnet0,romfile=,mac=<copied MAC>`.
     - `map-host-loopback=none` turns off the gateway-to-loopback mapping.
     - With it off, passt's default DNS setup drops the loopback resolver
       (`127.0.0.53`, with Tailscale behind it). `dns-forward=$GW` brings DNS back
@@ -164,31 +177,37 @@ run tests them.
   - `--expose-loopback` (step 6 positive control only): drop `map-host-loopback=none`.
 - `client`: `work/build/looking-glass-client -f $RUN/ivshmem spice:host=$RUN/spice.sock spice:port=0 win:setGuestRes=yes`.
 - `rdp`: `xfreerdp3` with the `RDP_ARGS` from the `omarchy-windows-vm` on `PATH`, minus
-  `/u` and `/p`, with `/v:127.0.0.1:13389`, the same `/scale` logic,
-  `KRB5_CONFIG=~/.config/windows/krb5.conf` (created with Omarchy's realm-less content
-  if missing), and `/title:Windows VM - Omarchy`. FreeRDP prompts for the password; the
-  script never handles it.
+  `/u`, `/p` and `/v`, with `/v:127.0.0.1:13389`, the same `/scale` logic (no `/scale`
+  if `hyprctl` or `jq` fails), and `KRB5_CONFIG=~/.config/windows/krb5.conf` (created
+  with Omarchy's realm-less content if missing). `/title:Windows VM - Omarchy` comes
+  from `RDP_ARGS`. The arguments go on the command line, not through `/args-from:stdin`:
+  they hold no password, and stdin stays free for FreeRDP's prompts. FreeRDP prompts
+  for the user name and password; the script never handles them.
 - `baseline`: refuse if `qemu_cmdlines` finds any QEMU; append `60,<busy_seconds>` (the
   `host_busy_seconds` delta over 60 s) to `work/baseline.csv`. Test fixtures use the
   same `<length>,<busy_seconds>` format.
 - `measure <label> --task <n> --transport <lg|rdp|rdp-real> --mode <fullscreen|tiled> --res <WxH> --scale <pct> --hz <n> [--seconds <n>]`:
-  default 60 s; task 8 uses `--seconds 1800`. `measure` counts down "3, 2, 1, go" before
+  default 60 s, or 1800 s for task 8. `measure` counts down "3, 2, 1, go" before
   its window opens. It records `host_busy_seconds` before and after and appends a row
   to `work/results.csv` with the raw busy seconds, plus the idle-subtracted value when
   `baseline_median` has rows of that length. For tasks 4 and 5 (the CPU decision
-  inputs) it refuses to start without 60 s baseline rows. **Every task run happens
+  inputs) it refuses to start without baseline rows of the run's length (60 s by
+  default). **Every task run happens
   inside `measure`**, so every run records CPU, resolution, scale and refresh (spec
   requirement 7). Tasks shorter than the window run inside it and the rest idles.
   Task 4: load the video paused at 1:00 and press play on "go", so the window covers
   the fixed 60 s segment. Task 8: the window covers the whole 30 minutes; check the
   unlock criteria inside it.
 - `record <label> [seconds]`: wait 3 s (time to focus the viewer), then
-  `timeout -s INT <secs> gpu-screen-recorder -w HDMI-A-1 -f 120 -cursor no -o work/rec/<label>.mp4`
+  `timeout -k 10 -s INT <secs> gpu-screen-recorder -w HDMI-A-1 -f 120 -cursor no -o work/rec/<label>.mp4`
   (default 10 s). Treat `timeout`'s exit 124 as success. Recording at 120 fps against
   the 60 Hz panel turns timing misses into repeats; the counter check proves it.
   `--region WxH+X+Y` switches to `-w region -region WxH+X+Y`.
-- `snap <clip>`: write the middle frame as `work/rec/<clip>.png`.
-- `frames <clip> <w:h:x:y>`: print `frame_index_rate`.
+- `snap <label>`: write the middle frame of `work/rec/<label>.mp4` as
+  `work/rec/<label>.png`.
+- `frames <label> <w:h:x:y>`: print `frame_index_rate` for `work/rec/<label>.mp4`.
+- Labels (`measure`, `record`, `snap`, `frames`) match `^[A-Za-z0-9][A-Za-z0-9._-]*$`.
+  `snap` and `frames` say "run lgtest record <label> first" when the clip is missing.
 - `stop`: over `$RUN/qmp.sock` with `socat`, send `qmp_capabilities`, then
   `system_powerdown`; wait for exit; delete `ivshmem`.
 
