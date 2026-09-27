@@ -68,6 +68,34 @@ disk_locked() {
     END { exit !found }' "${LGTEST_LOCKS:-/proc/locks}"
 }
 
+# Copy a stopped dockur VM's storage dir <src> to <dst> without writing to it:
+# data.img as a reflink, the firmware and MAC files as plain copies. Refuses
+# while any QEMU runs or the disk is locked, and when <dst> exists. Builds in
+# <dst>.tmp and renames at the end, so a failure leaves no half copy.
+prepare_copy() {
+  local src=$1 dst=$2
+  [[ -z $(qemu_cmdlines) ]] || die "refusing: a QEMU process is running; stop the VM first"
+  if disk_locked "$src/data.img"; then
+    die "refusing: $src/data.img is locked by another process"
+  fi
+  [[ ! -e $dst ]] || die "refusing: $dst already exists"
+  (
+    tmp=$dst.tmp
+    trap 'rm -rf -- "$tmp"' EXIT
+    rm -rf -- "$tmp"
+    mkdir -- "$tmp" || exit 1
+    # A reflink needs both files NOCOW or both COW, so match the source's C flag
+    # while the new file is still empty.
+    touch -- "$tmp/data.img" || exit 1
+    if [[ $(lsattr -- "$src/data.img" | awk '{print $1}') == *C* ]]; then
+      chattr +C -- "$tmp/data.img" || exit 1
+    fi
+    cp --reflink=always -- "$src/data.img" "$tmp/data.img" || exit 1
+    cp -- "$src/windows.rom" "$src/windows.vars" "$src/windows.mac" "$tmp/" || exit 1
+    mv -T -- "$tmp" "$dst" || exit 1
+  )
+}
+
 # Print host CPU busy time in seconds from the `cpu` line of /proc/stat:
 # user + nice + system + irq + softirq. Guest time already sits inside user
 # and nice; idle, iowait and steal are not host work. LGTEST_STAT swaps the file.

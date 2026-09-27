@@ -191,3 +191,108 @@ write_locks() {
   run disk_locked "$T/data.img"
   assert_failure 1
 }
+
+# --- prepare_copy ---
+
+# Build a fake dockur storage dir at <dir>: a 1 MiB data.img (NOCOW when the
+# second argument is "nocow") plus the firmware and MAC files.
+make_src() {
+  mkdir -p "$1"
+  touch "$1/data.img"
+  [[ ${2:-} != nocow ]] || chattr +C "$1/data.img"
+  dd if=/dev/urandom of="$1/data.img" bs=1M count=1 conv=notrunc,fsync status=none
+  echo rom >"$1/windows.rom"
+  echo vars >"$1/windows.vars"
+  echo 02:4B:81:73:3C:96 >"$1/windows.mac"
+}
+
+# Point the QEMU and lock checks at quiet fixtures.
+quiet_host() {
+  export LGTEST_PROC=$FIX/proc-none
+  : >"$T/nolocks"
+  export LGTEST_LOCKS=$T/nolocks
+}
+
+@test "prepare_copy: refuses while a QEMU process runs" {
+  make_src "$T/src"
+  quiet_host
+  LGTEST_PROC=$FIX/proc-qemu run prepare_copy "$T/src" "$T/dst"
+  assert_failure
+  assert_output --partial "QEMU process is running"
+  assert [ ! -e "$T/dst" ]
+  assert [ ! -e "$T/dst.tmp" ]
+}
+
+@test "prepare_copy: refuses while the source disk is locked" {
+  make_src "$T/src"
+  quiet_host
+  write_locks "$(locks_dev "$T/src/data.img"):$(stat -c %i "$T/src/data.img")"
+  LGTEST_LOCKS=$T/locks run prepare_copy "$T/src" "$T/dst"
+  assert_failure
+  assert_output --partial "is locked"
+  refute_output --partial "QEMU process"
+  assert [ ! -e "$T/dst" ]
+}
+
+@test "prepare_copy: refuses when the destination exists" {
+  make_src "$T/src"
+  quiet_host
+  mkdir "$T/dst"
+  echo keep >"$T/dst/marker"
+  run prepare_copy "$T/src" "$T/dst"
+  assert_failure
+  assert_output --partial "already exists"
+  assert [ "$(cat "$T/dst/marker")" = keep ]
+}
+
+@test "prepare_copy: NOCOW source gives a NOCOW reflink copy on btrfs" {
+  require_btrfs
+  make_src "$T/src" nocow
+  quiet_host
+  run prepare_copy "$T/src" "$T/dst"
+  assert_success
+  [[ $(lsattr "$T/dst/data.img" | awk '{print $1}') == *C* ]]
+  run filefrag -v "$T/dst/data.img"
+  assert_output --partial "shared"
+  cmp "$T/src/data.img" "$T/dst/data.img"
+  cmp "$T/src/windows.rom" "$T/dst/windows.rom"
+  cmp "$T/src/windows.vars" "$T/dst/windows.vars"
+  cmp "$T/src/windows.mac" "$T/dst/windows.mac"
+  assert [ ! -e "$T/dst.tmp" ]
+}
+
+@test "prepare_copy: COW source gives a copy without the C flag" {
+  require_btrfs
+  make_src "$T/src"
+  quiet_host
+  run prepare_copy "$T/src" "$T/dst"
+  assert_success
+  [[ $(lsattr "$T/dst/data.img" | awk '{print $1}') != *C* ]]
+}
+
+@test "prepare_copy: a failed copy leaves no dst and no dst.tmp; a rerun succeeds" {
+  require_btrfs
+  make_src "$T/src" nocow
+  quiet_host
+  rm "$T/src/windows.mac"
+  run prepare_copy "$T/src" "$T/dst"
+  assert_failure
+  assert [ ! -e "$T/dst" ]
+  assert [ ! -e "$T/dst.tmp" ]
+  echo 02:4B:81:73:3C:96 >"$T/src/windows.mac"
+  run prepare_copy "$T/src" "$T/dst"
+  assert_success
+  cmp "$T/src/data.img" "$T/dst/data.img"
+}
+
+@test "prepare_copy: a stale dst.tmp is deleted before copying" {
+  require_btrfs
+  make_src "$T/src" nocow
+  quiet_host
+  mkdir "$T/dst.tmp"
+  echo junk >"$T/dst.tmp/junk"
+  run prepare_copy "$T/src" "$T/dst"
+  assert_success
+  assert [ ! -e "$T/dst/junk" ]
+  assert [ ! -e "$T/dst.tmp" ]
+}
