@@ -387,12 +387,30 @@ joined() {
     '-chardev\nsocket,id=m,host=127.0.0.1,port=4444,server=on' \
     '-serial\ntelnet:127.0.0.1:5555,server=on' '-serial\nudp:127.0.0.1:5556' \
     '-spice\nport=5930,disable-ticketing=on' '-object\nsecret,id=v,vnc=:2' \
-    '-chardev\nsocket,id=w,path=/x,websocket=on'; do
+    '-chardev\nsocket,id=w,path=/x,websocket=on' \
+    '-serial\nmon:telnet::4444,server=on' '-serial\nmon:tcp:127.0.0.1:4445,server=on' \
+    '-nic\nuser,hostfwd=::2222-:22' '-net\nuser' '-spice\ntls-port=5901,x509-dir=/x'; do
     { cat "$FIX/dockur-cmdline.txt"; printf '%b\n' "$extra"; } >"$T/cap"
     run vm_args "$T/cap" 192.168.1.1 0 0
     assert_failure
     assert_output --partial "listener"
   done
+}
+
+# --- run ---
+
+@test "run: refuses when the copy is the live disk" {
+  # Only the guard is exercised: it fires before run touches $RUN or starts
+  # QEMU, so there is no success-path test here.
+  WORK=$T/work
+  export LGTEST_PROC=$T/emptyproc LGTEST_SOURCE=$T/src
+  mkdir -p "$LGTEST_PROC" "$WORK/vm"
+  make_src "$T/src"
+  cp "$FIX/dockur-cmdline.txt" "$WORK/dockur-cmdline.txt"
+  ln "$T/src/data.img" "$WORK/vm/data.img"
+  run cmd_run
+  assert_failure
+  assert_output --partial "is the live omarchy-windows-vm disk"
 }
 
 @test "vm_args: a work path with & is copied literally" {

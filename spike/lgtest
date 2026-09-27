@@ -204,7 +204,9 @@ vm_args() {
   done
   # Fail closed on a network listener that would now bind on the host.
   # Options match only at a boundary, so vmport=off is not port=.
-  local listener='^-(vnc|gdb|s|incoming)$|(^|,)(port|vnc|websocket)=|(^|[,=])(tcp|telnet|udp):'
+  # -nic and -net are listed too: slirp would reach host loopback, and its
+  # hostfwd= opens a listener. mon: is the chardev mux prefix.
+  local listener='^-(vnc|gdb|s|incoming|nic|net)$|(^|,)(tls-)?port=|(^|,)(vnc|websocket)=|(^|[,=]|mon:)(tcp|telnet|udp):'
   for arg in "${out[@]}"; do
     [[ ! $arg =~ $listener ]] || die "capture: refusing a network listener: $arg"
   done
