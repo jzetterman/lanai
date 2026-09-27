@@ -1,0 +1,6 @@
+Windows Registry Editor Version 5.00
+
+; Lifts the 30 fps cap on RDP sessions. Import on the spike VM copy only, never
+; on the real omarchy-windows-vm (docs/spike/plan.md).
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations]
+"DWMFRAMEINTERVAL"=dword:0000000f
