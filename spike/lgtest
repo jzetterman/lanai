@@ -153,6 +153,59 @@ frame_index_rate() {
       }'
 }
 
+# Print the spike VM's QEMU arguments (after argv[0]), one per line, built from
+# dockur's captured command line. The capture is authoritative: only what the
+# spec lets differ changes. The emulated display, HMP monitor and pid file are
+# dropped, the tap netdev becomes passt on the same id, /storage/ paths point
+# at work/vm, and Looking Glass, SPICE and QMP are added. Used by run.
+#   vm_args <capture> <gateway> <setup 0|1> <expose-loopback 0|1>
+vm_args() {
+  local capture=$1 gw=$2 setup=$3 expose=$4 i arg loopback=,map-host-loopback=none
+  local -a in out
+  mapfile -t in <"$capture"
+  if ((expose)); then loopback=""; fi
+  for ((i = 1; i < ${#in[@]}; i++)); do
+    arg=${in[i]}
+    case $arg in
+      "") continue ;;
+      -display | -vga | -monitor | -pidfile)
+        i=$((i + 1))
+        continue
+        ;;
+      -netdev)
+        i=$((i + 1))
+        [[ ${in[i]} =~ (^|,)id=([^,]+) ]] || die "capture: -netdev has no id"
+        out+=(-netdev "passt,id=${BASH_REMATCH[2]},ipv6=off$loopback,dns-forward=$gw,tcp-ports=127.0.0.1/13389:3389,udp-ports=127.0.0.1/13389:3389")
+        continue
+        ;;
+    esac
+    out+=("${arg//\/storage\//$WORK/vm/}")
+  done
+  for arg in "${out[@]}"; do
+    [[ $arg != */run/shm* ]] || die "capture: no rewrite rule for container path in: $arg"
+  done
+  out+=(
+    -object "memory-backend-file,id=ivshmem,share=on,mem-path=$RUN/ivshmem,size=128M"
+    -device ivshmem-plain,memdev=ivshmem
+    -spice "unix=on,addr=$RUN/spice.sock,disable-ticketing=on"
+    -device virtio-serial-pci
+    -chardev spicevmc,id=vdagent,name=vdagent
+    -device virtserialport,chardev=vdagent,name=com.redhat.spice.0
+    -chardev spicevmc,id=usbredir0,name=usbredir
+    -device usb-redir,chardev=usbredir0
+    -qmp "unix:$RUN/qmp.sock,server=on,wait=off"
+    -pidfile "$RUN/qemu.pid"
+  )
+  if ((setup)); then
+    out+=(-vga virtio -display gtk
+      -drive "if=none,id=setup,file=fat:$WORK/setup,format=raw,readonly=on"
+      -device usb-storage,drive=setup)
+  else
+    out+=(-vga none -display none)
+  fi
+  printf '%s\n' "${out[@]}"
+}
+
 usage() {
   cat <<'EOF'
 usage: lgtest <command> [args]

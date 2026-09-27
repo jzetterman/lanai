@@ -297,6 +297,70 @@ quiet_host() {
   assert [ ! -e "$T/dst.tmp" ]
 }
 
+# --- vm_args (run's argument builder, checked against the real dockur capture) ---
+
+# Join $output lines with single spaces, padded, for substring checks.
+joined() {
+  printf ' %s ' "$(tr '\n' ' ' <<<"$output" | sed 's/ *$//')"
+}
+
+@test "vm_args: keeps the capture, swaps tap for passt, rewrites paths" {
+  run vm_args "$FIX/dockur-cmdline.txt" 192.168.1.1 0 0
+  assert_success
+  local j
+  j=$(joined)
+  # Kept from the capture as-is.
+  [[ $j == *" -m 16G "* ]]
+  [[ $j == *" -smp 6,sockets=1,dies=1,cores=6,threads=1 "* ]]
+  [[ $j == *" -smbios type=1,serial=SystemSerialNumber "* ]]
+  [[ $j == *"rotation_rate=1,bootindex=3 "* ]]
+  [[ $j == *" -device virtio-net-pci,id=net0,netdev=hostnet0,romfile=,mac=02:4B:81:73:3C:96 "* ]]
+  # Network: passt on the capture's netdev id, loopback mapping off.
+  [[ $j == *" -netdev passt,id=hostnet0,ipv6=off,map-host-loopback=none,dns-forward=192.168.1.1,tcp-ports=127.0.0.1/13389:3389,udp-ports=127.0.0.1/13389:3389 "* ]]
+  refute_output --partial "tap,"
+  # Paths: storage files come from work/vm, no container paths remain.
+  [[ $j == *" -drive file=$WORK/vm/data.img,id=data3,"* ]]
+  [[ $j == *" -drive file=$WORK/vm/windows.rom,if=pflash,unit=0,format=raw,readonly=on "* ]]
+  refute_output --partial "/storage/"
+  refute_output --partial "/run/shm"
+  refute_output --partial "vnc"
+  refute_output --partial "-monitor"
+  # Display path: Looking Glass, SPICE, QMP, no emulated display.
+  [[ $j == *" -object memory-backend-file,id=ivshmem,share=on,mem-path=$RUN/ivshmem,size=128M -device ivshmem-plain,memdev=ivshmem "* ]]
+  [[ $j == *" -spice unix=on,addr=$RUN/spice.sock,disable-ticketing=on "* ]]
+  [[ $j == *" -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 "* ]]
+  [[ $j == *" -device usb-redir,chardev=usbredir0 "* ]]
+  [[ $j == *" -qmp unix:$RUN/qmp.sock,server=on,wait=off "* ]]
+  [[ $j == *" -pidfile $RUN/qemu.pid "* ]]
+  [[ $j == *" -vga none -display none "* ]]
+  refute_output --partial "fat:"
+  [[ $(grep -c '^-vga$' <<<"$output") == 1 ]]
+}
+
+@test "vm_args: --setup adds the GTK display and the setup disk" {
+  run vm_args "$FIX/dockur-cmdline.txt" 192.168.1.1 1 0
+  assert_success
+  local j
+  j=$(joined)
+  [[ $j == *" -vga virtio -display gtk "* ]]
+  [[ $j == *" -drive if=none,id=setup,file=fat:$WORK/setup,format=raw,readonly=on -device usb-storage,drive=setup "* ]]
+  [[ $(grep -c '^-vga$' <<<"$output") == 1 ]]
+}
+
+@test "vm_args: --expose-loopback drops only the loopback mapping" {
+  run vm_args "$FIX/dockur-cmdline.txt" 192.168.1.1 0 1
+  assert_success
+  refute_output --partial "map-host-loopback"
+  assert_line "passt,id=hostnet0,ipv6=off,dns-forward=192.168.1.1,tcp-ports=127.0.0.1/13389:3389,udp-ports=127.0.0.1/13389:3389"
+}
+
+@test "vm_args: a container path it does not know how to rewrite fails" {
+  { cat "$FIX/dockur-cmdline.txt"; printf -- '-chardev\nsocket,id=x,path=/run/shm/x.sock\n'; } >"$T/cap"
+  run vm_args "$T/cap" 192.168.1.1 0 0
+  assert_failure
+  assert_output --partial "/run/shm/x.sock"
+}
+
 # --- frame_index_rate ---
 
 # Encode a 16x16 clip at <out> through libx264 yuv420p. stdin holds one frame
