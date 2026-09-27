@@ -406,13 +406,21 @@ joined() {
 # Encode a 16x16 clip at <out> through libx264 yuv420p. stdin holds one frame
 # per line: a palette index 0-7 (black, red, green, yellow, blue, magenta,
 # cyan, white), or "b<i>" for a 50/50 blend of colors i and i+1. <rate> is the
-# input frame rate; extra ffmpeg output options follow.
+# input frame rate; extra ffmpeg output options follow. With BORDER=1 only the
+# center 8x8 carries the color and a 4-pixel white border surrounds it.
 make_clip() {
   local out=$1 rate=$2
   shift 2
-  LC_ALL=C awk '
-    BEGIN { for (i = 0; i < 8; i++) { r[i] = (i % 2) * 255; g[i] = (int(i / 2) % 2) * 255; b[i] = int(i / 4) * 255 } }
-    function frame(R, G, B,   s, p) { s = sprintf("%c%c%c", R, G, B); for (p = 0; p < 256; p++) printf "%s", s }
+  LC_ALL=C awk -v border="${BORDER:-0}" '
+    BEGIN { for (i = 0; i < 8; i++) { r[i] = (i % 2) * 255; g[i] = (int(i / 2) % 2) * 255; b[i] = int(i / 4) * 255 }
+            white = sprintf("%c%c%c", 255, 255, 255) }
+    function frame(R, G, B,   s, p, x, y) {
+      s = sprintf("%c%c%c", R, G, B)
+      for (p = 0; p < 256; p++) {
+        x = p % 16; y = int(p / 16)
+        printf "%s", (border && (x < 4 || x >= 12 || y < 4 || y >= 12)) ? white : s
+      }
+    }
     /^b/ { i = substr($0, 2) + 0; j = (i + 1) % 8
            frame(int((r[i] + r[j]) / 2), int((g[i] + g[j]) / 2), int((b[i] + b[j]) / 2)); next }
     { frame(r[$1], g[$1], b[$1]) }' |
@@ -436,6 +444,16 @@ assert_rate() {
   read -r _ rep skip unr dur <<<"$output"
   assert_equal "$rep $skip $unr" "0 0 0"
   awk -v d="$dur" 'BEGIN { exit !(d > 1.95 && d < 2.05) }'
+}
+
+@test "frame_index_rate: reads only the crop region" {
+  # A white border fills 3/4 of each frame; only the 8x8 center steps.
+  seq 0 119 | awk '{ print $1 % 8 }' | BORDER=1 make_clip "$T/c.mp4" 60
+  run frame_index_rate "$T/c.mp4" 8:8:4:4
+  assert_success
+  assert_rate 60
+  read -r _ rep skip unr _ <<<"$output"
+  assert_equal "$rep $skip $unr" "0 0 0"
 }
 
 @test "frame_index_rate: 30 steps/s at 60 fps shows repeats" {
