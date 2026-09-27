@@ -401,6 +401,65 @@ joined() {
   assert_line "file=/x/a&b/vm/data.img,id=data3,format=raw,cache=none,aio=native,discard=unmap,detect-zeroes=on,if=none"
 }
 
+# --- measure, snap and frames argument handling ---
+
+# Run measure against a temp work dir with a frozen /proc/stat and no real
+# sleeping; each sleep is logged to $T/sleeps.
+measure_env() {
+  WORK=$T/work
+  mkdir -p "$WORK"
+  export LGTEST_STAT=$FIX/stat
+  sleep() { echo "$1" >>"$T/sleeps"; }
+}
+
+@test "measure: task 8 defaults to 1800 s" {
+  measure_env
+  run cmd_measure t8 --task 8 --transport lg --mode tiled --res 1920x1080 --scale 100 --hz 60
+  assert_success
+  assert_equal "$(tail -n1 "$T/sleeps")" 1800
+  assert_equal "$(tail -n1 "$WORK/results.csv" | cut -d, -f2-11)" "t8,8,lg,tiled,1920x1080,100,60,1800,0.00,"
+}
+
+@test "measure: other tasks default to 60 s and subtract the idle median" {
+  measure_env
+  printf '60,1.50\n60,2.50\n' >"$WORK/baseline.csv"
+  run cmd_measure t5 --task 5 --transport rdp --mode fullscreen --res 3840x2160 --scale 180 --hz 60
+  assert_success
+  assert_equal "$(tail -n1 "$T/sleeps")" 60
+  assert_equal "$(tail -n1 "$WORK/results.csv" | cut -d, -f2-11)" "t5,5,rdp,fullscreen,3840x2160,180,60,60,0.00,-2.00"
+}
+
+@test "measure: task 4 refuses without baseline rows" {
+  measure_env
+  run cmd_measure t4 --task 4 --transport lg --mode tiled --res 1920x1080 --scale 100 --hz 60
+  assert_failure
+  assert_output --partial "baseline"
+  assert [ ! -e "$T/sleeps" ]
+}
+
+@test "labels must start with a letter or digit" {
+  measure_env
+  run cmd_measure -x --task 1 --transport lg --mode tiled --res 1x1 --scale 100 --hz 60
+  assert_failure
+  assert_output --partial "<label>"
+  run cmd_snap ../x
+  assert_failure
+  assert_output --partial "<label>"
+  run cmd_frames .hidden 1:1:0:0
+  assert_failure
+  assert_output --partial "<label>"
+}
+
+@test "snap and frames name the record step when the clip is missing" {
+  measure_env
+  run cmd_snap nothere
+  assert_failure
+  assert_output --partial "run lgtest record nothere first"
+  run cmd_frames nothere 8:8:4:4
+  assert_failure
+  assert_output --partial "run lgtest record nothere first"
+}
+
 # --- frame_index_rate ---
 
 # Encode a 16x16 clip at <out> through libx264 yuv420p. stdin holds one frame

@@ -45,9 +45,10 @@ qemu_cmdlines() {
   local f argv0
   for f in "${LGTEST_PROC:-/proc}"/[0-9]*/cmdline; do
     argv0=""
-    IFS= read -r -d '' argv0 <"$f" 2>/dev/null || [[ -n $argv0 ]] || continue
+    # stderr is silenced first, so a process that exits mid-scan prints nothing.
+    IFS= read -r -d '' argv0 2>/dev/null <"$f" || [[ -n $argv0 ]] || continue
     [[ ${argv0##*/} == qemu-system-x86_64 ]] || continue
-    tr '\0' '\n' <"$f" 2>/dev/null || continue
+    tr '\0' '\n' 2>/dev/null <"$f" || continue
     echo
   done
   return 0
@@ -240,6 +241,32 @@ download() {
   verify_sha256 "$dst" "$sum" || die "stopping: $url does not match its pin"
 }
 
+# Die unless <label> is safe as a file name: a letter or digit first, then
+# letters, digits, dot, dash or underscore. Used by measure, record, snap and
+# frames.
+check_label() {
+  [[ $2 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+    die "$1: <label> must start with a letter or digit, then letters, digits, dot, dash or underscore"
+}
+
+# Print the recording path for <label>, or die if there is none. Used by snap
+# and frames.
+clip_path() {
+  check_label "$1" "$2"
+  [[ -f $WORK/rec/$2.mp4 ]] || die "no recording $WORK/rec/$2.mp4; run lgtest record $2 first"
+  printf '%s\n' "$WORK/rec/$2.mp4"
+}
+
+# Sleep <seconds> and print the host busy seconds spent meanwhile. Used by
+# baseline and measure.
+busy_over() {
+  local a b
+  a=$(host_busy_seconds)
+  sleep "$1"
+  b=$(host_busy_seconds)
+  awk -v a="$a" -v b="$b" 'BEGIN { printf "%.2f\n", b - a }'
+}
+
 # --- subcommands ---
 
 # fetch: download the pins, unpack the client source, fill work/setup with
@@ -330,7 +357,7 @@ cmd_run() {
   ((!setup)) || [[ -d $WORK/setup ]] || die "missing $WORK/setup; run lgtest fetch first"
   gw=$(ip -4 route show default | awk '{ print $3; exit }')
   [[ -n $gw ]] || die "no IPv4 default route; passt needs one to forward DNS"
-  out=$(vm_args "$WORK/dockur-cmdline.txt" "$gw" "$setup" "$expose")
+  out=$(vm_args "$WORK/dockur-cmdline.txt" "$gw" "$setup" "$expose") || exit 1
   mapfile -t args <<<"$out"
   rm -rf -- "$RUN"
   mkdir -m 700 -- "$RUN"
@@ -362,7 +389,10 @@ cmd_rdp() {
   done
   args+=(/v:127.0.0.1:13389)
   # Omarchy's scale logic: 180 from 170%, 140 from 130%, else Windows' 100.
-  pct=$(hyprctl monitors -j | jq -r '.[] | select(.focused == true) | .scale' | awk '{ print int($1 * 100) }')
+  # A failed hyprctl or jq falls back to no /scale.
+  pct=$(hyprctl monitors -j | jq -r '.[] | select(.focused == true) | .scale' |
+    awk '{ print int($1 * 100) }') || pct=0
+  [[ $pct =~ ^[0-9]+$ ]] || pct=0
   if ((pct >= 170)); then
     args+=(/scale:180)
   elif ((pct >= 130)); then
@@ -377,25 +407,23 @@ cmd_rdp() {
 
 # baseline: append one 60 s idle measurement (no VM running) to baseline.csv.
 cmd_baseline() {
-  local a b
+  local b
   [[ -z $(qemu_cmdlines) ]] || die "refusing: a QEMU process is running; the baseline needs an idle host"
   mkdir -p "$WORK"
   echo "measuring 60 s of idle host CPU; leave the machine alone"
-  a=$(host_busy_seconds)
-  sleep 60
-  b=$(host_busy_seconds)
-  b=$(awk -v a="$a" -v b="$b" 'BEGIN { printf "%.2f", b - a }')
+  b=$(busy_over 60)
   echo "60,$b" >>"$WORK/baseline.csv"
   echo "baseline: $b busy seconds over 60 s"
 }
 
 # measure <label> --task ... : time one task run and append a row to
 # results.csv with raw busy seconds and, when baseline rows of the same length
-# exist, busy seconds minus the idle median.
+# exist, busy seconds minus the idle median. --seconds defaults to 60, or 1800
+# for task 8.
 cmd_measure() {
-  local label=${1:-} task="" transport="" mode="" res="" scale="" hz="" secs=60
-  local base="" a b busy idle="" n csv=$WORK/results.csv
-  [[ $label =~ ^[A-Za-z0-9._-]+$ ]] || die "measure: <label> must be letters, digits, dot, dash or underscore"
+  local label=${1:-} task="" transport="" mode="" res="" scale="" hz="" secs=""
+  local base="" busy idle="" n csv=$WORK/results.csv
+  check_label measure "$label"
   shift
   while (($#)); do
     (($# >= 2)) || die "measure: $1 needs a value"
@@ -412,6 +440,11 @@ cmd_measure() {
     shift 2
   done
   [[ $task =~ ^[1-8]$ ]] || die "measure: --task must be 1-8"
+  # Task 8 covers a 30-minute session; the others run in 60 s.
+  if [[ -z $secs ]]; then
+    secs=60
+    [[ $task != 8 ]] || secs=1800
+  fi
   [[ $transport =~ ^(lg|rdp|rdp-real)$ ]] || die "measure: --transport must be lg, rdp or rdp-real"
   [[ $mode =~ ^(fullscreen|tiled)$ ]] || die "measure: --mode must be fullscreen or tiled"
   [[ $res =~ ^[0-9]+x[0-9]+$ ]] || die "measure: --res must be WxH"
@@ -429,10 +462,7 @@ cmd_measure() {
     sleep 1
   done
   echo "go ($secs s)"
-  a=$(host_busy_seconds)
-  sleep "$secs"
-  b=$(host_busy_seconds)
-  busy=$(awk -v a="$a" -v b="$b" 'BEGIN { printf "%.2f", b - a }')
+  busy=$(busy_over "$secs")
   [[ -z $base ]] || idle=$(awk -v x="$busy" -v m="$base" 'BEGIN { printf "%.2f", x - m }')
   [[ -f $csv ]] || echo "time,label,task,transport,mode,res,scale,hz,seconds,busy_s,busy_minus_idle_s" >"$csv"
   echo "$(date -Iseconds),$label,$task,$transport,$mode,$res,$scale,$hz,$secs,$busy,$idle" >>"$csv"
@@ -444,7 +474,7 @@ cmd_measure() {
 cmd_record() {
   local label=${1:-} secs=10 region="" rc=0
   local -a target=(-w HDMI-A-1)
-  [[ $label =~ ^[A-Za-z0-9._-]+$ ]] || die "record: <label> must be letters, digits, dot, dash or underscore"
+  check_label record "$label"
   shift
   while (($#)); do
     case $1 in
@@ -466,7 +496,7 @@ cmd_record() {
   mkdir -p "$WORK/rec"
   echo "recording $secs s in 3 s; focus the viewer"
   sleep 3
-  timeout -s INT "$secs" gpu-screen-recorder "${target[@]}" -f 120 -cursor no \
+  timeout -k 10 -s INT "$secs" gpu-screen-recorder "${target[@]}" -f 120 -cursor no \
     -o "$WORK/rec/$label.mp4" || rc=$?
   ((rc == 0 || rc == 124)) || die "gpu-screen-recorder failed (exit $rc)"
   echo "$WORK/rec/$label.mp4"
@@ -474,8 +504,8 @@ cmd_record() {
 
 # snap <label>: write the middle frame of a recording as a PNG, to pick a crop.
 cmd_snap() {
-  local clip=$WORK/rec/${1:-}.mp4 dur
-  [[ -f $clip ]] || die "no recording $clip"
+  local clip dur
+  clip=$(clip_path snap "${1:-}") || exit 1
   dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$clip")
   ffmpeg -v error -ss "$(awk -v d="$dur" 'BEGIN { print d / 2 }')" -i "$clip" \
     -frames:v 1 -y "${clip%.mp4}.png"
@@ -484,8 +514,8 @@ cmd_snap() {
 
 # frames <label> <w:h:x:y>: print the frame-index count for a recording.
 cmd_frames() {
-  local clip=$WORK/rec/${1:-}.mp4
-  [[ -f $clip ]] || die "no recording $clip"
+  local clip
+  clip=$(clip_path frames "${1:-}") || exit 1
   [[ ${2:-} =~ ^[0-9]+:[0-9]+:[0-9]+:[0-9]+$ ]] || die "frames: crop must be w:h:x:y"
   frame_index_rate "$clip" "$2"
 }
