@@ -291,3 +291,4 @@ gets one for its live-disk refusal (a hard link between the source and `work/vm`
 | plan | b | 2 (full) | 2 blockers, 2 should-fix; 1 blocker downgraded to should-fix (the repo is on btrfs; Codex saw a /tmp copy); all integrated |
 | plan | b | 3 (full, cap) | 2 should-fix; both confirmed; John adjudicated (take the recommendations: raw CPU for task 8, stop on firmware failure); integrated. Gate closed. |
 | diff | a | 1 (panel: correctness, security, testing, maintainability) | 0 blockers, 4 should-fix, 17 nits (after dedupe); all integrated |
+| diff | a | 2 (delta) | 1 should-fix, 3 nits; all integrated; stage a clean |
