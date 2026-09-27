@@ -123,6 +123,36 @@ baseline_median() {
       }'
 }
 
+# Count frame-index advances in a recording of frame-index.html. Each frame's
+# crop region (w:h:x:y, physical pixels) is averaged to one RGB value and read
+# as a palette index: R is bit 0, G bit 1, B bit 2. A frame more than 48 from
+# every palette color is unreadable. Prints one line:
+#   advances_per_s repeats skips unreadable duration_s
+# Used by `lgtest frames`.
+frame_index_rate() {
+  local clip=$1 crop=$2 dur
+  dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$clip") || return 1
+  ffmpeg -v error -i "$clip" -fps_mode passthrough -vf "crop=$crop,scale=1:1:flags=area" \
+    -pix_fmt rgb24 -f rawvideo - | od -An -v -tu1 -w3 |
+    awk -v dur="$dur" '
+      {
+        idx = 0; dist = 0
+        for (c = 1; c <= 3; c++) {
+          if ($c >= 128) { idx += 2 ^ (c - 1); d = 255 - $c } else d = $c
+          if (d > dist) dist = d
+        }
+        if (dist > 48) { unreadable++; next }
+        if (!seen) { prev = idx; seen = 1; next }
+        delta = (idx - prev + 8) % 8
+        if (delta == 0) repeats++; else { advances++; skips += delta - 1 }
+        prev = idx
+      }
+      END {
+        if (!(dur > 0)) { print "lgtest: clip has no duration" > "/dev/stderr"; exit 1 }
+        printf "%.2f %d %d %d %s\n", advances / dur, repeats, skips, unreadable, dur
+      }'
+}
+
 usage() {
   cat <<'EOF'
 usage: lgtest <command> [args]

@@ -296,3 +296,83 @@ quiet_host() {
   assert [ ! -e "$T/dst/junk" ]
   assert [ ! -e "$T/dst.tmp" ]
 }
+
+# --- frame_index_rate ---
+
+# Encode a 16x16 clip at <out> through libx264 yuv420p. stdin holds one frame
+# per line: a palette index 0-7 (black, red, green, yellow, blue, magenta,
+# cyan, white), or "b<i>" for a 50/50 blend of colors i and i+1. <rate> is the
+# input frame rate; extra ffmpeg output options follow.
+make_clip() {
+  local out=$1 rate=$2
+  shift 2
+  LC_ALL=C awk '
+    BEGIN { for (i = 0; i < 8; i++) { r[i] = (i % 2) * 255; g[i] = (int(i / 2) % 2) * 255; b[i] = int(i / 4) * 255 } }
+    function frame(R, G, B,   s, p) { s = sprintf("%c%c%c", R, G, B); for (p = 0; p < 256; p++) printf "%s", s }
+    /^b/ { i = substr($0, 2) + 0; j = (i + 1) % 8
+           frame(int((r[i] + r[j]) / 2), int((g[i] + g[j]) / 2), int((b[i] + b[j]) / 2)); next }
+    { frame(r[$1], g[$1], b[$1]) }' |
+    ffmpeg -v error -f rawvideo -pix_fmt rgb24 -s 16x16 -r "$rate" -i - "$@" \
+      -c:v libx264 -pix_fmt yuv420p -y "$out"
+}
+
+# Assert that the "advances per second" field of $output is within 1 of <want>.
+assert_rate() {
+  local rate
+  read -r rate _ <<<"$output"
+  awk -v r="$rate" -v w="$1" 'BEGIN { exit !(r - w <= 1 && w - r <= 1) }' ||
+    fail "advances/s $rate is not within 1 of $1 (output: $output)"
+}
+
+@test "frame_index_rate: 60 steps/s at 60 fps counts every frame as an advance" {
+  seq 0 119 | awk '{ print $1 % 8 }' | make_clip "$T/c.mp4" 60
+  run frame_index_rate "$T/c.mp4" 8:8:4:4
+  assert_success
+  assert_rate 60
+  read -r _ rep skip unr dur <<<"$output"
+  assert_equal "$rep $skip $unr" "0 0 0"
+  awk -v d="$dur" 'BEGIN { exit !(d > 1.95 && d < 2.05) }'
+}
+
+@test "frame_index_rate: 30 steps/s at 60 fps shows repeats" {
+  seq 0 119 | awk '{ print int($1 / 2) % 8 }' | make_clip "$T/c.mp4" 60
+  run frame_index_rate "$T/c.mp4" 8:8:4:4
+  assert_success
+  assert_rate 30
+  read -r _ rep skip unr _ <<<"$output"
+  assert_equal "$rep $skip $unr" "60 0 0"
+}
+
+@test "frame_index_rate: 60 steps/s with every 4th frame dropped shows skips" {
+  # The display repeats the last frame in place of each dropped one.
+  seq 0 119 | awk '{ n = ($1 % 4 == 3) ? $1 - 1 : $1; print n % 8 }' | make_clip "$T/c.mp4" 60
+  run frame_index_rate "$T/c.mp4" 8:8:4:4
+  assert_success
+  assert_rate 45
+  read -r _ rep skip unr _ <<<"$output"
+  # 30 dropped frames; the last one has no following frame to show the skip.
+  assert_equal "$rep $skip $unr" "30 29 0"
+}
+
+@test "frame_index_rate: a 50/50 blended frame is unreadable and adds no advance" {
+  seq 0 119 | awk '{ i = int($1 / 2) % 8; print ($1 == 21) ? "b" i : i }' | make_clip "$T/c.mp4" 60
+  run frame_index_rate "$T/c.mp4" 8:8:4:4
+  assert_success
+  assert_rate 30
+  read -r _ rep skip unr _ <<<"$output"
+  assert_equal "$rep $skip $unr" "59 0 1"
+}
+
+@test "frame_index_rate: a 30-then-60 fps variable-rate clip loses no frames" {
+  # 30 frames 1/30 s apart, then 60 frames 1/60 s apart: 90 steps in 2 s.
+  seq 0 89 | awk '{ print $1 % 8 }' |
+    make_clip "$T/c.mp4" 60 -vf 'setpts=if(lt(N\,30)\,2*N\,N+30)/(60*TB)' -fps_mode passthrough
+  run ffprobe -v error -count_frames -select_streams v:0 \
+    -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "$T/c.mp4"
+  assert_output 90
+  run frame_index_rate "$T/c.mp4" 8:8:4:4
+  assert_success
+  assert_rate 44.5
+  read -r _ rep skip unr _ <<<"$output"
+  assert_equal "$rep $skip $unr" "0 0 0"
+}
