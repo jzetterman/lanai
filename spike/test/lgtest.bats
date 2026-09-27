@@ -114,3 +114,80 @@ spike
   assert_success
   assert_output ""
 }
+
+# --- disk_locked ---
+
+# Print a file's filesystem device the way /proc/locks writes it (%02x:%02x).
+locks_dev() {
+  local d maj min
+  d=$(findmnt -no MAJ:MIN -T "$1")
+  IFS=: read -r maj min <<<"${d//[[:space:]]/}"
+  printf '%02x:%02x' "$maj" "$min"
+}
+
+# Write a /proc/locks fixture with one OFD lock line on <dev>:<inode>, among
+# unrelated real-format lines.
+write_locks() {
+  {
+    echo "1: POSIX  ADVISORY  WRITE 3372069 00:1d:32123 1073741826 1073742335"
+    echo "2: OFDLCK ADVISORY  READ -1 $1 100 101"
+    echo "3: FLOCK  ADVISORY  WRITE 2211 00:19:998 0 EOF"
+  } >"$T/locks"
+}
+
+@test "disk_locked: a lock on the image's device and inode is found" {
+  touch "$T/data.img"
+  write_locks "$(locks_dev "$T/data.img"):$(stat -c %i "$T/data.img")"
+  LGTEST_LOCKS=$T/locks run disk_locked "$T/data.img"
+  assert_success
+}
+
+@test "disk_locked: no lock line for the image" {
+  touch "$T/data.img"
+  write_locks "00:1d:1"
+  LGTEST_LOCKS=$T/locks run disk_locked "$T/data.img"
+  assert_failure 1
+}
+
+@test "disk_locked: same inode on another device does not match" {
+  touch "$T/data.img"
+  local dev other=fe:01
+  dev=$(locks_dev "$T/data.img")
+  [[ $dev != "$other" ]] || other=fe:02
+  write_locks "$other:$(stat -c %i "$T/data.img")"
+  LGTEST_LOCKS=$T/locks run disk_locked "$T/data.img"
+  assert_failure 1
+}
+
+@test "disk_locked: an inode that extends the image's inode does not match" {
+  touch "$T/data.img"
+  local ino
+  ino=$(stat -c %i "$T/data.img")
+  write_locks "$(locks_dev "$T/data.img"):${ino}4"
+  LGTEST_LOCKS=$T/locks run disk_locked "$T/data.img"
+  assert_failure 1
+}
+
+@test "disk_locked: an inode that is a prefix of the image's inode does not match" {
+  touch "$T/data.img"
+  local ino
+  ino=$(stat -c %i "$T/data.img")
+  [[ ${#ino} -gt 1 ]] || skip "inode too short to truncate"
+  write_locks "$(locks_dev "$T/data.img"):${ino%?}"
+  LGTEST_LOCKS=$T/locks run disk_locked "$T/data.img"
+  assert_failure 1
+}
+
+@test "disk_locked: live flock on btrfs shows in the real /proc/locks" {
+  require_btrfs
+  touch "$T/data.img"
+  run disk_locked "$T/data.img"
+  assert_failure 1
+  exec {fd}<"$T/data.img"
+  flock -s "$fd"
+  run disk_locked "$T/data.img"
+  exec {fd}<&-
+  assert_success
+  run disk_locked "$T/data.img"
+  assert_failure 1
+}

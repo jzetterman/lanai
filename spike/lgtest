@@ -53,6 +53,21 @@ qemu_cmdlines() {
   return 0
 }
 
+# True if any process holds a lock on <img>. /proc/locks names a file as
+# <maj>:<min>:<inode> with the device in %02x:%02x. The device comes from
+# findmnt, because on btrfs stat reports the subvolume's device, which never
+# matches /proc/locks. LGTEST_LOCKS swaps /proc/locks for a fixture.
+disk_locked() {
+  local img=$1 ino dev maj min
+  ino=$(stat -c %i -- "$img") || return 2
+  dev=$(findmnt -no MAJ:MIN -T "$img" | head -n1)
+  IFS=: read -r maj min <<<"${dev//[[:space:]]/}"
+  [[ -n $maj && -n $min ]] || return 2
+  dev=$(printf '%02x:%02x' "$maj" "$min")
+  awk -v want="$dev:$ino" '{ for (i = 1; i <= NF; i++) if ($i == want) found = 1 }
+    END { exit !found }' "${LGTEST_LOCKS:-/proc/locks}"
+}
+
 # Print host CPU busy time in seconds from the `cpu` line of /proc/stat:
 # user + nice + system + irq + softirq. Guest time already sits inside user
 # and nice; idle, iowait and steal are not host work. LGTEST_STAT swaps the file.
