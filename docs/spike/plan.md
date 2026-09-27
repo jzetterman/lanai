@@ -292,3 +292,4 @@ gets one for its live-disk refusal (a hard link between the source and `work/vm`
 | plan | b | 3 (full, cap) | 2 should-fix; both confirmed; John adjudicated (take the recommendations: raw CPU for task 8, stop on firmware failure); integrated. Gate closed. |
 | diff | a | 1 (panel: correctness, security, testing, maintainability) | 0 blockers, 4 should-fix, 17 nits (after dedupe); all integrated |
 | diff | a | 2 (delta) | 1 should-fix, 3 nits; all integrated; stage a clean |
+| diff | b | 1 (full) | 0 findings; Codex could not run bats in its sandbox (bats verified locally: 43/43); gate closed |
