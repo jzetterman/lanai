@@ -34,19 +34,27 @@ btrfs_tmp() {
 }
 
 # Start a paused QEMU (TCG, no guest code runs) that opens <img> as a disk
-# the way a VM does, and wait until it holds the image lock. Sets QEMU_PID.
+# the way a VM does. -daemonize returns only once QEMU has set up its
+# devices, so the disk's locks are all held on return. Sets QEMU_PID.
 qemu_hold() {
-  local img=$1 ino i
-  ino=$(stat -c %i -- "$img")
-  qemu-system-x86_64 -S -nodefaults -display none -machine q35,accel=tcg \
-    -drive "file=$img,format=raw,if=none,id=d" -device virtio-scsi-pci \
-    -device scsi-hd,drive=d 3>&- &
-  QEMU_PID=$!
-  for ((i = 0; i < 50; i++)); do
-    grep -q ":$ino " /proc/locks && return 0
-    sleep 0.1
+  local img=$1 pidfile=$BATS_TEST_TMPDIR/qemu-hold.pid
+  qemu-system-x86_64 -S -daemonize -pidfile "$pidfile" -nodefaults -display none \
+    -machine q35,accel=tcg -drive "file=$img,format=raw,if=none,id=d" \
+    -device virtio-scsi-pci -device scsi-hd,drive=d 3>&- ||
+    fail "QEMU could not open $img"
+  QEMU_PID=$(<"$pidfile")
+}
+
+# Stop the QEMU from qemu_hold and wait until it has exited.
+qemu_release() {
+  local i
+  [[ -n ${QEMU_PID:-} ]] || return 0
+  kill "$QEMU_PID" 2>/dev/null || true
+  for ((i = 0; i < 100; i++)); do
+    kill -0 "$QEMU_PID" 2>/dev/null || break
+    sleep 0.05
   done
-  fail "QEMU did not lock $img"
+  QEMU_PID=""
 }
 
 # Return 0 when a VM could open <img> now: a paused QEMU runs for 2 s without
