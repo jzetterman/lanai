@@ -10,6 +10,13 @@
 # Keep in step with manifest.json (a test checks).
 LANAI_VERSION=0.1.0
 
+# This file's folder. The VM and copy helpers live beside it.
+LANAI_LIB=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source-path=SCRIPTDIR source=copy.sh
+source "$LANAI_LIB/copy.sh"
+# shellcheck source-path=SCRIPTDIR source=vm.sh
+source "$LANAI_LIB/vm.sh"
+
 # --- output ---
 
 # emit <ok true|false> <state> <message> <next> [details-json]: print the one
