@@ -15,7 +15,8 @@ setup() {
 
 teardown() {
   qemu_release
-  [[ -z ${B:-} ]] || rm -rf "$B"
+  # Read-only folders from a test must be writable again to be removed.
+  [[ -z ${B:-} ]] || { chmod -R u+w "$B" 2>/dev/null; rm -rf "$B"; }
 }
 
 # Build a fake omarchy-windows-vm storage dir at <dir>: a 1 MiB random
@@ -186,6 +187,53 @@ f 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 sub/a"
   run reflink_tree "$B/src" "$B/none"
   assert_failure
   assert [ ! -e "$B/none" ]
+}
+
+@test "reflink_tree: copies read-only folders and keeps their modes" {
+  ((EUID != 0)) || skip "root can write into read-only folders"
+  btrfs_tmp
+  make_storage "$B/src"
+  mkdir -p "$B/src/sub/deeper" "$B/dst"
+  echo nested >"$B/src/sub/deeper/f"
+  chmod 555 "$B/src/sub/deeper" "$B/src/sub" "$B/src"
+  run reflink_tree "$B/src" "$B/dst"
+  assert_success
+  [[ $(tree_manifest "$B/src") == "$(tree_manifest "$B/dst")" ]]
+  assert_equal "$(stat -c %a "$B/dst" "$B/dst/sub" "$B/dst/sub/deeper" | tr '\n' ' ')" "555 555 555 "
+}
+
+@test "lanai-copy: copies a read-only storage folder" {
+  ((EUID != 0)) || skip "root can write into read-only folders"
+  btrfs_tmp
+  make_storage "$B/src"
+  mkdir "$B/src/sub"
+  chmod 555 "$B/src/sub" "$B/src"
+  run "$REPO/bin/lanai-copy" "$B/src" "$B/dst"
+  assert_success
+  assert_equal "$(stat -c %a "$B/dst")" 555
+}
+
+@test "lanai-copy: a failed copy of a read-only folder leaves no .partial" {
+  ((EUID != 0)) || skip "root can write into read-only folders"
+  btrfs_tmp
+  make_storage "$B/src"
+  mkdir "$B/src/sub"
+  echo x >"$B/src/sub/f"
+  chmod 555 "$B/src/sub" "$B/src"
+  # A cp shim damages the copied MAC file, so verification fails.
+  mkdir "$T/shims"
+  cat >"$T/shims/cp" <<EOF
+#!/usr/bin/env bash
+$(command -v cp) "\$@" || exit
+last=\${!#}
+[[ \$last != *.partial/windows.mac ]] || echo x >>"\$last"
+EOF
+  chmod +x "$T/shims/cp"
+  PATH=$T/shims:$PATH run "$REPO/bin/lanai-copy" "$B/src" "$B/dst"
+  assert_failure
+  assert_output --partial "does not match"
+  assert [ ! -e "$B/dst.partial" ]
+  assert [ ! -e "$B/dst" ]
 }
 
 @test "reflink_tree: refuses a symlink in the source" {

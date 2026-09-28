@@ -46,7 +46,8 @@ has_nocow() {
 # the source and costs no space. btrfs refuses to clone between a NOCOW and a
 # COW file, so each file is created empty and given the source's NOCOW
 # attribute (or has an inherited one removed) before the clone. Modes and
-# file times are kept; <dst> gets <src>'s mode. Fails on a symlink or special
+# file times are kept; <dst> gets <src>'s mode. Folder modes are set after
+# their contents, so read-only folders copy too. Fails on a symlink or special
 # file, and when the two are not on one filesystem that supports reflinks.
 reflink_tree() (
   set -o pipefail
@@ -59,7 +60,6 @@ reflink_tree() (
     echo "lanai: $dst is not an empty folder" >&2
     exit 1
   fi
-  chmod --reference="$src" -- "$dst" || exit 1
   find "$src" -mindepth 1 -printf '%P\0' | LC_ALL=C sort -z |
     while IFS= read -r -d '' p; do
       s=$src/$p d=$dst/$p
@@ -67,7 +67,8 @@ reflink_tree() (
         echo "lanai: not a regular file or directory: $s" >&2
         exit 1
       elif [[ -d $s ]]; then
-        mkdir -- "$d" && chmod --reference="$s" -- "$d" || exit 1
+        # Its mode comes last, so a read-only folder can still be filled.
+        mkdir -- "$d" || exit 1
         continue
       fi
       : >"$d" || exit 1
@@ -80,7 +81,13 @@ reflink_tree() (
         echo "lanai: cannot reflink $s: source and destination must be on the same btrfs or XFS filesystem" >&2
         exit 1
       }
-    done
+    done || exit 1
+  # Folder modes, deepest first (reverse order puts a/b before a), then <dst>.
+  find "$src" -mindepth 1 -type d -printf '%P\0' | LC_ALL=C sort -rz |
+    while IFS= read -r -d '' p; do
+      chmod --reference="$src/$p" -- "$dst/$p" || exit 1
+    done || exit 1
+  chmod --reference="$src" -- "$dst"
 )
 
 # Take QEMU's write lock on the raw image <img> by holding `qemu-io -f raw`

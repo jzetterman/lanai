@@ -40,7 +40,8 @@ main() {
   lock_disk "$src/data.img" ||
     die "cannot lock $1/data.img ($LANAI_LOCK_ERROR): stop the VM that uses $1, then try again"
   created=0
-  trap '((created)) && rm -rf -- "$part"; unlock_disk' EXIT
+  # The copy may hold read-only folders, so make it writable before removing.
+  trap '((created)) && { chmod -R u+w -- "$part"; rm -rf -- "$part"; }; unlock_disk' EXIT
   # mkdir fails if the folder appeared since the check, so it is ours.
   mkdir -- "$part" || die "cannot create $part"
   # shellcheck disable=SC2034 # read by the EXIT trap
