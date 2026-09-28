@@ -87,7 +87,8 @@ Neither needs GPU acceleration.
    - installs the host packages Lanai needs, in a terminal that shows the exact command
      before it runs, with the system's normal password prompt;
    - installs one pinned Looking Glass client build, verified by checksum;
-   - installs the matching Looking Glass IDD and the SPICE guest agent inside Windows;
+   - installs the matching Looking Glass IDD, the SPICE guest agent and, for the clock
+     sync in requirement 21, the QEMU guest agent inside Windows;
    - asks the user to restart Windows once after the guest install. The spike showed that
      Looking Glass input does not work until that restart.
 8. The Looking Glass client on the host and the IDD in the guest come from the same
@@ -137,10 +138,12 @@ or 6008).
     plugin. Restarting the Omarchy shell, or reloading, updating or disabling the
     plugin, never stops the VM. The bar finds a running VM again and shows its true
     state.
-19. When the user's graphical session ends (logout, reboot or power-off), a running VM
-    gets a clean shutdown, whether or not the user has lingering services enabled. The
-    host waits up to 2 minutes for it. If the wait expires, the VM is force-stopped, and
-    Lanai reports that at the next start.
+19. When the user logs out, a running VM gets a clean shutdown, whether or not the user
+    has lingering services enabled. The host waits up to 2 minutes for it. On reboot or
+    power-off, Lanai starts the clean shutdown the moment the host begins shutting down
+    and gets as long as Omarchy's shutdown window allows (about 20 s today), without
+    changing system settings (John, 2026-09-28). If either wait expires, the VM is
+    force-stopped, and Lanai reports that at the next start.
 20. The VM survives the host screen locking and unlocking: within 10 s of unlock, with no
     user action, the window shows a live desktop, typing and mouse work, and a system
     sound plays. A reconnect counts as a fail.
@@ -222,7 +225,7 @@ stopped; Windows then resumes, boots after a restart, and `chkdsk` reports no er
 | 9 | Interrupting setup at each step, then rerunning it, ends in a working install |
 | 10-17, 20 | Each passes a scripted or checklist test (list in the plan); requirement 12 is checked with a scale matrix: each step, a value just above and below each boundary, a tie (for example 112.5% gives 100%, 275% gives 250%), the 250-300 gap, and values below 100% and above 500% (clamped to the nearest end). If requirement 15 is moved to v2 (recorded in this spec before the release gate), its check and the requirement 28 check are skipped |
 | 18 | Shell restart, plugin reload, plugin update and plugin disable each leave Windows running, and the bar shows its true state afterwards |
-| 19 | Logout, reboot and power-off each end in a clean shutdown, with lingering both enabled and disabled; a guest that ignores shutdown is force-stopped after 2 minutes and reported at the next start |
+| 19 | Logout ends in a clean shutdown, with lingering both enabled and disabled; a guest that ignores shutdown at logout is force-stopped after 2 minutes and reported at the next start; on reboot and power-off, Windows' shutdown starts when the host's does, an idle Windows shuts down cleanly within the window, and a forced stop is reported at the next start |
 | 21 | After suspend and resume, the requirement 20 check passes, and the guest clock is within 2 s of the host's within 60 s |
 | 22, 25 | While the VM runs: no Lanai process runs as root; no new listening TCP or UDP socket appears; Lanai's Unix control sockets and runtime files, including the shared-memory file, are mode 0600 or inside a 0700 directory owned by the user |
 | 23-24 | The spike's security check passes against Lanai's VM: the host-loopback probe is blocked after a positive control; a web page loads; on a guest without its own DNS client, a MagicDNS name and a short name through the host's search domain resolve through Windows' default resolver; the same names resolve when queried at the gateway (the diagnostic for guests with a DNS client such as WARP); a VPN destination and a host service on a non-loopback address are reachable |
@@ -260,3 +263,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | b | 2 (full) | 3 blockers, 1 should-fix; all confirmed. The integration failed silently (script error), so round 3 reviewed the unchanged text; integrated after round 3 |
 | spec | b | 3 (full, cap) | Reviewed the stale round-2 text: items 1-2 repeat round 2's blockers; items 3-5 new should-fix, confirmed and integrated. Unreadable dockur version: one-time confirmation (Claude's call, flagged to John) |
 | spec | b | 4 (extra, approved by John after round 3 reviewed stale text) | 2 blockers, 1 should-fix; all confirmed. Dockur version: John ruled no gate and no confirmation (5a rewritten); snapshot interlock and scale matrix integrated. Gate closed. |
+| spec | amendment | 2026-09-28 | Req 19 reboot/power-off changed to best effort within Omarchy's shutdown window (John's decision after research showed Omarchy caps user-session shutdown at 5 s); req 7 adds the QEMU guest agent for req 21 |
