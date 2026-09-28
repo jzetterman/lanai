@@ -18,7 +18,7 @@ Transports: `lg` is Looking Glass on the spike VM, `rdp` is RDP on the spike VM,
 | Windows scale used (from RDP's logic) | |
 | Tiled window size and position | |
 | Looking Glass build | B7-826-236efcb1 |
-| Baseline rows (60 s busy seconds) | |
+| Baseline rows (60 s busy seconds) | 17.92, 15.80, 16.61 (median 16.61), taken 2026-09-27 22:33-22:36 EDT with no VM running, load average 0.17 |
 
 ## Counter check
 
