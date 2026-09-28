@@ -203,14 +203,17 @@ try {
     # so the recommended step's index is -minScaleRel.
     $d = [LanaiDisplay]::GetScale($path)
     $recommended = - $d.minScaleRel
-    $rel = $want - $recommended
+    # The highest step Windows allows here, as an index into $Steps (Windows
+    # may report more steps than this list holds).
+    $maxIdx = [math]::Min($recommended + $d.maxScaleRel, $Steps.Count - 1)
     Write-Log ("Recommended {0}%, current {1}%, allowed {2}% to {3}%; want {4}%" -f `
             $Steps[$recommended], $Steps[$recommended + $d.curScaleRel],
-            $Steps[$recommended + $d.minScaleRel], $Steps[[math]::Min($recommended + $d.maxScaleRel, $Steps.Count - 1)], $Scale)
-    if ($rel -gt $d.maxScaleRel) {
-        Write-Log "Windows allows at most $($Steps[$recommended + $d.maxScaleRel])% at this resolution; using that."
-        $rel = $d.maxScaleRel
+            $Steps[0], $Steps[$maxIdx], $Scale)
+    if ($want -gt $maxIdx) {
+        Write-Log "Windows allows at most $($Steps[$maxIdx])% at this resolution; using that."
+        $want = $maxIdx
     }
+    $rel = $want - $recommended
     [LanaiDisplay]::SetScale($path, $rel)
     $after = [LanaiDisplay]::GetScale($path)
     Write-Log "Scale is now $($Steps[$recommended + $after.curScaleRel])%."
