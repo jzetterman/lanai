@@ -421,11 +421,21 @@ cannot be met as designed. Record it as a spec question; phase 4 waits for the a
 - Lingering at the start: `Linger=no`.
 - `InhibitDelayMaxUSec`: 15000000 (15 s).
 - `TimeoutStopUSec` of `user@<uid>.service`: 5s.
-- Logout path used:
-- A1 logout (lingering off): unit log, ordering lines, logind lines:
-- A2 reboot (lingering off): unit log, inhibitor lines, seconds to `QEMU exited`:
-- B1 logout (lingering on):
-- B2 reboot (lingering on):
+- Logout path used: Omarchy menu, System, Logout (`omarchy-system-logout`, then `uwsm stop`).
+- A1 logout (lingering off): PASS. `uwsm stop` at 21:56:44.618 UTC; `POWERDOWN` at :44.831;
+  `SHUTDOWN` with `"guest": true` at 21:56:56.509; `QEMU exited 13 s after system_powerdown`;
+  unit stopped at :58.095; the compositor unit stopped at :58.824; logind removed the
+  session at :58.984. The session waited for the VM. Log: `~/lanai-proofs/proof4-A1.log`.
+- A2 reboot (lingering off): PASS. `PrepareForShutdown(true)` seen at 22:00:49.995 UTC (the
+  eavesdropping fallback works); `POWERDOWN` at :50.024; `SHUTDOWN` with `"guest": true`
+  at 22:00:57.323; `QEMU exited 7 s after system_powerdown`; about 8 s from the signal to
+  the unit stopping, inside the 15 s delay. Log: `~/lanai-proofs/proof4-A2.log`.
+- B1 logout (lingering on): PASS. `uwsm stop` at 22:05:35.496 UTC; `SHUTDOWN` with
+  `"guest": true` at 22:05:46.309; `QEMU exited 11 s after system_powerdown`; unit stopped
+  at :47.555; the compositor unit stopped at :47.815. Log: `~/lanai-proofs/proof4-B1.log`.
+- B2 reboot (lingering on): PASS. `PrepareForShutdown(true)` at 22:07:21.141 UTC;
+  `SHUTDOWN` with `"guest": true` at 22:07:28.248; `QEMU exited 7 s after system_powerdown`;
+  unit stopped at :29.390, about 8 s after the signal. Log: `~/lanai-proofs/proof4-B2.log`.
 - Sign-in screen: PASS. Windows signs in automatically (dockur sets auto-logon), so we
   reached the screen by signing out from Start. Stop at 21:21:44 UTC; `POWERDOWN` at
   :44.265; `SHUTDOWN` with `"guest": true, "reason": "guest-shutdown"` at 21:21:51.158;
@@ -448,8 +458,16 @@ cannot be met as designed. Record it as a spec question; phase 4 waits for the a
   `"guest": true` at 21:38:36.073; `QEMU exited 8 s after system_powerdown`. Teams does
   not block. The lock is the cause: a locked Windows 11 drops the ACPI power button.
   Spec question for phase 4; see the plan follow-ups.
-- Idle Windows shutdown time for the README:
-- Pass (yes/no), and why:
+- Idle Windows shutdown time for the README: 7 to 13 s from `system_powerdown` to QEMU
+  exiting, over eight clean runs.
+- Pass (yes/no), and why: yes for (a) and (b): logout waits for the VM and ends in a clean
+  shutdown with lingering off and on, and reboot's delay inhibitor starts the shutdown well
+  inside 15 s. The sign-in screen passes. The locked session fails: a locked Windows drops
+  the ACPI power button. John chose (2026-09-28) to have setup turn off the Windows lock
+  (the Linux session is the lock); fold it into the spec and plan before phase 4. Kit
+  note: `proof-vm client` can start against the last run's stale `ivshmem` file and fail
+  with "Invalid path to the shared memory file"; Lanai's client launch must wait for the
+  new VM's file, not any file. Lingering restored to `no`.
 
 ## After the proofs
 
