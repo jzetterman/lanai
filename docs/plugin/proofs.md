@@ -82,9 +82,9 @@ ends with `copied ... verified N entries by size and SHA-256`. `media` fills
 
 ### Result
 
-- Date and time:
-- `lanai-copy` last line, and how long it took:
-- `media` last line:
+- Date and time: 2026-09-28 15:30-15:36 EDT
+- `lanai-copy` last line, and how long it took: `copied /home/john/.windows to /home/john/lanai-proofs/lanai-proof; verified 7 entries by size and SHA-256`, 279 s
+- `media` last line: `media ready: /home/john/lanai-proofs/kit/setup and /home/john/lanai-proofs/kit/virtio-win-0.1.302-1.iso` (downloads verified)
 
 ## Step 1: install the display pieces in the copy
 
@@ -106,8 +106,11 @@ A QEMU window opens. Sign in to Windows. From the USB drive in Explorer:
 
 ### Result
 
-- Date and time:
+- Date and time: 2026-09-28 15:37-16:15 EDT
 - Anything unexpected:
+  - Order changed on purpose: SPICE agent and `C:\Lanai\lanai-scale.ps1` first, the IDD last, because installing the IDD turns the setup display black (spike finding). Default refresh left alone: it is already 60 (checked in the IDD source during the spike).
+  - Looking Glass input worked at once after the IDD install, before any restart (`Using Input: LGMP`). The spike had needed a restart first.
+  - `proof-vm stop` (QMP `system_powerdown`) was ignored for 300 s because the IDD installer's final dialog was still open. After closing it, Start > Power > Shut down worked and QEMU exited 0. Lanai's `setup.cmd` runs every installer silently, and the bar's forced stop covers a guest that ignores shutdown.
 
 ## Proof 1: display scale
 
@@ -154,18 +157,28 @@ where Windows caps DPI by resolution, and record what happens. Fallback to recor
 
 ### Result
 
-- Date and time:
-- OEM strings:
+- Date and time: 2026-09-28 16:15-16:45 EDT
+- OEM strings: `lanai-scale=150`
 - Script output (step 2):
-- Applied at once, no sign-out (yes/no):
-- After resize (resolution, scale):
-- After restart, before the script (scale):
-- Script output after restart:
-- 250% at small window (resolution, output, scale shown):
-- 300% at small window (resolution, output, scale shown):
-- `PerMonitorSettings` output:
-- `lanai-scale.log`, if the script failed:
-- Pass (yes/no), and why:
+  ```
+  Display: name 'Looking Glass', path '\\?\DISPLAY#LGD1DDD#1&28a6823a&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}'
+  Recommended 100%, current %, allowed 100% to 350%; want 150%
+  Scale is now 150%.
+  ```
+- Applied at once, no sign-out (yes/no): yes. A controlled redo with `-Scale 100` then `-Scale 150` changed Settings to 100%, then 150%, with no sign-out prompt.
+- After resize (resolution, scale): John set 125% by hand (it looked best). Scale stayed 125% through every resize; the Windows resolution followed the window within about 1 s.
+- After restart, before the script (scale): 125% (survived the restart).
+- Script output after restart: `Recommended 100%, current %, allowed 100% to 250%; want 150%` then `Scale is now 150%.` (the allowed maximum fell with the smaller window).
+- 250% at small window (about 1024x768): `allowed 100% to 125%; want 250%`, `Windows allows at most 125% at this resolution; using that.`, `Scale is now 125%.`
+- 300% at small window: same cap, `Scale is now 125%.`
+- `PerMonitorSettings` output: `HKCU\Control Panel\Desktop\PerMonitorSettings\LGD1DDD1_01_07EA_BC^589876EA6875D582DD89E909A215592A`, `DpiValue REG_DWORD 0x1` (one step above recommended, 125%).
+- `lanai-scale.log`, if the script failed: not needed.
+- Pass (yes/no), and why: **yes.** Applies at once without a sign-out, holds across resizes, survives a restart, and clamps cleanly to Windows' resolution cap.
+- Notes for later phases:
+  - Bug: the script prints `current %` blank in some states (at 100%, and once at 125%); it printed `current 125%` correctly in another. Cosmetic; fix the current-scale lookup.
+  - Windows caps the scale by resolution. Lanai applies the scale at sign-in at the window's size then; enlarging the window later does not raise it. Acceptable for v1 (the window normally opens fullscreen or tiled).
+  - UX: resizing the Looking Glass window with Shift + right-drag accelerates instead of tracking the mouse. Likely the client's pointer warping or confinement confusing Hyprland's drag. Investigate client pointer options before phase 7.
+  - Kit: `proof-vm client` has no wait for the VM's shared-memory file (the harness's `client` does), so starting it right after `run` can fail with "Invalid path to the shared memory file". Start it once the VM is up.
 
 ## Proof 2: virtiofs file sharing
 
@@ -230,14 +243,18 @@ be followed from the guest.
 
 ### Result
 
-- Date and time:
-- virtiofsd owner (`ps`):
-- viofs driver present before step 2 (output):
-- Service start output:
-- Drive letter:
-- Round trip (both files, host owner and mode):
-- Step 7 outputs:
-- Pass (yes/no), and why:
+- Date and time: 2026-09-28 16:30-17:00 EDT
+- virtiofsd owner (`ps`): `john`, `/usr/lib/virtiofsd --socket-path=/run/user/1000/lanai-proof/virtiofs.sock --shared-dir /home/john/lanai-proofs/share --sandbox namespace`. Its warnings (no root uid/gid, file handles disabled, fd limit 524288) are normal for an unprivileged run.
+- viofs driver present before step 2 (output): `Original Name: viofs.inf` (dockur installed it). The VirtIO FS Device showed Status OK.
+- Service start output: `VirtioFsSvc` already existed with the runbook's settings and showed RUNNING, but no drive appeared. Running `virtiofs.exe -d -1 -D -` by hand showed the cause: after the FUSE INIT request it failed with `The service VirtIO-FS has failed to start (Status=c0000002)` (not implemented). **dockur's older viofs driver does not work with virtio-win 0.1.302's `virtiofs.exe`.** After `pnputil /add-driver E:\viofs\w11\amd64\viofs.inf /install` (driver installed on the device, no restart needed), the same run printed `Init: MaxWrite 1048576 bytes, MaxPages 256` and `The service VirtIO-FS has been started.`
+- Drive letter: `Z:`
+- Round trip (both files, host owner and mode): `Z:\from-linux.txt` read `from-linux`; `Z:\from-windows.txt` appeared on the host as `hello from windows`, owner `john`, mode 664.
+- Step 7 outputs: `dir Z:\..` listed the share's own root; `type Z:\..\outside\secret.txt`, `type Z:\escape-abs\secret.txt` and `type Z:\escape-rel\secret.txt` each failed with "Cannot find path"; `dir Z:\escape-abs` listed only the link itself; `type Z:\hostname-link` failed ("syntax is incorrect"). `secret.txt` on the host is unchanged.
+- Pass (yes/no), and why: **yes.** Files round-trip as the user, and neither `..` nor planted symlinks leave the share.
+- Notes for later phases:
+  - **setup.cmd must always install the pinned viofs driver** (`pnputil /add-driver ... /install`), not only "if missing": dockur's older driver fails with the current `virtiofs.exe`. Plan phase 6 needs this change.
+  - dockur already creates a `VirtioFsSvc` service; setup must update its settings (`sc.exe config`), not only create it.
+  - Runbook: in PowerShell use `sc.exe` (`sc` is Set-Content); the virtio-win CD's letter varies (E: here). Check at the next boot that the service mounts `Z:` by itself.
 
 ## Proof 3: QEMU guest agent and clock
 
@@ -290,15 +307,30 @@ disallowed command (`guest-exec`) is refused.
 
 ### Result
 
-- Date and time:
-- `BINARY_PATH_NAME` before and after:
-- `guest-exec` replies:
-- `set-time` replies:
-- Clock difference before suspend:
-- Right after wake:
-- 60 s after wake:
+- Date and time: 2026-09-28 17:00-17:17 EDT
+- `BINARY_PATH_NAME` before and after: before `"C:\Program Files\Qemu-ga\qemu-ga.exe" -d --retry-path`; after `"C:\Program Files\Qemu-ga\qemu-ga.exe" -d --retry-path --allow-rpcs=guest-sync,guest-sync-delimited,guest-set-time`. The `sc config` line must run in Command Prompt: PowerShell mangles its nested quotes.
+- `guest-exec` replies: `{"error": ... "JSON parse error, stray '\uFFFD'"}` (the agent's reply to the 0xFF flush byte, expected), `{"return": 18457}` (sync), `{"error": {"class": "CommandNotFound", "desc": "Command guest-exec has been disabled: the command is not allowed"}}`
+- `set-time` replies: the same flush error, `{"return": 28158}`, `{"return": {}}`
+- Clock difference before suspend: host 21:12:26.7, guest 21:12:26.6 UTC (0.1 s)
+- Right after wake: no screenshot before the sync; the sync landed 3 s after wake.
+- 60 s after wake: at 21:16:28.0 UTC (about 28 s after wake) host and guest both read 21:16:28.0 (0.0 s).
 - `sleep-watch.log`:
-- Pass (yes/no), and why:
+  ```
+  2026-09-28T21:05:52.749Z watching PrepareForSleep on the system bus
+  dbus-monitor: unable to enable new-style monitoring: ... Falling back to eavesdropping.
+  2026-09-28T21:13:45.983Z PrepareForSleep(true): host is suspending
+  2026-09-28T21:16:00.659Z PrepareForSleep(false): host resumed; setting the guest clock
+  {"error": {"class": "GenericError", "desc": "JSON parse error, stray '\uFFFD'"}}
+  {"return": 2449}
+  {"return": {}}
+  2026-09-28T21:16:03.663Z set-time done
+  ```
+  Host suspend (logind and kernel): 17:13:46 to 17:16:00 EDT (2 min 14 s, deep S3).
+- Pass (yes/no), and why: **yes.** A user-level `dbus-monitor --system` sees logind's `PrepareForSleep` (both edges) despite falling back from monitor mode; `guest-set-time` brought the guest to 0.0 s of the host within 28 s of resume; `guest-exec` is refused by the allow-list.
+- Notes for later phases:
+  - `qga_reply` must expect the parse-error line the 0xFF flush produces before the sync reply (the plan's "skip to 0xFF" rule covers it).
+  - The `VirtioFsSvc` share now mounts `Z:` by itself at boot, after the proof 2 driver update.
+  - An idle Windows shut down cleanly in 8-9 s from QMP `system_powerdown` twice (proof 1 and proof 2 boots), well inside Omarchy's roughly 20 s reboot window.
 
 ## Proof 4: shutdown paths
 
