@@ -188,8 +188,8 @@ compose_file() {
 # that line is read into Lanai, so other values (the Windows password) never
 # leave the file. Prints nothing when the key is missing. The line must be
 # `KEY: "value"`, `KEY: 'value'` or `KEY: value` with no quotes or comment
-# in the value; any other form fails, and callers treat the compose as
-# unreadable. Fails too when the file cannot be read.
+# in the value. Returns 1 when the file cannot be read, and 2 when the key's
+# line is in any other form (Lanai cannot tell what dockur would read).
 compose_value() {
   local file=$1 key=$2 line rc=0 q=\' d=\"
   [[ $key =~ ^[A-Z_]+$ ]] || return 1
@@ -203,8 +203,8 @@ compose_value() {
     [[ $line =~ $pre$bare$post ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
   else
-    echo "lanai: cannot read $key in $file" >&2
-    return 1
+    echo "lanai: cannot interpret $key in $file" >&2
+    return 2
   fi
 }
 
@@ -346,17 +346,31 @@ dockur_culture() {
   esac
 }
 
-# Print the windows.base name dockur would expect here: from the compose's
-# VERSION and LANGUAGE when it is readable, else from the values
-# omarchy-windows-vm always sets (VERSION 11, no LANGUAGE), per spec 5a.
+# Print the windows.base name dockur would expect here, from the compose's
+# VERSION and LANGUAGE. A missing key gets dockur's default, as dockur does.
+# Only when the compose cannot be read does it use the values
+# omarchy-windows-vm always sets (VERSION 11, no LANGUAGE), per spec 5a. A
+# key line it cannot interpret fails, printing which key.
 expected_base() {
-  local f version language
-  if f=$(readable_compose) && version=$(compose_value "$f" VERSION 2>/dev/null) &&
-    language=$(compose_value "$f" LANGUAGE 2>/dev/null); then
-    dockur_base "$version" "$language"
-  else
+  local f key rc
+  local -A v=()
+  if ! f=$(readable_compose); then
     dockur_base 11 ""
+    return
   fi
+  for key in VERSION LANGUAGE; do
+    rc=0
+    v[$key]=$(compose_value "$f" "$key" 2>/dev/null) || rc=$?
+    if ((rc == 2)); then
+      echo "cannot interpret $key in omarchy-windows-vm's settings"
+      return 1
+    elif ((rc != 0)); then
+      # The file became unreadable after the check.
+      dockur_base 11 ""
+      return
+    fi
+  done
+  dockur_base "${v[VERSION]}" "${v[LANGUAGE]}"
 }
 
 # Check that <dir> is an omarchy-windows-vm install Lanai supports and that
@@ -475,11 +489,19 @@ dockur_disk_size() {
 # Check that <dir>/data.img is at least the compose's DISK_SIZE, so a
 # container start would not grow it (spec 5a). Prints one line. Returns 0
 # when it passes, 1 when the disk is smaller, and 2 when it is not checked:
-# the compose or its DISK_SIZE line is not readable, or DISK_SIZE is max,
-# half or not a size.
+# the compose is not readable, or DISK_SIZE is max, half or not a size. A
+# DISK_SIZE line it cannot interpret in a readable compose refuses (1).
 disk_size_check() {
-  local dir=$1 f size want have
-  if ! f=$(readable_compose) || ! size=$(compose_value "$f" DISK_SIZE 2>/dev/null); then
+  local dir=$1 f size want have rc=0
+  if f=$(readable_compose); then
+    size=$(compose_value "$f" DISK_SIZE 2>/dev/null) || rc=$?
+  else
+    rc=1
+  fi
+  if ((rc == 2)); then
+    echo "cannot interpret DISK_SIZE in omarchy-windows-vm's settings"
+    return 1
+  elif ((rc != 0)); then
     echo "disk size not checked: omarchy-windows-vm's settings are not readable"
     return 2
   fi
@@ -561,9 +583,11 @@ container_preparing() {
 # Print the VM settings to seed Lanai's settings with (spec 6), as JSON:
 # {"memory_gib": N, "cores": N, "source": "omarchy-windows-vm"|"defaults"}.
 # From a readable compose it reads only RAM_SIZE and CPU_CORES. Otherwise, or
-# when either value is unusable, it uses half the host's memory (at most
-# 16 GiB) and half its CPU threads (at most 8). It never reads the password
-# or the credentials file. LANAI_PROC swaps /proc.
+# when either line cannot be interpreted or its value is unusable, it uses
+# half the host's memory (at most 16 GiB) and half its CPU threads (at most
+# 8). Falling back is safe here: memory and cores are VM sizing, not an
+# adoption safety check, and the user can change them in the panel. It never
+# reads the password or the credentials file. LANAI_PROC swaps /proc.
 settings_seed() {
   local f ram="" cores="" kb threads
   if f=$(readable_compose); then

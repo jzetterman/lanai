@@ -204,24 +204,24 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   assert_equal "$(compose_value "$f" RAM_SIZE)" 8G
 }
 
-@test "compose_value: a key line in any other form cannot be read" {
+@test "compose_value: a key line in any other form cannot be interpreted (status 2)" {
   write_compose
   local f=$OMARCHY_WINDOWS_DIR/docker-compose.yml line
   for line in "RAM_SIZE: \"8G'" "RAM_SIZE: \"8G\" # more" "RAM_SIZE: 8G\"" "RAM_SIZE: \"8\"G\"" \
     "RAM_SIZE: 8G # more"; do
     sed -i "/^ *RAM_SIZE:/d; s|^    environment:\$|&\n      $line|" "$f"
     run compose_value "$f" RAM_SIZE
-    assert_failure
-    assert_output --partial "cannot read RAM_SIZE"
+    assert_failure 2
+    assert_output --partial "cannot interpret RAM_SIZE"
   done
 }
 
-@test "compose_value: an unreadable file fails" {
+@test "compose_value: an unreadable file fails with status 1" {
   require_non_root
   write_compose
   chmod 000 "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
   run compose_value "$OMARCHY_WINDOWS_DIR/docker-compose.yml" RAM_SIZE
-  assert_failure
+  assert_failure 1
 }
 
 @test "compose_value: refuses a key that is not a plain name" {
@@ -474,13 +474,39 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   assert_success
 }
 
-@test "layout_check: a VERSION line it cannot read falls back to omarchy-windows-vm's values" {
+@test "layout_check: a VERSION or LANGUAGE line it cannot interpret refuses a set base" {
+  local key line
+  for line in "VERSION: \"10' " "VERSION: 10 # comment" "LANGUAGE: de # comment" "LANGUAGE: [de]x\""; do
+    key=${line%%:*}
+    make_install "$T/w"
+    write_compose "$key="
+    sed -i "s|^    environment:\$|&\n      $line|" "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
+    run layout_check "$T/w"
+    assert_failure 1
+    assert_output --partial "cannot interpret $key in omarchy-windows-vm's settings"
+    rm -rf "$T/w"
+  done
+}
+
+@test "layout_check: with an empty base, a VERSION it cannot interpret does not matter" {
+  # dockur compares the base with the settings only when the base is set.
   make_install "$T/w"
-  # A loose reader would take 10 here and refuse the win11x64.iso base.
+  : >"$T/w/windows.base"
   write_compose VERSION=
-  sed -i "s|^    environment:\$|&\n      VERSION: \"10' |" "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
+  sed -i "s|^    environment:\$|&\n      VERSION: 10 # comment|" "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
   run layout_check "$T/w"
   assert_success
+}
+
+@test "layout_check: without VERSION or LANGUAGE lines, dockur's defaults apply" {
+  make_install "$T/w"
+  write_compose VERSION= LANGUAGE=
+  run layout_check "$T/w"
+  assert_success
+  echo win10x64.iso >"$T/w/windows.base"
+  run layout_check "$T/w"
+  assert_failure 1
+  assert_output --partial "the container's settings give win11x64.iso"
 }
 
 @test "layout_check: only reads, whether it passes or refuses" {
@@ -663,13 +689,16 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   done
 }
 
-@test "disk_size_check: a DISK_SIZE line it cannot read reports not checked" {
+@test "disk_size_check: a DISK_SIZE line it cannot interpret refuses" {
   make_install "$T/w"
-  write_compose DISK_SIZE=
-  sed -i "s|^    environment:\$|&\n      DISK_SIZE: \"1M' |" "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
-  run disk_size_check "$T/w"
-  assert_failure 2
-  assert_output --partial "not checked"
+  local line
+  for line in "DISK_SIZE: \"1M' " "DISK_SIZE: 1M # comment"; do
+    write_compose DISK_SIZE=
+    sed -i "s|^    environment:\$|&\n      $line|" "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
+    run disk_size_check "$T/w"
+    assert_failure 1
+    assert_output "cannot interpret DISK_SIZE in omarchy-windows-vm's settings"
+  done
 }
 
 # --- share_check ---
