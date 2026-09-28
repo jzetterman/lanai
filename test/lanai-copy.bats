@@ -14,7 +14,7 @@ setup() {
 }
 
 teardown() {
-  [[ -z ${QEMU_PID:-} ]] || kill "$QEMU_PID" 2>/dev/null || true
+  qemu_release
   [[ -z ${B:-} ]] || rm -rf "$B"
 }
 
