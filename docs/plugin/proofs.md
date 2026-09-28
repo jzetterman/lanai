@@ -417,17 +417,37 @@ cannot be met as designed. Record it as a spec question; phase 4 waits for the a
 
 ### Result
 
-- Date and time:
-- Lingering at the start:
-- `InhibitDelayMaxUSec`:
-- `TimeoutStopUSec` of `user@<uid>.service`:
+- Date and time: 2026-09-28, from 17:19 EDT (21:19 UTC).
+- Lingering at the start: `Linger=no`.
+- `InhibitDelayMaxUSec`: 15000000 (15 s).
+- `TimeoutStopUSec` of `user@<uid>.service`: 5s.
 - Logout path used:
 - A1 logout (lingering off): unit log, ordering lines, logind lines:
 - A2 reboot (lingering off): unit log, inhibitor lines, seconds to `QEMU exited`:
 - B1 logout (lingering on):
 - B2 reboot (lingering on):
-- Sign-in screen:
-- Locked session:
+- Sign-in screen: PASS. Windows signs in automatically (dockur sets auto-logon), so we
+  reached the screen by signing out from Start. Stop at 21:21:44 UTC; `POWERDOWN` at
+  :44.265; `SHUTDOWN` with `"guest": true, "reason": "guest-shutdown"` at 21:21:51.158;
+  `QEMU exited 7 s after system_powerdown`; unit stopped at :52.888. The unit reported a
+  16.2G memory peak and a 1006.9M swap peak. The start script's `dbus-monitor` fell back
+  to eavesdropping (new-style monitoring is denied to users); rounds A2/B2 show whether it
+  still sees `PrepareForShutdown`.
+- Locked session: FAIL. Locked from Start > user > Lock. Stop at 21:22:51 UTC; `POWERDOWN`
+  at :51.298; no `SHUTDOWN` event. At 21:24:51 systemd hit `TimeoutStopSec`, sent SIGTERM
+  (`terminating on signal 15`), and the unit failed with result 'timeout'. Windows was
+  cut off without a shutdown (the copy, not `~/.windows`). Swap peak 1.8G.
+  Diagnosis run: locked again, `stop --no-block` at 21:34:03 UTC (`POWERDOWN` logged).
+  John unlocked about 20 s later: the desktop as it was, only Teams open, no shutdown
+  screen. So Windows drops the press while locked; it does not defer it to the unlock.
+  A second press over QMP did not reach QEMU: the stop script held the only QMP
+  connection. John then chose Start > Shut down near the limit; systemd's SIGTERM
+  landed at 21:36:03.652 before any `SHUTDOWN` event, so that run proves nothing about
+  Teams. Swap peak 7.3G.
+  Control run: unlocked desktop, Teams open, stop at 21:38:28 UTC; `SHUTDOWN` with
+  `"guest": true` at 21:38:36.073; `QEMU exited 8 s after system_powerdown`. Teams does
+  not block. The lock is the cause: a locked Windows 11 drops the ACPI power button.
+  Spec question for phase 4; see the plan follow-ups.
 - Idle Windows shutdown time for the README:
 - Pass (yes/no), and why:
 
