@@ -342,7 +342,7 @@ Then:
 - `lanai setup-host`, in a terminal opened by the panel (`omarchy launch terminal --
   …`), prints the exact command, then runs `sudo pacman -S --needed qemu-system-x86 qemu-img virtiofsd python
   qemu-ui-spice-core qemu-chardev-spice qemu-hw-usb-redirect qemu-ui-gtk
-  qemu-hw-display-virtio-vga qemu-hw-display-virtio-gpu passt socat jq base-devel cmake
+  qemu-hw-display-virtio-vga qemu-hw-display-virtio-gpu passt socat jq diffutils base-devel cmake
   spice-protocol libdecor usbredir fontconfig fuse3 libunwind libelf wayland
   libxkbcommon libglvnd nettle libpipewire libpulse libsamplerate`. Before release,
   confirm the whole package list (QEMU set and client build dependencies) once in a clean
@@ -396,7 +396,7 @@ Then:
 | 1. Checks | `layout_check`, `share_check` and `container_running` pass |
 | 2. Host packages | every package in the list is installed (`pacman -Q`); the snapshot needs `qemu-img` |
 | 3. Snapshot offer | the user accepted (a snapshot with a valid `COMPLETE` exists) or declined (recorded); always before any Lanai boot |
-| 3a. Normalize base | if `windows.base` is empty, write the same name dockur's `readBase` would write, so a later container start rewrites nothing, and tell the user. Runs after the snapshot, so a restore returns the original empty file; `layout_check` itself stays read-only. Tested: restore after normalizing an empty base matches the pre-adoption hashes |
+| 3a. Normalize base | if `windows.base` is empty or missing (a missing file counts as empty everywhere, as it does for dockur's `readBase`), write the same name dockur's `readBase` would write, so a later container start rewrites nothing, and tell the user. Runs after the snapshot, so a restore returns the original empty file; `layout_check` itself stays read-only. Tested: restore after normalizing an empty base matches the pre-adoption hashes |
 | 4. Client build | the pinned client binary exists and reports the pinned version |
 | 5. Guest setup boot | `lanai setup-guest` booted with `--setup` and QEMU exited after `setup.cmd`'s full shutdown |
 | 6. Normal boot | each guest component is checked, not assumed: the client log shows the matching IDD version; the guest agent answers a sync and a `guest-set-time` to the current host time (the channel's allowed use, which also proves the clock path); QMP `query-chardev` shows `frontend-open: true` for the SPICE agent's port (`vdagent`), as it does for the guest agent; the panel asks the user two one-click questions: does `~/Windows` show in Explorer, and does Windows' text look the right size (the scale task). Any missing component sends setup back to step 5 with "setup did not finish: run setup.cmd again"; `setup.cmd` is idempotent (each installer skips what is already installed at the pinned version). Tests cover a shutdown after a partly failed `setup.cmd` |

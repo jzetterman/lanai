@@ -1,6 +1,7 @@
-# Runs the bats suites and shellcheck in an Arch container. Tests that need
-# btrfs skip here (LANAI_TEST_BTRFS_DIR is unset); the lock tests run QEMU
-# under TCG with -S, so they need no KVM.
+# Runs the bats suites and shellcheck in an Arch container. bats runs as an
+# unprivileged user, so the tests of unreadable files run too. Tests that
+# need btrfs skip here (LANAI_TEST_BTRFS_DIR is unset); the lock tests run
+# QEMU under TCG with -S, so they need no KVM.
 name: test
 
 on:
@@ -14,13 +15,24 @@ jobs:
   test:
     runs-on: ubuntu-latest
     container: archlinux:latest
+    timeout-minutes: 20
     steps:
       - name: Install packages
         run: >-
           pacman -Syu --noconfirm bats bats-assert bats-support shellcheck ffmpeg jq
-          socat e2fsprogs qemu-system-x86 qemu-img
+          socat e2fsprogs diffutils qemu-system-x86 qemu-img
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: bats
-        run: bats test spike/test
+        run: |
+          useradd -m tester
+          chown -R tester .
+          install -d -m 700 -o tester /tmp/run-tester
+          runuser -u tester -- env HOME=/home/tester XDG_RUNTIME_DIR=/tmp/run-tester \
+            bats test spike/test
       - name: shellcheck
-        run: shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
+        run: >-
+          shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash
+          spike/test/*.bats docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
+          docs/plugin/proof-kit/proof-unit-stop
