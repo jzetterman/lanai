@@ -2,9 +2,9 @@
 
 Plan: [plan.md](plan.md), "Phase 1". Spec: [spec.md](spec.md).
 
-These four proofs settle the riskiest unknowns before phase 2 builds on them. John runs
+These four proofs settle the riskiest unknowns before the VM work builds on them. You run
 all of them by hand. Each proof runs on a full reflink copy of `~/.windows`, never on
-`~/.windows` itself. If a proof fails, stop and take it to John before phase 2.
+`~/.windows` itself. If a proof fails, stop and record why. Phase 4 (VM lifecycle) waits.
 
 Record every time with its timezone, for example `2026-09-28 14:00 EDT`. Paste command
 output into the Result sections as it printed.
@@ -14,15 +14,15 @@ output into the Result sections as it printed.
 | File | What it does |
 |---|---|
 | `bin/lanai-copy` | Makes the verified reflink copy. Holds QEMU's lock on the source disk while it copies. |
-| `docs/plugin/proof-kit/proof-vm` | Builds and runs the proof VM from the spike's `vm_args` and the captured `omarchy-windows-vm` command line (`spike/test/fixtures/dockur-cmdline.txt`), plus each proof's devices. Refuses `~/.windows`. `proof-vm help` lists its commands; `proof-vm args <copy> [options]` prints the QEMU line without starting anything. |
+| `docs/plugin/proof-kit/proof-vm` | Builds and runs the proof VM from the spike's `vm_args` and the captured `omarchy-windows-vm` command line (`spike/test/fixtures/dockur-cmdline.txt`), plus each proof's devices. Refuses `~/.windows`, and refuses a copy that holds a symlink, a hard link, or a file that is the live one. `proof-vm help` lists its commands. `proof-vm args <copy> [options]` prints the QEMU line without starting anything. |
 | `docs/plugin/proof-kit/lanai-proof.service`, `proof-unit-start`, `proof-unit-stop` | Proof 4's throwaway unit and its start and stop scripts. |
 | `guest/lanai-scale.ps1` | Proof 1's scale script (first draft). |
 | `lib/pins.sh` | The pinned downloads below. |
 
-The proof VM differs from the spike VM in three ways: its name is `lanai-proof`, it has
-no serial monitor on the terminal (stop it with `proof-vm stop` or from Windows), and its
-runtime files live in `$XDG_RUNTIME_DIR/lanai-proof/`. Like the spike, it forwards host
-`127.0.0.1:13389` to the guest's RDP port.
+The proof VM differs from the spike VM in three ways. Its name is `lanai-proof`. It has
+no serial monitor on the terminal, so you stop it with `proof-vm stop` or from Windows.
+Its runtime files live in `$XDG_RUNTIME_DIR/lanai-proof/`. Like the spike, it forwards
+host `127.0.0.1:13389` to the guest's RDP port.
 
 ## Pinned downloads
 
@@ -43,43 +43,50 @@ pins, already fetched into `spike/work/setup/`.
 ## Before you start
 
 1. Use the main checkout on branch `plugin/v1`. The kit reuses the spike's built client
-   and downloads from `spike/work/`, which only that checkout has:
+   and downloads from `spike/work/`, which only that checkout has. Save the paths the
+   runbook uses in a small file, so every terminal can load them:
 
    ```sh
    cd ~/Development/github/jzetterman/windows-on-omarchy
    git switch plugin/v1
-   K=$PWD/docs/plugin/proof-kit
-   S=~/lanai-proofs    # scratch; must be on the same btrfs filesystem as ~/.windows
-   mkdir -p "$S"
+   mkdir -p ~/lanai-proofs    # scratch; must be on the same btrfs filesystem as ~/.windows
+   printf 'R=%q\nK=%q\nS=%q\n' "$PWD" "$PWD/docs/plugin/proof-kit" ~/lanai-proofs \
+     >~/lanai-proofs/env
+   source ~/lanai-proofs/env
    ```
 
-2. Check the spike's parts are there: `spike/work/build/looking-glass-client` (from
-   `spike/lgtest build`) and `spike/work/setup/looking-glass-idd-setup.exe` (from
-   `spike/lgtest fetch`). Check `/usr/lib/virtiofsd --version` prints a version.
-3. Stop the container VM: `omarchy-windows-vm stop`, then `omarchy-windows-vm status`
+   **In every new terminal, and after every log-in, run `source ~/lanai-proofs/env`
+   first.** `$R` is the checkout, `$K` the kit and `$S` the scratch folder.
+
+2. Check the spike's parts are there: `$R/spike/work/build/looking-glass-client` (from
+   `spike/lgtest build`) and `$R/spike/work/setup/looking-glass-idd-setup.exe` (from
+   `spike/lgtest fetch`). Check that `/usr/lib/virtiofsd --version` prints a version.
+3. Stop the container VM with `omarchy-windows-vm stop`. Then `omarchy-windows-vm status`
    shows it stopped.
 
 ## Step 0: make the test copy and the setup media
 
 ```sh
-bin/lanai-copy ~/.windows "$S/lanai-proof"
+"$R/bin/lanai-copy" ~/.windows "$S/lanai-proof"
 "$K/proof-vm" media "$S/kit"
 ```
 
-`lanai-copy` refuses while any VM holds the disk. It ends with `copied ... verified N
-entries by size and SHA-256`. `media` fills `$S/kit/setup/` (the setup USB disk) and
-downloads the ISO to `$S/kit/virtio-win-0.1.302-1.iso`.
+`lanai-copy` refuses while any VM holds the disk. It reads the whole disk twice, once
+from the source and once from the copy, to compare them. That takes several minutes. It
+ends with `copied ... verified N entries by size and SHA-256`. `media` fills
+`$S/kit/setup/` (the setup USB disk) and downloads the ISO to
+`$S/kit/virtio-win-0.1.302-1.iso`.
 
 ### Result
 
 - Date and time:
-- `lanai-copy` last line:
+- `lanai-copy` last line, and how long it took:
 - `media` last line:
 
 ## Step 1: install the display pieces in the copy
 
-The copy has Windows as the container left it, without the Looking Glass IDD. Install it
-once; proofs 1-4 all use it.
+The copy has Windows as the container left it, without the Looking Glass IDD. You install
+it once; proofs 1-4 all use it.
 
 ```sh
 "$K/proof-vm" run "$S/lanai-proof" --setup "$S/kit/setup"
@@ -131,6 +138,12 @@ In the Looking Glass window:
    `reg query "HKCU\Control Panel\Desktop\PerMonitorSettings" /s`.
 8. Shut down from Windows, or run `"$K/proof-vm" stop`.
 
+If the script prints `Error:`, copy `%LOCALAPPDATA%\Lanai\lanai-scale.log` into the
+Result. To try a fixed script, get the new `guest/lanai-scale.ps1` into the checkout, run
+`"$K/proof-vm" media "$S/kit"` again (it copies the script into the setup disk), start
+the VM with `--setup "$S/kit/setup"` as in step 1, and copy the script from the USB drive
+to `C:\Lanai`, replacing the old one.
+
 Pass: 150% applies without a sign-out, holds after the Looking Glass window is resized to
 a different resolution, and survives a reboot. Also try 250% and 300% at a small window,
 where Windows caps DPI by resolution, and record what happens. Fallback to record:
@@ -148,6 +161,7 @@ where Windows caps DPI by resolution, and record what happens. Fallback to recor
 - 250% at small window (resolution, output, scale shown):
 - 300% at small window (resolution, output, scale shown):
 - `PerMonitorSettings` output:
+- `lanai-scale.log`, if the script failed:
 - Pass (yes/no), and why:
 
 ## Proof 2: virtiofs file sharing
@@ -175,12 +189,12 @@ Start the VM with the share, the setup disk and the virtio-win ISO:
 ps -o user,pid,args -C virtiofsd                                # terminal 3: owner
 ```
 
-In Windows, in an administrator Command Prompt. `D:` below is the virtio-win CD; use the
-letter Explorer shows.
+In Windows, open an administrator Command Prompt. `D:` below is the virtio-win CD; use
+the letter Explorer shows.
 
 1. Check for the driver: `pnputil /enum-drivers | findstr /i viofs`. Copy the output.
-2. If it lists nothing: `pnputil /add-driver D:\viofs\w11\amd64\viofs.inf /install`.
-   Device Manager, System devices, shows "VirtIO FS Device" without a warning sign.
+2. If it lists nothing, run `pnputil /add-driver D:\viofs\w11\amd64\viofs.inf /install`.
+   Device Manager, System devices, then shows "VirtIO FS Device" without a warning sign.
 3. Run `winfsp-2.1.25156.msi` from the USB drive with the defaults.
 4. Install the service:
 
@@ -193,7 +207,7 @@ letter Explorer shows.
 
 5. Explorer shows a new drive (usually `Z:`). Note its letter.
 6. Round trip: open `Z:\from-linux.txt` (it says `from-linux`). Make `Z:\from-windows.txt`
-   with some text. On the host: `cat "$S/share/from-windows.txt"` and
+   with some text. On the host, run `cat "$S/share/from-windows.txt"` and
    `stat -c '%U %a' "$S/share/from-windows.txt"`.
 7. Try to leave the share, and copy each result:
 
@@ -224,21 +238,23 @@ be followed from the guest.
 
 ## Proof 3: QEMU guest agent and clock
 
-**John runs this one: it suspends the machine.** The VM gets the guest agent channel
-(`org.qemu.guest_agent.0` on `$XDG_RUNTIME_DIR/lanai-proof/qga.sock`). The agent may run
-only `guest-sync`, `guest-sync-delimited` and `guest-set-time`.
+**Step 8 suspends your computer. Save your work first.**
+
+The VM gets the guest agent channel (`org.qemu.guest_agent.0` on
+`$XDG_RUNTIME_DIR/lanai-proof/qga.sock`). The agent may run only `guest-sync`,
+`guest-sync-delimited` and `guest-set-time`.
 
 ```sh
 "$K/proof-vm" run "$S/lanai-proof" --qga --setup "$S/kit/setup"   # terminal 1
 "$K/proof-vm" client                                              # terminal 2
 ```
 
-In Windows, in an administrator Command Prompt:
+In Windows, open an administrator Command Prompt:
 
 1. Run `qemu-ga-x86_64.msi` from the USB drive with the defaults.
-2. `sc qc QEMU-GA`. Copy `BINARY_PATH_NAME`.
-3. Add the allow-list to the service's command line. Keep every argument step 2 showed;
-   add only `--allow-rpcs=...`. With the usual arguments (`-d --retry-path`):
+2. Run `sc qc QEMU-GA`. Copy `BINARY_PATH_NAME`.
+3. Add the allow-list to the service's command line. Keep every argument step 2 showed,
+   and add only `--allow-rpcs=...`. With the usual arguments (`-d --retry-path`):
 
    ```bat
    sc config QEMU-GA binPath= "\"C:\Program Files\Qemu-ga\qemu-ga.exe\" -d --retry-path --allow-rpcs=guest-sync,guest-sync-delimited,guest-set-time"
@@ -259,7 +275,7 @@ On the host:
    Windows PowerShell:
    ``while ($true) { Write-Host -NoNewline ("`r" + [DateTime]::UtcNow.ToString('HH:mm:ss.f')); Start-Sleep -Milliseconds 100 }``.
    Take a screenshot with both in view. Note the difference.
-8. Suspend: `systemctl suspend`. Wait 2 minutes by a timer. Wake the machine.
+8. Suspend: `systemctl suspend`. Wait 2 minutes by a timer. Wake the computer.
 9. Take a screenshot at once, then one 60 s after the wake. Note the difference in each.
 10. Copy `$S/sleep-watch.log`. It shows `PrepareForSleep(true)`, `PrepareForSleep(false)`
     and the `set-time` replies, with UTC times.
@@ -283,22 +299,33 @@ disallowed command (`guest-exec`) is refused.
 
 ## Proof 4: shutdown paths
 
-**John runs this one: it logs him out and reboots.** The throwaway unit
-`lanai-proof.service` runs the proof VM the way the plan's `lanai-vm.service` will:
-`Type=exec`, `PartOf=` and `After=graphical-session.target`, `Slice=session.slice`,
-`TimeoutStopSec=2min`. Its start script holds a shutdown delay inhibitor whose watcher
-runs `systemctl --user stop --no-block lanai-proof.service` on `PrepareForShutdown(true)`,
-then runs QEMU. Its stop script sends QMP `system_powerdown`, logs every QMP event with a
-UTC time, and waits for QEMU to exit. A clean shutdown is the event
-`{"event": "SHUTDOWN", "data": {"guest": true, ...}}`.
+**This proof logs you out twice and reboots twice. Before each, save your work, close
+other apps, and save the Results you have typed so far in this file.**
 
-Install the unit and note the lingering setting to restore at the end:
+The throwaway unit `lanai-proof.service` runs the proof VM the way the plan's
+`lanai-vm.service` will: `Type=exec`, `PartOf=` and `After=graphical-session.target`,
+`Slice=session.slice`, `TimeoutStopSec=2min`. Its start script holds a shutdown delay
+inhibitor whose watcher runs `systemctl --user stop --no-block lanai-proof.service` on
+`PrepareForShutdown(true)`, then runs QEMU. Its stop script sends QMP `system_powerdown`,
+logs every QMP event with a UTC time, and waits for QEMU to exit. A clean shutdown is
+the event `{"event": "SHUTDOWN", "data": {"guest": true, ...}}`.
+
+Install the unit, and note the lingering setting so you can restore it at the end:
 
 ```sh
+mkdir -p ~/.config/systemd/user
 sed -e "s|@KIT@|$K|g" -e "s|@COPY@|$S/lanai-proof|g" "$K/lanai-proof.service" \
   >~/.config/systemd/user/lanai-proof.service
 systemctl --user daemon-reload
 loginctl show-user "$USER" -p Linger
+```
+
+Record the two time limits that apply, before round A:
+
+```sh
+busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
+  org.freedesktop.login1.Manager InhibitDelayMaxUSec
+systemctl show "user@$(id -u).service" -p TimeoutStopUSec
 ```
 
 Each run starts the same way: `systemctl --user start lanai-proof.service`, then
@@ -306,25 +333,36 @@ Each run starts the same way: `systemctl --user start lanai-proof.service`, then
 unit's log with `journalctl --user -u lanai-proof -o short-iso-precise` (add `-b -1`
 after a reboot).
 
+To log out, always use the Omarchy menu: System, then Logout. It runs
+`omarchy-system-logout`, which closes every window (the Looking Glass client too) and
+then runs `uwsm stop`.
+
+What failure looks like: the unit's log has no `QEMU exited` line, or no `SHUTDOWN` event
+with `"guest": true`. Either means QEMU was killed before Windows finished. Record the
+log's last line and its time.
+
 Round A, lingering off (`loginctl disable-linger`):
 
-1. **Logout.** Start a run. Log out of Hyprland. Log back in. Copy:
+1. **Logout.** Start a run. Log out as above. Log back in and run
+   `source ~/lanai-proofs/env`. Copy:
    - the unit's log for that run;
    - `journalctl --user -b -o short-iso-precise | grep -E 'lanai-proof|graphical-session.target|wayland-wm'`;
    - `journalctl -b -o short-iso-precise -u systemd-logind | tail -n 20` (the "Removed
      session" line shows when `uwsm start` exited).
-2. **Reboot.** Start a run. Run `systemctl reboot`. After the reboot, copy the unit's log
-   with `-b -1` and `journalctl -b -1 -o short-iso-precise | grep -iE 'inhibit|lanai|shutdown'`.
+2. **Reboot.** Start a run. Run `systemctl reboot`. After the reboot, log in, run
+   `source ~/lanai-proofs/env`, and copy the unit's log with `-b -1` and
+   `journalctl -b -1 -o short-iso-precise | grep -iE 'inhibit|lanai|shutdown'`.
    Note the time from `PrepareForShutdown(true)` to `QEMU exited`.
 
 Round B, lingering on (`loginctl enable-linger`): repeat steps 1 and 2.
 
 Then, with either setting:
 
-3. **Sign-in screen.** Start the unit, but do not sign in to Windows. Wait for the
-   sign-in screen, then run `systemctl --user stop lanai-proof.service`. Copy the log.
-4. **Locked session.** Start the unit, sign in, lock Windows (Windows key + L), then run
-   `systemctl --user stop lanai-proof.service`. Copy the log.
+3. **Sign-in screen.** Start the unit and the client, but do not sign in to Windows.
+   Wait for the sign-in screen, then run `systemctl --user stop lanai-proof.service`.
+   Copy the log.
+4. **Locked session.** Start the unit and the client, sign in, lock Windows (Windows
+   key + L), then run `systemctl --user stop lanai-proof.service`. Copy the log.
 
 Clean up:
 
@@ -340,12 +378,15 @@ VM unit stops, and the result is a clean shutdown (QMP `SHUTDOWN` with `"guest":
 (b) at reboot, the delay inhibitor starts Windows' shutdown, and the time an idle Windows
 takes is recorded for the README. Also confirm `system_powerdown` shuts Windows down at
 the sign-in screen and in a locked session. If (a) fails, the 2-minute logout requirement
-cannot be met as designed: take it to John as a spec question before phase 4.
+cannot be met as designed. Record it as a spec question; phase 4 waits for the answer.
 
 ### Result
 
 - Date and time:
 - Lingering at the start:
+- `InhibitDelayMaxUSec`:
+- `TimeoutStopUSec` of `user@<uid>.service`:
+- Logout path used:
 - A1 logout (lingering off): unit log, ordering lines, logind lines:
 - A2 reboot (lingering off): unit log, inhibitor lines, seconds to `QEMU exited`:
 - B1 logout (lingering on):

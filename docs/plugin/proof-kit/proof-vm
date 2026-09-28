@@ -104,9 +104,17 @@ parse_opts() {
   done
   [[ -z $SCALE || $SCALE =~ ^[0-9]+$ ]] || die "--scale must be a whole percentage"
   [[ -f $COPY/data.img ]] || die "no data.img in $COPY"
-  # Never the live install: not its folder, not a hard link to its disk.
+  # Never the live install: not its folder, and no file in the copy may be a
+  # symlink, the live file itself, or a hard link to anything. -ef and stat
+  # read only metadata of ~/.windows, never its files.
   [[ $COPY != "$(realpath -m -- "$LIVE")" ]] || die "refusing: $COPY is the live ~/.windows"
-  [[ ! $COPY/data.img -ef $LIVE/data.img ]] || die "refusing: $COPY/data.img is the live disk"
+  local f
+  for f in "$COPY"/* "$COPY"/.[!.]*; do
+    [[ -e $f || -L $f ]] || continue
+    [[ ! -L $f ]] || die "refusing: $f is a symlink"
+    [[ ! $f -ef $LIVE/${f##*/} ]] || die "refusing: $f is the live ~/.windows/${f##*/}"
+    [[ ! -f $f || $(stat -c %h -- "$f") == 1 ]] || die "refusing: $f has other hard links"
+  done
   [[ $COPY != *,* && $SHARE != *,* && $SETUP != *,* && $ISO != *,* ]] ||
     die "paths must not contain a comma (QEMU option syntax)"
 }
@@ -154,23 +162,29 @@ cmd_client() {
   exec "$CLIENT" -f "$RUN/ivshmem" spice:host="$RUN/spice.sock" spice:port=0 win:setGuestRes=yes
 }
 
-# qga <json>: send one guest agent command after a guest-sync-delimited, and
-# print the replies. The agent's 0xFF sync marker is dropped.
-cmd_qga() {
-  local cmd=${1:?qga needs a JSON command}
+# qga_send <command...>: send a guest-sync-delimited, then one guest agent
+# command that <command...> prints at the moment it is sent, and print the
+# replies. The agent's 0xFF sync marker is dropped.
+qga_send() {
   { printf '\xff{"execute":"guest-sync-delimited","arguments":{"id":%d}}\n' "$RANDOM"
     sleep 1
-    printf '%s\n' "$cmd"
+    "$@"
     sleep 2; } | socat -t 3 - "UNIX-CONNECT:$RUN/qga.sock" | tr -d '\377'
 }
 
-# set-time: set the guest clock to the host's, in nanoseconds since the epoch,
-# read at the moment the command is sent.
+# qga <json>: send one guest agent command and print the replies.
+cmd_qga() {
+  qga_send printf '%s\n' "${1:?qga needs a JSON command}"
+}
+
+# Print guest-set-time with the host clock in nanoseconds since the epoch.
+set_time_json() {
+  printf '{"execute":"guest-set-time","arguments":{"time":%s}}\n' "$(date +%s%N)"
+}
+
+# set-time: set the guest clock to the host's, read as the command is sent.
 cmd_set_time() {
-  { printf '\xff{"execute":"guest-sync-delimited","arguments":{"id":%d}}\n' "$RANDOM"
-    sleep 1
-    printf '{"execute":"guest-set-time","arguments":{"time":%s}}\n' "$(date +%s%N)"
-    sleep 2; } | socat -t 3 - "UNIX-CONNECT:$RUN/qga.sock" | tr -d '\377'
+  qga_send set_time_json
 }
 
 # sleep-watch: as the desktop user, log logind's PrepareForSleep signals and
