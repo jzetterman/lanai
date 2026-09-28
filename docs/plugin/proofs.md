@@ -31,20 +31,22 @@ and stops. Recorded 2026-09-28.
 
 | File | Version | URL | SHA-256 |
 |---|---|---|---|
+| Looking Glass IDD zip | `B7-826-236efcb1` (the spike's pin; the client comes from the same build) | `https://looking-glass.io/artifact/B7-826-236efcb1/idd` | `34daa6ddb403c1f503fb2ace94360159818fda1795fc5c2be5cec1f4391d5d57` |
+| SPICE guest agent MSI | 0.10.0 (the spike's pin) | `https://www.spice-space.org/download/windows/vdagent/vdagent-win-0.10.0/spice-vdagent-x64-0.10.0.msi` | `77629435705bc27dd7d2525e9d2084f72dbab5fdbf310e812f91332fe18d00eb` |
 | WinFsp MSI | 2.1.25156 (release v2.1, "WinFsp 2025") | `https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi` | `073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a` (matches GitHub's published digest) |
 | QEMU guest agent MSI | qemu-ga-win 110.2.3-2.el10 (the target of virtio-win's `latest-qemu-ga` link) | `https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-qemu-ga/qemu-ga-win-110.2.3-2.el10/qemu-ga-x86_64.msi` | `19dcf8abc30f70c2eb6e87282601fd0476e4e0b19936f63d9c80be30db0796ed` |
 | virtio-win ISO | 0.1.302-1 (the target of virtio-win's `stable-virtio` link) | `https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-0.1.302.iso` | `303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d` |
 
 The ISO holds the viofs driver and `virtiofs.exe` in `viofs\w11\amd64\`. Its
-`guest-agent\qemu-ga-x86_64.msi` is byte for byte the qemu-ga MSI above. The
-Looking Glass IDD (`B7-826-236efcb1`) and the SPICE agent (0.10.0) come from the spike's
-pins, already fetched into `spike/work/setup/`.
+`guest-agent\qemu-ga-x86_64.msi` is byte for byte the qemu-ga MSI above. `media`
+unpacks `looking-glass-idd-setup.exe` from the verified IDD zip on every run, and
+copies the verified SPICE agent into the setup disk; it never reuses the spike's copies.
 
 ## Before you start
 
-1. Use the main checkout on branch `plugin/v1`. The kit reuses the spike's built client
-   and downloads from `spike/work/`, which only that checkout has. Save the paths the
-   runbook uses in a small file, so every terminal can load them:
+1. Use the main checkout on branch `plugin/v1`. The kit reuses the spike's built
+   Looking Glass client from `spike/work/`, which only that checkout has. Save the paths
+   the runbook uses in a small file, so every terminal can load them:
 
    ```sh
    cd ~/Development/github/jzetterman/windows-on-omarchy
@@ -58,9 +60,10 @@ pins, already fetched into `spike/work/setup/`.
    **In every new terminal, and after every log-in, run `source ~/lanai-proofs/env`
    first.** `$R` is the checkout, `$K` the kit and `$S` the scratch folder.
 
-2. Check the spike's parts are there: `$R/spike/work/build/looking-glass-client` (from
-   `spike/lgtest build`) and `$R/spike/work/setup/looking-glass-idd-setup.exe` (from
-   `spike/lgtest fetch`). Check that `/usr/lib/virtiofsd --version` prints a version.
+2. Check that the spike's client is there: `$R/spike/work/build/looking-glass-client`
+   (from `spike/lgtest build`). Check that `/usr/lib/virtiofsd --version` prints a
+   version. Paths you give the kit must not contain a comma or a newline; it refuses
+   them.
 3. Stop the container VM with `omarchy-windows-vm stop`. Then `omarchy-windows-vm status`
    shows it stopped.
 
