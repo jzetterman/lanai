@@ -106,23 +106,26 @@ Neither needs GPU acceleration.
      IDD, the SPICE guest agent, the QEMU guest agent (clock sync, requirement 21), the
      file-sharing client (requirement 15), and the sign-in task that applies the display
      scale (requirement 12). The same prompt also turns off locking inside Windows for
-     the Windows user who runs setup (two of the settings apply to every account on that
-     Windows). Setup refuses, before changing anything in Windows, if the administrator
-     prompt is approved with a different account. After setup, until the user or a
-     policy turns it back on, nothing can lock that user's session: not the Lock or
-     Switch user commands, not an idle or screen-saver lock; wake from sleep and Dynamic
-     Lock must be unable to trigger. A locked Windows ignores the shutdown request Lanai
-     sends, so a locked VM would be force-stopped (phase 1, proof 4). The Linux
-     session's lock protects an open Windows window instead (John, 2026-09-28). The cost
-     is small: dockur already signs Windows in automatically at every boot, RDP and the
-     container's web console both still ask for the Windows password, and any process
-     running as the user can already read the stored password. So turning off the lock
-     exposes only an open Windows window or console tab, which the Linux lock covers.
-     Setup replaces any lock settings the user had. If Windows is joined to a domain or
-     enrolled in MDM, setup says that a policy may turn the lock back on, and that
-     shutdowns may then end in the forced stop. The README says the lock is off, why,
-     and what it exposes; that setup replaced any lock settings the user had, and that
-     the restore steps bring back Windows' defaults, not those settings; that turning it
+     the Windows user who runs setup; two of the changes, Switch user and the machine
+     inactivity lock, apply to every account on that Windows. Setup refuses, before
+     changing anything in Windows, if the administrator prompt is approved with a
+     different account. After setup, until the user or a policy turns it back on,
+     nothing can lock that user's session: not the Lock or Switch user commands, not an
+     idle or screen-saver lock; wake from sleep and Dynamic Lock must be unable to
+     trigger. A locked Windows ignores the shutdown request Lanai sends, so a locked VM
+     would be force-stopped (phase 1, proof 4). The Linux session's lock protects an
+     open Windows window instead (John, 2026-09-28). What changes: Windows no longer
+     locks itself or on request, so an unattended, unlocked Linux session leaves Windows
+     open for as long as the VM runs, and the user has to lock Linux to cover it. What
+     does not change: dockur already signs Windows in automatically at every boot, RDP
+     and the container's web console both still ask for the Windows password, and any
+     process running as the user can already read the stored password. Setup replaces
+     any lock settings the user had. If Windows is joined to a domain or enrolled in
+     MDM, setup says that a policy may turn the lock back on, and that shutdowns may
+     then end in the forced stop. The README says the lock is off, why, what changes and
+     what does not (as above), and that Switch user and the inactivity lock are off for
+     every account; that setup replaced any lock settings the user had, and that the
+     restore steps bring back Windows' defaults, not those settings; that turning it
      back on, or a policy, brings back the forced stop; that any Windows security screen
      left open (such as a UAC prompt) may also need the forced stop; and how to turn the
      lock back on;
@@ -267,12 +270,12 @@ stopped; Windows then resumes, boots after a restart, and `chkdsk` reports no er
 | 6 | Settings seed from `omarchy-windows-vm` when readable, and otherwise from the stated host-relative defaults, with no prompt; with a sentinel password set on the test install, the sentinel never appears in Lanai's files, logs, setup terminal output, or any child process's arguments or environment; changed settings take effect at the next start |
 | 6a | Lanai pointed at a reflink copy boots the copy and never opens the live `~/.windows` |
 | 7 | On a machine with a working `omarchy-windows-vm` install, a user who follows the README reaches a working Windows window from the bar; setup shows one package-manager password prompt and one Windows administrator prompt, and asks for one Windows restart; where the storage location's filesystem can make an instant copy, setup offers the snapshot, and restoring it returns the storage location to its pre-adoption hashes; where it cannot, setup says so and suggests a backup; snapshot and restore are each refused while either VM runs; a container start attempted during a snapshot or restore does not boot a VM, and the snapshot still matches its source |
-| 7b | Before setup, each lock path locks Windows or leaves it at the sign-in screen: Lock in the Start menu and in Ctrl+Alt+Del, Switch user, Windows key + L sent with QMP `send-key`, and each automatic lock the VM can trigger, turned on at a 1-minute timeout (secure screen saver, machine inactivity limit). After setup, with the screen-saver timeout still at 1 minute (setup leaves it set but not secure) and the inactivity limit as setup left it, none of them does; Windows is still unlocked after idling past every timeout; Windows reports no sleep state it could wake from, and row 27 shows no Bluetooth device. A shutdown with the Ctrl+Alt+Del screen left open is recorded (clean, or the README names it). Setup's domain or MDM warning appears when its membership check reports membership (simulated). Approving the prompt with a different administrator account makes setup refuse, and Windows' lock settings are unchanged. The README states the lock note from requirement 7 |
+| 7b | Before setup, each lock path locks Windows or leaves it at the sign-in screen: Lock in the Start menu and in Ctrl+Alt+Del, Switch user, Windows key + L sent with QMP `send-key`, and each automatic lock the VM can trigger, turned on at a 1-minute timeout (secure screen saver, machine inactivity limit). After setup, with the screen-saver timeout still at 1 minute (setup leaves it set but not secure) and the inactivity limit as setup left it, none of them does; Windows is still unlocked after idling past every timeout; Windows reports no sleep state it could wake from, and row 27 shows no Bluetooth device. A shutdown with the Ctrl+Alt+Del screen left open is recorded (clean, or the README names it). Setup's domain or MDM warning appears when its membership check reports membership (simulated). Approving the prompt with a different administrator account makes setup refuse; afterwards the before-setup lock controls still lock, and the Looking Glass IDD and the guest agents are not installed. The README states the lock note from requirement 7 |
 | 8 | A deliberate client/IDD mismatch is detected and named; a simulated pin change keeps or restores a working window |
 | 9 | Interrupting setup at each step, then rerunning it, ends in a working install |
 | 10-17, 20 | Each passes a scripted or checklist test (list in the plan); requirement 12 is checked with a scale matrix: each step, a value just above and below each boundary, a tie (for example 112.5% gives 100%, 275% gives 250%), the 250-300 gap, and values below 100% and above 500% (clamped to the nearest end). If requirement 15 is moved to v2 (recorded in this spec before the release gate), its check and the requirement 28 check are skipped |
 | 18 | Shell restart, plugin reload, plugin update and plugin disable each leave Windows running, and the bar shows its true state afterwards |
-| 19 | Logout ends in a clean shutdown, with lingering both enabled and disabled, including with row 7b's 1-minute screen saver still set (no longer secure) and running at logout; a guest that ignores shutdown at logout is force-stopped after 2 minutes and reported at the next start, naming a locked Windows or an open security screen as likely causes; on reboot and power-off, with lingering both enabled and disabled, Windows' shutdown starts when the host's does, the time Windows took is measured and written in the README, and a forced stop is reported at the next start |
+| 19 | Logout ends in a clean shutdown, with lingering both enabled and disabled, including with row 7b's 1-minute screen saver still set (no longer secure) and running at logout; a guest that ignores shutdown at logout (fixture: turn the Windows lock back on and lock Windows, or leave open a security screen that row 7b recorded as ignoring shutdown, then log out) is force-stopped after 2 minutes and reported at the next start, naming a locked Windows or an open security screen as likely causes; on reboot and power-off, with lingering both enabled and disabled, Windows' shutdown starts when the host's does, the time Windows took is measured and written in the README, and a forced stop is reported at the next start |
 | 21 | After suspend and resume, the requirement 20 check passes, and the guest clock is within 2 s of the host's within 60 s |
 | 22, 25 | While the VM runs: no Lanai process runs as root; no new listening TCP or UDP socket appears; all of Lanai's Unix sockets (control, file sharing, guest agent) and runtime files, including the shared-memory file, are mode 0600 or inside a 0700 directory owned by the user |
 | 23-24 | The spike's security check passes against Lanai's VM: the host-loopback probe is blocked after a positive control; a web page loads; on a guest without its own DNS client, a MagicDNS name and a short name through the host's search domain resolve through Windows' default resolver; the same names resolve when queried at the gateway (the diagnostic for guests with a DNS client such as WARP); a VPN destination and a host service on a non-loopback address are reachable |
@@ -319,3 +322,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | amendment review (a) | 2026-09-28 | Round 2 (full): 0 blockers, 8 should-fix, 5 nits; all confirmed and integrated. Item 1 corrected a false claim: `omarchy-windows-vm` sets `PROTECT: "Y"`, so the web console asks for the password too. Req 32 restores the lock inside Windows before the stop; req 7 states the result and the small real exposure; row 7b split out |
 | spec | amendment review (a) | 2026-09-28 | Round 3 (delta): 2 should-fix, 5 nits (one plan-side); all confirmed and integrated (README restore-to-defaults note; row 7b's after-state stated; scope and refusal; removal order; forced-stop causes checked in row 19) |
 | spec | amendment review (a) | 2026-09-28 | Round 4 (delta, cap): 1 should-fix, 2 nits; all integrated (the different-account refusal happens before any change and row 7b tests it; row 30-32 wording; rewrap). Checked: `omarchy-windows-vm` sets `restart: "no"`, so a Start-menu shutdown leaves the container down. Stage a closed |
+| spec | b Grok (substitute) | 2026-09-28 | Codex out of credits. Round 1 (full): 3 P2, 1 P3; all confirmed and integrated (the real change stated plainly: an unattended, unlocked Linux session leaves Windows open; row 19 names a force-stop fixture; row 7b's refusal checks that nothing was installed; the two machine-wide changes named) |

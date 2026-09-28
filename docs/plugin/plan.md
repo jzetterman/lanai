@@ -268,7 +268,10 @@ Tests first:
   request), then `guest-sync-delimited` with a fresh random id, skips to the 0xFF in
   the reply, discards replies carrying any other id (a stale reply from an earlier,
   abandoned connection), and accepts only `{"return":<that id>}`; command mode (always
-  after a fresh sync) accepts only `{"return":{}}`. Both reject
+  after a fresh sync) accepts only `{"return":{}}`; refusal mode (after a fresh sync,
+  used only by setup's step 6) passes only on an error of class `CommandNotFound`
+  whose text says the command has been disabled, and fails on any `{"return":...}`.
+  All three reject
   replies over 4 KiB, junk and wrong JSON, and time out at 5 s.
 - `vm_args` input validation: a storage path with a comma, a malformed MAC, and
   out-of-range memory or cores are each refused.
@@ -375,19 +378,23 @@ Then:
 - `lanai open`: start or focus the `lanai-client` unit and return at once (the QML
   deadline is 10 s, and a first boot can take longer). The unit's `ExecStart` is a small
   wrapper, `lanai-client-exec`, that retries `query-status` on `qmp-cli.sock` until a
-  command reply arrives (a read timeout means retry, since QEMU serves one client per
-  socket and a status poll may hold it; 60 s cap, then fail with a message), and only
-  then execs the client, redirecting its output to `$RUN/client.log` itself (not
-  `StandardOutput=file:`, which fails when `$RUN` does not exist yet). The timeout
-  message goes to the unit's journal; `status_map` reads only the latest invocation
-  (`journalctl --user -u lanai-client -I`), so an old message does not linger. The QMP
-  greeting does not count: only the command reply does. QEMU creates
+  command reply arrives. Each try uses a short connect and read timeout (2 s) and
+  closes its connection; a missing socket, a refused connect or a read timeout means
+  retry, since QEMU serves one client per socket and a status poll may hold it. The
+  60 s cap covers the whole wait, then it fails with a message. It closes the QMP
+  connection before it execs the client, since a leftover connection would be the
+  only client QEMU serves on that socket and would block `lanai status` and `lanai
+  stop`. Only then does it exec the client, redirecting its output to `$RUN/client.log`
+  itself (not `StandardOutput=file:`, which fails when `$RUN` does not exist yet). The
+  timeout message goes to the unit's journal; `status_map` reads only the latest
+  invocation (`journalctl --user -u lanai-client -I`), so an old message does not
+  linger. The QMP greeting does not count: only the command reply does. QEMU creates
   `memory-backend-*` objects after chardevs and runs QMP commands only from its main
-  loop, after every backend exists (tested 2026-09-28, recorded in `proofs.md`). So
-  the client never opens a stale `ivshmem` left by an earlier run; proof 4 hit that
-  race, when the client found the old file and the new VM then replaced it. The client
-  runs with `-f $RUN/ivshmem spice:host=$RUN/spice.sock spice:port=0
-  win:setGuestRes=yes`. Closing it does not stop the VM.
+  loop, after every backend exists (tested 2026-09-28, recorded in `proofs.md`). So the
+  client never opens a stale `ivshmem` left by an earlier run; proof 4 hit that race,
+  when the client found the old file and the new VM then replaced it. The client runs
+  with `-f $RUN/ivshmem spice:host=$RUN/spice.sock spice:port=0 win:setGuestRes=yes`.
+  Closing it does not stop the VM.
 - `version_check` (tests first, with trimmed fixtures from the spike's
   `spike/work/client-*.log`): parse `Version  :` after `Guest Information:`; normalize
   `B7-826-236efcb1` and `B7-826-g236efcb155` to tag, count and hash prefix; an
@@ -402,16 +409,19 @@ Then:
   differs (a standard user who typed an administrator's credentials: `HKCU` would then
   be the administrator's hive). The elevated stage runs from System32, so it calls
   every file by `%~dp0`. Then, in order:
-  - recreates `C:\Lanai`: `rd /s /q C:\Lanai` (it removes a junction without following
-    it, so a folder or junction another user planted there is gone), then `mkdir
-    C:\Lanai`, stopping if `mkdir` fails. It sets the owner and ACL by well-known SID,
-    since group names are localized and a new folder under `C:\` inherits Modify for
-    Authenticated Users: `icacls C:\Lanai /setowner *S-1-5-32-544`, then `icacls
-    C:\Lanai /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F"
-    "*S-1-5-32-545:(OI)(CI)RX"` (quoted, since the parentheses would end a cmd `if`
-    block). It stops unless `dir /b /a C:\Lanai` then lists nothing, since another
-    account could have planted a file before the ACL was set. Only then does it copy
-    the logon task's script in;
+  - prepares `C:\Lanai` without deleting anything recursively, since elevated recursive
+    deletes can follow a planted link. If `C:\Lanai` is a reparse point (`fsutil
+    reparsepoint query C:\Lanai` succeeds), it removes that link with `rd` and no `/s`,
+    which unlinks it without touching the target. Then it creates the folder if missing
+    and sets the owner and ACL by well-known SID, since group names are localized and a
+    new folder under `C:\` inherits Modify for Authenticated Users: `icacls C:\Lanai
+    /setowner *S-1-5-32-544`, then `icacls C:\Lanai /inheritance:r /grant
+    "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"` (quoted,
+    since the parentheses would end a cmd `if` block). With the ACL set, it lists the
+    folder with `dir /b /a C:\Lanai` and judges the output, not the exit code (`dir`
+    returns 1 on an empty folder): anything other than nothing or `lanai-scale.ps1`
+    stops setup with the list, since another account could have planted it. Only then
+    does it copy the logon task's script in;
   - installs the SPICE vdagent MSI;
   - installs the qemu-ga MSI, then sets the allow-list with the literal command from
     proof 3, which is fixed by the pinned MSI and safe to rerun:
@@ -436,9 +446,9 @@ Then:
     already made it, both with
     `binPath= "C:\Program Files\Lanai\virtiofs.exe" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"`
     (proof 2's values);
-  - installs the Looking Glass IDD (`/S /ivshmem`, exit code checked);
   - adds the logon task running `C:\Lanai\lanai-scale.ps1`;
-  - calls `%~dp0lanai-lock.cmd` (spec req 7). With `reg add /f` and `reg delete /f`,
+  - runs `call "%~dp0lanai-lock.cmd"` (spec req 7; without `call`, control never returns
+    to `setup.cmd`). With `reg add /f` and `reg delete /f`,
     which are safe to rerun, it sets `DisableLockWorkstation` REG_DWORD 1 under
     `HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System` (removes Lock
     from Start and Ctrl+Alt+Del, and turns off Windows key + L); `HideFastUserSwitching`
@@ -446,12 +456,10 @@ Then:
     (Switch user leaves the session behind the sign-in screen, the same state as a
     lock); and `ScreenSaverIsSecure` REG_SZ "0" under `HKCU\Control Panel\Desktop`; and
     deletes `InactivityTimeoutSecs` under that HKLM key, only when `reg query` finds it
-    (`reg delete` exits 1 on an absent value, the normal case). Before writing, it reads
-    the current values with `reg query`, printing "not set" for absent ones; setup keeps
-    no record of them. `lanai-lock.cmd` returns them in environment variables (it does
-    not use `setlocal`), and `setup.cmd` prints them again as its last output and waits
-    for a key press before the shutdown. Sign-in on wake and Dynamic Lock cannot fire
-    in this VM (the template sets `disable_s3=1`
+    (`reg delete` exits 1 on an absent value, the normal case). It does not print or
+    keep the old values: setup keeps no record of them, and the README's restore steps
+    bring back Windows' defaults (spec req 32). Sign-in on wake and Dynamic Lock cannot
+    fire in this VM (the template sets `disable_s3=1`
     and `disable_s4=1`, and the VM has no Bluetooth), so it leaves them alone; the lock
     proof confirms both. Last, if `(Get-CimInstance Win32_ComputerSystem).PartOfDomain`
     is true, `dsregcmd /status` reports `AzureAdJoined : YES` or `WorkplaceJoined :
@@ -460,6 +468,9 @@ Then:
     shutdowns may then end in the forced stop. `LANAI_FAKE_MANAGED=1` makes that check
     report membership, for row 7b; self-elevation drops the caller's environment, so it
     must be set in an elevated prompt that runs `lanai-lock.cmd` directly;
+  - installs the Looking Glass IDD last (`/S /ivshmem`, exit code checked), because it
+    turns the setup display black (Step 1 of `proofs.md` ordered it last for the same
+    reason), so nothing after it may need the user's eyes or a key press;
   - then `shutdown /s /t 10` (a full shutdown: without `/hybrid`, `/s` bypasses fast
     startup), so QEMU exits and `lanai setup` starts the normal boot (the one restart).
     No service is restarted before that: both services start automatically, so the next
@@ -468,9 +479,11 @@ Then:
   test copy `$S/lanai-proof` and the proof kit. First write `guest/lanai-lock.cmd`,
   since the proof runs the real file, and extend `proof-vm media` to copy it into the
   setup disk; then rerun `"$K/proof-vm" media "$S/kit"` so the setup disk holds it.
-  Boot with `"$K/proof-vm" run "$S/lanai-proof" --setup "$S/kit/setup"`. Send Windows
-  key + L with the connection held open, since QEMU drops requests still queued when
-  the client disconnects, and check that it prints `{"return": {}}` twice:
+  Boot with `"$K/proof-vm" run "$S/lanai-proof" --setup "$S/kit/setup"`. Sign back in
+  after every control that locks, before the next one. The Windows key + L control
+  (not a warm-up) is this command, which holds the connection open, since QEMU drops
+  requests still queued when the client disconnects; it must print `{"return": {}}`
+  twice:
 
   ```sh
   { printf '%s\n' '{"execute":"qmp_capabilities"}' \
@@ -482,19 +495,23 @@ Then:
   1. Positive controls, each on its own. Confirm each of these locks Windows or leaves
      it at the sign-in screen: Lock in Start; Lock in Ctrl+Alt+Del; Windows key + L sent
      as above; `rundll32 user32.dll,LockWorkStation` (the call apps use); Switch user;
-     a 1-minute secure screen saver alone; then, with the screen saver off,
-     `InactivityTimeoutSecs` 60 alone, after a restart. If a control does not lock, fix
-     the control before step 2. A path with no working control counts as unproven.
-     Then turn on the 1-minute secure screen saver and `InactivityTimeoutSecs` 60
-     together, as a user's earlier settings.
+     a 1-minute secure screen saver alone, set in Settings (so a screen saver program is
+     chosen, and "On resume, display logon screen" is ticked); then, with the screen
+     saver off, the inactivity limit alone, set with `reg add
+     HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v
+     InactivityTimeoutSecs /t REG_DWORD /d 60 /f`, after a restart. If a control does
+     not lock, fix the control before step 2. A path with no working control counts as
+     unproven. Then turn on the 1-minute secure screen saver and `InactivityTimeoutSecs`
+     60 together, as a user's earlier settings.
   2. Run `lanai-lock.cmd` elevated, then restart Windows (some values load at sign-in).
   3. Leave the settings as the script left them, and do not open the screen saver
      dialog (saving it can write `ScreenSaverIsSecure` back). Confirm with `reg query`
      that `InactivityTimeoutSecs` is gone, `ScreenSaveTimeOut` is still 60 and
      `ScreenSaverIsSecure` is "0". Repeat every manual path from step 1; none may lock
      Windows. Idle 3 minutes or more and confirm Windows is still unlocked. Run
-     `powercfg /a` and record that no sleep state is available, and
-     `Get-PnpDevice -Class Bluetooth` and record that it finds none.
+     `powercfg /a` and `Get-PnpDevice -Class Bluetooth`: if any sleep state is
+     available or any Bluetooth device exists, stop and take it to John (spec row 7b
+     requires both paths unable to fire).
   4. With the 1-minute screen saver (now not secure) showing, run `"$K/proof-vm" stop`.
      Pass: it prints `QEMU exited`, which after `system_powerdown` happens only when
      the guest powers off. Repeat once with the Ctrl+Alt+Del screen left open, and
@@ -547,12 +564,13 @@ Then:
 
 - First, two short checks, recorded in `proofs.md`:
   - Resize (proof 1 finding): resizing the Looking Glass window with a Hyprland mouse
-    drag grows it faster than the mouse moves. Reproduce it, then retry with one client
-    option changed at a time: `wayland:warpSupport=no`, then `input:captureOnly=yes`,
-    then `win:setGuestRes=no` (to rule out a resize feedback loop). On the pinned
-    client, `input:captureOnFocus` is already off and `input:rawMouse` applies only in
-    capture mode. A fix changes phase 5's client flags; if nothing fixes it, add a
-    README note.
+    drag grows it faster than the mouse moves. On the phase 6 test copy, run `lanai
+    start` and attach the pinned client with each option below. Reproduce it, then retry
+    with one client option changed at a time: `wayland:warpSupport=no`, then
+    `input:captureOnly=yes`, then `win:setGuestRes=no` (to rule out a resize feedback
+    loop). On the pinned client, `input:captureOnFocus` is already off and
+    `input:rawMouse` applies only in capture mode. A fix changes phase 5's client flags;
+    if nothing fixes it, add a README note.
   - Scale timing: dockur signs in automatically at boot, possibly before the client
     attaches and sizes the display, so the logon task may see the IDD's default
     resolution and cap the scale (proof 1: 125% at about 1024x768). On a test copy that
@@ -572,29 +590,36 @@ Then:
   stopping, every 15 s otherwise; 10 s deadline per call; QML calls never block on stop.
 - README: install; removal (first, inside Windows, under Lanai or over RDP under
   `omarchy-windows-vm`, in an administrator Command Prompt as the same Windows user
-  (some settings are in `HKCU`): restore Windows' default lock settings with fixed `reg`
-  commands, then undo each other change setup made, or say why it can stay: the SPICE
-  vdagent, qemu-ga with its allow-list, WinFsp, the newer `viofs` driver, `virtiofs.exe`
-  and the `VirtioFsSvc` settings, the Looking Glass IDD, the logon task and `C:\Lanai`.
-  Then shut Windows down from its Start menu, since a restored lock can drop the stop
-  request (the container does not restart by itself: `omarchy-windows-vm` sets `restart:
-  "no"`). Then, if Lanai's VM still runs, `systemctl --user stop lanai-vm.service`,
-  which works without the plugin); verified Omarchy and dockur versions; the remaining
-  risks from req 5a (including the disk-size check skipped when the compose is
-  unreadable); the clipboard exposure (req 29); the DNS-client note (req 24); the
-  measured reboot shutdown time (req 19: phase 8 measures it; proof 4's reboots took 7 s
-  and its logouts 11 to 13 s for an idle Windows); the coexistence note (req 30); the
-  Windows lock (req 7): it is off for the Windows user who ran setup, and two of the
-  settings (Switch user, the inactivity limit) apply to every account on that Windows;
-  why; what that exposes: dockur already signs in automatically at every boot, RDP and
-  the web console at `127.0.0.1:8006` both ask for the Windows password
-  (`omarchy-windows-vm` sets `PROTECT: "Y"`), and any process running as the user can
-  read the stored password, so only the idle or manual lock of an open Windows window or
-  console tab is lost, and the Linux lock covers that; that setup replaced any lock
-  settings the user had, and that the restore steps bring back Windows' defaults, not
-  those settings; that turning the lock back on, or a domain or MDM lock policy, brings
-  back the forced stop, as can any Windows security screen left open (such as a UAC
-  prompt); and how to turn the lock back on.
+  (some settings are in `HKCU`): restore Windows' default lock settings with `reg delete
+  HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System /v
+  DisableLockWorkstation /f`, `reg delete
+  HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v
+  HideFastUserSwitching /f` and `reg delete "HKCU\Control Panel\Desktop" /v
+  ScreenSaverIsSecure /f` (`InactivityTimeoutSecs` is absent by default, so nothing is
+  written back; the same three commands are how to turn the lock back on), then undo
+  each other change setup made, or say why it can stay: the SPICE vdagent, qemu-ga with
+  its allow-list, WinFsp, the newer `viofs` driver, `virtiofs.exe` and the `VirtioFsSvc`
+  settings, the Looking Glass IDD, the logon task and `C:\Lanai`. Then shut Windows down
+  from its Start menu, since a restored lock can drop the stop request (the container
+  does not restart by itself: `omarchy-windows-vm` sets `restart: "no"`). Then, if
+  Lanai's VM still runs, `systemctl --user stop lanai-vm.service`, which works without
+  the plugin); verified Omarchy and dockur versions; the remaining risks from req 5a
+  (including the disk-size check skipped when the compose is unreadable); the clipboard
+  exposure (req 29); the DNS-client note (req 24); the measured reboot shutdown time
+  (req 19: phase 8 measures it; proof 4's reboots took 7 s and its logouts 11 to 13 s
+  for an idle Windows); the coexistence note (req 30); the Windows lock (req 7): it is
+  off for the Windows user who ran setup, and two of the settings (Switch user, the
+  inactivity limit) apply to every account on that Windows; why; what that exposes:
+  dockur already signs in automatically at every boot, RDP and the web console at
+  `127.0.0.1:8006` both ask for the Windows password (`omarchy-windows-vm` sets
+  `PROTECT: "Y"`), and any process running as the user can read the stored password,
+  which does not change; what changes: Windows no longer locks itself or on request, so
+  an unattended, unlocked Linux session leaves Windows open for as long as the VM runs,
+  and the user has to lock Linux to cover it; that setup replaced any lock settings the
+  user had, and that the restore steps bring back Windows' defaults, not those settings;
+  that turning the lock back on, or a domain or MDM lock policy, brings back the forced
+  stop, as can any Windows security screen left open (such as a UAC prompt); and how to
+  turn the lock back on.
 
 ## Phase 8: Acceptance
 
@@ -647,3 +672,4 @@ Then:
 | plan amendment (proof findings) | a | 2 (full) | 0 blockers, 8 should-fix, 7 nits; 14 integrated. Item 7 (turn off wake and Dynamic Lock too) resolved by the spec's round 2 wording (they must be unable to trigger, and the lock proof confirms it). Also folded in the spec's round 2 changes: README exposure text corrected (`PROTECT: "Y"`), removal restores the lock inside Windows first, domain/MDM warning, forced-stop notice names likely causes |
 | plan amendment (proof findings) | a | 3 (delta) | 0 blockers, 5 should-fix, 8 nits; all confirmed and integrated (lock proof keeps setup's end state; VirtioFsSvc stop waits and handles a missing service; send-key holds the connection; README matches spec reqs 7 and 32; absent-value handling in `lanai-lock.cmd`; `C:\Lanai` junction guard; MDM enrollment check; rewraps) |
 | plan amendment (proof findings) | a | 4 (delta, cap) | 0 blockers, 2 should-fix, 5 nits; all integrated (send-key in a fenced block; `net stop` result ignored, a failed copy stops setup; `C:\Program Files\Lanai` created; empty-folder check after the ACL; lock values handed back in variables; removal undoes every Windows change before the shutdown; rewraps). Stage a closed |
+| plan amendment (proof findings) | b Grok (substitute) | 1 (full) | Codex out of credits. 7 P2, 2 P3; all confirmed and integrated (`call` for `lanai-lock.cmd`; IDD installed last because it blanks the setup display, so no pause or printed values; `C:\Lanai` without recursive deletes; `dir` judged by output; client wrapper closes QMP before exec, per-try timeouts; `qga_reply` refusal mode; literal README restore commands; lock proof sign-in between controls; stop on any sleep state or Bluetooth; resize check names its VM). README exposure text matches the spec's Grok round |
