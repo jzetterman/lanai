@@ -40,14 +40,14 @@ has_nocow() {
   [[ ${a%% *} == *C* ]]
 }
 
-# Copy the tree <src> to <dst>, which must not exist, with cp --reflink=always,
-# so the copy shares its data blocks with the source and costs no space.
-# btrfs refuses to clone between a NOCOW and a COW file, so each file is
-# created empty and given the source's NOCOW attribute (or has an inherited
-# one removed) before the clone. Modes and file times are kept. Fails on a
-# symlink or special file, and when the two paths are not on one filesystem
-# that supports reflinks. A failure can leave a partial <dst>; callers build
-# into a temporary name and remove it.
+# Copy the tree <src> into <dst>, an empty folder the caller made (so the
+# caller knows the folder is its own and may remove it on failure). Each file
+# is cloned with cp --reflink=always, so the copy shares its data blocks with
+# the source and costs no space. btrfs refuses to clone between a NOCOW and a
+# COW file, so each file is created empty and given the source's NOCOW
+# attribute (or has an inherited one removed) before the clone. Modes and
+# file times are kept; <dst> gets <src>'s mode. Fails on a symlink or special
+# file, and when the two are not on one filesystem that supports reflinks.
 reflink_tree() (
   set -o pipefail
   src=$1 dst=$2
@@ -55,7 +55,10 @@ reflink_tree() (
     echo "lanai: not a directory: $src" >&2
     exit 1
   }
-  mkdir -- "$dst" || exit 1
+  if [[ ! -d $dst || -L $dst ]] || [[ -n $(find "$dst" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+    echo "lanai: $dst is not an empty folder" >&2
+    exit 1
+  fi
   chmod --reference="$src" -- "$dst" || exit 1
   find "$src" -mindepth 1 -printf '%P\0' | LC_ALL=C sort -z |
     while IFS= read -r -d '' p; do
@@ -81,26 +84,36 @@ reflink_tree() (
 )
 
 # Take QEMU's write lock on the raw image <img> by holding `qemu-io -f raw`
-# open read-write with no commands. While held, no VM can open the image;
-# while a VM holds it, this fails with qemu-io's reason. The lock lasts until
-# unlock_disk or until this shell exits (qemu-io then reads end of input).
-# `qemu-io -r` would take only a shared read lock and block nothing.
-# One lock at a time.
+# open read-write with no commands. While held, no VM can open the image.
+# While a VM holds it, this fails and sets LANAI_LOCK_ERROR to qemu-io's
+# reason (the caller words the message). The lock lasts until unlock_disk or
+# until this shell exits (qemu-io then reads end of input). `qemu-io -r`
+# would take only a shared read lock and block nothing. One lock at a time.
 lock_disk() {
-  local img=$1 prompt="" rest=""
-  [[ -f $img ]] || {
-    echo "lanai: no disk image at $img" >&2
+  local img prompt="" rest="" out
+  LANAI_LOCK_ERROR=""
+  # An absolute path, so QEMU never reads a "proto:" prefix in the name.
+  if [[ ! -f $1 ]] || ! img=$(realpath -e -- "$1"); then
+    LANAI_LOCK_ERROR="no disk image at $1"
     return 1
-  }
+  fi
   coproc LANAI_LOCK { exec qemu-io -f raw -- "$img" 2>&1; }
+  # A copy of the output end: bash closes the coproc's own fds as soon as
+  # it exits, which on failure can be before its message is read.
+  exec {out}<&"${LANAI_LOCK[0]}"
   # qemu-io prints its prompt once the image is open; an error ends it.
-  IFS= read -r -t 30 -N 9 prompt <&"${LANAI_LOCK[0]}" || true
+  IFS= read -r -t 30 -N 9 prompt <&"$out" || true
   if [[ $prompt == "qemu-io> " ]]; then
+    exec {out}<&-
     return 0
   fi
-  rest=$(timeout 5 cat <&"${LANAI_LOCK[0]}") || true
+  rest=$(timeout 5 cat <&"$out") || true
+  exec {out}<&-
   wait "$LANAI_LOCK_PID" 2>/dev/null || true
-  printf 'lanai: cannot lock %s: %s\n' "$img" "$prompt$rest" >&2
+  # qemu-io's first line holds the reason.
+  rest=$prompt$rest
+  LANAI_LOCK_ERROR=${rest%%$'\n'*}
+  LANAI_LOCK_ERROR=${LANAI_LOCK_ERROR#qemu-io: }
   return 1
 }
 
