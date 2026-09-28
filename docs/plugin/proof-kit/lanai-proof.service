@@ -1,0 +1,15 @@
+# Throwaway unit for plan phase 1, proof 4 (docs/plugin/proofs.md). Install
+# with the sed line in the runbook, which fills @KIT@ and @COPY@. Delete it
+# after the proof. No [Install] section: it starts only by hand.
+[Unit]
+Description=Lanai proof 4 VM (throwaway)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=exec
+Slice=session.slice
+Environment=PROOF_COPY=@COPY@
+ExecStart=@KIT@/proof-unit-start
+ExecStop=@KIT@/proof-unit-stop
+TimeoutStopSec=2min
