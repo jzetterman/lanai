@@ -90,7 +90,7 @@ reflink_tree() (
 # until this shell exits (qemu-io then reads end of input). `qemu-io -r`
 # would take only a shared read lock and block nothing. One lock at a time.
 lock_disk() {
-  local img prompt="" rest="" out
+  local img prompt="" rest="" out=""
   LANAI_LOCK_ERROR=""
   # An absolute path, so QEMU never reads a "proto:" prefix in the name.
   if [[ ! -f $1 ]] || ! img=$(realpath -e -- "$1"); then
@@ -99,21 +99,27 @@ lock_disk() {
   fi
   coproc LANAI_LOCK { exec qemu-io -f raw -- "$img" 2>&1; }
   # A copy of the output end: bash closes the coproc's own fds as soon as
-  # it exits, which on failure can be before its message is read.
-  exec {out}<&"${LANAI_LOCK[0]}"
-  # qemu-io prints its prompt once the image is open; an error ends it.
-  IFS= read -r -t 30 -N 9 prompt <&"$out" || true
-  if [[ $prompt == "qemu-io> " ]]; then
-    exec {out}<&-
-    return 0
+  # it exits, which on failure can be before its message is read. If it is
+  # already gone, there is nothing to read.
+  if [[ -n ${LANAI_LOCK[0]:-} ]]; then
+    { exec {out}<&"${LANAI_LOCK[0]}"; } 2>/dev/null || out=""
   fi
-  rest=$(timeout 5 cat <&"$out") || true
-  exec {out}<&-
+  if [[ -n $out ]]; then
+    # qemu-io prints its prompt once the image is open; an error ends it.
+    IFS= read -r -t 30 -N 9 prompt <&"$out" || true
+    if [[ $prompt == "qemu-io> " ]]; then
+      exec {out}<&-
+      return 0
+    fi
+    rest=$(timeout 5 cat <&"$out") || true
+    exec {out}<&-
+  fi
   wait "$LANAI_LOCK_PID" 2>/dev/null || true
   # qemu-io's first line holds the reason.
   rest=$prompt$rest
   LANAI_LOCK_ERROR=${rest%%$'\n'*}
   LANAI_LOCK_ERROR=${LANAI_LOCK_ERROR#qemu-io: }
+  LANAI_LOCK_ERROR=${LANAI_LOCK_ERROR:-qemu-io exited without a reason}
   return 1
 }
 
