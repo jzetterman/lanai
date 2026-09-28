@@ -122,6 +122,37 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   assert_output "$T/not-yet"
 }
 
+@test "storage_dir: a settings file that is a symlink fails, dangling or not" {
+  mkdir -p "$XDG_CONFIG_HOME/lanai"
+  local f=$XDG_CONFIG_HOME/lanai/settings.json
+  ln -s "$T/none.json" "$f"
+  run storage_dir
+  assert_failure
+  assert_output --partial "$f is a symlink"
+  refute_output --partial "$HOME/.windows"
+  echo '{"storage": "/srv/copy"}' >"$T/real.json"
+  ln -sfn "$T/real.json" "$f"
+  run storage_dir
+  assert_failure
+  assert_output --partial "$f is a symlink"
+}
+
+@test "storage_dir: an unreadable or non-file settings path fails" {
+  mkdir -p "$XDG_CONFIG_HOME/lanai/settings.json"
+  run storage_dir
+  assert_failure
+  refute_output --partial "$HOME/.windows"
+  rmdir "$XDG_CONFIG_HOME/lanai/settings.json"
+  if ((EUID != 0)); then
+    echo '{"storage": "/srv/copy"}' >"$XDG_CONFIG_HOME/lanai/settings.json"
+    chmod 000 "$XDG_CONFIG_HOME/lanai/settings.json"
+    run storage_dir
+    assert_failure
+    assert_output --partial "cannot read the storage location"
+    refute_output --partial "$HOME/.windows"
+  fi
+}
+
 @test "storage_dir: broken settings fail instead of falling back to the live install" {
   mkdir -p "$XDG_CONFIG_HOME/lanai"
   local bad
@@ -191,6 +222,45 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   assert_equal "$(compose_value "$f" RAM_SIZE)" 12G
   sed -i "s|RAM_SIZE: '12G'|RAM_SIZE: 16G|" "$f"
   assert_equal "$(compose_value "$f" RAM_SIZE)" 16G
+}
+
+@test "compose_value: a list-form line for the key cannot be interpreted (status 2)" {
+  local f=$OMARCHY_WINDOWS_DIR/docker-compose.yml line key
+  for line in "- VERSION=10" "- \"VERSION=10\"" "- 'VERSION=10'" "  -   LANGUAGE=de" \
+    "- DISK_SIZE=1M" "- \"DISK_SIZE=64G\""; do
+    key=${line#*-}
+    key=${key//[\"\' ]/}
+    key=${key%%=*}
+    write_compose "$key="
+    sed -i "s|^    environment:\$|&\n      $line|" "$f"
+    run compose_value "$f" "$key"
+    assert_failure 2
+    assert_output --partial "cannot interpret $key"
+  done
+  # The map form next to a list-form line still counts as uninterpretable.
+  write_compose
+  sed -i "s|^    environment:\$|&\n      - VERSION=10|" "$f"
+  run compose_value "$f" VERSION
+  assert_failure 2
+  # A list entry for another key does not matter.
+  write_compose
+  sed -i "s|^    environment:\$|&\n      - XVERSION=10\n      - VERSIONS=10|" "$f"
+  run compose_value "$f" VERSION
+  assert_success
+  assert_output 11
+}
+
+@test "layout_check and disk_size_check refuse a list-form compose" {
+  make_install "$T/w"
+  write_compose VERSION= DISK_SIZE=
+  sed -i "s|^    environment:\$|&\n      - VERSION=10\n      - DISK_SIZE=1M|" \
+    "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
+  run layout_check "$T/w"
+  assert_failure 1
+  assert_output --partial "cannot interpret VERSION in omarchy-windows-vm's settings"
+  run disk_size_check "$T/w"
+  assert_failure 1
+  assert_output "cannot interpret DISK_SIZE in omarchy-windows-vm's settings"
 }
 
 @test "compose_value: a missing key is empty; similar keys do not match" {
@@ -678,14 +748,25 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   done
 }
 
-@test "disk_size_check: max, half or a size it cannot read reports not checked" {
+@test "disk_size_check: a dynamic DISK_SIZE (max or half) refuses" {
   make_install "$T/w"
   local v
-  for v in max HALF lots 64XB; do
+  for v in max HALF " Max "; do
     write_compose "DISK_SIZE=$v"
     run disk_size_check "$T/w"
-    assert_failure 2
-    assert_output --partial "not checked"
+    assert_failure 1
+    assert_output "a dynamic disk size (max/half) is not supported"
+  done
+}
+
+@test "disk_size_check: a DISK_SIZE that is not a size refuses" {
+  make_install "$T/w"
+  local v
+  for v in lots 64XB; do
+    write_compose "DISK_SIZE=$v"
+    run disk_size_check "$T/w"
+    assert_failure 1
+    assert_output --partial "is not a size"
   done
 }
 
