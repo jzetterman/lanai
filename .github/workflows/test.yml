@@ -1,0 +1,26 @@
+# Runs the bats suites and shellcheck in an Arch container. Tests that need
+# btrfs skip here (LANAI_TEST_BTRFS_DIR is unset); the lock tests run QEMU
+# under TCG with -S, so they need no KVM.
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install packages
+        run: >-
+          pacman -Syu --noconfirm bats bats-assert bats-support shellcheck ffmpeg jq
+          socat e2fsprogs qemu-system-x86 qemu-img
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: bats
+        run: bats test spike/test
+      - name: shellcheck
+        run: shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
