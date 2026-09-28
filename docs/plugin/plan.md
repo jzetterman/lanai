@@ -473,3 +473,4 @@ Then:
 | plan | b | 3 (full, cap) | 1 blocker, 5 should-fix; all confirmed (item 5 was a regression from the round-1 rewrite); John adjudicated: integrate all. Shared `preflight` before every unit start; base normalized after the snapshot; `$RUN` must be 0700; forced marker wins; `setup-guest` builds verified media; step 6 checks the SPICE agent and asks about text size. Gate closed. |
 | diff (phases 1-3) | a | 1 (panel: correctness, security, testing, maintainability) | 0 blockers, 7 should-fix, ~20 nits (after dedupe); all integrated. A reviewer read the real compose file once against instructions (read-only; only memory and cores printed); disclosed to John |
 | diff (phases 1-3) | a | 2 (delta) | 0 blockers, 0 should-fix, 4 nits (3 integrated, 1 negligible); stage a clean |
+| diff (phases 1-3) | b | 1 (full) | 1 blocker (readable but uninterpretable compose fell back to defaults), 1 should-fix (read-only folders); both confirmed and integrated |
