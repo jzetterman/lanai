@@ -27,6 +27,12 @@ die() {
   exit 1
 }
 
+# Die when <path> holds a newline: QEMU's arguments pass one per line, so a
+# newline would split one path into extra arguments. <what> names it.
+no_newline() {
+  [[ $2 != *$'\n'* ]] || die "$1 must not contain a newline: ${2@Q}"
+}
+
 # Print a line with a UTC timestamp.
 log() {
   printf '%s %s\n' "$(date -u +%FT%T.%3NZ)" "$*"
@@ -82,6 +88,9 @@ proof_args() {
 
 # Parse run/args options into the globals the callers read.
 parse_opts() {
+  local a
+  no_newline "the runtime folder (XDG_RUNTIME_DIR)" "$RUN"
+  for a in "$@"; do no_newline "a path or option" "$a"; done
   COPY=${1:-}
   [[ -n $COPY && $COPY != -* ]] || die "give the copy's folder first"
   COPY=$(realpath -- "$COPY")
@@ -109,6 +118,8 @@ parse_opts() {
   # read only metadata of ~/.windows, never its files.
   [[ $COPY != "$(realpath -m -- "$LIVE")" ]] || die "refusing: $COPY is the live ~/.windows"
   local f
+  # The resolved paths too: a symlink could point at a name with a newline.
+  for f in "$COPY" "$SHARE" "$SETUP" "$ISO"; do no_newline "a resolved path" "$f"; done
   for f in "$COPY"/* "$COPY"/.[!.]*; do
     [[ -e $f || -L $f ]] || continue
     [[ ! -L $f ]] || die "refusing: $f is a symlink"
@@ -239,15 +250,20 @@ cmd_stop() {
 # <dir>/setup becomes the setup USB disk; the virtio-win ISO is attached as a
 # CD with --iso, because it is too big for QEMU's FAT disk.
 cmd_media() {
-  local dir=${1:?media needs a folder} spike_setup=$REPO/spike/work/setup
-  [[ -f $spike_setup/looking-glass-idd-setup.exe ]] ||
-    die "missing $spike_setup; run spike/lgtest fetch first"
+  local dir=${1:?media needs a folder}
+  local zip=$dir/looking-glass-$LG_BUILD-idd.zip vdagent=spice-vdagent-x64-$VDAGENT_VERSION.msi
+  no_newline "the media folder" "$dir"
   mkdir -p -- "$dir/setup"
+  # The IDD zip and the SPICE agent are kept outside setup/ and verified on
+  # every run; their copies in setup/ are made again from the verified files.
+  rm -f -- "$dir/setup/looking-glass-idd-setup.exe" "$dir/setup/$vdagent"
+  download "$LG_IDD_URL" "$zip" "$LG_IDD_SHA"
+  download "$VDAGENT_URL" "$dir/$vdagent" "$VDAGENT_SHA"
   download "$WINFSP_URL" "$dir/setup/winfsp-$WINFSP_VERSION.msi" "$WINFSP_SHA"
   download "$QEMU_GA_URL" "$dir/setup/qemu-ga-x86_64.msi" "$QEMU_GA_SHA"
   download "$VIRTIO_WIN_URL" "$dir/virtio-win-$VIRTIO_WIN_VERSION.iso" "$VIRTIO_WIN_SHA"
-  cp -- "$spike_setup/looking-glass-idd-setup.exe" "$spike_setup/spice-vdagent-x64-$VDAGENT_VERSION.msi" \
-    "$REPO/guest/lanai-scale.ps1" "$dir/setup/"
+  unzip -q -o -- "$zip" looking-glass-idd-setup.exe -d "$dir/setup"
+  cp -- "$dir/$vdagent" "$REPO/guest/lanai-scale.ps1" "$dir/setup/"
   log "media ready: $dir/setup and $dir/virtio-win-$VIRTIO_WIN_VERSION.iso"
 }
 
