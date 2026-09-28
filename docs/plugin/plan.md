@@ -475,3 +475,4 @@ Then:
 | diff (phases 1-3) | a | 2 (delta) | 0 blockers, 0 should-fix, 4 nits (3 integrated, 1 negligible); stage a clean |
 | diff (phases 1-3) | b | 1 (full) | 1 blocker (readable but uninterpretable compose fell back to defaults), 1 should-fix (read-only folders); both confirmed and integrated |
 | diff (phases 1-3) | b | 2 (full) | 0 blockers, 2 should-fix in the proof kit (unverified cached installers; newline paths); both confirmed and integrated |
+| diff (phases 1-3) | b | 3 (full, cap) | 2 blockers, 1 should-fix, all fail-open cases (list-form compose keys, DISK_SIZE max/half, symlinked settings file); John ruled: refuse all three (no list-form parser); integrated. Gate closed. |
