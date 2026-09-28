@@ -334,8 +334,8 @@ unit's log with `journalctl --user -u lanai-proof -o short-iso-precise` (add `-b
 after a reboot).
 
 To log out, always use the Omarchy menu: System, then Logout. It runs
-`omarchy-system-logout`, which closes every window (the Looking Glass client too) and
-then runs `uwsm stop`.
+`omarchy-system-logout`, which closes every window (the Looking Glass client too), and
+runs `uwsm stop` 2 s after it starts.
 
 What failure looks like: the unit's log has no `QEMU exited` line, or no `SHUTDOWN` event
 with `"guest": true`. Either means QEMU was killed before Windows finished. Record the

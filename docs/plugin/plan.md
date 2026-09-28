@@ -203,10 +203,15 @@ download, in `docs/plugin/proofs.md`. If a proof fails, stop and take it to John
 - `test/lanai.bats` (bats-support, bats-assert); move the spike's reusable functions
   and their tests; `spike/` stays unchanged.
 - `.github/workflows/test.yml`: `ubuntu-latest`, `container: archlinux:latest`,
-  `pacman -Syu --noconfirm bats bats-assert bats-support shellcheck ffmpeg jq socat
-  e2fsprogs qemu-system-x86 qemu-img` (the lock test runs QEMU under TCG with `-S`, no
-  KVM needed), then `bats test spike/test` and `shellcheck -x bin/* lib/*.sh
-  spike/lgtest`. Actions pinned by full SHA. btrfs-only tests skip on overlayfs.
+  `timeout-minutes: 20`. `pacman -Syu --noconfirm bats bats-assert bats-support
+  shellcheck ffmpeg jq socat e2fsprogs diffutils qemu-system-x86 qemu-img` (the lock
+  tests run QEMU under TCG with `-S`, no KVM needed). Checkout with
+  `persist-credentials: false`. Then `bats test spike/test` as an unprivileged user
+  `tester` (via `runuser`, with its own `XDG_RUNTIME_DIR`), so the tests of unreadable
+  files run, and `shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats
+  test/helpers.bash spike/test/*.bats docs/plugin/proof-kit/proof-vm
+  docs/plugin/proof-kit/proof-unit-start docs/plugin/proof-kit/proof-unit-stop`.
+  Actions pinned by full SHA. btrfs-only tests skip on overlayfs.
 
 ## Phase 3: Adoption checks and settings (TDD)
 
