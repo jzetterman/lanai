@@ -52,6 +52,8 @@ These sections are filled in phase 7:
 Run `bats test spike/test`. Tests that need btrfs read `LANAI_TEST_BTRFS_DIR` (for
 example `LANAI_TEST_BTRFS_DIR=$PWD/.btrfs-test`, which git ignores) and skip when it is
 unset or not on btrfs. Lint with
-`shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats`.
+`shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
+docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
+docs/plugin/proof-kit/proof-unit-stop`.
 
 Lanai is MIT licensed; see [LICENSE](LICENSE).
