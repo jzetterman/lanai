@@ -117,6 +117,21 @@ f 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 sub/a"
   [[ $LANAI_LOCK_ERROR == *"no disk image"* ]] || fail "reason: $LANAI_LOCK_ERROR"
 }
 
+@test "lock_disk: a qemu-io that exits at once without a word still gives a reason" {
+  truncate -s 1M "$T/d.img"
+  mkdir "$T/shims"
+  printf '#!/bin/sh\nexit 1\n' >"$T/shims/qemu-io"
+  chmod +x "$T/shims/qemu-io"
+  local _
+  # Several runs: bash may reap the coproc before or after lock_disk reads it.
+  for _ in 1 2 3 4 5; do
+    PATH=$T/shims:$PATH lock_disk "$T/d.img" 2>"$T/err" && fail "locked with a failing qemu-io"
+    assert_equal "$LANAI_LOCK_ERROR" "qemu-io exited without a reason"
+    run cat "$T/err"
+    refute_output --partial "Bad file descriptor"
+  done
+}
+
 @test "lock_disk: a relative name with a colon is a file, not a QEMU protocol" {
   cd "$T"
   truncate -s 1M "nbd:disk.img"
