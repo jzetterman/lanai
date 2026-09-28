@@ -469,6 +469,26 @@ cannot be met as designed. Record it as a spec question; phase 4 waits for the a
   with "Invalid path to the shared memory file"; Lanai's client launch must wait for the
   new VM's file, not any file. Lingering restored to `no`.
 
+## Extra check: QMP answers only after `ivshmem` exists
+
+Added 2026-09-28 after proof 4's client race. Question: can the client wait for a QMP
+command reply instead of for the `ivshmem` file, which a crashed or earlier run may
+leave behind? Run three times, each in a fresh scratch directory `$D`, no guest disk:
+
+```sh
+qemu-system-x86_64 -nodefaults -display none -machine q35 -m 256 \
+  -object memory-backend-file,id=m,mem-path="$D/ivshmem",size=128M,share=on \
+  -device ivshmem-plain,memdev=m -qmp unix:"$D/q.sock",server=on,wait=off &
+# Poll for 10 s: note whether ivshmem exists when q.sock first appears, then send
+# qmp_capabilities + query-status with socat until a "status" reply arrives.
+```
+
+Result, all three runs: `ivshmem existed when socket first seen: no` and `ivshmem
+present at first reply`. QEMU creates the QMP chardev before the memory backends
+(`object_create_early` leaves `memory-backend-*` for later) and runs non-OOB QMP
+commands only from its main loop, after every backend exists. The greeting may come
+earlier, so only a command reply counts.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with
