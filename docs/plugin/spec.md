@@ -66,8 +66,12 @@ Neither needs GPU acceleration.
    one disk file (not both `data.img` and `data.qcow2`); the install-complete marker
    (`windows.boot`) exists; `windows.base` is empty, or names the image dockur derives
    from the container's Windows version and language settings, in its `.iso` form; and
-   no `custom.iso` or `boot.iso` sits in the storage location. If any check fails,
-   Lanai refuses to start and says why. The panel may show the dockur version when it
+   no `custom.iso` or `boot.iso` sits in the storage location. When Lanai cannot read
+   `omarchy-windows-vm`'s settings without a prompt, it compares `windows.base` with the
+   image for the values `omarchy-windows-vm` always sets (Windows 11, no language) and
+   skips the disk-size check (John, 2026-09-28); growing the disk only adds space and
+   never overwrites Windows data. If any check fails, Lanai refuses to start and says
+   why. The panel may show the dockur version when it
    can read it, as information only. The README names the remaining risks: do not start
    `omarchy-windows-vm` while Lanai runs Windows, and do not change its container
    settings (Windows version, language, disk size or format, CLEAR, custom ISO mounts)
@@ -282,3 +286,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | amendment | 2026-09-28 | Req 19 reboot/power-off changed to best effort within Omarchy's shutdown window (John's decision after research showed Omarchy caps user-session shutdown at 5 s); req 7 adds the QEMU guest agent for req 21 |
 | spec | amendment | 2026-09-28 | From plan research: req 5a covers dockur's destructive paths (delete on missing `windows.boot` or zeroed disk start; move on a custom or boot ISO, or a changed version or language); req 12 scale applies at next VM start via an SMBIOS text field (Claude's call, flagged to John); req 15 in v1 via virtiofs; req 7 lists all guest installs; reqs 27 and 29 include clipboard files |
 | spec | amendment review | 2026-09-28 | 0 blockers, 6 should-fix, 4 nits; all integrated (clipboard channel confirmed LGMP from the spike's client log) |
+| spec | amendment | 2026-09-28 | From plan Codex round 1: req 5a, when the settings are unreadable, uses `omarchy-windows-vm`'s fixed values for the base check and skips the size check (John's decision) |
