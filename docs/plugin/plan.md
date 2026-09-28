@@ -84,8 +84,8 @@ use.
     marker and `last-shutdown`. `lanai-vm-exec` only writes the "running" marker, with
     `$INVOCATION_ID`, right before it execs QEMU. `status_map` reads `last-run`, and the
     panel clears it once it has shown a forced-stop notice, so each is shown once. The
-    notice names a locked Windows or an open Windows security screen as likely causes
-    (spec req 19).
+    notice names a locked Windows, an open Windows security screen, or a shutdown that
+    did not finish in time as likely causes (spec req 19).
 - **Stopping from the UI never uses `systemctl stop`** (req 16). `lanai stop` sends
   `system_powerdown` on `qmp-cli.sock` and records the request time; the unit stays
   active until QEMU exits by itself. After 2 minutes the panel offers the forced stop.
@@ -377,8 +377,10 @@ Then:
   written by `setup-guest`).
 - `lanai open`: start or focus the `lanai-client` unit and return at once (the QML
   deadline is 10 s, and a first boot can take longer). The unit's `ExecStart` is a small
-  wrapper, `lanai-client-exec`, that retries `query-status` on `qmp-cli.sock` until a
-  command reply arrives. Each try uses a short connect and read timeout (2 s) and
+  wrapper, `lanai-client-exec`, that retries on `qmp-cli.sock` until QEMU answers a
+  command: each try connects, reads the greeting, sends `qmp_capabilities` then
+  `query-status`, and succeeds only on a `return` that holds `status` (the handshake
+  of the extra check in `proofs.md`). Each try uses a short connect and read timeout (2 s) and
   closes its connection; a missing socket, a refused connect or a read timeout means
   retry, since QEMU serves one client per socket and a status poll may hold it. The
   60 s cap covers the whole wait, then it fails with a message. It closes the QMP
@@ -448,7 +450,11 @@ Then:
     (proof 2's values);
   - adds the logon task running `C:\Lanai\lanai-scale.ps1`;
   - runs `call "%~dp0lanai-lock.cmd"` (spec req 7; without `call`, control never returns
-    to `setup.cmd`). With `reg add /f` and `reg delete /f`,
+    to `setup.cmd`). `lanai-lock.cmd` never relaunches itself, so the one administrator
+    prompt stays the only one (spec req 7) and every write finishes in the caller's
+    process: if it is not elevated (`net session` fails), it prints a message and runs
+    `exit /b 1`, and it always ends with `exit /b`, never `exit`. `setup.cmd` stops if
+    it returns non-zero. With `reg add /f` and `reg delete /f`,
     which are safe to rerun, it sets `DisableLockWorkstation` REG_DWORD 1 under
     `HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System` (removes Lock
     from Start and Ctrl+Alt+Del, and turns off Windows key + L); `HideFastUserSwitching`
@@ -477,8 +483,13 @@ Then:
     boot applies their new settings, and step 6 checks them.
 - Lock proof before the rest of phase 6, with John at the keyboard. It uses the existing
   test copy `$S/lanai-proof` and the proof kit. First write `guest/lanai-lock.cmd`,
-  since the proof runs the real file, and extend `proof-vm media` to copy it into the
-  setup disk; then rerun `"$K/proof-vm" media "$S/kit"` so the setup disk holds it.
+  since the proof runs the real file. Extend `proof-vm client` to wait for a QMP
+  `query-status` reply, as `lanai-client-exec` will, so it never opens a stale
+  `ivshmem`. The copy already has the IDD, which leaves QEMU's own window black, so
+  every step runs through the Looking Glass client: start it with `"$K/proof-vm"
+  client` once the VM is up, and again after each guest restart. Extend `proof-vm
+  media` to copy `lanai-lock.cmd` into the setup disk, then rerun `"$K/proof-vm" media
+  "$S/kit"` so the setup disk holds it.
   Boot with `"$K/proof-vm" run "$S/lanai-proof" --setup "$S/kit/setup"`. Sign back in
   after every control that locks, before the next one. The Windows key + L control
   (not a warm-up) is this command, which holds the connection open, since QEMU drops
@@ -518,10 +529,13 @@ Then:
      record the result either way.
   Record the results in `proofs.md`. If any lock path survives, stop and take it to
   John.
-- Row 7b's different-account refusal runs in phase 8 on a test copy: create a
-  standard local account, sign in as it, run `setup.cmd`, and approve the prompt with
-  the administrator account. Setup must refuse before changing anything; `reg query`
-  shows the lock values unchanged.
+- Row 7b's different-account refusal runs in phase 8 on a copy that has not been
+  through setup (a fresh `lanai-copy` of the test install, or a restored snapshot):
+  create a standard local account, sign in as it, run `setup.cmd`, and approve the
+  prompt with the administrator account. Setup must refuse before changing anything:
+  `reg query` shows the pre-setup lock values, and the Looking Glass IDD, qemu-ga,
+  the SPICE agent, WinFsp, `VirtioFsSvc`'s Lanai settings and the scale task are all
+  absent.
 - `guest/lanai-scale.ps1` fix (proof 1): it sometimes logs the current scale as blank
   (at 100%, and once at 125%), because `curScaleRel` can point outside the step list.
   Log the raw `minScaleRel`, `curScaleRel` and `maxScaleRel`, and route all four
@@ -554,7 +568,7 @@ Then:
 | 3a. Normalize base | if `windows.base` is empty or missing (a missing file counts as empty everywhere, as it does for dockur's `readBase`), write the same name dockur's `readBase` would write, so a later container start rewrites nothing, and tell the user. Runs after the snapshot, so a restore returns the original empty file; `layout_check` itself stays read-only. Tested: restore after normalizing an empty base matches the pre-adoption hashes |
 | 4. Client build | the pinned client binary exists and reports the pinned version |
 | 5. Guest setup boot | `lanai setup-guest` booted with `--setup` and QEMU exited after `setup.cmd`'s full shutdown |
-| 6. Normal boot | each guest component is checked, not assumed: the client log shows the matching IDD version; the guest agent answers a sync and a `guest-set-time` to the current host time (the channel's allowed use, which also proves the clock path), and refuses `guest-ping` with `CommandNotFound ... has been disabled` (the allow-list took effect; spec req 27); QMP `query-chardev` shows `frontend-open: true` for the SPICE agent's port (`vdagent`), as it does for the guest agent; the panel asks the user two one-click questions: does `~/Windows` show in Explorer, and does Windows' text look the right size (the scale task). Any missing component sends setup back to step 5 with "setup did not finish: run setup.cmd again"; `setup.cmd` is idempotent (each installer skips what is already installed at the pinned version). Tests cover a shutdown after a partly failed `setup.cmd` |
+| 6. Normal boot | each guest component is checked, not assumed: the client log shows the matching IDD version; the guest agent answers a sync and a `guest-set-time` to the current host time (the channel's allowed use, which also proves the clock path), and refuses an argument-free `guest-exec` with `CommandNotFound ... has been disabled`, the reply proof 3 recorded (the allow-list took effect; spec req 27; without arguments the command could not run anything even if the allow-list had failed); QMP `query-chardev` shows `frontend-open: true` for the SPICE agent's port (`vdagent`), as it does for the guest agent; the panel asks the user two one-click questions: does `~/Windows` show in Explorer, and does Windows' text look the right size (the scale task). Any missing component sends setup back to step 5 with "setup did not finish: run setup.cmd again"; `setup.cmd` is idempotent (each installer skips what is already installed at the pinned version). Tests cover a shutdown after a partly failed `setup.cmd` |
 | 7. Done | all of the above |
 
   bats tests interrupt the flow after each step and check that `lanai setup` resumes at
@@ -575,8 +589,11 @@ Then:
     attaches and sizes the display, so the logon task may see the IDD's default
     resolution and cap the scale (proof 1: 125% at about 1024x768). On a test copy that
     finished phase 6 setup, with the focused monitor at 150% or more, run `lanai start`
-    then `lanai open`, and read the "allowed" line in `lanai-scale.log`. If the scale
-    is capped, take it to John before writing any README note.
+    and wait, without attaching the client, until `lanai status` says running (the
+    guest agent answers), which is when a user would click Open. Then `lanai open`, and
+    read the "allowed" line in `%LOCALAPPDATA%\Lanai\lanai-scale.log`. Run a second
+    trial with `lanai open` right after `lanai start`. If either trial caps the scale,
+    take it to John before writing any README note.
 
 - `Widget.qml`: a Lanai glyph distinct from the four Windows plugins; the tooltip shows
   state, cause and next step as text (req 10). Primary click starts Windows, or opens
@@ -673,3 +690,4 @@ Then:
 | plan amendment (proof findings) | a | 3 (delta) | 0 blockers, 5 should-fix, 8 nits; all confirmed and integrated (lock proof keeps setup's end state; VirtioFsSvc stop waits and handles a missing service; send-key holds the connection; README matches spec reqs 7 and 32; absent-value handling in `lanai-lock.cmd`; `C:\Lanai` junction guard; MDM enrollment check; rewraps) |
 | plan amendment (proof findings) | a | 4 (delta, cap) | 0 blockers, 2 should-fix, 5 nits; all integrated (send-key in a fenced block; `net stop` result ignored, a failed copy stops setup; `C:\Program Files\Lanai` created; empty-folder check after the ACL; lock values handed back in variables; removal undoes every Windows change before the shutdown; rewraps). Stage a closed |
 | plan amendment (proof findings) | b Grok (substitute) | 1 (full) | Codex out of credits. 7 P2, 2 P3; all confirmed and integrated (`call` for `lanai-lock.cmd`; IDD installed last because it blanks the setup display, so no pause or printed values; `C:\Lanai` without recursive deletes; `dir` judged by output; client wrapper closes QMP before exec, per-try timeouts; `qga_reply` refusal mode; literal README restore commands; lock proof sign-in between controls; stop on any sleep state or Bluetooth; resize check names its VM). README exposure text matches the spec's Grok round |
+| plan amendment (proof findings) | b Grok (substitute) | 2 (full) | 5 P2, 1 P3; all confirmed and integrated (lock proof runs through the Looking Glass client, and `proof-vm client` waits for a QMP reply; scale timing tested at the late attach a user makes, plus a fast trial; step 6 checks the refusal with an argument-free `guest-exec`, as proof 3 recorded; `lanai-lock.cmd` never relaunches and exits with `exit /b`; the refusal test runs on a pre-setup copy and checks every guest change; the client wrapper's QMP handshake named). Also matched the forced-stop notice to spec round 2 |
