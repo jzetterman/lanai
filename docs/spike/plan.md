@@ -172,11 +172,14 @@ gets one for its live-disk refusal (a hard link between the source and `work/vm`
     `-device virtserialport,chardev=vdagent,name=com.redhat.spice.0`); USB redirection for Looking Glass USB
     audio (`-chardev spicevmc,id=usbredir0,name=usbredir -device usb-redir,chardev=usbredir0`)
   - QMP on `$RUN/qmp.sock`, `-pidfile $RUN/qemu.pid`
-  - `--setup` adds `-vga virtio -display gtk` and the setup disk, with an absolute path:
+  - `--setup` adds `-vga virtio -display gtk,window-close=off` (closing the window must
+    not power off the VM) and the setup disk, with an absolute path:
     `-drive if=none,id=setup,file=fat:$WORK/setup,format=raw,readonly=on -device usb-storage,drive=setup`.
     Without `--setup`: `-vga none -display none`.
   - `--expose-loopback` (step 6 positive control only): drop `map-host-loopback=none`.
 - `client`: `work/build/looking-glass-client -f $RUN/ivshmem spice:host=$RUN/spice.sock spice:port=0 win:setGuestRes=yes`.
+  It first waits up to 30 s (`LGTEST_CLIENT_WAIT`) for QEMU to create `$RUN/ivshmem`,
+  so it can start right after `run`.
 - `rdp`: `xfreerdp3` with the `RDP_ARGS` from the `omarchy-windows-vm` on `PATH`, minus
   `/u`, `/p` and `/v`, with `/v:127.0.0.1:13389`, the same `/scale` logic (no `/scale`
   if `hyprctl` or `jq` fails), and `KRB5_CONFIG=~/.config/windows/krb5.conf` (created

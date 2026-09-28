@@ -193,8 +193,8 @@ else a temporary `python3 -m http.server --bind 127.0.0.1 18631`.
   - rdp:
   - rdp-real:
 - Setup: the IDD's direct input needed a Windows restart after install. Before the restart, the Looking Glass window fell back to SPICE input, which did not reach Windows. Plugin note: the installer flow must restart Windows.
-- Setup: closing the `--setup` QEMU window powers the VM off. Harness fix queued: `window-close=off`.
-- Harness: `client` can start before QEMU creates the shared-memory file. Fix queued: wait for the file.
+- Setup: closing the `--setup` QEMU window powers the VM off. Harness fix made: `window-close=off`.
+- Harness: `client` can start before QEMU creates the shared-memory file. Fix made: `client` waits up to 30 s for it.
 - Baselines taken 2026-09-27 (35.0, 19.8, 33.4 busy s) ran while another session ran Hyprland's test suite; retake before measured runs.
 - Other:
 

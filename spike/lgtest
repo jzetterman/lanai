@@ -223,7 +223,8 @@ vm_args() {
     -pidfile "$RUN/qemu.pid"
   )
   if ((setup)); then
-    out+=(-vga virtio -display gtk
+    # window-close=off: closing the setup window must not power off the VM.
+    out+=(-vga virtio -display "gtk,window-close=off"
       -drive "if=none,id=setup,file=fat:$WORK/setup,format=raw,readonly=on"
       -device "usb-storage,drive=setup")
   else
@@ -367,10 +368,19 @@ cmd_run() {
   TMPDIR=$RUN exec qemu-system-x86_64 "${args[@]}"
 }
 
-# client: start the Looking Glass client against the running spike VM.
+# client: start the Looking Glass client against the running spike VM. It waits
+# up to LGTEST_CLIENT_WAIT seconds (default 30) for QEMU to create the shared
+# memory file, so it can be started right after `lgtest run`.
 cmd_client() {
   local bin=$WORK/build/looking-glass-client
+  local wait=${LGTEST_CLIENT_WAIT:-30} i
+  [[ $wait =~ ^[0-9]+$ ]] || die "LGTEST_CLIENT_WAIT must be whole seconds"
   [[ -x $bin ]] || die "missing $bin; run lgtest build first"
+  for ((i = 0; i < wait; i++)); do
+    [[ -f $RUN/ivshmem ]] && break
+    sleep 1
+  done
+  [[ -f $RUN/ivshmem ]] || die "no shared memory at $RUN/ivshmem after ${wait}s; start the VM with lgtest run"
   exec "$bin" -f "$RUN/ivshmem" spice:host="$RUN/spice.sock" spice:port=0 win:setGuestRes=yes
 }
 

@@ -355,7 +355,7 @@ joined() {
   assert_success
   local j
   j=$(joined)
-  [[ $j == *" -vga virtio -display gtk "* ]]
+  [[ $j == *" -vga virtio -display gtk,window-close=off "* ]]
   [[ $j == *" -drive if=none,id=setup,file=fat:$WORK/setup,format=raw,readonly=on -device usb-storage,drive=setup "* ]]
   [[ $(grep -c '^-vga$' <<<"$output") == 1 ]]
 }
@@ -477,6 +477,41 @@ measure_env() {
   run cmd_frames nothere 8:8:4:4
   assert_failure
   assert_output --partial "run lgtest record nothere first"
+}
+
+# Point WORK and RUN at temp dirs with a stub client that records its args,
+# so client tests never start the real Looking Glass client.
+client_env() {
+  WORK=$T/work
+  RUN=$T/run
+  mkdir -p "$WORK/build" "$RUN"
+  # shellcheck disable=SC2016 # the stub's $@ and $0 must stay literal
+  printf '#!/bin/sh\necho "$@" >"$0.ran"\n' >"$WORK/build/looking-glass-client"
+  chmod +x "$WORK/build/looking-glass-client"
+}
+
+@test "client waits for the VM's shared memory, then gives up with a clear message" {
+  client_env
+  LGTEST_CLIENT_WAIT=1 run cmd_client
+  assert_failure
+  assert_output --partial "no shared memory at $RUN/ivshmem"
+  [[ ! -e $WORK/build/looking-glass-client.ran ]]
+}
+
+@test "client starts against the VM's shared memory and SPICE socket" {
+  client_env
+  touch "$RUN/ivshmem"
+  LGTEST_CLIENT_WAIT=1 run cmd_client
+  assert_success
+  run cat "$WORK/build/looking-glass-client.ran"
+  assert_output "-f $RUN/ivshmem spice:host=$RUN/spice.sock spice:port=0 win:setGuestRes=yes"
+}
+
+@test "client rejects a wait that is not whole seconds" {
+  client_env
+  LGTEST_CLIENT_WAIT=30s run cmd_client
+  assert_failure
+  assert_output --partial "LGTEST_CLIENT_WAIT must be whole seconds"
 }
 
 # --- frame_index_rate ---
