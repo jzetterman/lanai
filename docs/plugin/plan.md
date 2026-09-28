@@ -474,3 +474,4 @@ Then:
 | diff (phases 1-3) | a | 1 (panel: correctness, security, testing, maintainability) | 0 blockers, 7 should-fix, ~20 nits (after dedupe); all integrated. A reviewer read the real compose file once against instructions (read-only; only memory and cores printed); disclosed to John |
 | diff (phases 1-3) | a | 2 (delta) | 0 blockers, 0 should-fix, 4 nits (3 integrated, 1 negligible); stage a clean |
 | diff (phases 1-3) | b | 1 (full) | 1 blocker (readable but uninterpretable compose fell back to defaults), 1 should-fix (read-only folders); both confirmed and integrated |
+| diff (phases 1-3) | b | 2 (full) | 0 blockers, 2 should-fix in the proof kit (unverified cached installers; newline paths); both confirmed and integrated |
