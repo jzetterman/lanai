@@ -1,0 +1,28 @@
+services:
+  windows:
+    image: dockurr/windows
+    container_name: omarchy-windows
+    environment:
+      VERSION: "11"
+      RAM_SIZE: "8G"
+      CPU_CORES: "4"
+      DISK_SIZE: "64G"
+      USERNAME: "lanaitester"
+      PASSWORD: "LanaiSentinel-7f3a9c2e"
+      PROTECT: "Y"
+      TZ: "America/New_York"
+      ARGUMENTS: "-rtc base=localtime,clock=host,driftfix=slew"
+    devices:
+      - /dev/kvm
+      - /dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - 127.0.0.1:8006:8006
+      - 127.0.0.1:3389:3389/tcp
+      - 127.0.0.1:3389:3389/udp
+    volumes:
+      - /home/lanaitester/.windows:/storage
+      - /home/lanaitester/Windows:/shared
+    restart: "no"
+    stop_grace_period: 2m
