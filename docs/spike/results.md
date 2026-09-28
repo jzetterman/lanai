@@ -26,8 +26,8 @@ Both counts must read within 10% of the true rate.
 
 | Running | Native rate | advances/s | repeats | skips | unreadable | Within 10%? |
 |---|---|---|---|---|---|---|
-| spike VM + viewer | 60 | | | | | |
-| spike VM + viewer | 30 | | | | | |
+| spike VM + LG client | 60 | 59.95 | 553 | 0 | 0 | yes |
+| spike VM + LG client | 30 | 30.00 | 857 | 0 | 0 | yes |
 | real VM + RDP | 60 | | | | | |
 | real VM + RDP | 30 | | | | | |
 
