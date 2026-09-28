@@ -9,8 +9,10 @@ bats_load_library bats-assert
 REPO=$(cd -- "$BATS_TEST_DIRNAME/.." && pwd)
 FIX=$BATS_TEST_DIRNAME/fixtures
 
-# Point HOME and every XDG_* path at fresh temp dirs, so no test can reach the
-# real ~/.windows, settings or runtime dir. Other XDG_* variables are unset.
+# Point HOME, every XDG_* path, TMPDIR and Lanai's overrides at fresh temp
+# paths, so no test can reach the real ~/.windows, compose file, settings,
+# /proc processes or runtime dir. Other XDG_* variables are unset. A test that
+# needs the real /proc or /proc/locks unsets LANAI_PROC or LANAI_LOCKS itself.
 isolate_home() {
   local v
   for v in $(compgen -e XDG_); do unset "$v"; done
@@ -19,7 +21,12 @@ isolate_home() {
   export XDG_STATE_HOME=$HOME/.local/state XDG_CACHE_HOME=$HOME/.cache
   export XDG_RUNTIME_DIR=$BATS_TEST_TMPDIR/run
   export XDG_CONFIG_DIRS=$BATS_TEST_TMPDIR/etc-xdg XDG_DATA_DIRS=$BATS_TEST_TMPDIR/share
-  mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+  export TMPDIR=$BATS_TEST_TMPDIR/tmp
+  export OMARCHY_WINDOWS_DIR=$BATS_TEST_TMPDIR/var-lib-omarchy-windows
+  export LANAI_PROC=$BATS_TEST_TMPDIR/proc LANAI_LOCKS=$BATS_TEST_TMPDIR/locks
+  mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" \
+    "$TMPDIR" "$LANAI_PROC"
+  : >"$LANAI_LOCKS"
   mkdir -m 700 "$XDG_RUNTIME_DIR"
 }
 

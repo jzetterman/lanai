@@ -13,9 +13,11 @@ setup() {
   isolate_home
   # shellcheck source-path=SCRIPTDIR source=../lib/lanai.sh
   source "$REPO/lib/lanai.sh"
+  # shellcheck source-path=SCRIPTDIR source=../lib/copy.sh
+  source "$REPO/lib/copy.sh"
   T=$BATS_TEST_TMPDIR
-  # No compose anywhere unless a test writes one.
-  export OMARCHY_WINDOWS_DIR=$T/var-lib-omarchy-windows
+  # isolate_home points OMARCHY_WINDOWS_DIR and LANAI_PROC at empty temp
+  # paths: no compose and no processes unless a test writes them.
   mkdir -p "$T/shims"
 }
 
@@ -100,6 +102,26 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   assert_output /srv/copy
 }
 
+@test "storage_dir: a symlinked folder resolves to its target" {
+  mkdir -p "$T/real" "$XDG_CONFIG_HOME/lanai"
+  ln -s "$T/real" "$HOME/.windows"
+  run storage_dir
+  assert_success
+  assert_output "$(realpath "$T/real")"
+  ln -s "$T/real" "$T/copy-link"
+  echo "{\"storage\": \"$T/copy-link\"}" >"$XDG_CONFIG_HOME/lanai/settings.json"
+  run storage_dir
+  assert_output "$(realpath "$T/real")"
+}
+
+@test "storage_dir: a folder that does not exist yet is printed as is" {
+  mkdir -p "$XDG_CONFIG_HOME/lanai"
+  echo "{\"storage\": \"$T/not-yet\"}" >"$XDG_CONFIG_HOME/lanai/settings.json"
+  run storage_dir
+  assert_success
+  assert_output "$T/not-yet"
+}
+
 @test "storage_dir: broken settings fail instead of falling back to the live install" {
   mkdir -p "$XDG_CONFIG_HOME/lanai"
   local bad
@@ -136,13 +158,6 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   run compose_file
   assert_failure
   assert_output ""
-}
-
-@test "compose_file: the default system path is /var/lib/omarchy/windows" {
-  unset OMARCHY_WINDOWS_DIR
-  # Only the path is compared; the file is never opened.
-  run bash -c 'source "$1"; declare -f compose_file' _ "$REPO/lib/lanai.sh"
-  assert_output --partial "/var/lib/omarchy/windows"
 }
 
 @test "compose_file: an unreadable system compose is still the one" {
@@ -189,6 +204,26 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   assert_equal "$(compose_value "$f" RAM_SIZE)" 8G
 }
 
+@test "compose_value: a key line in any other form cannot be read" {
+  write_compose
+  local f=$OMARCHY_WINDOWS_DIR/docker-compose.yml line
+  for line in "RAM_SIZE: \"8G'" "RAM_SIZE: \"8G\" # more" "RAM_SIZE: 8G\"" "RAM_SIZE: \"8\"G\"" \
+    "RAM_SIZE: 8G # more"; do
+    sed -i "/^ *RAM_SIZE:/d; s|^    environment:\$|&\n      $line|" "$f"
+    run compose_value "$f" RAM_SIZE
+    assert_failure
+    assert_output --partial "cannot read RAM_SIZE"
+  done
+}
+
+@test "compose_value: an unreadable file fails" {
+  require_non_root
+  write_compose
+  chmod 000 "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
+  run compose_value "$OMARCHY_WINDOWS_DIR/docker-compose.yml" RAM_SIZE
+  assert_failure
+}
+
 @test "compose_value: refuses a key that is not a plain name" {
   write_compose
   run compose_value "$OMARCHY_WINDOWS_DIR/docker-compose.yml" '.*'
@@ -207,7 +242,8 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   for pair in "10:win10x64.iso" "Windows 11:win11x64.iso" "WIN11:win11x64.iso" \
     "11e:win11x64-enterprise-eval.iso" "ltsc10:win10x64-enterprise-ltsc-eval.iso" \
     "2022:win2022-eval.iso" "xp:winxpx86.iso" "tiny11:tiny11.iso" \
-    "win11x64:win11x64.iso" "my/custom:mycustom.iso" " \"10\" :win10x64.iso"; do
+    "win11x64:win11x64.iso" "my/custom:mycustom.iso" " \"10\" :win10x64.iso" \
+    " \" 10 \" :win10x64.iso"; do
     assert_equal "$(dockur_base "${pair%%:*}" "")" "${pair#*:}"
   done
 }
@@ -256,6 +292,16 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   run layout_check "$T/empty"
   assert_failure 2
   assert_output --partial "No Windows install"
+}
+
+@test "layout_check: a folder Lanai cannot read gets its own message" {
+  require_non_root
+  make_install "$T/w"
+  chmod 000 "$T/w"
+  run layout_check "$T/w"
+  chmod 755 "$T/w"
+  assert_failure 1
+  assert_output "cannot read $T/w"
 }
 
 @test "layout_check: a file in place of the folder is refused" {
@@ -318,6 +364,7 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   run layout_check "$T/w"
   assert_failure 1
   assert_output --partial "data.qcow2: Lanai supports only a raw data.img"
+  refute_output --partial "data.img is missing"
 }
 
 @test "layout_check: an allow-listed name that is not a regular file is refused" {
@@ -387,9 +434,85 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   assert_success
 }
 
+@test "layout_check: a disk smaller than 100 KB is refused, zero or not" {
+  make_install "$T/w"
+  truncate -s 0 "$T/w/data.img"
+  truncate -s 10 "$T/w/data.img"
+  run layout_check "$T/w"
+  assert_failure 1
+  assert_output --partial "data.img is smaller than 100 KB"
+  printf 'LANAI' >"$T/w/data.img"
+  run layout_check "$T/w"
+  assert_failure 1
+  assert_output --partial "data.img is smaller than 100 KB"
+}
+
+@test "layout_check: without cmp the disk start cannot be read, so it refuses" {
+  make_install "$T/w"
+  mkdir "$T/bin"
+  local tool
+  for tool in find sort sed stat grep; do ln -s "$(command -v "$tool")" "$T/bin/$tool"; done
+  PATH=$T/bin run layout_check "$T/w"
+  assert_failure 1
+  assert_output "cannot read the first 100 KB of data.img"
+}
+
+@test "layout_check: an unreadable disk refuses" {
+  require_non_root
+  make_install "$T/w"
+  chmod 000 "$T/w/data.img"
+  run layout_check "$T/w"
+  chmod 644 "$T/w/data.img"
+  assert_failure 1
+  assert_output "cannot read the first 100 KB of data.img"
+}
+
+@test "layout_check: a windows.base with a carriage return reads as dockur reads it" {
+  make_install "$T/w"
+  printf 'win11x64.iso\r\n' >"$T/w/windows.base"
+  run layout_check "$T/w"
+  assert_success
+}
+
+@test "layout_check: a VERSION line it cannot read falls back to omarchy-windows-vm's values" {
+  make_install "$T/w"
+  # A loose reader would take 10 here and refuse the win11x64.iso base.
+  write_compose VERSION=
+  sed -i "s|^    environment:\$|&\n      VERSION: \"10' |" "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
+  run layout_check "$T/w"
+  assert_success
+}
+
+@test "layout_check: only reads, whether it passes or refuses" {
+  local before after dir
+  make_install "$T/pass"
+  make_install "$T/refused"
+  touch "$T/refused/custom.iso"
+  rm "$T/refused/windows.boot"
+  make_install "$T/empty-base"
+  : >"$T/empty-base/windows.base"
+  write_compose VERSION=10
+  for dir in "$T/pass" "$T/refused" "$T/empty-base"; do
+    # A second resolution makes a rewrite visible even within one second.
+    touch -d '2020-01-01 00:00:00' "$dir"/* "$dir"
+    before=$(tree_manifest "$dir"; stat -c '%Y %n' "$dir" "$dir"/*)
+    run layout_check "$dir"
+    after=$(tree_manifest "$dir"; stat -c '%Y %n' "$dir" "$dir"/*)
+    assert_equal "$after" "$before"
+  done
+}
+
 @test "layout_check: an empty windows.base passes" {
   make_install "$T/w"
   : >"$T/w/windows.base"
+  run layout_check "$T/w"
+  assert_success
+}
+
+@test "layout_check: a missing windows.base counts as empty, even when the compose differs" {
+  make_install "$T/w"
+  rm "$T/w/windows.base"
+  write_compose VERSION=10
   run layout_check "$T/w"
   assert_success
 }
@@ -512,15 +635,41 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   assert_output --partial "not checked"
 }
 
-@test "disk_size_check: a size it cannot read reports not checked" {
+@test "disk_size_check: DISK_SIZE is normalized as dockur does it" {
+  make_install "$T/w"
+  local pair
+  # <DISK_SIZE>:<what it means>. The 1 MiB disk passes only the 1M ones.
+  for pair in "64GB:64G" "64g:64G" "256:256G" "1.5:1.5G" "2tb:2T"; do
+    write_compose "DISK_SIZE=${pair%%:*}"
+    run disk_size_check "$T/w"
+    assert_failure 1
+    assert_output --partial "smaller than DISK_SIZE ${pair#*:}"
+  done
+  for pair in 1MB 1mb 1m "0.5M"; do
+    write_compose "DISK_SIZE=$pair"
+    run disk_size_check "$T/w"
+    assert_success
+  done
+}
+
+@test "disk_size_check: max, half or a size it cannot read reports not checked" {
   make_install "$T/w"
   local v
-  for v in max half 64GB lots; do
+  for v in max HALF lots 64XB; do
     write_compose "DISK_SIZE=$v"
     run disk_size_check "$T/w"
     assert_failure 2
     assert_output --partial "not checked"
   done
+}
+
+@test "disk_size_check: a DISK_SIZE line it cannot read reports not checked" {
+  make_install "$T/w"
+  write_compose DISK_SIZE=
+  sed -i "s|^    environment:\$|&\n      DISK_SIZE: \"1M' |" "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
+  run disk_size_check "$T/w"
+  assert_failure 2
+  assert_output --partial "not checked"
 }
 
 # --- share_check ---
@@ -580,6 +729,8 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
   fake_proc 4302 /user.slice/user-1000.slice/user@1000.service/app.slice/docker-desktop.scope \
     qemu-system-x86_64
   fake_proc 4303 "$DOCKER_SCOPE"
+  fake_proc 4304 "${DOCKER_SCOPE}X" qemu-system-x86_64
+  fake_proc 4305 /docker/not-hex qemu-system-x86_64
   LANAI_PROC=$T/proc run container_running
   assert_failure
   assert_output ""
@@ -602,6 +753,14 @@ DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f001122334455667
 @test "container_preparing: an entry.sh outside docker does not count" {
   fake_proc 4500 /user.slice/user-1000.slice/session-2.scope bash /run/entry.sh
   fake_proc 4501 /user.slice/user-1000.slice/session-2.scope vim /tmp/entry.sh
+  LANAI_PROC=$T/proc run container_preparing
+  assert_failure
+}
+
+@test "container_preparing: only dockur's /run/entry.sh counts inside docker" {
+  fake_proc 4600 "$DOCKER_SCOPE" bash /tmp/entry.sh
+  fake_proc 4601 "$DOCKER_SCOPE" cat /run/entry.sh.bak
+  fake_proc 4602 "$DOCKER_SCOPE" bash /run/other/entry.sh
   LANAI_PROC=$T/proc run container_preparing
   assert_failure
 }
@@ -655,6 +814,12 @@ fake_host() {
     assert_success
     assert_output '{"memory_gib":7,"cores":3,"source":"defaults"}'
   done
+  # A line in a form it cannot read.
+  write_compose RAM_SIZE=
+  sed -i "s|^    environment:\$|&\n      RAM_SIZE: \"12G' |" "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
+  LANAI_PROC=$T/proc run settings_seed
+  assert_success
+  assert_output '{"memory_gib":7,"cores":3,"source":"defaults"}'
 }
 
 @test "the compose password never reaches output, files, or any child's argv or env" {
