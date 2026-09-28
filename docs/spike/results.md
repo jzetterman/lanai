@@ -198,6 +198,14 @@ else a temporary `python3 -m http.server --bind 127.0.0.1 18631`.
 - Baselines taken 2026-09-27 (35.0, 19.8, 33.4 busy s) ran while another session ran Hyprland's test suite; retake before measured runs.
 - Other:
 
+## Status (2026-09-28)
+
+John chose to start building the plugin before the measured sessions (plan
+steps 8-9), on the assumption that Looking Glass beats RDP. That is an
+assumption, not a result. **The measured protocol must run, and the decision
+rule below must pass, before the plugin is released anywhere.** Steps 4-7 are
+done and recorded above; the spike VM copy and baselines can be reused.
+
 ## Decision
 
 "RDP" means, per measure and mode, the better of `rdp` and `rdp-real`.
