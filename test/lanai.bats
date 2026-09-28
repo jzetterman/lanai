@@ -222,6 +222,7 @@ write_locks() {
 
 @test "disk_locked: a running VM's lock on btrfs shows in the real /proc/locks" {
   btrfs_tmp
+  unset LANAI_LOCKS
   truncate -s 1M "$B/data.img"
   run disk_locked "$B/data.img"
   assert_failure 1

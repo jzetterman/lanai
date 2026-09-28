@@ -82,18 +82,28 @@ verify_sha256() {
   fi
 }
 
-# Print the command line of every QEMU process, one argument per line, with a
-# blank line after each process. Matches on argv[0], bare or with a path, so a
-# shell that only mentions QEMU is ignored. Empty output means no QEMU runs.
-# LANAI_PROC swaps /proc for a fixture tree.
-qemu_cmdlines() {
-  local f argv0
+# Print the pid of every QEMU process, one per line. Matches on argv[0], bare
+# or with a path, so a shell that only mentions QEMU is ignored. LANAI_PROC
+# swaps /proc for a fixture tree.
+qemu_pids() {
+  local f argv0 pid
   for f in "${LANAI_PROC:-/proc}"/[0-9]*/cmdline; do
     argv0=""
     # stderr is silenced first, so a process that exits mid-scan prints nothing.
     IFS= read -r -d '' argv0 2>/dev/null <"$f" || [[ -n $argv0 ]] || continue
     [[ ${argv0##*/} == qemu-system-x86_64 ]] || continue
-    tr '\0' '\n' 2>/dev/null <"$f" || continue
+    pid=${f%/cmdline}
+    printf '%s\n' "${pid##*/}"
+  done
+  return 0
+}
+
+# Print the command line of every QEMU process, one argument per line, with a
+# blank line after each process. Empty output means no QEMU runs.
+qemu_cmdlines() {
+  local pid
+  for pid in $(qemu_pids); do
+    tr '\0' '\n' 2>/dev/null <"${LANAI_PROC:-/proc}/$pid/cmdline" || continue
     echo
   done
   return 0
@@ -133,10 +143,13 @@ settings_file() {
 }
 
 # Print the storage location Lanai uses (spec 6a): settings.json's "storage",
-# else ~/.windows. Fails when the settings file cannot be parsed or names a
-# relative path, so a broken file never falls back to the live install.
+# else ~/.windows. A symlink resolves to its target (omarchy-windows-vm
+# accepts a symlinked ~/.windows), so every check sees the real folder; a
+# path that does not exist prints as is. Fails when the settings file cannot
+# be parsed or names a relative path, so a broken file never falls back to
+# the live install.
 storage_dir() {
-  local f dir
+  local f dir=""
   f=$(settings_file)
   if [[ -e $f ]]; then
     dir=$(jq -r 'if (type == "object" and (.storage | type) == "string") then .storage
@@ -145,16 +158,13 @@ storage_dir() {
       echo "lanai: cannot read the storage location from $f" >&2
       return 1
     }
-    if [[ -n $dir ]]; then
-      [[ $dir == /* ]] || {
-        echo "lanai: the storage location in $f must be an absolute path" >&2
-        return 1
-      }
-      printf '%s\n' "$dir"
-      return 0
-    fi
+    [[ -z $dir || $dir == /* ]] || {
+      echo "lanai: the storage location in $f must be an absolute path" >&2
+      return 1
+    }
   fi
-  printf '%s\n' "$HOME/.windows"
+  [[ -n $dir ]] || dir=$HOME/.windows
+  realpath -e -- "$dir" 2>/dev/null || printf '%s\n' "$dir"
 }
 
 # Print the path of omarchy-windows-vm's compose file: the system one, else
@@ -174,13 +184,28 @@ compose_file() {
   fi
 }
 
-# Print the first value of <key> in the compose file <file>, quoted or bare.
-# Prints nothing when the key is missing. Only the matching line is printed,
-# so other values (the Windows password) never leave the file.
+# Print the value of the first <key> line in the compose file <file>. Only
+# that line is read into Lanai, so other values (the Windows password) never
+# leave the file. Prints nothing when the key is missing. The line must be
+# `KEY: "value"`, `KEY: 'value'` or `KEY: value` with no quotes or comment
+# in the value; any other form fails, and callers treat the compose as
+# unreadable. Fails too when the file cannot be read.
 compose_value() {
-  local file=$1 key=$2
+  local file=$1 key=$2 line rc=0 q=\' d=\"
   [[ $key =~ ^[A-Z_]+$ ]] || return 1
-  sed -n -E "s/^[[:space:]]*$key:[[:space:]]*[\"']?([^\"']*)[\"']?[[:space:]]*\$/\\1/p;T;q" "$file"
+  line=$(grep -m1 -E "^[[:space:]]*$key:" -- "$file") || rc=$?
+  ((rc != 1)) || return 0
+  ((rc == 0)) || return 1
+  local pre="^[[:space:]]*$key:[[:space:]]*" post='[[:space:]]*$'
+  local dquoted="$d([^$d]*)$d" squoted="$q([^$q]*)$q"
+  local bare="([^$d$q#[:space:]]([^$d$q#]*[^$d$q#[:space:]])?)?"
+  if [[ $line =~ $pre$dquoted$post ]] || [[ $line =~ $pre$squoted$post ]] ||
+    [[ $line =~ $pre$bare$post ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  else
+    echo "lanai: cannot read $key in $file" >&2
+    return 1
+  fi
 }
 
 # Print the readable compose file, or fail when there is none Lanai can read
@@ -216,13 +241,15 @@ dockur_base() {
   fi
 }
 
-# dockur's strip (utils.sh): trim white space, then one leading and trailing
-# double and single quote.
+# dockur's strip (utils.sh): trim white space, drop one leading and trailing
+# double and single quote, then trim white space again.
 dockur_strip() {
   local s=$1
   s="${s#"${s%%[![:space:]]*}"}"
   s="${s%"${s##*[![:space:]]}"}"
   s=${s%\"} s=${s#\"} s=${s%\'} s=${s#\'}
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
   printf '%s\n' "$s"
 }
 
@@ -323,9 +350,10 @@ dockur_culture() {
 # VERSION and LANGUAGE when it is readable, else from the values
 # omarchy-windows-vm always sets (VERSION 11, no LANGUAGE), per spec 5a.
 expected_base() {
-  local f
-  if f=$(readable_compose); then
-    dockur_base "$(compose_value "$f" VERSION)" "$(compose_value "$f" LANGUAGE)"
+  local f version language
+  if f=$(readable_compose) && version=$(compose_value "$f" VERSION 2>/dev/null) &&
+    language=$(compose_value "$f" LANGUAGE 2>/dev/null); then
+    dockur_base "$version" "$language"
   else
     dockur_base 11 ""
   fi
@@ -337,10 +365,14 @@ expected_base() {
 # problem on its own line. Returns 0 when it passes, 1 when refused, and 2
 # when there is no install (a missing or empty folder). Reads only.
 layout_check() {
-  local dir=$1 name p f base want
+  local dir=$1 name p f base want rc
   local -a entries=() problems=()
   if [[ -e $dir && ! -d $dir ]]; then
     echo "$dir is not a folder"
+    return 1
+  fi
+  if [[ -d $dir && ! (-r $dir && -x $dir) ]]; then
+    echo "cannot read $dir"
     return 1
   fi
   if [[ -d $dir ]]; then
@@ -391,9 +423,22 @@ layout_check() {
   if [[ ! -s $dir/data.img ]]; then
     [[ -e $dir/data.qcow2 ]] ||
       problems+=("data.img is missing or empty; dockur would install Windows on a new disk")
-  elif cmp -s -n 102400 -- "$dir/data.img" /dev/zero; then
+  elif (($(stat -c %s -- "$dir/data.img") < 102400)); then
+    problems+=("data.img is smaller than 100 KB, so it is not a Windows disk")
+  else
     # dockur's hasData: a disk whose first 100 KiB are zero counts as blank.
-    problems+=("the first 100 KB of data.img are all zero; dockur would treat the disk as blank and install Windows again")
+    # cmp: 0 = all zero, 1 = data; anything else (cmp missing, the disk
+    # unreadable) fails closed.
+    rc=2
+    if command -v cmp >/dev/null; then
+      rc=0
+      cmp -s -n 102400 -- "$dir/data.img" /dev/zero || rc=$?
+    fi
+    case $rc in
+      0) problems+=("the first 100 KB of data.img are all zero; dockur would treat the disk as blank and install Windows again") ;;
+      1) ;;
+      *) problems+=("cannot read the first 100 KB of data.img") ;;
+    esac
   fi
 
   if [[ -s $dir/windows.base ]]; then
@@ -412,19 +457,33 @@ layout_check() {
   return 1
 }
 
-# Check that <dir>/data.img is at least the compose's DISK_SIZE (dockur's
-# default 64G), so a container start would not grow it (spec 5a). Prints one
-# line. Returns 0 when it passes, 1 when the disk is smaller, and 2 when it is
-# not checked: the compose is not readable, or DISK_SIZE is not a fixed size.
+# Print DISK_SIZE the way dockur 6.05 reads it (init.sh strip, then disk.sh
+# normalizeSize and normalizeDiskSize): no spaces, a bare number gets G,
+# upper case, MB/GB/TB become M/G/T, and empty means 64G. max and half,
+# which depend on free space at start, stay as they are.
+dockur_disk_size() {
+  local s
+  s=$(dockur_strip "$1")
+  s=${s// /}
+  [[ -n $s ]] || s=64G
+  [[ -n ${s//[0-9.]/} ]] || s+=G
+  s=${s^^}
+  s=${s//MB/M} s=${s//GB/G} s=${s//TB/T}
+  printf '%s\n' "$s"
+}
+
+# Check that <dir>/data.img is at least the compose's DISK_SIZE, so a
+# container start would not grow it (spec 5a). Prints one line. Returns 0
+# when it passes, 1 when the disk is smaller, and 2 when it is not checked:
+# the compose or its DISK_SIZE line is not readable, or DISK_SIZE is max,
+# half or not a size.
 disk_size_check() {
   local dir=$1 f size want have
-  if ! f=$(readable_compose); then
+  if ! f=$(readable_compose) || ! size=$(compose_value "$f" DISK_SIZE 2>/dev/null); then
     echo "disk size not checked: omarchy-windows-vm's settings are not readable"
     return 2
   fi
-  size=$(compose_value "$f" DISK_SIZE)
-  size=${size// /}
-  [[ -n $size ]] || size=64G
+  size=$(dockur_disk_size "$size")
   if ! want=$(numfmt --from=iec -- "$size" 2>/dev/null) || [[ ! $want =~ ^[0-9]+$ ]]; then
     echo "disk size not checked: DISK_SIZE $size is not a fixed size"
     return 2
@@ -465,27 +524,26 @@ in_docker_cgroup() {
     "${LANAI_PROC:-/proc}/$1/cgroup" 2>/dev/null
 }
 
-# Print the pid of a QEMU running in a docker container (omarchy-windows-vm's
-# VM, spec 3) and return 0; return 1 when there is none. Reads only /proc, so
-# it needs no Docker access and no password. LANAI_PROC swaps /proc.
+# Print the pid of a QEMU running in a Docker container and return 0; return
+# 1 when there is none (spec 3). That is a Docker VM, most likely
+# omarchy-windows-vm's but not certainly, so refusal messages built on this
+# say "a Docker VM is running (possibly omarchy-windows-vm)". Reads only
+# /proc, so it needs no Docker access and no password. LANAI_PROC swaps /proc.
 container_running() {
-  local f pid argv0
-  for f in "${LANAI_PROC:-/proc}"/[0-9]*/cmdline; do
-    argv0=""
-    IFS= read -r -d '' argv0 2>/dev/null <"$f" || [[ -n $argv0 ]] || continue
-    [[ ${argv0##*/} == qemu-system-x86_64 ]] || continue
-    pid=${f%/cmdline}
-    pid=${pid##*/}
-    in_docker_cgroup "$pid" || continue
-    printf '%s\n' "$pid"
-    return 0
+  local pid
+  for pid in $(qemu_pids); do
+    if in_docker_cgroup "$pid"; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
   done
   return 1
 }
 
-# Return 0 when a docker container runs dockur's entry script but has no QEMU
-# yet (the container is preparing, spec 3). Best effort: QEMU's disk lock is
-# the backstop. LANAI_PROC swaps /proc.
+# Return 0 when a Docker container runs dockur's /run/entry.sh but has no
+# QEMU yet (a container, possibly omarchy-windows-vm's, is preparing a VM,
+# spec 3). Best effort: QEMU's disk lock is the backstop. LANAI_PROC swaps
+# /proc.
 container_preparing() {
   local f pid arg
   container_running >/dev/null && return 1
@@ -509,8 +567,8 @@ container_preparing() {
 settings_seed() {
   local f ram="" cores="" kb threads
   if f=$(readable_compose); then
-    ram=$(compose_value "$f" RAM_SIZE)
-    cores=$(compose_value "$f" CPU_CORES)
+    ram=$(compose_value "$f" RAM_SIZE 2>/dev/null) || ram=""
+    cores=$(compose_value "$f" CPU_CORES 2>/dev/null) || cores=""
   fi
   if [[ $ram =~ ^[0-9]+G$ && $cores =~ ^[0-9]+$ ]] && ((10#${ram%G} >= 1 && 10#$cores >= 1)); then
     printf '{"memory_gib":%d,"cores":%d,"source":"omarchy-windows-vm"}\n' "$((10#${ram%G}))" "$((10#$cores))"
