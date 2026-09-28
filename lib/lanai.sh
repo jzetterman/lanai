@@ -145,13 +145,18 @@ settings_file() {
 # Print the storage location Lanai uses (spec 6a): settings.json's "storage",
 # else ~/.windows. A symlink resolves to its target (omarchy-windows-vm
 # accepts a symlinked ~/.windows), so every check sees the real folder; a
-# path that does not exist prints as is. Fails when the settings file cannot
-# be parsed or names a relative path, so a broken file never falls back to
-# the live install.
+# path that does not exist prints as is. ~/.windows is the default only when
+# there is no settings file at all. Fails when the settings file is a symlink
+# (dangling or not), cannot be read or parsed, or names a relative path, so a
+# broken file never falls back to the live install.
 storage_dir() {
   local f dir=""
   f=$(settings_file)
-  if [[ -e $f ]]; then
+  # Only a settings file that does not exist at all means the default.
+  if [[ -L $f ]]; then
+    echo "lanai: $f is a symlink; Lanai reads only a regular settings file" >&2
+    return 1
+  elif [[ -e $f ]]; then
     dir=$(jq -r 'if (type == "object" and (.storage | type) == "string") then .storage
       elif (type == "object" and .storage == null) then ""
       else error("storage must be a string") end' "$f") || {
@@ -189,10 +194,20 @@ compose_file() {
 # leave the file. Prints nothing when the key is missing. The line must be
 # `KEY: "value"`, `KEY: 'value'` or `KEY: value` with no quotes or comment
 # in the value. Returns 1 when the file cannot be read, and 2 when the key's
-# line is in any other form (Lanai cannot tell what dockur would read).
+# line is in any other form, or the key also appears in the list form
+# (`- KEY=value`), which Lanai does not parse: omarchy-windows-vm always
+# writes the map form. Either way Lanai cannot tell what dockur would read.
 compose_value() {
   local file=$1 key=$2 line rc=0 q=\' d=\"
   [[ $key =~ ^[A-Z_]+$ ]] || return 1
+  grep -q -E "^[[:space:]]*-[[:space:]]*[\"']?$key=" -- "$file" || rc=$?
+  if ((rc == 0)); then
+    echo "lanai: cannot interpret $key in $file (list form)" >&2
+    return 2
+  elif ((rc != 1)); then
+    return 1
+  fi
+  rc=0
   line=$(grep -m1 -E "^[[:space:]]*$key:" -- "$file") || rc=$?
   ((rc != 1)) || return 0
   ((rc == 0)) || return 1
@@ -488,9 +503,10 @@ dockur_disk_size() {
 
 # Check that <dir>/data.img is at least the compose's DISK_SIZE, so a
 # container start would not grow it (spec 5a). Prints one line. Returns 0
-# when it passes, 1 when the disk is smaller, and 2 when it is not checked:
-# the compose is not readable, or DISK_SIZE is max, half or not a size. A
-# DISK_SIZE line it cannot interpret in a readable compose refuses (1).
+# when it passes, and 2 ("not checked") only when the compose cannot be
+# read. With a readable compose it refuses (1) a smaller disk, a DISK_SIZE
+# line it cannot interpret, a dynamic size (max or half) and anything that
+# is not a size.
 disk_size_check() {
   local dir=$1 f size want have rc=0
   if f=$(readable_compose); then
@@ -506,9 +522,14 @@ disk_size_check() {
     return 2
   fi
   size=$(dockur_disk_size "$size")
+  if [[ $size == MAX || $size == HALF ]]; then
+    # dockur sizes these from free space at each start, so the disk can grow.
+    echo "a dynamic disk size (max/half) is not supported"
+    return 1
+  fi
   if ! want=$(numfmt --from=iec -- "$size" 2>/dev/null) || [[ ! $want =~ ^[0-9]+$ ]]; then
-    echo "disk size not checked: DISK_SIZE $size is not a fixed size"
-    return 2
+    echo "DISK_SIZE $size is not a size"
+    return 1
   fi
   have=$(stat -c %s -- "$dir/data.img") || {
     echo "cannot read the size of $dir/data.img"
