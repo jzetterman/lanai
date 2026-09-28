@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# lanai-copy <src> <dst>: make a full, verified reflink copy of a stopped
+# omarchy-windows-vm storage folder, for rehearsals and proofs
+# (docs/plugin/plan.md, "Test copies"). It holds QEMU's write lock on
+# <src>/data.img for the whole run, so it refuses while a VM uses the disk and
+# no VM can start during the copy. It builds <dst>.partial, checks its file
+# list, sizes and SHA-256 against <src> under the lock, then renames it.
+set -euo pipefail
+
+LIB=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib" && pwd)
+# shellcheck source-path=SCRIPTDIR source=../lib/copy.sh
+source "$LIB/copy.sh"
+
+# Print an error and exit. The EXIT trap cleans up.
+die() {
+  printf 'lanai-copy: %s\n' "$*" >&2
+  exit 1
+}
+
+main() {
+  if (($# != 2)); then
+    echo "usage: lanai-copy <src> <dst>" >&2
+    exit 2
+  fi
+  local src=$1 dst=${2%/} n
+  [[ -d $src ]] || die "$src is not a directory"
+  [[ -f $src/data.img && ! -L $src/data.img ]] || die "$src has no data.img"
+  [[ ! -e $dst && ! -L $dst ]] || die "$dst already exists"
+  case $(realpath -m -- "$dst")/ in
+    "$(realpath -- "$src")"/*) die "$dst is inside $src" ;;
+  esac
+  # Global, so the EXIT trap can still see it.
+  part=$dst.partial
+
+  lock_disk "$src/data.img" || die "cannot lock $src/data.img; stop the VM first"
+  trap 'rm -rf -- "$part"; unlock_disk' EXIT
+  rm -rf -- "$part"
+  reflink_tree "$src" "$part" || die "copy failed"
+  n=$(tree_manifest "$src") || die "cannot read $src"
+  [[ $n == "$(tree_manifest "$part")" ]] || die "the copy does not match $src"
+  mv -T -- "$part" "$dst"
+  unlock_disk
+  trap - EXIT
+  echo "copied $src to $dst; verified $(wc -l <<<"$n") entries by size and SHA-256"
+}
+
+main "$@"
