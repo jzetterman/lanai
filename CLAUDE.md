@@ -7,6 +7,12 @@ except its measured sessions; the Lanai plugin is in design (docs/plugin/).
 
 - `docs/` holds specs and plans, with review logs in each doc.
 - `spike/` holds the software-mode test harness. `spike/work/` is gitignored scratch.
+- The Lanai plugin sits at the root: `manifest.json`, `bin/` (the `lanai` CLI and
+  `lanai-copy`), `lib/`, `guest/` and `test/` (bats). `docs/plugin/proof-kit/` holds the
+  phase 1 proof scripts.
+- Tests: `bats test spike/test`; btrfs tests read `LANAI_TEST_BTRFS_DIR` (the ignored
+  `.btrfs-test/` works). CI runs the same in an Arch container
+  (`.github/workflows/test.yml`).
 
 ## Rules
 

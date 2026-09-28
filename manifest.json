@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.jzetterman.lanai",
+  "name": "Lanai",
+  "version": "0.1.0",
+  "author": "John Zetterman",
+  "license": "MIT",
+  "description": "Run your omarchy-windows-vm Windows install in plain QEMU and see it in a Looking Glass window.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Lanai",
+    "description": "Start, open and shut down Windows from the bar, with setup and settings in the panel.",
+    "category": "System",
+    "defaultSection": "right"
+  }
+}

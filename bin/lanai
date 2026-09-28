@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# lanai <command> [args]: Lanai's one-shot CLI backend. Each call prints one
+# JSON object and exits; `lanai help` lists the commands. The functions live
+# in lib/lanai.sh.
+set -euo pipefail
+
+LANAI_LIB=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib" && pwd)
+# shellcheck source-path=SCRIPTDIR source=../lib/lanai.sh
+source "$LANAI_LIB/lanai.sh"
+lanai_main "$@"
