@@ -105,18 +105,25 @@ f 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 sub/a"
   vm_can_open "$T/d.img"
 }
 
-@test "lock_disk: fails with QEMU's reason while a VM holds the disk" {
+@test "lock_disk: fails with QEMU's reason in LANAI_LOCK_ERROR while a VM holds the disk" {
   truncate -s 1M "$T/d.img"
   qemu_hold "$T/d.img"
-  run lock_disk "$T/d.img"
-  assert_failure
-  assert_output --partial 'Failed to get "write" lock'
+  if lock_disk "$T/d.img"; then fail "lock_disk took a lock a VM holds"; fi
+  [[ $LANAI_LOCK_ERROR == *'Failed to get "write" lock'* ]] || fail "reason: $LANAI_LOCK_ERROR"
 }
 
 @test "lock_disk: fails on a missing image" {
-  run lock_disk "$T/none.img"
+  if lock_disk "$T/none.img"; then fail "locked a missing image"; fi
+  [[ $LANAI_LOCK_ERROR == *"no disk image"* ]] || fail "reason: $LANAI_LOCK_ERROR"
+}
+
+@test "lock_disk: a relative name with a colon is a file, not a QEMU protocol" {
+  cd "$T"
+  truncate -s 1M "nbd:disk.img"
+  lock_disk "nbd:disk.img"
+  run vm_can_open "$T/nbd:disk.img"
   assert_failure
-  assert_output --partial "none.img"
+  unlock_disk
 }
 
 # --- reflink_tree ---
@@ -124,13 +131,15 @@ f 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 sub/a"
 @test "reflink_tree: copies nested dirs and files as shared extents, keeping modes" {
   btrfs_tmp
   make_storage "$B/src"
-  mkdir "$B/src/sub"
+  mkdir "$B/src/sub" "$B/dst"
   echo nested >"$B/src/sub/f"
   chmod 600 "$B/src/windows.vars"
+  chmod 750 "$B/src"
   run reflink_tree "$B/src" "$B/dst"
   assert_success
   [[ $(tree_manifest "$B/src") == "$(tree_manifest "$B/dst")" ]]
   assert_equal "$(stat -c %a "$B/dst/windows.vars")" 600
+  assert_equal "$(stat -c %a "$B/dst")" 750
   run filefrag -v "$B/dst/data.img"
   assert_output --partial "shared"
 }
@@ -139,30 +148,35 @@ f 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 sub/a"
   btrfs_tmp
   make_storage "$B/nocow" nocow
   make_storage "$B/cow"
-  # New files in this parent inherit NOCOW, so a COW source needs it removed.
-  mkdir "$B/cparent"
-  chattr +C "$B/cparent"
+  # New files in this folder inherit NOCOW, so a COW source needs it removed.
+  mkdir "$B/nocow-copy" "$B/cow-copy"
+  chattr +C "$B/cow-copy"
   reflink_tree "$B/nocow" "$B/nocow-copy"
-  reflink_tree "$B/cow" "$B/cparent/cow-copy"
+  reflink_tree "$B/cow" "$B/cow-copy"
   [[ $(attrs "$B/nocow-copy/data.img") == *C* ]]
-  [[ $(attrs "$B/cparent/cow-copy/data.img") != *C* ]]
-  cmp "$B/cow/data.img" "$B/cparent/cow-copy/data.img"
+  [[ $(attrs "$B/cow-copy/data.img") != *C* ]]
+  cmp "$B/cow/data.img" "$B/cow-copy/data.img"
 }
 
-@test "reflink_tree: refuses an existing destination and leaves it alone" {
+@test "reflink_tree: refuses a destination that is not an empty folder, and leaves it alone" {
   btrfs_tmp
   make_storage "$B/src"
   mkdir "$B/dst"
   echo keep >"$B/dst/marker"
   run reflink_tree "$B/src" "$B/dst"
   assert_failure
+  assert_output --partial "not an empty folder"
   assert_equal "$(cat "$B/dst/marker")" keep
   assert [ ! -e "$B/dst/data.img" ]
+  run reflink_tree "$B/src" "$B/none"
+  assert_failure
+  assert [ ! -e "$B/none" ]
 }
 
 @test "reflink_tree: refuses a symlink in the source" {
   btrfs_tmp
   make_storage "$B/src"
+  mkdir "$B/dst"
   ln -s /etc/hostname "$B/src/link"
   run reflink_tree "$B/src" "$B/dst"
   assert_failure
@@ -170,7 +184,7 @@ f 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 sub/a"
 }
 
 @test "reflink_tree: fails with a clear reason where reflinks are impossible" {
-  mkdir -p "$T/fs"
+  mkdir -p "$T/fs/dst"
   require_no_reflink "$T/fs"
   make_storage "$T/fs/src"
   run reflink_tree "$T/fs/src" "$T/fs/dst"
@@ -219,7 +233,10 @@ f 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 sub/a"
   qemu_hold "$T/src/data.img"
   run "$REPO/bin/lanai-copy" "$T/src" "$T/dst"
   assert_failure
-  assert_output --partial "stop the VM first"
+  # One message: the reason and the next step.
+  assert_equal "${#lines[@]}" 1
+  assert_output --partial 'Failed to get "write" lock'
+  assert_output --partial "stop the VM that uses $T/src, then try again"
   assert [ ! -e "$T/dst" ]
   assert [ ! -e "$T/dst.partial" ]
 }
@@ -286,15 +303,61 @@ EOF
   vm_can_open "$B/src/data.img"
 }
 
-@test "lanai-copy: a stale dst.partial is replaced" {
+@test "lanai-copy: an existing dst.partial is refused and left alone" {
+  make_storage "$T/src"
+  mkdir "$T/dst.partial"
+  echo keep >"$T/dst.partial/marker"
+  run "$REPO/bin/lanai-copy" "$T/src" "$T/dst"
+  assert_failure
+  assert_output --partial "$T/dst.partial already exists"
+  assert_equal "$(cat "$T/dst.partial/marker")" keep
+  assert [ ! -e "$T/dst" ]
+}
+
+@test "lanai-copy: a source named like the work folder is refused and kept" {
+  make_storage "$T/win.partial"
+  local before
+  before=$(tree_manifest "$T/win.partial")
+  run "$REPO/bin/lanai-copy" "$T/win.partial" "$T/win"
+  assert_failure
+  assert_equal "$(tree_manifest "$T/win.partial")" "$before"
+  assert [ ! -e "$T/win" ]
+}
+
+@test "lanai-copy: a source inside the work folder is refused and kept" {
+  make_storage "$T/foo.partial/win"
+  local before
+  before=$(tree_manifest "$T/foo.partial")
+  run "$REPO/bin/lanai-copy" "$T/foo.partial/win" "$T/foo"
+  assert_failure
+  assert_equal "$(tree_manifest "$T/foo.partial")" "$before"
+  assert [ ! -e "$T/foo" ]
+}
+
+@test "lanai-copy: a symlink to the work folder is refused and its target kept" {
+  make_storage "$T/real"
+  ln -s "$T/real" "$T/dst.partial"
+  run "$REPO/bin/lanai-copy" "$T/real" "$T/dst"
+  assert_failure
+  assert [ -f "$T/real/data.img" ]
+  assert [ -L "$T/dst.partial" ]
+}
+
+@test "lanai-copy: copies through a symlinked source folder" {
   btrfs_tmp
-  make_storage "$B/src"
-  mkdir "$B/dst.partial"
-  echo junk >"$B/dst.partial/junk"
-  run "$REPO/bin/lanai-copy" "$B/src" "$B/dst"
+  make_storage "$B/real"
+  ln -s "$B/real" "$B/link"
+  run "$REPO/bin/lanai-copy" "$B/link" "$B/dst"
   assert_success
-  assert [ ! -e "$B/dst/junk" ]
-  assert [ ! -e "$B/dst.partial" ]
+  assert [ -d "$B/dst" ]
+  assert [ ! -L "$B/dst" ]
+  assert_equal "$(tree_manifest "$B/dst")" "$(tree_manifest "$B/real")"
+}
+
+@test "lanai-copy: a missing source is refused" {
+  run "$REPO/bin/lanai-copy" "$T/none" "$T/dst"
+  assert_failure
+  assert_output --partial "$T/none is not a folder"
 }
 
 @test "lanai-copy: fails cleanly where reflinks are impossible" {

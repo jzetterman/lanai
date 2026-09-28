@@ -4,7 +4,9 @@
 # (docs/plugin/plan.md, "Test copies"). It holds QEMU's write lock on
 # <src>/data.img for the whole run, so it refuses while a VM uses the disk and
 # no VM can start during the copy. It builds <dst>.partial, checks its file
-# list, sizes and SHA-256 against <src> under the lock, then renames it.
+# list, sizes and SHA-256 against <src> under the lock, then renames it. A
+# symlinked <src> is copied from its target. It never removes anything it did
+# not create: an existing <dst>.partial is refused.
 set -euo pipefail
 
 LIB=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib" && pwd)
@@ -22,19 +24,27 @@ main() {
     echo "usage: lanai-copy <src> <dst>" >&2
     exit 2
   fi
-  local src=$1 dst=${2%/} n
-  [[ -d $src ]] || die "$src is not a directory"
-  [[ -f $src/data.img && ! -L $src/data.img ]] || die "$src has no data.img"
-  [[ ! -e $dst && ! -L $dst ]] || die "$dst already exists"
-  case $(realpath -m -- "$dst")/ in
-    "$(realpath -- "$src")"/*) die "$dst is inside $src" ;;
-  esac
+  local src dst=${2%/} n rsrc rdst rpart
+  # The real folder, so find and reflink_tree see files, not a symlink.
+  src=$(realpath -e -- "$1" 2>/dev/null) && [[ -d $src ]] || die "$1 is not a folder"
+  [[ -f $src/data.img && ! -L $src/data.img ]] || die "$1 has no data.img"
   # Global, so the EXIT trap can still see it.
   part=$dst.partial
+  [[ ! -e $dst && ! -L $dst ]] || die "$dst already exists"
+  [[ ! -e $part && ! -L $part ]] || die "$part already exists; move it away first"
+  rsrc=$src/ rdst=$(realpath -m -- "$dst")/ rpart=$(realpath -m -- "$part")/
+  case $rdst in "$rsrc"*) die "$dst is inside $1" ;; esac
+  case $rpart in "$rsrc"*) die "$part is inside $1" ;; esac
+  case $rsrc in "$rpart"* | "$rdst"*) die "$1 is inside $dst or $part" ;; esac
 
-  lock_disk "$src/data.img" || die "cannot lock $src/data.img; stop the VM first"
-  trap 'rm -rf -- "$part"; unlock_disk' EXIT
-  rm -rf -- "$part"
+  lock_disk "$src/data.img" ||
+    die "cannot lock $1/data.img ($LANAI_LOCK_ERROR): stop the VM that uses $1, then try again"
+  created=0
+  trap '((created)) && rm -rf -- "$part"; unlock_disk' EXIT
+  # mkdir fails if the folder appeared since the check, so it is ours.
+  mkdir -- "$part" || die "cannot create $part"
+  # shellcheck disable=SC2034 # read by the EXIT trap
+  created=1
   reflink_tree "$src" "$part" || die "copy failed"
   n=$(tree_manifest "$src") || die "cannot read $src"
   [[ $n == "$(tree_manifest "$part")" ]] || die "the copy does not match $src"
