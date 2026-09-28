@@ -389,8 +389,8 @@ Then:
   stop`. Only then does it exec the client, redirecting its output to `$RUN/client.log`
   itself (not `StandardOutput=file:`, which fails when `$RUN` does not exist yet). The
   timeout message goes to the unit's journal; `status_map` reads only the latest
-  invocation (`journalctl --user -u lanai-client -I`), so an old message does not
-  linger. The QMP greeting does not count: only the command reply does. QEMU creates
+  invocation (`journalctl --user -u lanai-client -I "$(systemctl --user show -p
+  InvocationID --value lanai-client.service)"`), so an old message does not linger. The QMP greeting does not count: only the command reply does. QEMU creates
   `memory-backend-*` objects after chardevs and runs QMP commands only from its main
   loop, after every backend exists (tested 2026-09-28, recorded in `proofs.md`). So the
   client never opens a stale `ivshmem` left by an earlier run; proof 4 hit that race,
@@ -483,9 +483,11 @@ Then:
     boot applies their new settings, and step 6 checks them.
 - Lock proof before the rest of phase 6, with John at the keyboard. It uses the existing
   test copy `$S/lanai-proof` and the proof kit. First write `guest/lanai-lock.cmd`,
-  since the proof runs the real file. Extend `proof-vm client` to wait for a QMP
-  `query-status` reply, as `lanai-client-exec` will, so it never opens a stale
-  `ivshmem`. The copy already has the IDD, which leaves QEMU's own window black, so
+  since the proof runs the real file. Extend `proof-vm client` to wait on the kit's
+  only QMP socket, `qmp.sock`, with the same handshake as `lanai-client-exec` (greeting,
+  `qmp_capabilities`, then a `query-status` reply that holds `status`), and to
+  disconnect before it execs the client, so it never opens a stale `ivshmem` and the
+  send-key command below can be the only client on that socket. The copy already has the IDD, which leaves QEMU's own window black, so
   every step runs through the Looking Glass client: start it with `"$K/proof-vm"
   client` once the VM is up, and again after each guest restart. Extend `proof-vm
   media` to copy `lanai-lock.cmd` into the setup disk, then rerun `"$K/proof-vm" media
@@ -523,19 +525,25 @@ Then:
      `powercfg /a` and `Get-PnpDevice -Class Bluetooth`: if any sleep state is
      available or any Bluetooth device exists, stop and take it to John (spec row 7b
      requires both paths unable to fire).
-  4. With the 1-minute screen saver (now not secure) showing, run `"$K/proof-vm" stop`.
+  4. In an elevated prompt, `set LANAI_FAKE_MANAGED=1`, run `lanai-lock.cmd` again,
+     and confirm it prints the policy warning (row 7b).
+  5. With the 1-minute screen saver (now not secure) showing, run `"$K/proof-vm" stop`.
      Pass: it prints `QEMU exited`, which after `system_powerdown` happens only when
      the guest powers off. Repeat once with the Ctrl+Alt+Del screen left open, and
      record the result either way.
   Record the results in `proofs.md`. If any lock path survives, stop and take it to
   John.
 - Row 7b's different-account refusal runs in phase 8 on a copy that has not been
-  through setup (a fresh `lanai-copy` of the test install, or a restored snapshot):
-  create a standard local account, sign in as it, run `setup.cmd`, and approve the
-  prompt with the administrator account. Setup must refuse before changing anything:
-  `reg query` shows the pre-setup lock values, and the Looking Glass IDD, qemu-ga,
-  the SPICE agent, WinFsp, `VirtioFsSvc`'s Lanai settings and the scale task are all
-  absent.
+  through setup (a fresh `lanai-copy` of the test install, or a restored snapshot).
+  Boot it with the setup media attached (`lanai setup-guest`, or `proof-vm run
+  --setup`). dockur signs in the administrator automatically, so first take the
+  inventory: the lock values (`reg query`), installed drivers (`pnputil
+  /enum-drivers`), services (`sc.exe qc` for `QEMU-GA` and `VirtioFsSvc`), installed
+  programs and scheduled tasks. Then create a standard local account, sign out, sign
+  in as it, run `setup.cmd` from the setup disk, and approve the prompt with the
+  administrator account. Setup must refuse before changing anything: the same
+  inventory matches (dockur's own guest agent and file-sharing service stay as they
+  were), and the Looking Glass IDD and the scale task are absent.
 - `guest/lanai-scale.ps1` fix (proof 1): it sometimes logs the current scale as blank
   (at 100%, and once at 125%), because `curScaleRel` can point outside the step list.
   Log the raw `minScaleRel`, `curScaleRel` and `maxScaleRel`, and route all four
@@ -691,3 +699,4 @@ Then:
 | plan amendment (proof findings) | a | 4 (delta, cap) | 0 blockers, 2 should-fix, 5 nits; all integrated (send-key in a fenced block; `net stop` result ignored, a failed copy stops setup; `C:\Program Files\Lanai` created; empty-folder check after the ACL; lock values handed back in variables; removal undoes every Windows change before the shutdown; rewraps). Stage a closed |
 | plan amendment (proof findings) | b Grok (substitute) | 1 (full) | Codex out of credits. 7 P2, 2 P3; all confirmed and integrated (`call` for `lanai-lock.cmd`; IDD installed last because it blanks the setup display, so no pause or printed values; `C:\Lanai` without recursive deletes; `dir` judged by output; client wrapper closes QMP before exec, per-try timeouts; `qga_reply` refusal mode; literal README restore commands; lock proof sign-in between controls; stop on any sleep state or Bluetooth; resize check names its VM). README exposure text matches the spec's Grok round |
 | plan amendment (proof findings) | b Grok (substitute) | 2 (full) | 5 P2, 1 P3; all confirmed and integrated (lock proof runs through the Looking Glass client, and `proof-vm client` waits for a QMP reply; scale timing tested at the late attach a user makes, plus a fast trial; step 6 checks the refusal with an argument-free `guest-exec`, as proof 3 recorded; `lanai-lock.cmd` never relaunches and exits with `exit /b`; the refusal test runs on a pre-setup copy and checks every guest change; the client wrapper's QMP handshake named). Also matched the forced-stop notice to spec round 2 |
+| plan amendment (proof findings) | b Grok (substitute) | 3 (full, cap) | 2 P2, 2 P3; all confirmed and integrated (the kit's client waits on `qmp.sock` and disconnects before exec, so send-key can use it; the refusal test boots with the setup media, signs out of auto sign-in and compares an inventory, matching spec row 7b; a runnable `journalctl -I` command; a step for the domain/MDM warning). Stage closed at the cap |
