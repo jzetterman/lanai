@@ -37,8 +37,9 @@ Neither needs GPU acceleration.
    variables, and a real-time clock in the host's time zone. Windows boots without
    driver errors, and its activation state is unchanged. The allowed differences are the
    display path, the network backend, the file-sharing path, the devices Looking Glass
-   needs, a setup-only display and read-only setup media, and the SMBIOS serial (dockur
-   copies the host's serial, which only root can read).
+   needs, a setup-only display and read-only setup media, the file-sharing device, a
+   host-to-guest SMBIOS text field that carries the display scale (requirement 12), and
+   the SMBIOS serial (dockur copies the host's serial, which only root can read).
 3. Lanai and `omarchy-windows-vm` never run the VM at the same time, and Lanai never
    runs two copies of its own VM.
    - Lanai refuses to start while the container VM runs. It detects that without Docker
@@ -57,11 +58,16 @@ Neither needs GPU acceleration.
    against.
 5a. Lanai does not gate on the dockur version, just as `omarchy-windows-vm` does not
    (John, 2026-09-28). Requirement 3's "a container start changes nothing" is shown for
-   the verified dockur versions. For any version, Lanai checks at every start that the
-   firmware, firmware variables and MAC files are present and the disk is at its full
-   configured size, which closes every pre-boot write path known in dockur. The panel
-   may show the dockur version when it can read it, as information only. The README
-   names the remaining risk: do not start `omarchy-windows-vm` while Lanai runs Windows.
+   the verified dockur versions. For any version, Lanai checks at every start that none
+   of dockur's known destructive or rewriting paths can trigger: the firmware, firmware
+   variables and MAC files exist and are not empty; the disk is at least its configured
+   size and its first 100 KB are not all zero; the install-complete marker
+   (`windows.boot`) exists; the recorded install base is the standard Windows image; and
+   no `custom.iso` or `boot.iso` sits in the storage location. If any check fails,
+   Lanai refuses to start and says why. The panel may show the dockur version when it
+   can read it, as information only. The README names the remaining risks: do not start
+   `omarchy-windows-vm` while Lanai runs Windows, and do not change its Windows version
+   or language settings while Lanai is in use.
 6. Lanai keeps its own VM settings (memory and CPU cores). Setup fills them from
    `omarchy-windows-vm`'s settings when it can read them without a prompt. Otherwise it
    uses half the host's memory, at most 16 GiB, and half the host's CPU threads, at
@@ -87,8 +93,10 @@ Neither needs GPU acceleration.
    - installs the host packages Lanai needs, in a terminal that shows the exact command
      before it runs, with the system's normal password prompt;
    - installs one pinned Looking Glass client build, verified by checksum;
-   - installs the matching Looking Glass IDD, the SPICE guest agent and, for the clock
-     sync in requirement 21, the QEMU guest agent inside Windows;
+   - installs inside Windows, with one administrator prompt: the matching Looking Glass
+     IDD, the SPICE guest agent, the QEMU guest agent (clock sync, requirement 21), the
+     file-sharing client (requirement 15), and the sign-in task that applies the display
+     scale (requirement 12);
    - asks the user to restart Windows once after the guest install. The spike showed that
      Looking Glass input does not work until that restart.
 8. The Looking Glass client on the host and the IDD in the guest come from the same
@@ -114,15 +122,16 @@ Neither needs GPU acceleration.
     resizes, and the Windows desktop follows its size. At start, Windows uses the display
     scale step (100 to 250 in steps of 25, then 300 to 500 in steps of 50) nearest the
     focused monitor's scale, with ties rounded down (John, 2026-09-28). A host scale
-    change applies at the next Windows start or sign-in.
+    change applies at the next start of Lanai's VM.
 13. Keyboard, mouse, clipboard (both ways) and audio output work in the Windows window.
 14. At the Windows sign-in screen, the user types the password they chose when
     `omarchy-windows-vm` installed Windows. Lanai never reads the stored credentials file
     and never handles the password (requirement 6).
 15. The user can move files between Linux and Windows through a folder they can find on
     both sides. `~/Windows`, the folder `omarchy-windows-vm` already shares, is
-    preferred. This requirement may move to v2 if the plan finds no mechanism that runs
-    as the user (John, 2026-09-28). Clipboard transfer (requirement 13) stays in v1.
+    preferred. Research found a mechanism that runs as the user (virtiofs), so this
+    requirement is in v1. It may still move to v2 only if that mechanism fails its
+    checks (John, 2026-09-28). Clipboard transfer (requirement 13) stays in v1.
 16. Shutting down from the bar is a clean Windows shutdown. If it has not finished
     within 2 minutes (for example, Windows is installing updates), the panel offers the
     forced stop. The forced stop needs a confirmation and is never the default.
@@ -171,14 +180,15 @@ or 6008).
 
 27. The guest is untrusted. Besides the baseline emulated hardware that requirement 2
     keeps (CPU, disk controller, NIC, firmware, clock, USB controller and tablet), the
-    accepted guest-to-host surfaces are: the frames and cursor
-    data the Looking Glass client reads from shared memory; SPICE (input, audio and
-    clipboard); the network backend; the file share, if present; and a time-sync-only
+    accepted guest-to-host surfaces are: the frames, cursor data, and clipboard contents
+    (text, images and files) the Looking Glass client exchanges over shared memory; SPICE
+    (input, audio and clipboard); the network backend; the file share, if present; and a time-sync-only
     guest agent channel, if the plan needs one for requirement 21. Nothing else.
 28. The file share, if present, is confined to `~/Windows`. The guest cannot reach any
     other host path through it, including through symlinks or `..`.
 29. The README states the clipboard exposure: while the Windows window runs, the guest can
-    read anything copied on the host.
+    read anything copied on the host, including files, and files copied in Windows can
+    appear on the host.
 
 ### Coexistence and presentation
 
@@ -217,7 +227,7 @@ stopped; Windows then resumes, boots after a restart, and `chkdsk` reports no er
 | 3 | Starting the container while Lanai runs does not boot Windows and causes no disk damage; starting Lanai while the container runs is refused with a clear message; starting Lanai while the container is still preparing (before its VM process exists) does not boot a second VM; a second Lanai start is refused |
 | 4 | After Lanai stops, `omarchy-windows-vm` boots and RDP works |
 | 5 | A fixture of each unsupported layout (none, TPM, Secure Boot, legacy) gets its refusal message |
-| 5a | With a firmware, variables or MAC file missing, or the disk below its configured size, Lanai refuses to start and says why; the README states the remaining risk |
+| 5a | A fixture for each failing check (missing or empty firmware, variables or MAC file; disk below its configured size; zeroed first 100 KB; missing `windows.boot`; non-standard install base; a `custom.iso` or `boot.iso` present) makes Lanai refuse to start and say why; the README states the remaining risks |
 | 6 | Settings seed from `omarchy-windows-vm` when readable, and otherwise from the stated host-relative defaults, with no prompt; with a sentinel password set on the test install, the sentinel never appears in Lanai's files, logs, setup terminal output, or any child process's arguments or environment; changed settings take effect at the next start |
 | 6a | Lanai pointed at a reflink copy boots the copy and never opens the live `~/.windows` |
 | 7 | On a machine with a working `omarchy-windows-vm` install, a user who follows the README reaches a working Windows window from the bar; setup shows one package-manager password prompt and asks for one Windows restart; where the storage location's filesystem can make an instant copy, setup offers the snapshot, and restoring it returns the storage location to its pre-adoption hashes; where it cannot, setup says so and suggests a backup; snapshot and restore are each refused while either VM runs; a container start attempted during a snapshot or restore does not boot a VM, and the snapshot still matches its source |
@@ -264,3 +274,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | b | 3 (full, cap) | Reviewed the stale round-2 text: items 1-2 repeat round 2's blockers; items 3-5 new should-fix, confirmed and integrated. Unreadable dockur version: one-time confirmation (Claude's call, flagged to John) |
 | spec | b | 4 (extra, approved by John after round 3 reviewed stale text) | 2 blockers, 1 should-fix; all confirmed. Dockur version: John ruled no gate and no confirmation (5a rewritten); snapshot interlock and scale matrix integrated. Gate closed. |
 | spec | amendment | 2026-09-28 | Req 19 reboot/power-off changed to best effort within Omarchy's shutdown window (John's decision after research showed Omarchy caps user-session shutdown at 5 s); req 7 adds the QEMU guest agent for req 21 |
+| spec | amendment | 2026-09-28 | From plan research: req 5a covers dockur's destructive paths (delete on missing `windows.boot` or zeroed disk start; move on custom or boot ISO); req 12 scale applies at next VM start via an SMBIOS text field (Claude's call, flagged to John); req 15 in v1 via virtiofs; req 7 lists all guest installs; reqs 27 and 29 include clipboard files |
