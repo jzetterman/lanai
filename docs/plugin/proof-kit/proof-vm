@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+# proof-vm: throwaway harness for the Lanai phase 1 proofs. The runbook is
+# docs/plugin/proofs.md. It builds the VM's QEMU line with the spike's vm_args
+# (spike/lgtest) from the captured omarchy-windows-vm command line, points it
+# at a lanai-copy of ~/.windows, and adds each proof's devices. It refuses to
+# run on ~/.windows itself. Run `proof-vm help` for the subcommands.
+set -euo pipefail
+
+KIT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)
+REPO=$(cd -- "$KIT/../../.." && pwd)
+# Reuse the spike's tested vm_args, qemu_cmdlines and download.
+# shellcheck source-path=SCRIPTDIR source=../../../spike/lgtest
+source "$REPO/spike/lgtest"
+# shellcheck source-path=SCRIPTDIR source=../../../lib/pins.sh
+source "$REPO/lib/pins.sh"
+
+RUN=${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is not set}/lanai-proof
+CAPTURE=${PROOF_CAPTURE:-$REPO/spike/test/fixtures/dockur-cmdline.txt}
+CLIENT=${PROOF_CLIENT:-$REPO/spike/work/build/looking-glass-client}
+LIVE=$HOME/.windows
+# vm_args writes $WORK/vm/ for /storage/ and $WORK/setup for the setup disk;
+# this placeholder is swapped for the real paths below.
+WORK=/LANAI-PROOF-WORK
+
+die() {
+  printf 'proof-vm: %s\n' "$*" >&2
+  exit 1
+}
+
+# Print a line with a UTC timestamp.
+log() {
+  printf '%s %s\n' "$(date -u +%FT%T.%3NZ)" "$*"
+}
+
+# Print the proof VM's QEMU arguments, one per line. Options as for run.
+proof_args() {
+  local copy=$1 scale=$2 share=$3 qga=$4 setup=$5 iso=$6 gw out arg mem="" i
+  local -a in args
+  gw=$(ip -4 route show default | awk '{ print $3; exit }')
+  [[ -n $gw ]] || die "no IPv4 default route; passt needs one to forward DNS"
+  out=$(vm_args "$CAPTURE" "$gw" "$([[ -n $setup ]] && echo 1 || echo 0)" 0) || exit 1
+  mapfile -t in <<<"$out"
+  for ((i = 0; i < ${#in[@]}; i++)); do
+    arg=${in[i]}
+    case $arg in
+      -serial)
+        # The serial monitor on stdio; Lanai drops it too.
+        i=$((i + 1))
+        continue
+        ;;
+      -name)
+        args+=(-name "LanaiProof,process=lanai-proof")
+        i=$((i + 1))
+        continue
+        ;;
+      -m) mem=${in[i + 1]} ;;
+    esac
+    arg=${arg//"$WORK/vm/"/"$copy/"}
+    args+=("${arg//"fat:$WORK/setup"/"fat:$setup"}")
+  done
+  [[ -n $mem ]] || die "the capture has no -m"
+  if [[ -n $scale ]]; then
+    args+=(-smbios "type=11,value=lanai-scale=$scale")
+  fi
+  if [[ -n $share ]]; then
+    # vhost-user needs guest RAM in shared memory.
+    args+=(-object "memory-backend-memfd,id=mem,size=$mem,share=on" -machine memory-backend=mem
+      -chardev "socket,id=vfs,path=$RUN/virtiofs.sock"
+      -device "vhost-user-fs-pci,chardev=vfs,tag=lanai")
+  fi
+  if ((qga)); then
+    args+=(-chardev "socket,id=qga0,path=$RUN/qga.sock,server=on,wait=off"
+      -device "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0")
+  fi
+  if [[ -n $iso ]]; then
+    # q35's built-in AHCI controller carries the read-only CD.
+    args+=(-drive "if=none,id=media,file=$iso,format=raw,media=cdrom,readonly=on"
+      -device "ide-cd,drive=media,bus=ide.1")
+  fi
+  printf '%s\n' "${args[@]}"
+}
+
+# Parse run/args options into the globals the callers read.
+parse_opts() {
+  COPY=${1:-}
+  [[ -n $COPY && $COPY != -* ]] || die "give the copy's folder first"
+  COPY=$(realpath -- "$COPY")
+  shift
+  SCALE="" SHARE="" QGA=0 SETUP="" ISO=""
+  while (($#)); do
+    case $1 in
+      --scale) SCALE=${2:?--scale needs a percentage} ;;
+      --share) SHARE=$(realpath -- "${2:?--share needs a folder}") ;;
+      --setup) SETUP=$(realpath -- "${2:?--setup needs a folder}") ;;
+      --iso) ISO=$(realpath -- "${2:?--iso needs a file}") ;;
+      --qga)
+        QGA=1
+        shift
+        continue
+        ;;
+      *) die "unknown option $1" ;;
+    esac
+    shift 2
+  done
+  [[ -z $SCALE || $SCALE =~ ^[0-9]+$ ]] || die "--scale must be a whole percentage"
+  [[ -f $COPY/data.img ]] || die "no data.img in $COPY"
+  # Never the live install: not its folder, not a hard link to its disk.
+  [[ $COPY != "$(realpath -m -- "$LIVE")" ]] || die "refusing: $COPY is the live ~/.windows"
+  [[ ! $COPY/data.img -ef $LIVE/data.img ]] || die "refusing: $COPY/data.img is the live disk"
+  [[ $COPY != *,* && $SHARE != *,* && $SETUP != *,* && $ISO != *,* ]] ||
+    die "paths must not contain a comma (QEMU option syntax)"
+}
+
+# args <copy> [options]: print the QEMU arguments run would use.
+cmd_args() {
+  parse_opts "$@"
+  proof_args "$COPY" "$SCALE" "$SHARE" "$QGA" "$SETUP" "$ISO"
+}
+
+# run <copy> [--scale N] [--share DIR] [--qga] [--setup DIR] [--iso FILE]:
+# start the proof VM in the foreground. --share starts virtiofsd on DIR.
+cmd_run() {
+  local out i
+  local -a args
+  parse_opts "$@"
+  [[ -z $(qemu_cmdlines) ]] || die "refusing: a QEMU process is already running"
+  out=$(proof_args "$COPY" "$SCALE" "$SHARE" "$QGA" "$SETUP" "$ISO") || exit 1
+  mapfile -t args <<<"$out"
+  [[ -d $RUN ]] || mkdir -m 700 -- "$RUN"
+  rm -f -- "$RUN"/*.sock "$RUN/ivshmem" "$RUN/qemu.pid"
+  if [[ -n $SHARE ]]; then
+    /usr/lib/virtiofsd --socket-path="$RUN/virtiofs.sock" --shared-dir "$SHARE" \
+      --sandbox namespace &
+    for ((i = 0; i < 50; i++)); do
+      [[ -S $RUN/virtiofs.sock ]] && break
+      sleep 0.1
+    done
+    [[ -S $RUN/virtiofs.sock ]] || die "virtiofsd did not create its socket"
+  fi
+  log "starting QEMU on $COPY"
+  # QEMU starts passt, which writes its pid file under TMPDIR.
+  TMPDIR=$RUN exec qemu-system-x86_64 "${args[@]}"
+}
+
+# client: start the spike's Looking Glass client on the proof VM.
+cmd_client() {
+  local i
+  [[ -x $CLIENT ]] || die "missing $CLIENT; build it with spike/lgtest build"
+  for ((i = 0; i < 30; i++)); do
+    [[ -f $RUN/ivshmem ]] && break
+    sleep 1
+  done
+  [[ -f $RUN/ivshmem ]] || die "no shared memory at $RUN/ivshmem; is the VM running?"
+  exec "$CLIENT" -f "$RUN/ivshmem" spice:host="$RUN/spice.sock" spice:port=0 win:setGuestRes=yes
+}
+
+# qga <json>: send one guest agent command after a guest-sync-delimited, and
+# print the replies. The agent's 0xFF sync marker is dropped.
+cmd_qga() {
+  local cmd=${1:?qga needs a JSON command}
+  { printf '\xff{"execute":"guest-sync-delimited","arguments":{"id":%d}}\n' "$RANDOM"
+    sleep 1
+    printf '%s\n' "$cmd"
+    sleep 2; } | socat -t 3 - "UNIX-CONNECT:$RUN/qga.sock" | tr -d '\377'
+}
+
+# set-time: set the guest clock to the host's, in nanoseconds since the epoch,
+# read at the moment the command is sent.
+cmd_set_time() {
+  { printf '\xff{"execute":"guest-sync-delimited","arguments":{"id":%d}}\n' "$RANDOM"
+    sleep 1
+    printf '{"execute":"guest-set-time","arguments":{"time":%s}}\n' "$(date +%s%N)"
+    sleep 2; } | socat -t 3 - "UNIX-CONNECT:$RUN/qga.sock" | tr -d '\377'
+}
+
+# sleep-watch: as the desktop user, log logind's PrepareForSleep signals and
+# set the guest clock after each resume (proof 3).
+cmd_sleep_watch() {
+  log "watching PrepareForSleep on the system bus"
+  dbus-monitor --system "type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'" |
+    while IFS= read -r line; do
+      case $line in
+        *"boolean true"*) log "PrepareForSleep(true): host is suspending" ;;
+        *"boolean false"*)
+          log "PrepareForSleep(false): host resumed; setting the guest clock"
+          cmd_set_time || log "set-time failed"
+          log "set-time done"
+          ;;
+      esac
+    done
+}
+
+# shutdown-watch: run under `systemd-inhibit --mode=delay`; stop the proof
+# unit when logind announces a shutdown (proof 4).
+cmd_shutdown_watch() {
+  log "watching PrepareForShutdown on the system bus"
+  dbus-monitor --system "type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForShutdown'" |
+    while IFS= read -r line; do
+      case $line in
+        *"boolean true"*)
+          log "PrepareForShutdown(true): stopping lanai-proof.service"
+          systemctl --user stop --no-block lanai-proof.service
+          ;;
+      esac
+    done
+}
+
+# stop: ask Windows to shut down over QMP and wait up to 5 minutes for QEMU.
+cmd_stop() {
+  local pid i
+  [[ -S $RUN/qmp.sock && -s $RUN/qemu.pid ]] || die "no proof VM state in $RUN; is it running?"
+  pid=$(<"$RUN/qemu.pid")
+  { printf '%s\n' '{"execute":"qmp_capabilities"}' '{"execute":"system_powerdown"}'; sleep 1; } |
+    socat - "UNIX-CONNECT:$RUN/qmp.sock" >/dev/null
+  log "sent system_powerdown to QEMU $pid"
+  for ((i = 0; i < 300; i++)); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  ! kill -0 "$pid" 2>/dev/null || die "QEMU $pid still runs after 300 s"
+  log "QEMU exited"
+}
+
+# media <dir>: download and verify the pinned guest files for proofs 1-3.
+# <dir>/setup becomes the setup USB disk; the virtio-win ISO is attached as a
+# CD with --iso, because it is too big for QEMU's FAT disk.
+cmd_media() {
+  local dir=${1:?media needs a folder} spike_setup=$REPO/spike/work/setup
+  [[ -f $spike_setup/looking-glass-idd-setup.exe ]] ||
+    die "missing $spike_setup; run spike/lgtest fetch first"
+  mkdir -p -- "$dir/setup"
+  download "$WINFSP_URL" "$dir/setup/winfsp-$WINFSP_VERSION.msi" "$WINFSP_SHA"
+  download "$QEMU_GA_URL" "$dir/setup/qemu-ga-x86_64.msi" "$QEMU_GA_SHA"
+  download "$VIRTIO_WIN_URL" "$dir/virtio-win-$VIRTIO_WIN_VERSION.iso" "$VIRTIO_WIN_SHA"
+  cp -- "$spike_setup/looking-glass-idd-setup.exe" "$spike_setup/spice-vdagent-x64-$VDAGENT_VERSION.msi" \
+    "$REPO/guest/lanai-scale.ps1" "$dir/setup/"
+  log "media ready: $dir/setup and $dir/virtio-win-$VIRTIO_WIN_VERSION.iso"
+}
+
+usage() {
+  cat <<'EOF'
+usage: proof-vm <command> [args]
+  media <dir>                      download and verify the guest files
+  args <copy> [options]            print the QEMU arguments
+  run <copy> [options]             start the proof VM in the foreground
+    options: --scale <pct> --share <dir> --qga --setup <dir> --iso <file>
+  client                           start the Looking Glass client
+  stop                             clean shutdown over QMP
+  qga <json> | set-time            guest agent command | set the guest clock
+  sleep-watch | shutdown-watch     proof 3 and proof 4 watchers
+EOF
+}
+
+main() {
+  local cmd=${1:-help}
+  shift || true
+  case $cmd in
+    media | args | run | client | stop | qga) "cmd_$cmd" "$@" ;;
+    set-time | sleep-watch | shutdown-watch) "cmd_${cmd//-/_}" "$@" ;;
+    help | -h | --help) usage ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

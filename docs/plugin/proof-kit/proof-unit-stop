@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# ExecStop of the throwaway lanai-proof.service (proof 4). systemd runs it on
+# every stop: `systemctl --user stop`, the end of the graphical session, and
+# the shutdown watcher. When QEMU still runs, it sends system_powerdown over
+# QMP, logs every QMP event with a UTC timestamp (the SHUTDOWN event with
+# "guest": true is the clean-shutdown proof), and waits for QEMU to exit.
+# The unit's TimeoutStopSec (2 min) bounds the wait. Output goes to the
+# journal: journalctl --user -u lanai-proof -o short-iso-precise
+set -uo pipefail
+
+RUN=${XDG_RUNTIME_DIR:?}/lanai-proof
+
+log() {
+  printf '%s %s\n' "$(date -u +%FT%T.%3NZ)" "$*"
+}
+
+log "ExecStop: EXIT_CODE=${EXIT_CODE:-} MAINPID=${MAINPID:-}"
+if [[ -n ${EXIT_CODE:-} || -z ${MAINPID:-} ]] || ! kill -0 "$MAINPID" 2>/dev/null; then
+  log "QEMU has already exited"
+  exit 0
+fi
+
+start=$(date +%s)
+# The writer keeps the connection open; socat ends when QEMU closes it.
+{ printf '%s\n' '{"execute":"qmp_capabilities"}' '{"execute":"system_powerdown"}'; sleep 180; } |
+  socat -t 1 - "UNIX-CONNECT:$RUN/qmp.sock" |
+  while IFS= read -r line; do log "qmp: $line"; done &
+reader=$!
+log "sent system_powerdown"
+
+while kill -0 "$MAINPID" 2>/dev/null; do sleep 0.2; done
+log "QEMU exited $(($(date +%s) - start)) s after system_powerdown"
+# Let the reader log the last events, then stop it.
+sleep 1
+kill "$reader" 2>/dev/null
+exit 0
