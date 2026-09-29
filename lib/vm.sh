@@ -18,7 +18,7 @@ LANAI_UNIT=lanai-vm.service
 
 # The helpers lanai-vm-exec supervises, each with what is lost while it is
 # down (lanai status shows it as a warning on the running state).
-declare -A LANAI_HELPERS=(
+declare -gA LANAI_HELPERS=(
   [virtiofsd]="file sharing through ~/Windows is off"
   [inhibitor]="a clean Windows shutdown at reboot or power-off is off"
   [sleep-watcher]="clock sync after suspend is off"
