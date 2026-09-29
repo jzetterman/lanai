@@ -712,9 +712,33 @@ signal_header() {
     "${3:-(null destination)}" "$2" "$1"
 }
 
-@test "shutdown_watch_lines: a broadcast PrepareForShutdown(true) stops the unit without blocking" {
+# A busctl stand-in for logind's properties: get-property <...> <name>
+# prints "b <value>" from $T/<name>, and fails when that file says "fail"
+# or is missing. It logs each property it was asked for.
+logind_is() {
+  export T
+  printf '%s\n' "$2" >"$T/$1"
+  shim busctl 'echo "$*" >>"$T/busctl.calls"
+v=$(cat "$T/${!#}" 2>/dev/null) || exit 1
+[[ $v != fail ]] || exit 1
+echo "b $v"'
+}
+
+# A unicast PrepareForShutdown whose string argument holds lines that look
+# like a broadcast header and body: dbus-monitor prints strings raw, so no
+# line rule can tell them apart.
+forged_shutdown() {
+  signal_header PrepareForShutdown 1 :1.0
+  echo '   string "x'
+  signal_header PrepareForShutdown 2
+  echo "   boolean true"
+  echo 'z"'
+}
+
+@test "shutdown_watch_lines: a broadcast PrepareForShutdown(true) that logind confirms stops the unit" {
   shim systemctl 'echo "$*" >>"$CALLS"'
   export CALLS=$T/calls
+  logind_is PreparingForShutdown true
   {
     signal_header PrepareForShutdown 1
     echo "   boolean false"
@@ -724,11 +748,33 @@ signal_header() {
   PATH=$T/shims:$PATH run shutdown_watch_lines <"$T/in"
   assert_success
   assert_equal "$(<"$T/calls")" "--user stop --no-block lanai-vm.service"
+  assert_equal "$(<"$T/busctl.calls")" \
+    "get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager PreparingForShutdown"
+}
+
+@test "shutdown_watch_lines: a forged broadcast inside a unicast string does nothing unless logind confirms" {
+  shim systemctl 'echo "$*" >>"$CALLS"'
+  export CALLS=$T/calls
+  forged_shutdown >"$T/in"
+  # The line parser alone cannot tell this from a real broadcast.
+  run logind_broadcasts PrepareForShutdown <"$T/in"
+  assert_output true
+  logind_is PreparingForShutdown false
+  PATH=$T/shims:$PATH run shutdown_watch_lines <"$T/in"
+  assert_success
+  assert [ ! -e "$T/calls" ]
+  assert_output --partial "logind does not confirm"
+  # busctl failing is no confirmation either.
+  logind_is PreparingForShutdown fail
+  PATH=$T/shims:$PATH run shutdown_watch_lines <"$T/in"
+  assert_success
+  assert [ ! -e "$T/calls" ]
 }
 
 @test "shutdown_watch_lines: ignores a unicast signal, another member, and a body without a header" {
   shim systemctl 'echo "$*" >>"$CALLS"'
   export CALLS=$T/calls
+  logind_is PreparingForShutdown true
   {
     signal_header PrepareForShutdown 1 :1.0
     echo "   boolean true"
@@ -745,6 +791,7 @@ signal_header() {
 
 @test "shutdown-watch: listens only to logind, and keeps watching when a stop fails" {
   export T
+  logind_is PreparingForShutdown true
   {
     signal_header PrepareForShutdown 1
     echo "   boolean true"
@@ -771,9 +818,10 @@ signal_header() {
   assert_line --partial "member='PrepareForSleep'"
 }
 
-@test "sleep_watch_lines: a broadcast resume sets the guest clock; a suspend or a unicast does nothing" {
+@test "sleep_watch_lines: a broadcast resume that logind confirms sets the guest clock" {
   # Stand-in for the agent call: log the mode and command.
   qga_reply() { printf '%s %s\n' "$2" "$3" >>"$T/qga-calls"; }
+  logind_is PreparingForSleep false
   {
     signal_header PrepareForSleep 1
     echo "   boolean true"
@@ -782,11 +830,16 @@ signal_header() {
     signal_header PrepareForSleep 3
     echo "   boolean false"
   } >"$T/in"
-  run sleep_watch_lines <"$T/in"
+  PATH=$T/shims:$PATH run sleep_watch_lines <"$T/in"
   assert_success
   assert_equal "$(wc -l <"$T/qga-calls")" 1
   # qga_reply fills in the time as the command goes out (tested above).
   assert_equal "$(<"$T/qga-calls")" 'command {"execute":"guest-set-time","arguments":{"time":@NOW_NS@}}'
+  # logind still preparing for sleep: not a resume.
+  rm "$T/qga-calls"
+  logind_is PreparingForSleep true
+  PATH=$T/shims:$PATH run sleep_watch_lines <"$T/in"
+  assert [ ! -e "$T/qga-calls" ]
 }
 
 @test "clock_sync: retries a busy agent until 60 s have passed" {

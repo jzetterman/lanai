@@ -146,11 +146,11 @@ storage_problem() {
     elif [[ $mode == snapshot && $LANAI_STORE_NAMES != *" $e "* ]]; then
       leftovers+=("$e")
     fi
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0')
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0' | LC_ALL=C sort -z)
   if ((${#bad[@]})); then
     echo "$dir holds $(printf '%s, ' "${bad[@]}" | sed 's/, $//'), which Lanai will not copy, replace or remove. Check that Lanai's storage points at the right folder, and move those out first."
   elif ((${#leftovers[@]})); then
-    echo "$dir holds $(printf '%s, ' "${leftovers[@]}" | sed 's/, $//'): left over from an unfinished dockur start or restore, not Windows data; delete it, then take the snapshot."
+    echo "$dir holds $(printf '%s, ' "${leftovers[@]}" | sed 's/, $//'): left over from an unfinished dockur start or restore, not Windows data; delete $( ((${#leftovers[@]} > 1)) && echo them || echo it), then take the snapshot."
   else
     return 1
   fi
@@ -335,7 +335,12 @@ snapshot_restore() {
   for name in "${order[@]}"; do
     if [[ $name == data.img ]]; then
       if ! reason=$(python3 "$LANAI_LIB/ficlone.py" "$snap/data.img" "$dir/data.img" 2>&1); then
+        # Keep ficlone.py's detail, but other files were already replaced,
+        # so its "nothing was changed" is not true here; and always end with
+        # the next step.
         rc=1 fail=${reason#ficlone.py: }
+        fail=${fail//; nothing was changed/}
+        [[ $fail == *"the snapshot is intact"* ]] || fail+="; run lanai restore again"
       fi
     elif ! reflink_file "$snap/$name" "$dir/.lanai-restore.$name" ||
       ! mv -f -T -- "$dir/.lanai-restore.$name" "$dir/$name"; then
@@ -353,7 +358,7 @@ snapshot_restore() {
       else
         strays+=("$e")
       fi
-    done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0')
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0' | LC_ALL=C sort -z)
     if ((${#strays[@]})); then
       rc=1
       fail="$(printf '%s, ' "${strays[@]}" | sed 's/, $//') appeared in $dir while it ran; move that out, then run lanai restore again"

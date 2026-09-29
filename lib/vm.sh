@@ -488,14 +488,34 @@ logind_broadcasts() {
   done
 }
 
+# logind_confirms <property> <true|false>: return 0 when logind's own
+# Manager property <property> (PreparingForShutdown, PreparingForSleep) has
+# that value. dbus-monitor prints string arguments raw, newlines included,
+# so a unicast signal can carry lines that look exactly like a broadcast:
+# its output is only a trigger, and only logind can answer this. Fails, and
+# logs, when busctl does not answer.
+logind_confirms() {
+  local got
+  if ! got=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
+    org.freedesktop.login1.Manager "$1" 2>/dev/null); then
+    echo "lanai: cannot read logind's $1" >&2
+    return 1
+  fi
+  [[ $got == "b $2" ]]
+}
+
 # Read dbus-monitor's output for PrepareForShutdown on stdin; on a
-# broadcast true (the host begins a reboot or power-off), stop the VM unit
-# without waiting, so its ExecStop shuts Windows down while the delay
-# inhibitor holds.
+# broadcast true that logind confirms (the host begins a reboot or
+# power-off), stop the VM unit without waiting, so its ExecStop shuts
+# Windows down while the delay inhibitor holds.
 shutdown_watch_lines() {
   local value
   while IFS= read -r value; do
     [[ $value == true ]] || continue
+    if ! logind_confirms PreparingForShutdown true; then
+      echo "lanai: ignoring a PrepareForShutdown that logind does not confirm" >&2
+      continue
+    fi
     echo "lanai: the host is shutting down; stopping Windows" >&2
     systemctl --user stop --no-block "$LANAI_UNIT" ||
       echo "lanai: could not stop $LANAI_UNIT" >&2
@@ -508,11 +528,16 @@ shutdown_watch() {
 }
 
 # Read dbus-monitor's output for PrepareForSleep on stdin; on a broadcast
-# false (the host resumed), set the guest clock (spec 21).
+# false that logind confirms (the host resumed), set the guest clock (spec
+# 21).
 sleep_watch_lines() {
   local value
   while IFS= read -r value; do
     [[ $value == false ]] || continue
+    if ! logind_confirms PreparingForSleep false; then
+      echo "lanai: ignoring a PrepareForSleep that logind does not confirm" >&2
+      continue
+    fi
     echo "lanai: the host resumed; setting the Windows clock" >&2
     clock_sync || echo "lanai: could not set the Windows clock after resume" >&2
   done < <(logind_broadcasts PrepareForSleep)

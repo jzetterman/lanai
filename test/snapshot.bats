@@ -235,6 +235,30 @@ take_snapshot() {
   vm_can_open "$T/win/data.img" || fail "the lock outlived the restore"
 }
 
+@test "restore: the clone step's own reason reaches the user, with the next step" {
+  need_no_reflink
+  use_install "$T/win"
+  plain_cp
+  take_snapshot
+  echo changed >"$T/win/windows.vars"
+  local msg
+  # Stand-ins for ficlone.py's refusals and its errno message.
+  for msg in "ficlone.py: a and b differ in NOCOW; nothing was changed" "ficlone.py: a is empty" \
+    "ficlone.py: cannot clone a onto b (No space left on device); the snapshot is intact: run lanai restore again, or restore another snapshot"; do
+    shim python3 "echo '$msg' >&2; exit 1"
+    lanai_run restore "$NAME"
+    assert_failure
+    run field message
+    # The detail stays, without a false "nothing was changed" (other files
+    # were already replaced), and with the next step exactly once.
+    msg=${msg#ficlone.py: }
+    assert_output --partial "${msg%; nothing was changed}"
+    refute_output --partial "nothing was changed"
+    [[ $(grep -o "run lanai restore again" <<<"$output" | wc -l) == 1 ]] ||
+      fail "not one next step: $output"
+  done
+}
+
 @test "snapshot: a copy that does not match its source is removed, and the lock released" {
   use_install "$T/win"
   plain_cp
@@ -353,9 +377,17 @@ take_snapshot() {
     assert_failure
     run field message
     assert_output --partial "$f"
-    assert_output --partial "delete it"
+    assert_output --partial "delete it,"
     rm "$T/win/$f"
   done
+  # Two of them: "delete them".
+  echo stray >"$T/win/setup.img"
+  echo stray >"$T/win/setup.img.tmp"
+  lanai_run snapshot
+  assert_failure
+  run field message
+  assert_output --partial "setup.img, setup.img.tmp"
+  assert_output --partial "delete them,"
   run bash -c 'ls -A "$1" 2>/dev/null || true' _ "$XDG_DATA_HOME/lanai/snapshots"
   assert_output ""
 }
