@@ -1192,8 +1192,11 @@ cmd_setup_host() {
   local missing cmd details
   local -a list
   missing=$(host_packages_missing)
-  mapfile -t list <<<"$missing"
-  cmd=$(host_install_command "${list[@]}")
+  cmd=
+  if [[ -n $missing ]]; then
+    mapfile -t list <<<"$missing"
+    cmd=$(host_install_command "${list[@]}")
+  fi
   details=$(jq -n -c --arg m "$missing" --arg c "$cmd" \
     '{missing: ($m | split("\n") | map(select(. != ""))), command: $c}')
   if [[ -z $missing ]]; then

@@ -425,16 +425,19 @@ build_client() {
 
 # Print each package of LANAI_HOST_PACKAGES that is not installed, one per
 # line. pacman -T (deptest) honours provides, so jq-git counts for jq and is
-# never offered for replacement. When pacman fails otherwise, every package
-# counts as missing.
+# never offered for replacement. When pacman fails otherwise, or exits 127
+# with no output (bash's "command not found"), every package counts as
+# missing.
 host_packages_missing() {
   local out rc=0
   out=$(pacman -T -- "${LANAI_HOST_PACKAGES[@]}" 2>/dev/null) || rc=$?
-  case $rc in
-    0) ;;
-    127) [[ -z $out ]] || printf '%s\n' "$out" ;;
-    *) printf '%s\n' "${LANAI_HOST_PACKAGES[@]}" ;;
-  esac
+  if ((rc == 0)); then
+    return 0
+  elif ((rc == 127)) && [[ -n $out ]]; then
+    printf '%s\n' "$out"
+  else
+    printf '%s\n' "${LANAI_HOST_PACKAGES[@]}"
+  fi
 }
 
 # Print the one command that installs packages <pkg>..., exactly as

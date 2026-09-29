@@ -909,9 +909,19 @@ exit "$(cat "$T/sudo-rc" 2>/dev/null || echo 0)"'
   lanai_run setup-host
   assert_success
   assert_equal "$(field missing)" "[]"
+  assert_equal "$(field command)" ""
   sleep 0.5
   assert [ ! -e "$T/omarchy.calls" ]
   assert [ ! -e "$T/sudo.calls" ]
+}
+
+@test "host_packages_missing: a pacman that is not there counts every package missing" {
+  # bash's own "command not found" is exit 127 with nothing on stdout, the
+  # same code pacman -T uses for missing packages.
+  shim pacman 'exit 127'
+  PATH=$T/shims:$PATH run host_packages_missing
+  assert_success
+  assert_equal "$output" "$(printf '%s\n' "${LANAI_HOST_PACKAGES[@]}")"
 }
 
 @test "lanai setup-host: opens the panel's terminal for the install and never runs sudo itself" {
