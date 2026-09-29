@@ -1,11 +1,12 @@
-# Phase 1 proofs: runbook and results
+# Lanai proofs: runbook and results
 
-Plan: [plan.md](plan.md), "Phase 1". Spec: [spec.md](spec.md).
+Plan: [plan.md](plan.md), "Phase 1" and "Phase 6". Spec: [spec.md](spec.md).
 
-These four proofs settle the riskiest unknowns before the VM work builds on them. Proof 5
-is phase 6's lock proof, which runs before the rest of phase 6. You run all of them by
-hand. Each proof runs on a full reflink copy of `~/.windows`, never on
-`~/.windows` itself. If a proof fails, stop and record why. Phase 4 (VM lifecycle) waits.
+Proofs 1 to 4 (phase 1) settled the riskiest unknowns before the VM work built on them.
+Proof 5 is phase 6's lock proof, which runs before the rest of phase 6. You run all of
+them by hand. Each proof runs on a full reflink copy of `~/.windows`, never on
+`~/.windows` itself. If a proof fails, stop and record why. The work that depends on it
+waits: phase 4 (VM lifecycle) for proofs 1 to 4, and the rest of phase 6 for proof 5.
 
 Record every time with its timezone, for example `2026-09-28 14:00 EDT`. Paste command
 output into the Result sections as it printed.
@@ -511,9 +512,23 @@ password.
 
 Before you start:
 
-1. Run `source ~/lanai-proofs/env`. Switch the main checkout (`$R`) to the branch that
-   holds this section and `guest/lanai-lock.cmd`. It needs the spike's client in
-   `$R/spike/work/`, as before.
+1. Run `source ~/lanai-proofs/env`. Switch the main checkout to the branch
+   `plugin/phase6`, which holds this section and `guest/lanai-lock.cmd`:
+
+   ```sh
+   git -C "$R" fetch origin
+   git -C "$R" switch plugin/phase6
+   ```
+
+   To keep `$R` on another branch instead, point `K` at a checkout of `plugin/phase6`,
+   and keep the spike's client from `$R`. The env file sets `K` back, so run both lines
+   after every `source ~/lanai-proofs/env`:
+
+   ```sh
+   K=<path to a checkout of plugin/phase6>/docs/plugin/proof-kit
+   export PROOF_CLIENT=$R/spike/work/build/looking-glass-client
+   ```
+
 2. Refresh the setup disk, so it holds `lanai-lock.cmd`: `"$K/proof-vm" media "$S/kit"`.
    It ends with `media ready`.
 3. Stop the container VM with `omarchy-windows-vm stop`.
@@ -552,6 +567,22 @@ Ctrl+Alt+Del:
   sleep 1; } | socat - "UNIX-CONNECT:$XDG_RUNTIME_DIR/lanai-proof/qmp.sock"
 ```
 
+The starting state. In Command Prompt, record the output of:
+
+```bat
+reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v EnableLUA
+reg query HKLM\SOFTWARE\Microsoft\Enrollments /s /v ProviderID
+reg query HKLM\SOFTWARE\Microsoft\Enrollments /s /v DiscoveryServiceFullURL
+reg query HKLM\SOFTWARE\Microsoft\Enrollments /s /v UPN
+```
+
+`EnableLUA` should be `0x0`: dockur's unattended install turns UAC off, so every
+Command Prompt of the signed-in administrator already runs with full rights, and "Run as
+administrator" changes nothing. The `Enrollments` queries show the real data for the
+MDM check. Stock Windows 11 has built-in subkeys with a `ProviderID`, so the script
+counts an enrollment only by a non-empty `DiscoveryServiceFullURL` or `UPN`. Expect
+none of those on this copy.
+
 Step 1, the positive controls. Run each one on its own. After each one that locks, sign
 back in before the next.
 
@@ -576,7 +607,9 @@ back in before the next.
    for 2 minutes: Windows must be locked.
 
 If a control does not lock, fix the control before step 2: find out why, and try again.
-A path with no working control counts as unproven.
+For the screen saver and the inactivity limit, first run `powercfg /requests`. A
+request under DISPLAY (a video or a presentation app, for example) blocks both; close
+what holds it. A path with no working control counts as unproven.
 
 Then set up a user's earlier lock settings: turn the 1-minute secure screen saver back
 on, as in control 6. `InactivityTimeoutSecs` is still 60 from control 7. From here on,
@@ -584,9 +617,14 @@ Windows locks after each idle minute until step 2; sign in each time.
 
 Step 2, run the script:
 
-1. From a normal Command Prompt (not elevated), run `E:\lanai-lock.cmd`, then
-   `echo %errorlevel%`. It must print that it needs administrator rights, then `1`. It
-   changes nothing.
+1. The refusal, from a restricted prompt. With UAC off, a normal prompt has full
+   rights, so open one without them: in Command Prompt, run
+   `runas /trustlevel:0x20000 cmd`. In the new window, run
+   `whoami /groups | findstr S-1-5-32-544`. The Administrators group must show "Group
+   used for deny only". If it does, run `E:\lanai-lock.cmd`, then `echo %errorlevel%`.
+   It must print that it needs administrator rights, then `1`, and change nothing.
+   Close that window. If the group is not deny-only, record that and skip this check;
+   phase 8's different-account test covers the refusal.
 2. From an elevated Command Prompt, run `E:\lanai-lock.cmd`, then `echo %errorlevel%`.
    It must print `lanai-lock: locking inside Windows is off.`, then `0`. This copy is
    not in a domain or MDM, so no policy warning may appear.
@@ -623,6 +661,9 @@ screen saver dialog: saving it can write `ScreenSaverIsSecure` back.
    nothing matches is fine. If either finds one, stop here and record it. The script
    leaves sign-in on wake and Dynamic Lock alone because neither can fire in this VM,
    and spec row 7b needs both unable to fire.
+5. An extra control, recorded but not part of the pass: in Command Prompt, run
+   `tsdiscon`. Record whether it leaves the session at the sign-in screen. If it does,
+   sign back in.
 
 Step 4, the domain and MDM warning. In an elevated Command Prompt:
 
@@ -639,30 +680,39 @@ prompt.
 
 Step 5, stop from the host:
 
+`stop` sends `system_powerdown` once and waits up to 300 s. Lanai waits only 2 minutes
+(`TimeoutStopSec=2min`) and sends the press again every 10 s. So time each stop: `sent
+system_powerdown` and `QEMU exited` both carry a UTC time.
+
 1. Keep your hands off the client window until the screen saver (no longer secure)
-   shows. Then, in terminal 3, run `"$K/proof-vm" stop`. It must print `QEMU exited`.
-   After `system_powerdown`, QEMU exits only when Windows powers off.
+   shows. Then, in terminal 3, run `"$K/proof-vm" stop`. It must print `QEMU exited`
+   within 120 s of `sent system_powerdown`. After `system_powerdown`, QEMU exits only
+   when Windows powers off.
 2. Start the VM and the client again, and wait for the desktop. Open the Ctrl+Alt+Del
    screen with the command above and leave it open. Run `"$K/proof-vm" stop`. Record
-   the result either way. If Windows ignores the stop, `stop` gives up after 300 s with
-   `still runs after 300 s`. Then choose Cancel on that screen and run
-   `"$K/proof-vm" stop` again.
+   the result either way, with the time from `sent system_powerdown` to `QEMU exited`.
+   Note that this sends one press, where Lanai would send one every 10 s. If Windows
+   ignores the stop, `stop` gives up after 300 s with `still runs after 300 s`. Then
+   choose Cancel on that screen and run `"$K/proof-vm" stop` again.
 
 What failure looks like: a path in step 3 still locks Windows, a `reg query` result
-differs, Windows asks for the password after the idle wait, or step 5.1 ends with
-`still runs after 300 s`. If any lock path survives, stop and record it. The rest of
-phase 6 waits.
+differs, Windows asks for the password after the idle wait, or step 5.1 takes more than
+120 s or ends with `still runs after 300 s`. If any lock path survives, stop and record
+it. The rest of phase 6 waits.
 
-Pass: in step 1, every control locked Windows. In step 3, none did, the `reg query`
-results match, Windows stayed unlocked through 3 minutes of idle, and there is no sleep
-state and no Bluetooth device. Step 2 printed no policy warning, and step 4 printed it.
-Step 5.1 printed `QEMU exited`. Step 5.2 is recorded, clean or not; if not, the README
-names it (row 7b).
+Pass: in step 1, every control locked Windows. Step 2.2 (the elevated run) exited 0 and
+printed no policy warning. Where step 2.1 ran, the refusal exited 1. In step 3, none of
+the controls locked, the `reg query` results match, Windows stayed unlocked through 3
+minutes of idle, and there is no sleep state and no Bluetooth device. Step 4 printed the
+warning. Step 5.1 printed `QEMU exited` within 120 s of `sent system_powerdown`. Step
+5.2 is recorded, clean or not; if not, the README names it (row 7b).
 
 ### Result
 
 - Date and time:
-- Branch and commit of `$R`:
+- Branch and commit of the kit's checkout:
+- Starting state, `EnableLUA`:
+- Starting state, `Enrollments` queries (`ProviderID`, `DiscoveryServiceFullURL`, `UPN`):
 - Step 1, before the script (locked yes or no, and what Windows showed):
   - Lock in Start:
   - Lock in Ctrl+Alt+Del:
@@ -671,8 +721,9 @@ names it (row 7b).
   - Switch user:
   - Secure screen saver at 1 minute:
   - `InactivityTimeoutSecs` 60, after a restart:
-- Step 2, not elevated (output and error level):
-- Step 2, elevated (output and error level):
+- Step 2.1, restricted prompt (the `whoami` line, then output and error level, or
+  skipped and why):
+- Step 2.2, elevated (output and error level):
 - Step 3, `reg query` output:
 - Step 3, after the script (locked yes or no, and what Windows showed):
   - Lock in Start:
@@ -683,9 +734,10 @@ names it (row 7b).
 - Step 3, after 3 minutes idle (still unlocked?):
 - Step 3, `powercfg /a` output:
 - Step 3, `Get-PnpDevice -Class Bluetooth` output:
+- Step 3, extra: `tsdiscon` (sign-in screen or not):
 - Step 4, the warning as printed:
-- Step 5.1, stop with the screen saver showing (`stop`'s output):
-- Step 5.2, stop with the Ctrl+Alt+Del screen open (`stop`'s output, clean or not):
+- Step 5.1, stop with the screen saver showing (`stop`'s output, seconds to `QEMU exited`):
+- Step 5.2, stop with the Ctrl+Alt+Del screen open (`stop`'s output, seconds, clean or not):
 - Pass (yes/no), and why:
 
 ## After the proofs
