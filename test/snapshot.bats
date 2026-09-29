@@ -259,6 +259,59 @@ take_snapshot() {
   done
 }
 
+# A sha256sum stand-in that, while $T/probe-hash exists, records whether a
+# VM could open $STORE/data.img each time a file is hashed (124: it could;
+# anything else: the lock stopped it), then hashes as usual.
+hash_probes_the_lock() {
+  export STORE
+  shim sha256sum 'if [[ -e $T/probe-hash ]]; then
+  rc=0
+  timeout 2 qemu-system-x86_64 -S -nodefaults -display none -machine q35,accel=tcg \
+    -drive "file=$STORE/data.img,format=raw,if=none,id=d" -device virtio-scsi-pci \
+    -device scsi-hd,drive=d </dev/null 3>&- 2>/dev/null || rc=$?
+  echo "$rc" >>"$T/hash-open"
+fi
+exec /usr/bin/sha256sum "$@"'
+}
+
+@test "restore: holds the disk lock while it hashes the snapshot" {
+  need_no_reflink
+  use_install "$T/win"
+  plain_cp
+  take_snapshot
+  echo changed >"$T/win/windows.vars"
+  hash_probes_the_lock
+  : >"$T/probe-hash"
+  lanai_run restore "$NAME"
+  rm "$T/probe-hash"
+  [[ -s $T/hash-open ]] || fail "the restore hashed nothing"
+  run sort -u "$T/hash-open"
+  assert_output 1
+  vm_can_open "$T/win/data.img" || fail "the lock outlived the restore"
+}
+
+@test "restore: a damaged snapshot is refused under the lock, then the lock is released" {
+  use_install "$T/win"
+  plain_cp
+  take_snapshot
+  echo changed >"$T/win/windows.vars"
+  local before
+  before=$(tree_manifest "$T/win")
+  flip_byte "$SNAP/windows.vars"
+  hash_probes_the_lock
+  : >"$T/probe-hash"
+  lanai_run restore "$NAME"
+  rm "$T/probe-hash"
+  assert_failure
+  run field message
+  assert_output --partial "damaged"
+  run sort -u "$T/hash-open"
+  assert_output 1
+  vm_can_open "$T/win/data.img" || fail "the lock outlived the refusal"
+  assert [ ! -e "$S/restore-in-progress" ]
+  assert_equal "$(tree_manifest "$T/win")" "$before"
+}
+
 @test "snapshot: refuses a storage folder that fails the adoption checks" {
   use_install "$T/win"
   plain_cp

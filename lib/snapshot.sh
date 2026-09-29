@@ -257,11 +257,12 @@ restore_mark() {
 }
 
 # restore [<name>]: return the storage location to snapshot <name>. The
-# storage location must pass storage_problem, and the snapshot's files must
-# match its manifest, before anything is written. Then the
-# "restore-in-progress" marker names the snapshot and the storage location;
-# under QEMU's write lock every file but data.img is replaced through a temp
-# file and a rename, and data.img is cloned in place with ficlone.py, so it
+# storage location must pass storage_problem before anything happens. When
+# data.img exists, QEMU's write lock is taken next and held to the end, and
+# the snapshot's files must match its manifest before anything is written.
+# Then the "restore-in-progress" marker names the snapshot and the storage
+# location (a deleted data.img is put back and locked only after it); every
+# file but data.img is replaced through a temp file and a rename, and data.img is cloned in place with ficlone.py, so it
 # is never empty and the locked inode is the one written; other regular
 # files are removed; the result is checked against the manifest, flushed,
 # and only then is the marker deleted. While the marker exists, a restore
@@ -315,7 +316,20 @@ snapshot_restore() {
     echo "$dir/data.img and $snap/data.img differ in NOCOW (the C attribute), so btrfs cannot clone one onto the other. Nothing was changed."
     return 1
   fi
+  # QEMU's write lock is held from here to the end whenever the disk exists,
+  # through the minutes of hashing too, so no container VM (or a direct
+  # start of lanai-vm) can boot while the restore runs. Taking it writes
+  # nothing, so a refusal before the marker still changes nothing.
+  local locked=0
+  if [[ -f $dir/data.img ]]; then
+    if ! lock_disk "$dir/data.img"; then
+      echo "cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it first. Nothing was changed."
+      return 1
+    fi
+    locked=1
+  fi
   if [[ $(snapshot_manifest "$snap") != "$(<"$snap/COMPLETE")" ]]; then
+    ((locked == 0)) || unlock_disk
     echo "$snap is damaged: its files do not match its manifest. Nothing was changed."
     return 1
   fi
@@ -328,20 +342,21 @@ snapshot_restore() {
   # restore that stops anywhere after it blocks lanai start until it is
   # finished.
   if ! restore_mark "$marker" "$snap" "$dir"; then
+    ((locked == 0)) || unlock_disk
     echo "cannot write $marker; nothing was changed"
     return 1
   fi
-  if [[ ! -f $dir/data.img ]]; then
+  if ((locked == 0)); then
     # dockur deleted the disk: put it back first, so its lock can be taken.
     if ! reflink_file "$snap/data.img" "$dir/.lanai-restore.data.img" ||
       ! mv -f -T -- "$dir/.lanai-restore.data.img" "$dir/data.img"; then
       echo "the restore did not finish: cannot copy data.img back from $snap; run lanai restore again"
       return 1
     fi
-  fi
-  if ! lock_disk "$dir/data.img"; then
-    echo "the restore did not finish: cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it, then run lanai restore again."
-    return 1
+    if ! lock_disk "$dir/data.img"; then
+      echo "the restore did not finish: cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it, then run lanai restore again."
+      return 1
+    fi
   fi
   for name in "${order[@]}"; do
     if [[ $name == data.img ]]; then
