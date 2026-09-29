@@ -535,9 +535,11 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   `Looking Glass (<build>)` line it logs first, also for `--help`; the installed
   binary must report the pin. Downloads go to `$XDG_CACHE_HOME/lanai/downloads/`,
   the build to a work folder there (removed after), the output to
-  `$XDG_STATE_HOME/lanai/build-client.log`. It installs through
-  `<build>.partial/`, holds `build.lock`, and does nothing when the pinned build is
-  already installed. Older builds are removed only by `build-client`, once
+  `$XDG_STATE_HOME/lanai/build-client.log`. A cached download is used only when it
+  still matches the pin, else it is fetched again; curl gives up on a connect over
+  20 s or a transfer under 1 KiB/s for 60 s, so a stalled download cannot hold the
+  lock. It installs through `<build>.partial/`, holds `build.lock`, and does nothing
+  when the pinned build is already installed. Older builds are removed only by `build-client`, once
   `guest-version` matches the pin. One real run on 2026-09-29: the download matched
   the pinned SHA-256, and the build took 22 s and reported `B7-826-236efcb1`.
 - `lanai open` needs the VM unit active. It focuses with `hyprctl dispatch
@@ -545,28 +547,46 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   main pid is the client), not by app id, which every Looking Glass client shares.
   Before it starts the unit it records the guest version the last client log names.
   `systemd-run` passes `WAYLAND_DISPLAY` and the `XDG_*` folders with `--setenv`,
-  since the user manager may lack them.
+  since the user manager may lack them, and `--expand-environment=no`, so a `$` in a
+  path stays literal. It sets `PartOf=lanai-vm.service`: every stop of the VM unit
+  stops the client too, even when ExecStop is killed at `TimeoutStopSec`, and unlike
+  `Requires=` or `BindsTo=` it never starts the VM.
+- `lanai-client-exec`'s wait runs `qmp_call` with a 2 s budget per try
+  (`LANAI_QMP_BUDGET`), so every try closes its connection, even one that got no
+  status; a test on a one-client socket checks it.
 - Status reads the client's result from `$RUN/client.log`, not from `journalctl -I`:
   with `--collect`, a failed transient unit is unloaded, so its invocation id is gone.
   `lanai-client-exec` rewrites the log on each start (a `lanai: client started at
   <epoch>` line, then the client's output, appended so an emptied log stays whole),
   or writes the timeout message as its only line; the message also goes to the
-  journal. So the log always holds the latest try only.
+  journal. So the log always holds the latest try only. Accepted risk: the log has no
+  size cap. It sits in `$XDG_RUNTIME_DIR` (tmpfs) and is read on every status poll,
+  but a new client or VM start empties it, and the spike's 8-minute session logged
+  under 100 lines.
 - `version_check` prints `match`, `mismatch`, `idd-missing`, `waiting` or `unknown`,
   plus the guest's version when the log names one. The latest event wins (a guest that
   comes back after a mismatch counts). A guest version the client reports as
   `unknown` is a mismatch. The 30 s count needs the start line, since the client's log
-  times count from its own start. The client logs "transport source is not
-  available" only on its first wait, so a missing IDD is detected for the first
-  session of each client, not after a guest restart mid-session.
-- `status_map`: a mismatch is `version-mismatch` (as in phase 4). A missing IDD counts
-  only once Windows has booted (QMP running, the agent's port open, setup done), since
-  a client opened at boot waits for the IDD too; it is `failed`, with the client log as
-  `logs` and the `omarchy-windows-vm` fallback. A client that gave up waiting is a
-  warning on the active states. `lanai status` also records the guest version it reads.
-- Added: `lanai-vm-stop` stops `lanai-client.service` once QEMU is gone, so a client
-  never holds an old run's shared memory, and `lanai open` never focuses a dead
-  window. `qmp_open` takes a time budget (the client wait uses 2 s per try).
+  times count from its own start; only the log's first line counts as the start
+  line, since the guest can put text at the start of a later line through its
+  version string. The client logs "transport source is not available" only on its
+  first wait, so a missing IDD is detected for the first session of each client, not
+  after a guest restart mid-session. `guest_version_set` records only what
+  `lg_version_key` can read.
+- `status_map`: a stop in progress and a QEMU error come before a mismatch, so the
+  forced stop is still offered (spec 16). Then a mismatch is `version-mismatch`. A
+  missing IDD counts only while the client unit runs (a log whose window was closed
+  is stale) and once Windows has booted (QMP running, the agent's port open, setup
+  done), since a client opened at boot waits for the IDD too; it is `failed`, with
+  the client log as `logs` and the `omarchy-windows-vm` fallback. A client that gave
+  up waiting is a warning. `lanai status` also records the guest version it reads.
+- A pin bump the guest has not caught up with (req 8): when the recorded guest version
+  is not the pinned build, `build_select` keeps the old build, so the window works,
+  and status adds a warning in every state but `version-mismatch`: the driver's
+  version, the pin, and "run Lanai setup again to update it".
+- Added: `lanai-vm-stop` stops the client unit once QEMU is gone (a QEMU that exits on
+  its own starts no stop job, so `PartOf=` does not cover it), so a client never holds
+  an old run's shared memory, and `lanai open` never focuses a dead window.
 - For phase 6: `lanai setup-guest` calls `guest_version_set "$LG_BUILD"` when it
   succeeds; step 2 uses `host_packages_missing`, step 4 `client_version`, and step 6
   `version_check`.
@@ -821,6 +841,10 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 - **Test install** (rows 3, 4, 30-32): a separate machine or VM running Omarchy with
   `omarchy-windows-vm` and a copy of a Windows install. John picks the machine.
 - **Live install** (John only, after the rehearsal passes).
+- Client timing check (phase 5 review): open the client right at `lanai start` and
+  note whether the guest agent's port opens before the IDD first reports. If it does,
+  status shows a brief false "IDD missing" (failed) until the IDD answers; record how
+  long, and take it to John if it is more than a poll or two.
 - Checklist for rows 10-17 and 20, recorded in `docs/plugin/acceptance.md`:
 
 | Row | Check |
