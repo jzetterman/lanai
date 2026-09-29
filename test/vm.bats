@@ -15,7 +15,13 @@ setup() {
   T=$BATS_TEST_TMPDIR
   RUN=$XDG_RUNTIME_DIR/lanai
   S=$XDG_STATE_HOME/lanai
-  mkdir -p "$T/shims"
+  mkdir -p "$T/shims" "$T/base-shims"
+  # A default systemctl that only logs, so no test reaches the real user
+  # manager (lanai-vm-stop stops the client unit). Tests that need another
+  # one put it in $T/shims, first on PATH.
+  printf '#!/usr/bin/env bash\necho "$*" >>"$T/systemctl.calls"\n' >"$T/base-shims/systemctl"
+  chmod +x "$T/base-shims/systemctl"
+  export T PATH=$T/base-shims:$PATH
 }
 
 teardown() {
@@ -1088,6 +1094,24 @@ fake_main() {
   assert_success
   assert [ ! -e "$T/qmp.log" ]
   kill "$FAKE_PID"
+}
+
+@test "lanai-vm-stop: closes the Looking Glass window once QEMU is gone, on both paths" {
+  mkdir -m 700 "$RUN"
+  fake_main
+  export FAKE_QMP_KILL=$FAKE_PID
+  serve "$RUN/qmp.sock" "$FIX/fake-qmp"
+  # The client unit is stopped only after QEMU exited, so the window shows
+  # Windows shutting down until then.
+  shim systemctl 'if kill -0 "$FAKE_PID" 2>/dev/null; then echo "$* (QEMU still ran)"; else echo "$*"; fi >>"$T/systemctl.calls"'
+  export FAKE_PID
+  INVOCATION_ID=inv-c MAINPID=$FAKE_PID PATH=$T/shims:$PATH run timeout 20 "$REPO/bin/lanai-vm-stop"
+  assert_success
+  assert_equal "$(cat "$T/systemctl.calls")" "--user stop --no-block lanai-client.service"
+  rm "$T/systemctl.calls"
+  EXIT_CODE=exited INVOCATION_ID=inv-c run timeout 20 "$REPO/bin/lanai-vm-stop"
+  assert_success
+  assert_equal "$(cat "$T/systemctl.calls")" "--user stop --no-block lanai-client.service"
 }
 
 @test "lanai-vm-stop: waits at most about 2 s for a record that never comes" {

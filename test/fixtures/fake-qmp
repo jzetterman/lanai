@@ -7,7 +7,8 @@
 #   FAKE_QMP_MODE    silent: greet, then never answer; events: send an event
 #                    before each reply; shutdown: after capabilities, send a
 #                    SHUTDOWN event (FAKE_QMP_GUEST, default true), another
-#                    event, and hang up
+#                    event, and hang up; nostatus: query-status returns
+#                    no status
 #   FAKE_QMP_STATUS  query-status's status (default running)
 #   FAKE_QMP_QGA     query-chardev's frontend-open for qga0 (default true)
 #   FAKE_QMP_KILL    a pid to kill when system_powerdown arrives; with
@@ -31,7 +32,10 @@ while IFS= read -r line; do
   [[ ${FAKE_QMP_MODE:-} != events ]] || printf '%s\n' "$event"
   case $cmd in
     qmp_capabilities) r='{}' ;;
-    query-status) r="{\"status\": \"${FAKE_QMP_STATUS:-running}\", \"singlestep\": false, \"running\": true}" ;;
+    query-status)
+      r="{\"status\": \"${FAKE_QMP_STATUS:-running}\", \"singlestep\": false, \"running\": true}"
+      [[ ${FAKE_QMP_MODE:-} != nostatus ]] || r='{}'
+      ;;
     query-chardev)
       r="[{\"frontend-open\": true, \"filename\": \"spicevmc\", \"label\": \"vdagent\"},
 {\"frontend-open\": ${FAKE_QMP_QGA:-true}, \"filename\": \"unix:/r/qga.sock,server=on\", \"label\": \"qga0\"}]"

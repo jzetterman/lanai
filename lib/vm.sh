@@ -302,14 +302,14 @@ qmp_call() {
   return "$rc"
 }
 
-# qmp_open <socket>: connect, read QEMU's greeting and negotiate
+# qmp_open <socket> [<seconds>]: connect, read QEMU's greeting and negotiate
 # capabilities, leaving the connection open for qmp_send or for reading
-# events on LANAI_SOCK_R. Starts the session's 5 s budget. On failure the
-# connection is closed.
+# events on LANAI_SOCK_R. Starts the session's budget (default 5 s; the
+# client wait uses 2 s per try). On failure the connection is closed.
 qmp_open() {
   local t line
   sock_open "$1" || return 1
-  LANAI_QMP_DEADLINE=$(($(now_us) + 5000000)) LANAI_QMP_ID=0
+  LANAI_QMP_DEADLINE=$(($(now_us) + ${2:-5} * 1000000)) LANAI_QMP_ID=0
   if t=$(time_left "$LANAI_QMP_DEADLINE") && IFS= read -r -t "$t" -u "$LANAI_SOCK_R" line &&
     jq -e 'has("QMP")' <<<"$line" >/dev/null 2>&1 &&
     qmp_send '{"execute":"qmp_capabilities"}' >/dev/null; then
@@ -322,7 +322,7 @@ qmp_open() {
 # qmp_send <command-json>: on the connection from qmp_open, send one command
 # with the next id and print its reply (compact, id removed); events before
 # it are skipped. Fails on a line that is not JSON, or when the session's
-# 5 s run out. Call it directly, not in $(...), so the id count survives.
+# budget runs out. Call it directly, not in $(...), so the id count survives.
 qmp_send() {
   local cmd line t reply="" id=$((LANAI_QMP_ID + 1))
   LANAI_QMP_ID=$id
@@ -738,8 +738,9 @@ pid_running() {
 # LANAI_POWERDOWN_INTERVAL seconds (a stop during early boot, before QMP or
 # the guest's ACPI is ready), until QEMU exits; the unit's TimeoutStopSec
 # bounds that wait. When QEMU already exited ($EXIT_CODE is set) it skips
-# that. Either way it then waits up to 2 s for this run's last-shutdown
-# record, so systemd does not kill the event logger before it writes.
+# that. Either way it then stops the Looking Glass client's unit and waits
+# up to 2 s for this run's last-shutdown record, so systemd does not kill
+# the event logger before it writes.
 vm_stop() {
   local run s i last=-1
   run=$(run_dir) || return 1
@@ -757,6 +758,9 @@ vm_stop() {
       sleep 0.2
     done
   fi
+  # The Looking Glass client is useless once QEMU is gone, and would hold
+  # the old shared memory into the next run.
+  systemctl --user stop --no-block lanai-client.service >/dev/null 2>&1 || true
   for ((i = 0; i < 10; i++)); do
     jq -e --arg inv "${INVOCATION_ID:-}" '.invocation == $inv' "$s/last-shutdown" >/dev/null 2>&1 &&
       return 0
