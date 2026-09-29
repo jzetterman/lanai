@@ -201,7 +201,9 @@ or 6008).
 23. The guest reaches the internet and everything the host can reach, including VPN and
     Tailscale destinations. It cannot reach services bound to the host's loopback.
     Services the host exposes on its other addresses stay reachable, as they are to any
-    machine on the network.
+    machine on the network. Windows also starts when the host has no network, for
+    example on a plane. It then has no network until Lanai's VM next starts, and Lanai
+    says so when it starts it (John, 2026-09-28).
 24. The guest resolves names through the host's resolver, including Tailscale MagicDNS
     and the host's search domains. The README notes that a DNS client installed inside
     Windows (such as Cloudflare WARP or a corporate agent) overrides this.
@@ -279,7 +281,7 @@ stopped; Windows then resumes, boots after a restart, and `chkdsk` reports no er
 | 19 | Logout ends in a clean shutdown, with lingering both enabled and disabled, including with row 7b's 1-minute screen saver still set (no longer secure) and running at logout; a guest that ignores shutdown at logout (fixture: turn the Windows lock back on and lock Windows, or leave open a security screen that row 7b recorded as ignoring shutdown, then log out) is force-stopped after 2 minutes and reported at the next start, naming a locked Windows, an open security screen, or a shutdown that did not finish in time as likely causes; on reboot and power-off, with lingering both enabled and disabled and an idle, unlocked Windows, Windows' shutdown starts when the host's does, the time Windows took is measured and written in the README, and the next start reports no forced stop; with the logout fixture above, a reboot whose wait expires ends in a forced stop that the next start reports |
 | 21 | After suspend and resume, the requirement 20 check passes, and the guest clock is within 2 s of the host's within 60 s |
 | 22, 25 | While the VM runs: no Lanai process runs as root; no new listening TCP or UDP socket appears; all of Lanai's Unix sockets (control, file sharing, guest agent) and runtime files, including the shared-memory file, are mode 0600 or inside a 0700 directory owned by the user |
-| 23-24 | The spike's security check passes against Lanai's VM: the host-loopback probe is blocked after a positive control; a web page loads; on a guest without its own DNS client, a MagicDNS name and a short name through the host's search domain resolve through Windows' default resolver; the same names resolve when queried at the gateway (the diagnostic for guests with a DNS client such as WARP); a VPN destination and a host service on a non-loopback address are reachable |
+| 23-24 | The spike's security check passes against Lanai's VM: the host-loopback probe is blocked after a positive control; a web page loads; on a guest without its own DNS client, a MagicDNS name and a short name through the host's search domain resolve through Windows' default resolver; the same names resolve when queried at the gateway (the diagnostic for guests with a DNS client such as WARP); a VPN destination and a host service on a non-loopback address are reachable; with the host's network off, Windows starts, and Lanai's start reply says it has no network |
 | 27 | A review of QEMU's command line and device tree (QMP `info qtree`) shows only the baseline hardware from requirement 2 plus the listed channels, and nothing else |
 | 29 | The README states the clipboard exposure |
 | 26 | Setup refuses a download or source with a wrong checksum |
@@ -326,3 +328,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | b Grok (substitute) | 2026-09-28 | Codex out of credits. Round 1 (full): 3 P2, 1 P3; all confirmed and integrated (the real change stated plainly: an unattended, unlocked Linux session leaves Windows open; row 19 names a force-stop fixture; row 7b's refusal checks that nothing was installed; the two machine-wide changes named) |
 | spec | b Grok (substitute) | 2026-09-28 | Round 2 (full): 2 P2, 2 P3; all confirmed and integrated (row 4 checks the lock stays off under `omarchy-windows-vm`; row 7b's refusal checks every guest change; forced-stop causes include a slow shutdown; row 30-32 checks Switch user) |
 | spec | b Grok (substitute) | 2026-09-28 | Round 3 (full, cap): 2 P2, 1 P3; all confirmed and integrated (row 19 splits the clean reboot from the forced-stop fixture; row 7b's refusal compares against the before-setup inventory, since dockur already installs its own file-sharing service and guest agent; row 4 parenthetical dropped). Stage closed at the cap |
+| spec | amendment | 2026-09-28 | From the phase 4 review: req 23 lets Windows start with no host network (passt's local mode; checked by two reviewers), and row 23-24 tests it (John's decision) |
