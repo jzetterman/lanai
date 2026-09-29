@@ -922,3 +922,5 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 | diff (phase 5) | a | 1 (panel: correctness+reliability, security+supply chain, testing+maintainability) | 0 blockers, 6 should-fix, about 12 nits; all integrated. Heavy round: one more full round |
 | diff (phase 5) | a | 2 (full, 2 reviewers) | 0 blockers, 3 should-fix, 8 nits; all integrated |
 | diff (phase 5) | a | 3 (delta) | clean; 3 nits, 2 taken by Claude test-first (a missing pacman counts all missing; no empty install command). Stage a closed |
+| diff (phase 5) | b Grok (substitute) | 1 (full) | 1 P2 (VM stop returned before the client unit left, so a quick Start then Open could focus the old window), 1 P3 (setup-host claimed a terminal opened); both integrated |
+| diff (phase 5) | b Grok (substitute) | 2 (full) | no findings (reboot timing budget weighed). Gate closed |
