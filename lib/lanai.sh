@@ -656,8 +656,8 @@ scale_step() {
     echo "lanai: not a scale percentage: $1" >&2
     return 1
   }
-  awk -v s="$1" 'BEGIN {
-    n = split("100 125 150 175 200 225 250 300 350 400 450 500", step, " ")
+  awk -v s="$1" -v steps="$LANAI_SCALE_STEPS" 'BEGIN {
+    n = split(steps, step, " ")
     best = step[1]; bd = s - step[1]; if (bd < 0) bd = -bd
     for (i = 2; i <= n; i++) {
       d = s - step[i]; if (d < 0) d = -d
@@ -686,6 +686,8 @@ dockur_version() {
 # (spec 8, 10).
 LANAI_LOGS="journalctl --user -u lanai-vm"
 LANAI_FALLBACK="or use omarchy-windows-vm (RDP or its web console) instead"
+LANAI_FORCED_NOTICE="Windows was force-stopped last time. Likely causes: a locked Windows, an open Windows security screen, or a shutdown that did not finish in time."
+LANAI_BUSY="another Lanai start, snapshot or restore is running"
 
 # Return 0 when Lanai's setup has finished: setup.json's "done" is true
 # (phase 6 writes it).
@@ -702,16 +704,52 @@ unit_state() {
   printf '%s\n' "$st"
 }
 
-# Return 0 when helper <name>'s supervisor still runs inside the VM unit:
-# $RUN/<name>.pid names a process whose cgroup is lanai-vm.service. A dead
-# pid, or a reused one outside the unit, means the helper is gone.
+# Hold Lanai's operation lock (<state>/lock) until this process exits, so
+# two starts, snapshots or restores never overlap (a double click). Call it
+# in the command's own shell, not in $(...). Fails at once when another
+# process holds it.
+lanai_flock() {
+  local s
+  s=$(state_dir)
+  mkdir -p -- "$s" || return 1
+  exec {LANAI_FLOCK_FD}>>"$s/lock" || return 1
+  flock -n "$LANAI_FLOCK_FD"
+}
+
+# Print why a container VM blocks Lanai, and succeed; fail when none does
+# (spec 3). Reads only /proc.
+container_blocked() {
+  if container_running >/dev/null; then
+    echo "a Docker VM is running (possibly omarchy-windows-vm). Stop it with omarchy-windows-vm stop first."
+  elif container_preparing; then
+    echo "a Docker container (possibly omarchy-windows-vm) is preparing a VM. Stop it with omarchy-windows-vm stop first."
+  else
+    return 1
+  fi
+}
+
+# Print why an unfinished restore blocks a start or a snapshot, and succeed;
+# fail when there is none.
+restore_pending() {
+  [[ -e $(state_dir)/restore-in-progress ]] || return 1
+  echo "a restore did not finish: run lanai restore again"
+}
+
+# Return 0 when helper <name> still runs inside the VM unit: $RUN/<name>.pid
+# names a live process (not a zombie) whose cgroup is lanai-vm.service. A
+# dead pid, or a reused one outside the unit, means the helper is gone.
 # LANAI_PROC swaps /proc.
 helper_alive() {
-  local f=$1/$2.pid pid
+  local f=$1/$2.pid pid proc stat
   [[ -r $f ]] || return 1
   pid=$(<"$f")
   [[ $pid =~ ^[0-9]+$ ]] || return 1
-  grep -qE "/${LANAI_UNIT//./\\.}\$" "${LANAI_PROC:-/proc}/$pid/cgroup" 2>/dev/null
+  proc=${LANAI_PROC:-/proc}/$pid
+  [[ -r $proc/stat ]] || return 1
+  stat=$(<"$proc/stat")
+  stat=${stat##*) }
+  [[ ${stat:0:1} != [ZX] ]] || return 1
+  grep -qE "/${LANAI_UNIT//./\\.}\$" "$proc/cgroup" 2>/dev/null
 }
 
 # Print the facts lanai status maps to a state, as Key=Value lines: the
@@ -775,131 +813,88 @@ status_facts() {
 # force_stop (true once a shutdown from the bar has run 2 minutes, spec 16)
 # and, for failed, logs.
 status_map() {
-  local line state message next notice="" warning="" force=false name details
+  local line state message next notice="" warning="" force=false name logs=""
   local -A f=()
   local -a lost=()
   while IFS= read -r line; do
     [[ $line != *=* ]] || f[${line%%=*}]=${line#*=}
   done
-  local active=${f[ActiveState]:-unknown} setup=${f[LanaiSetup]:-needed}
-  if [[ ${f[LanaiLastRun]:-} == forced || ${f[LanaiForced]:-} == yes ]]; then
-    notice="Windows was force-stopped last time. Likely causes: a locked Windows, an open Windows security screen, or a shutdown that did not finish in time."
-  fi
+  local active=${f[ActiveState]:-unknown} setup=${f[LanaiSetup]:-needed} qmp=${f[LanaiQmp]:-none}
+  local forced=${f[LanaiForced]:-no} failed_next="see the logs with $LANAI_LOGS, $LANAI_FALLBACK"
+  # A stop that ran out of time (TimeoutStopSec, at logout with lingering)
+  # is a forced stop, not a crash.
+  [[ ! ($active == failed && ${f[Result]:-} == timeout) ]] || forced=yes
+  [[ ${f[LanaiLastRun]:-} != forced && $forced != yes ]] || notice=$LANAI_FORCED_NOTICE
   case $active in
     active | reloading)
       if [[ ${f[LanaiVersion]:-} == mismatch ]]; then
         state="version-mismatch"
-      elif [[ -n ${f[LanaiStopAge]:-} ]]; then
-        state=stopping
+        message="The Looking Glass client and the driver in Windows come from different builds."
+        next="run Lanai setup again to update Windows, $LANAI_FALLBACK"
+      elif [[ -n ${f[LanaiStopAge]:-} || $qmp == shutdown ]]; then
+        state=stopping message="Windows is shutting down." next="wait up to 2 minutes"
+        if ((${f[LanaiStopAge]:-0} >= 120)); then
+          force=true
+          message="Windows has not shut down after 2 minutes. It may be installing updates, or a Windows security screen may be open."
+          next="wait, or use the forced stop in the panel"
+        fi
+      elif [[ $qmp == internal-error || $qmp == guest-panicked || $qmp == io-error ]]; then
+        state=failed message="QEMU reports $qmp." next=$failed_next
+      elif [[ $qmp == running && $setup != "done" ]]; then
+        # dockur installs its own guest agent, so the port says nothing yet.
+        state="setup-needed" message="Windows is running, but Lanai setup has not finished."
+        next="finish setup in the Lanai panel"
+      elif [[ $qmp == running && ${f[LanaiQga]:-} == open ]]; then
+        state=running message="Windows is running." next="open the Windows window"
+        if [[ -n ${f[LanaiHelpersMissing]:-} ]]; then
+          IFS=, read -r -a lost <<<"${f[LanaiHelpersMissing]}"
+          for name in "${lost[@]}"; do
+            warning+="${warning:+; }${LANAI_HELPERS[$name]:-$name stopped}"
+          done
+          warning="Some of Lanai's helpers stopped: $warning."
+          next="shut Windows down and start it again"
+        fi
       else
-        case ${f[LanaiQmp]:-none} in
-          running)
-            if [[ ${f[LanaiQga]:-} == open ]]; then
-              state=running
-            elif [[ $setup != "done" ]]; then
-              state="setup-running"
-            else
-              state=starting
-            fi
-            ;;
-          shutdown) state=stopping ;;
-          internal-error | guest-panicked | io-error) state=qemu-failed ;;
-          *) state=starting ;;
-        esac
+        state=starting message="Windows is starting." next="wait for Windows to start"
       fi
       ;;
-    activating) state=starting ;;
-    deactivating) state=stopping ;;
+    activating) state=starting message="Windows is starting." next="wait for Windows to start" ;;
+    deactivating) state=stopping message="Windows is shutting down." next="wait up to 2 minutes" ;;
     inactive | failed)
       if [[ ${f[LanaiContainer]:-none} == running ]]; then
-        state="in-use"
+        state="in-use" message="omarchy-windows-vm is running Windows (a Docker VM is running)."
+        next="stop it with omarchy-windows-vm stop, then start Windows here"
       elif [[ ${f[LanaiContainer]:-none} == preparing ]]; then
-        state="in-use-preparing"
-      elif [[ $active == failed && ${f[LanaiForced]:-} != yes ]]; then
-        state="unit-failed"
-      elif [[ ${f[LanaiInstall]:-present} == none ]]; then
-        state="not-installed"
-      elif [[ $setup != "done" ]]; then
-        state="setup-needed"
-      else
-        state=stopped
-      fi
-      ;;
-    *) state=manager-failed ;;
-  esac
-
-  case $state in
-    stopped) message="Windows is stopped." next="start Windows" ;;
-    not-installed)
-      message="There is no Windows install at Lanai's storage location."
-      next="install Windows with omarchy-windows-vm, then run Lanai setup"
-      ;;
-    setup-needed) message="Lanai setup has not finished." next="open the Lanai panel and run setup" ;;
-    setup-running)
-      state="setup-needed"
-      message="Windows is running, but Lanai setup has not finished."
-      next="finish setup in the Lanai panel"
-      ;;
-    in-use)
-      message="omarchy-windows-vm is running Windows (a Docker VM is running)."
-      next="stop it with omarchy-windows-vm stop, then start Windows here"
-      ;;
-    in-use-preparing)
-      state="in-use"
-      message="A Docker container, possibly omarchy-windows-vm's, is preparing a VM."
-      next="stop it with omarchy-windows-vm stop, then start Windows here"
-      ;;
-    starting) message="Windows is starting." next="wait for Windows to start" ;;
-    running)
-      message="Windows is running." next="open the Windows window"
-      if [[ -n ${f[LanaiHelpersMissing]:-} ]]; then
-        IFS=, read -r -a lost <<<"${f[LanaiHelpersMissing]}"
-        for name in "${lost[@]}"; do
-          warning+="${warning:+; }${LANAI_HELPERS[$name]:-$name stopped}"
-        done
-        warning="Some of Lanai's helpers stopped: $warning."
-        next="shut Windows down and start it again"
-      fi
-      ;;
-    stopping)
-      message="Windows is shutting down." next="wait up to 2 minutes"
-      if ((${f[LanaiStopAge]:-0} >= 120)); then
-        force=true
-        message="Windows has not shut down after 2 minutes. It may be installing updates, or a Windows security screen may be open."
-        next="wait, or use the forced stop in the panel"
-      fi
-      ;;
-    version-mismatch)
-      message="The Looking Glass client and the driver in Windows come from different builds."
-      next="run Lanai setup again to update Windows, $LANAI_FALLBACK"
-      ;;
-    unit-failed | qemu-failed | manager-failed)
-      if [[ $state == unit-failed ]]; then
+        state="in-use" message="A Docker container, possibly omarchy-windows-vm's, is preparing a VM."
+        next="stop it with omarchy-windows-vm stop, then start Windows here"
+      elif [[ $active == failed && $forced != yes ]]; then
+        state=failed next=$failed_next
         message="Windows stopped with an error (${f[Result]:-unknown}, status ${f[ExecMainStatus]:-unknown})."
-      elif [[ $state == qemu-failed ]]; then
-        message="QEMU reports ${f[LanaiQmp]}."
+      elif [[ ${f[LanaiInstall]:-present} == none ]]; then
+        state="not-installed" message="There is no Windows install at Lanai's storage location."
+        next="install Windows with omarchy-windows-vm, then run Lanai setup"
+      elif [[ $setup != "done" ]]; then
+        state="setup-needed" message="Lanai setup has not finished." next="open the Lanai panel and run setup"
       else
-        message="Lanai cannot read the VM's state from systemd."
+        state=stopped message="Windows is stopped." next="start Windows"
       fi
-      state=failed
-      next="see the logs with $LANAI_LOGS, $LANAI_FALLBACK"
       ;;
+    *) state=failed message="Lanai cannot read the VM's state from systemd." next=$failed_next ;;
   esac
-  details=$(jq -n -c --arg notice "$notice" --arg warning "$warning" --argjson force "$force" \
-    --arg logs "$([[ $state == failed ]] && echo "$LANAI_LOGS")" \
+  [[ $state != failed ]] || logs=$LANAI_LOGS
+  emit true "$state" "$message" "$next" "$(jq -n -c --arg notice "$notice" --arg warning "$warning" \
+    --argjson force "$force" --arg logs "$logs" \
     '{notice: (if $notice == "" then null else $notice end),
       warning: (if $warning == "" then null else $warning end),
-      force_stop: $force} + (if $logs == "" then {} else {logs: $logs} end)')
-  emit true "$state" "$message" "$next" "$details"
+      force_stop: $force} + (if $logs == "" then {} else {logs: $logs} end)')"
 }
 
 # Check everything that must hold before the VM unit starts, and print the
-# first reason to refuse (plan phase 4). The unit must not be running;
-# then the previous run's markers become a verdict (record_previous_run),
-# then it refuses on an unfinished restore, layout_check, disk_size_check,
-# share_check, a running or preparing container, or a held disk lock. The
-# unit check comes first so a second start cannot clear a live run's
-# markers.
+# first reason to refuse (plan phase 4). The unit must be stopped first, so
+# a second start cannot clear a live run's markers; then the previous run's
+# markers become a verdict (record_previous_run); then it refuses on an
+# unfinished restore, layout_check, disk_size_check, share_check, a running
+# or preparing container, or a held disk lock.
 preflight() {
   local st dir out rc
   if ! st=$(unit_state); then
@@ -908,16 +903,17 @@ preflight() {
   fi
   case $st in
     inactive | failed) ;;
+    deactivating)
+      echo "Windows is still shutting down; try again in a moment."
+      return 1
+      ;;
     *)
       echo "Windows is already running under Lanai ($st)."
       return 1
       ;;
   esac
   record_previous_run >/dev/null
-  if [[ -e $(state_dir)/restore-in-progress ]]; then
-    echo "a restore did not finish: run lanai restore again"
-    return 1
-  fi
+  restore_pending && return 1
   dir=$(storage_dir) || {
     echo "Lanai cannot read its settings file."
     return 1
@@ -936,14 +932,7 @@ preflight() {
     printf '%s\n' "$out"
     return 1
   }
-  if container_running >/dev/null; then
-    echo "a Docker VM is running (possibly omarchy-windows-vm). Stop it with omarchy-windows-vm stop first."
-    return 1
-  fi
-  if container_preparing; then
-    echo "a Docker container (possibly omarchy-windows-vm) is preparing a VM. Stop it with omarchy-windows-vm stop first."
-    return 1
-  fi
+  container_blocked && return 1
   rc=0
   disk_locked "$dir/data.img" || rc=$?
   case $rc in
@@ -959,85 +948,104 @@ preflight() {
 }
 
 # Print the VM unit for the runtime copy at <runtime-dir>, from
-# systemd/lanai-vm.service, with the XDG folders this CLI uses. Fails on a
+# systemd/lanai-vm.service, with the XDG folders the VM reads. Fails on a
 # path the unit file cannot hold without quoting.
 unit_render() {
   local rt=$1 unit p env
   local -a paths=("$rt/bin" "${XDG_CONFIG_HOME:-$HOME/.config}" "${XDG_STATE_HOME:-$HOME/.local/state}"
-    "${XDG_DATA_HOME:-$HOME/.local/share}" "${XDG_CACHE_HOME:-$HOME/.cache}")
+    "${XDG_DATA_HOME:-$HOME/.local/share}")
   for p in "${paths[@]}"; do
     [[ $p =~ ^/[A-Za-z0-9._/@+:,~=-]*$ ]] || {
       echo "lanai: $p has characters the VM unit cannot hold" >&2
       return 1
     }
   done
-  env="XDG_CONFIG_HOME=${paths[1]} XDG_STATE_HOME=${paths[2]} XDG_DATA_HOME=${paths[3]} XDG_CACHE_HOME=${paths[4]}"
+  env="XDG_CONFIG_HOME=${paths[1]} XDG_STATE_HOME=${paths[2]} XDG_DATA_HOME=${paths[3]}"
   unit=$(<"$LANAI_LIB/../systemd/lanai-vm.service") || return 1
   unit=${unit//@BIN@/"${paths[0]}"}
   printf '%s\n' "${unit//@ENV@/"$env"}"
 }
 
 # Make sure the VM unit runs Lanai's current code from a stable copy (plan:
-# Stable runtime copy): copy bin/ and lib/ into
-# <data>/runtime/<version>/ when that copy is missing, install the unit when
-# it differs, reload systemd, and remove older copies. Runs only while the
-# unit is stopped (after preflight), so a plugin update or removal never
-# pulls files from under a running VM.
+# Stable runtime copy): copy bin/ and lib/ into <data>/runtime/<version>/
+# when that copy is missing, install the unit when it differs, reload
+# systemd, and remove older copies. Every step's failure stops it. Runs only
+# while the unit is stopped (after preflight), so a plugin update or removal
+# never pulls files from under a running VM.
 runtime_refresh() {
   local root rt src part unit_dir unit want d
   root=$(data_dir)/runtime
   rt=$root/$LANAI_VERSION
-  src=$(cd -- "$LANAI_LIB/.." && pwd)
+  src=$(cd -- "$LANAI_LIB/.." && pwd) || return 1
   if [[ ! -d $rt ]]; then
     part=$rt.partial
-    rm -rf -- "$part"
-    mkdir -p -- "$part"
-    cp -R -- "$src/bin" "$src/lib" "$src/systemd" "$part/"
-    mv -T -- "$part" "$rt"
+    rm -rf -- "$part" || return 1
+    mkdir -p -- "$part" || return 1
+    cp -R -- "$src/bin" "$src/lib" "$part/" || return 1
+    mv -T -- "$part" "$rt" || return 1
   fi
   want=$(unit_render "$rt") || return 1
   unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
   unit=$unit_dir/$LANAI_UNIT
   if [[ ! -f $unit || $(<"$unit") != "$want" ]]; then
-    mkdir -p -- "$unit_dir"
-    printf '%s\n' "$want" >"$unit.tmp"
-    mv -f -- "$unit.tmp" "$unit"
+    mkdir -p -- "$unit_dir" || return 1
+    printf '%s\n' "$want" >"$unit.tmp" || return 1
+    mv -f -- "$unit.tmp" "$unit" || return 1
     systemctl --user daemon-reload || return 1
   fi
   for d in "$root"/*; do
-    [[ ! -e $d || $d == "$rt" ]] || rm -rf -- "$d"
+    [[ ! -e $d || $d == "$rt" ]] || rm -rf -- "$d" || return 1
   done
 }
 
-# boot_vm <setup 0|1>: the one path that starts the VM unit (lanai start;
-# lanai setup-guest and setup's step 6 boot in phase 6). It runs preflight,
-# refreshes the runtime copy, turns the focused monitor's scale into a
-# Windows step (100% without Hyprland), leaves the scale and boot mode in
-# <state>/boot.json for lanai-vm-exec, and starts the unit. Emits the
-# result, with last_run so the panel can show a forced-stop notice once.
+# boot_vm <setup true|false>: the one path that starts the VM unit (lanai
+# start; lanai setup-guest and setup's step 6 boot in phase 6). Under
+# lanai_flock it runs preflight, turns the focused monitor's scale into a
+# Windows step (100% without Hyprland), runs lanai-vm-exec's own checks as a
+# dry run (vm_plan), so a refusal is explained here rather than showing as
+# a failed unit, refreshes the runtime copy, leaves the scale and boot mode
+# in <state>/boot.json for lanai-vm-exec, and starts the unit. Emits the
+# result, with last_run so the panel can show a forced-stop notice once,
+# and network false when the host has no default route.
 boot_vm() {
-  local setup=false reason scale step s last=""
-  [[ $1 != 1 ]] || setup=true
-  if ! reason=$(preflight); then
-    emit false "" "$reason" ""
+  local setup=$1 reason scale step s media="" last="" message="Windows is starting." network=true
+  if ! lanai_flock; then
+    emit false "" "$LANAI_BUSY." "try again when it finishes"
     return 1
   fi
-  if ! runtime_refresh >&2; then
-    emit false failed "Lanai could not install its runtime copy or VM unit." "see the error output"
+  if ! reason=$(preflight); then
+    emit false "" "$reason" ""
     return 1
   fi
   scale=$(host_scale) || scale=100
   step=$(scale_step "$scale") || step=100
   s=$(state_dir)
-  jq -n -c --argjson scale "$step" --argjson setup "$setup" '{scale: $scale, setup: $setup}' >"$s/boot.json"
+  [[ $setup != true ]] || media=$s/setup-media
+  if ! reason=$(vm_plan "$step" "$media"); then
+    emit false "" "$reason" ""
+    return 1
+  fi
+  if [[ -z $(default_gateway) ]]; then
+    network=false
+    message="Windows is starting without a network: the host has no default route."
+  fi
+  if ! runtime_refresh >&2; then
+    emit false failed "Lanai could not install its runtime copy or VM unit." "see the error output"
+    return 1
+  fi
+  if ! mkdir -p -- "$s" || ! jq -n -c --argjson scale "$step" --argjson setup "$setup" \
+    '{scale: $scale, setup: $setup}' >"$s/boot.json"; then
+    emit false "" "Lanai cannot write $s/boot.json." ""
+    return 1
+  fi
   if ! systemctl --user start "$LANAI_UNIT" >&2; then
     emit false failed "Windows did not start." "see the logs with $LANAI_LOGS, $LANAI_FALLBACK"
     return 1
   fi
   [[ ! -f $s/last-run ]] || last=$(<"$s/last-run")
-  emit true starting "Windows is starting." "wait for Windows to start" \
-    "$(jq -n -c --argjson scale "$step" --arg last "$last" \
-      '{scale: $scale, last_run: (if $last == "" then null else $last end)}')"
+  emit true starting "$message" "wait for Windows to start" \
+    "$(jq -n -c --argjson scale "$step" --arg last "$last" --argjson network "$network" \
+      '{scale: $scale, network: $network, last_run: (if $last == "" then null else $last end)}')"
 }
 
 # status: print the VM's state for the bar (spec 10).
@@ -1051,7 +1059,7 @@ cmd_start() {
     emit false setup-needed "Lanai setup has not finished." "open the Lanai panel and run setup"
     return 1
   fi
-  boot_vm 0
+  boot_vm false
 }
 
 # stop: ask Windows to shut down cleanly (spec 16). Sends system_powerdown
@@ -1059,13 +1067,13 @@ cmd_start() {
 # The unit stays active until QEMU exits by itself. A repeated stop keeps
 # the first request's time, so the panel's 2 minutes run on.
 cmd_stop() {
-  local show inv run s reply rinv="" at=""
-  show=$(systemctl --user show "$LANAI_UNIT" -p ActiveState -p InvocationID 2>/dev/null) || show=""
-  if [[ $show != *ActiveState=active* ]]; then
+  local st inv run s reply rinv="" at=""
+  st=$(unit_state) || st=""
+  if [[ $st != active ]]; then
     emit false "" "Windows is not running." ""
     return 1
   fi
-  inv=$(sed -n 's/^InvocationID=//p' <<<"$show")
+  inv=$(systemctl --user show -p InvocationID --value "$LANAI_UNIT" 2>/dev/null) || inv=""
   run=$(run_dir)
   if ! reply=$(qmp_call "$run/qmp-cli.sock" '{"execute":"system_powerdown"}') ||
     [[ $reply != '{"return":{}}' ]]; then
@@ -1111,8 +1119,13 @@ cmd_force_stop() {
 
 # snapshot: make an instant, verified copy of the storage location (spec 7),
 # and say where it lives, that it grows, and how to delete or restore it.
+# It can take minutes; the panel runs it detached (plan phases 6-7).
 cmd_snapshot() {
   local out rc=0 dir name
+  if ! lanai_flock; then
+    emit false "" "$LANAI_BUSY." "try again when it finishes"
+    return 1
+  fi
   out=$(snapshot_create) || rc=$?
   if ((rc == 3)); then
     dir=$(storage_dir) || dir="the storage location"
@@ -1124,11 +1137,12 @@ cmd_snapshot() {
     return 1
   fi
   name=${out##*/}
-  emit true "" "Snapshot saved at $out. It shares its data with the Windows disk, so it costs little space at first and grows as Windows changes. Delete it with: rm -rf $out. Restore it with: lanai restore $name." "" \
+  emit true "" "Snapshot saved at $out. It shares its data with the Windows disk, so it costs little space at first and grows as Windows changes. Delete it with: rm -rf ${out@Q}. Restore it with: lanai restore $name." "" \
     "$(jq -n -c --arg p "$out" --arg n "$name" '{snapshot: $p, name: $n}')"
 }
 
-# snapshots: list the complete snapshots, oldest first.
+# snapshots: list the complete snapshots of the storage location, oldest
+# first.
 cmd_snapshots() {
   local dir list
   dir=$(storage_dir) || return 1
@@ -1137,9 +1151,14 @@ cmd_snapshots() {
 }
 
 # restore [<name>]: return the storage location to a snapshot (spec 7).
-# Without a name it resumes a restore that did not finish.
+# Without a name it resumes a restore that did not finish. It can take
+# minutes; the panel runs it detached (plan phases 6-7).
 cmd_restore() {
   local out
+  if ! lanai_flock; then
+    emit false "" "$LANAI_BUSY." "try again when it finishes"
+    return 1
+  fi
   if ! out=$(snapshot_restore "${1:-}"); then
     emit false "" "$out" ""
     return 1

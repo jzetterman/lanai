@@ -16,23 +16,10 @@ setup() {
   RUN=$XDG_RUNTIME_DIR/lanai
   S=$XDG_STATE_HOME/lanai
   mkdir -p "$T/shims"
-  BG_PIDS=()
-  # The fake servers (test/fixtures/fake-*) read their knobs from here.
-  export FAKE_CONF=$T/fake.conf
-}
-
-# Set the fake servers' knobs (KEY=value lines) for their next connection.
-conf() {
-  printf '%s\n' "$@" >"$FAKE_CONF"
 }
 
 teardown() {
-  local p
-  for p in "${BG_PIDS[@]}"; do
-    pkill -P "$p" 2>/dev/null || true
-    kill -- "-$p" 2>/dev/null || kill "$p" 2>/dev/null || true
-  done
-  for p in "${BG_PIDS[@]}"; do wait "$p" 2>/dev/null || true; done
+  stop_bg
 }
 
 # --- vm_args ---
@@ -209,11 +196,36 @@ EOF
     assert_failure
     assert_output --partial "scale"
   done
-  for bad in 192.168.1 "192.168.1.1,hostfwd=tcp::1-:1" fe80::1 ""; do
+  for bad in 192.168.1 "192.168.1.1,hostfwd=tcp::1-:1" fe80::1; do
     run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 "$bad"
     assert_failure
     assert_output --partial "gateway"
   done
+}
+
+@test "vm_args: without a gateway, passt runs without the DNS forward" {
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 ""
+  assert_success
+  assert_line "passt,id=hostnet0,ipv6=off,map-host-loopback=none"
+}
+
+@test "default_gateway: reads the gateway from ip's JSON, or nothing without one" {
+  shim ip 'cat "$T/route.json"'
+  export T
+  echo '[{"dst":"default","gateway":"192.168.1.1","dev":"wlan0","protocol":"dhcp","flags":[]}]' >"$T/route.json"
+  PATH=$T/shims:$PATH run default_gateway
+  assert_output 192.168.1.1
+  # A nexthop id before "via" (the text form's third word is not the gateway).
+  echo '[{"dst":"default","nhid":5,"gateway":"10.0.0.1","dev":"eth0","flags":[]}]' >"$T/route.json"
+  PATH=$T/shims:$PATH run default_gateway
+  assert_output 10.0.0.1
+  # A device route, such as a VPN's, has no gateway; nor has an empty table.
+  echo '[{"dst":"default","dev":"wg0","scope":"link","flags":[]}]' >"$T/route.json"
+  PATH=$T/shims:$PATH run default_gateway
+  assert_output ""
+  echo '[]' >"$T/route.json"
+  PATH=$T/shims:$PATH run default_gateway
+  assert_output ""
 }
 
 @test "vm_args: refuses a setup media path or runtime folder with a comma" {
@@ -229,7 +241,7 @@ EOF
   local extra
   for extra in '-vnc\n:1' '-chardev\nsocket,id=m,host=127.0.0.1,port=4444,server=on' \
     '-serial\nmon:stdio' '-netdev\nuser,id=n,hostfwd=tcp::2222-:22' '-drive\nfile=/storage/x.img' \
-    '-chardev\nsocket,id=x,path=/run/shm/x.sock'; do
+    '-chardev\nsocket,id=x,path=/run/shm/x.sock' '-netdev\nuser,id=n2'; do
     { cat "$REPO/lib/dockur-6.05.args"; printf '%b\n' "$extra"; } >"$T/args"
     LANAI_ARGS_TEMPLATE=$T/args run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 192.168.1.1
     assert_failure
@@ -287,11 +299,13 @@ EOF
 
 # --- record_previous_run ---
 
-# Write the marker files of a run: running <invocation>, and optionally a
-# last-shutdown record <invocation> <guest true|false>.
+# Write the marker files of a run that really started: running
+# <invocation>, and the event logger's started stamp for it. mark_shutdown
+# adds a last-shutdown record <invocation> <guest true|false>.
 mark_running() {
   mkdir -p "$S"
   printf '%s\n' "$1" >"$S/running"
+  printf '%s\n' "$1" >"$S/started"
 }
 mark_shutdown() {
   mkdir -p "$S"
@@ -302,6 +316,7 @@ mark_shutdown() {
 # Assert that the run markers are all gone.
 assert_markers_gone() {
   assert [ ! -e "$S/running" ]
+  assert [ ! -e "$S/started" ]
   assert [ ! -e "$S/forced" ]
   assert [ ! -e "$S/last-shutdown" ]
 }
@@ -316,11 +331,27 @@ assert_markers_gone() {
   assert_markers_gone
 }
 
-@test "record_previous_run: a crash (running marker, no shutdown record) is forced" {
+@test "record_previous_run: a crash or a SIGKILL at reboot (no shutdown record) is forced" {
   mark_running aaaa1111
   run record_previous_run
   assert_output forced
   assert_equal "$(<"$S/last-run")" forced
+  assert_markers_gone
+}
+
+@test "record_previous_run: a run whose QEMU never answered failed to start; nothing to report" {
+  mkdir -p "$S"
+  echo aaaa1111 >"$S/running"
+  run record_previous_run
+  assert_success
+  assert_output ""
+  assert [ ! -e "$S/last-run" ]
+  assert_markers_gone
+  # A stamp from another run does not count either.
+  echo bbbb2222 >"$S/running"
+  echo aaaa1111 >"$S/started"
+  run record_previous_run
+  assert_output ""
   assert_markers_gone
 }
 
@@ -342,12 +373,6 @@ assert_markers_gone() {
   assert_markers_gone
 }
 
-@test "record_previous_run: a SIGKILL at reboot leaves only the running marker, so forced" {
-  mark_running bbbb2222
-  run record_previous_run
-  assert_output forced
-}
-
 @test "record_previous_run: another run's shutdown record does not count" {
   mark_running bbbb2222
   mark_shutdown aaaa1111 true
@@ -360,7 +385,7 @@ assert_markers_gone() {
   mark_running ""
   mark_shutdown "" true
   run record_previous_run
-  assert_output forced
+  refute_output clean
 }
 
 @test "record_previous_run: a start that failed before the running marker reports nothing, once" {
@@ -396,19 +421,6 @@ assert_markers_gone() {
 }
 
 # --- the QMP and guest agent clients ---
-
-# Serve <socket> with the fake server <script> (one run per connection) in
-# the background, and wait until the socket exists.
-serve() {
-  local i
-  socat "UNIX-LISTEN:$1,fork" "EXEC:$2" >/dev/null 2>&1 3>&- &
-  BG_PIDS+=("$!")
-  for ((i = 0; i < 100; i++)); do
-    [[ -S $1 ]] && return 0
-    sleep 0.05
-  done
-  fail "the fake server did not create $1"
-}
 
 # Wait until file <f> holds a line matching <regex> (up to 3 s).
 wait_for_line() {
@@ -533,11 +545,23 @@ wait_for_line() {
   assert_success
   assert_equal "$(sed -n 3p "$T/qga.log")" 'cmd {"execute":"guest-set-time","arguments":{"time":1}}'
   local reply
-  for reply in other generic disabled notfound; do
+  for reply in other big generic disabled notfound; do
     conf "FAKE_QGA_CMD=$reply"
     run qga_reply "$T/g.sock" command '{"execute":"guest-set-time"}'
     assert_failure
   done
+}
+
+@test "qga_reply command: fills @NOW_NS@ with the host's time as the command goes out" {
+  export FAKE_QGA_LOG=$T/qga.log
+  serve "$T/g.sock" "$FIX/fake-qga"
+  run qga_reply "$T/g.sock" command '{"execute":"guest-set-time","arguments":{"time":@NOW_NS@}}'
+  assert_success
+  local ns now
+  ns=$(sed -n 's/^cmd //p' "$T/qga.log" | jq -r .arguments.time)
+  now=${EPOCHREALTIME//[!0-9]/}000
+  [[ $ns =~ ^[0-9]{19}$ ]] || fail "not nanoseconds: $ns"
+  ((now - ns >= 0 && now - ns < 3000000000)) || fail "time $ns is not the send time ($now)"
 }
 
 @test "qga_reply refusal: passes only on the 'has been disabled' CommandNotFound" {
@@ -614,6 +638,17 @@ wait_for_line() {
   assert_equal "$(<"$RUN/holder.pid")" "${BG_PIDS[0]}"
 }
 
+@test "run_once: runs the helper once, and drops its pid file when it exits" {
+  mkdir -m 700 "$RUN"
+  printf '#!/usr/bin/env bash\necho run >>"%s"\n[[ -s "%s" ]] && echo pidfile-present >>"%s"\nexit 3\n' \
+    "$T/runs" "$RUN/vfs.pid" "$T/runs" >"$T/crash"
+  chmod +x "$T/crash"
+  run run_once vfs "$T/crash"
+  assert_failure 3
+  assert_equal "$(paste -sd' ' "$T/runs")" "run pidfile-present"
+  assert [ ! -e "$RUN/vfs.pid" ]
+}
+
 # --- helpers: event logger, shutdown and sleep watchers ---
 
 @test "event_log: records the guest's SHUTDOWN with this run's invocation id" {
@@ -623,6 +658,8 @@ wait_for_line() {
   run timeout 10 bash -c 'source "$1"; event_log' _ "$REPO/lib/lanai.sh"
   assert_success
   assert_equal "$(jq -c . "$S/last-shutdown")" '{"invocation":"inv-1","guest":true,"reason":"guest-shutdown"}'
+  # QEMU answered, so the run counts as started.
+  assert_equal "$(<"$S/started")" inv-1
 }
 
 @test "event_log: records a host-initiated SHUTDOWN as not the guest's" {
@@ -660,7 +697,29 @@ EOF
   assert_equal "$(<"$T/calls")" "--user stop --no-block lanai-vm.service"
 }
 
-@test "sleep_watch_lines: a resume sets the guest clock to the host's, a suspend does nothing" {
+@test "shutdown-watch: listens only to logind, and keeps watching when a stop fails" {
+  export T
+  # dbus-monitor logs its match and reports two shutdown signals.
+  shim dbus-monitor 'printf "%s\n" "$@" >"$T/match"; printf "   boolean true\n   boolean true\n"'
+  shim systemctl 'echo "$*" >>"$T/calls"; exit 1'
+  PATH=$T/shims:$PATH run "$REPO/bin/lanai-vm-helper" shutdown-watch
+  assert_success
+  run cat "$T/match"
+  assert_line --partial "sender='org.freedesktop.login1'"
+  assert_line --partial "member='PrepareForShutdown'"
+  assert_equal "$(wc -l <"$T/calls")" 2
+}
+
+@test "sleep-watch: listens only to logind" {
+  export T
+  shim dbus-monitor 'printf "%s\n" "$@" >"$T/match"'
+  PATH=$T/shims:$PATH run "$REPO/bin/lanai-vm-helper" sleep-watch
+  run cat "$T/match"
+  assert_line --partial "sender='org.freedesktop.login1'"
+  assert_line --partial "member='PrepareForSleep'"
+}
+
+@test "sleep_watch_lines: a resume sets the guest clock, a suspend does nothing" {
   # Stand-in for the agent call: log the mode and command.
   qga_reply() { printf '%s %s\n' "$2" "$3" >>"$T/qga-calls"; }
   run sleep_watch_lines <<'EOF'
@@ -669,17 +728,11 @@ EOF
 EOF
   assert_success
   assert_equal "$(wc -l <"$T/qga-calls")" 1
-  local mode cmd ns
-  read -r mode cmd <"$T/qga-calls"
-  assert_equal "$mode" command
-  assert_equal "$(jq -r .execute <<<"$cmd")" guest-set-time
-  ns=$(jq -r .arguments.time <<<"$cmd")
-  # Nanoseconds since the epoch, within 5 s of now.
-  (((ns / 1000000000) - $(date +%s) <= 5 && $(date +%s) - (ns / 1000000000) <= 5)) ||
-    fail "time $ns is not now"
+  # qga_reply fills in the time as the command goes out (tested above).
+  assert_equal "$(<"$T/qga-calls")" 'command {"execute":"guest-set-time","arguments":{"time":@NOW_NS@}}'
 }
 
-@test "clock_sync: retries a busy agent, and stops trying after 60 s" {
+@test "clock_sync: retries a busy agent until 60 s have passed" {
   shim sleep ':'
   echo 0 >"$T/count"
   # Busy twice, then answers.
@@ -691,15 +744,17 @@ EOF
   PATH=$T/shims:$PATH run clock_sync
   assert_success
   assert_equal "$(<"$T/count")" 3
-  # Never answers: it gives up after its 30 tries of 2 s.
+  # Never answers, and each try takes 20 s: tries at 0, 20 and 40 s, then
+  # the 60 s are up.
   echo 0 >"$T/count"
   qga_reply() {
     echo $(($(<"$T/count") + 1)) >"$T/count"
+    SECONDS=$((SECONDS + 20))
     return 1
   }
   PATH=$T/shims:$PATH run clock_sync
   assert_failure
-  assert_equal "$(<"$T/count")" 30
+  assert_equal "$(<"$T/count")" 3
 }
 
 # --- lanai-vm-exec ---
@@ -716,7 +771,8 @@ for a; do [[ $a != --socket-path=* ]] || p=${a#*=}; done
 exec socat "UNIX-LISTEN:$p,fork" EXEC:/bin/true'
   shim systemd-inhibit 'printf "%s\n" "$@" >"$T/inhibit.args"; exec sleep 30'
   shim dbus-monitor 'exec sleep 30'
-  shim ip 'echo "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.20 metric 600"'
+  echo '[{"dst":"default","gateway":"192.168.1.1","dev":"wlan0","flags":[]}]' >"$T/route.json"
+  shim ip 'cat "$T/route.json"'
   export T LANAI_VIRTIOFSD=$T/shims/virtiofsd INVOCATION_ID=inv-exec
   make_install "$T/win"
   mkdir -p "$HOME/Windows" "$XDG_CONFIG_HOME/lanai"
@@ -756,11 +812,11 @@ start_exec() {
   assert_equal "$(<"$T/qemu.tmpdir")" "$RUN"
   assert_equal "$(tr '\0' ' ' </proc/"$EXEC_PID"/cmdline)" "sleep 30 "
   assert_equal "$(<"$S/running")" inv-exec
-  # Each helper runs under its supervisor, whose pid is in $RUN.
+  # Each helper's pid (virtiofsd's own runner, the others' supervisors) is in $RUN.
   local name
-  for name in virtiofsd inhibitor sleep-watcher event-logger; do
+  for name in virtiofsd shutdown-watch sleep-watch event-log; do
     [[ -s $RUN/$name.pid ]] || fail "no pid file for $name"
-    kill -0 "$(<"$RUN/$name.pid")" || fail "$name's supervisor is not running"
+    kill -0 "$(<"$RUN/$name.pid")" || fail "$name is not running"
   done
   assert_equal "$(paste -sd' ' "$T/virtiofsd.args")" \
     "--sandbox namespace --shared-dir $HOME/Windows --socket-path=$RUN/virtiofs.sock"
@@ -800,9 +856,28 @@ start_exec() {
   assert_output --partial "0700"
 }
 
+@test "lanai-vm-exec: without a default route it still boots, without the DNS forward" {
+  exec_shims
+  echo '[{"dst":"default","dev":"wg0","scope":"link","flags":[]}]' >"$T/route.json"
+  start_exec
+  local i
+  for ((i = 0; i < 100; i++)); do
+    [[ -e $T/qemu.args ]] && break
+    sleep 0.05
+  done
+  run cat "$T/qemu.args"
+  assert_line "passt,id=hostnet0,ipv6=off,map-host-loopback=none"
+  run cat "$T/exec.out"
+  assert_output --partial "without a network"
+}
+
 @test "lanai-vm-exec: without virtiofsd's socket it fails and writes no marker" {
   exec_shims
   export NO_VFS_SOCKET=1
+  # A stale socket from an earlier run must not count as virtiofsd's.
+  mkdir -m 700 "$RUN"
+  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$RUN/virtiofs.sock"
+  [[ -S $RUN/virtiofs.sock ]] || fail "no stale socket planted"
   start_exec
   local rc=0
   wait "$EXEC_PID" || rc=$?
@@ -841,13 +916,27 @@ fake_main() {
     FAKE_QMP_INVOCATION=inv-stop
   mkdir -p "$S"
   serve "$RUN/qmp.sock" "$FIX/fake-qmp"
-  local start=$SECONDS
+  local start=${EPOCHREALTIME//[!0-9]/}
   INVOCATION_ID=inv-stop MAINPID=$FAKE_PID run "$REPO/bin/lanai-vm-stop"
   assert_success
   grep -q '"execute":"system_powerdown"' "$T/qmp.log" || fail "no system_powerdown sent"
   ! kill -0 "$FAKE_PID" 2>/dev/null || fail "returned while QEMU still ran"
   # The record was already there, so there was no 2 s wait.
-  (((SECONDS - start) <= 1)) || fail "took $((SECONDS - start)) s"
+  local ms=$(((${EPOCHREALTIME//[!0-9]/} - start) / 1000))
+  ((ms < 1500)) || fail "took $ms ms"
+}
+
+@test "lanai-vm-stop: repeats system_powerdown while Windows ignores it" {
+  mkdir -m 700 "$RUN"
+  fake_main
+  # QEMU exits only on the second request, as when the first came during
+  # early boot.
+  export FAKE_QMP_LOG=$T/qmp.log FAKE_QMP_KILL=$FAKE_PID FAKE_QMP_KILL_ON=2
+  serve "$RUN/qmp.sock" "$FIX/fake-qmp"
+  LANAI_POWERDOWN_INTERVAL=1 INVOCATION_ID=inv-r MAINPID=$FAKE_PID run timeout 20 "$REPO/bin/lanai-vm-stop"
+  assert_success
+  assert_equal "$(grep -c '"execute":"system_powerdown"' "$T/qmp.log")" 2
+  ! kill -0 "$FAKE_PID" 2>/dev/null || fail "returned while QEMU still ran"
 }
 
 @test "lanai-vm-stop: after QEMU exited on its own it skips the powerdown" {
@@ -856,9 +945,12 @@ fake_main() {
   serve "$RUN/qmp.sock" "$FIX/fake-qmp"
   mkdir -p "$S"
   printf '{"invocation":"inv-x","guest":true,"reason":"guest-shutdown"}\n' >"$S/last-shutdown"
-  EXIT_CODE=exited EXIT_STATUS=0 INVOCATION_ID=inv-x MAINPID="" run "$REPO/bin/lanai-vm-stop"
+  # MAINPID names a live process: only EXIT_CODE says QEMU is gone.
+  fake_main
+  EXIT_CODE=exited EXIT_STATUS=0 INVOCATION_ID=inv-x MAINPID=$FAKE_PID run "$REPO/bin/lanai-vm-stop"
   assert_success
   assert [ ! -e "$T/qmp.log" ]
+  kill "$FAKE_PID"
 }
 
 @test "lanai-vm-stop: waits at most about 2 s for a record that never comes" {

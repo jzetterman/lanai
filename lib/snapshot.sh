@@ -6,11 +6,20 @@
 # the data folder cannot reflink from the storage location. <name> is the
 # UTC time, like 20260928T193000Z. It is built in <name>.partial/, checked
 # file by file (list, size, SHA-256) against the storage location while
-# QEMU's write lock is held, given a COMPLETE file holding that manifest,
-# and only then renamed. Only a folder with a matching COMPLETE counts.
+# QEMU's write lock is held, given a SOURCE file (the storage location's
+# real path) and a COMPLETE file (the manifest), and only then renamed. A
+# snapshot counts only for the storage location its SOURCE names, and only
+# with a matching COMPLETE. The callers hold lanai_flock, so no two
+# snapshots or restores overlap.
 # shellcheck shell=bash
 
 LANAI_SNAP_RE='^[0-9]{8}T[0-9]{6}Z$'
+
+# The names a storage location may hold for a snapshot or restore: the
+# omarchy-windows-vm install (layout_check's allow-list), dockur's leftover
+# setup image, and a restore's own temp files.
+LANAI_STORE_NAMES=" data.img windows.base windows.boot windows.mac windows.rom windows.vars windows.ver "
+LANAI_STORE_LEFTOVERS=" setup.img setup.img.tmp "
 
 # Print the places snapshots of <storage> may live, in order of preference.
 snapshot_roots() {
@@ -19,16 +28,20 @@ snapshot_roots() {
 
 # Print the first snapshot place that can hold an instant copy of the
 # install at <storage>, probed with a real reflink of windows.mac (a small
-# file). A folder the probe had to create is removed again when it fails.
-# Fails when neither place can reflink.
+# file). Places are made with mode 0700; one that is a symlink or belongs to
+# another user is skipped. A folder the probe had to create is removed again
+# when it fails. Fails when neither place can reflink.
 snapshot_root() {
   local storage=$1 root probe made
   while IFS= read -r root; do
     made=0
-    if [[ ! -d $root ]]; then
-      mkdir -p -- "$root" 2>/dev/null || continue
+    if [[ ! -e $root && ! -L $root ]]; then
+      if ! mkdir -p -- "${root%/*}" 2>/dev/null || ! mkdir -m 700 -- "$root" 2>/dev/null; then
+        continue
+      fi
       made=1
     fi
+    [[ -d $root && ! -L $root && $(stat -c %u -- "$root") == "$(id -u)" ]] || continue
     probe=$root/.lanai-probe.$$
     if reflink_file "$storage/windows.mac" "$probe"; then
       rm -f -- "$probe"
@@ -41,20 +54,31 @@ snapshot_root() {
   return 1
 }
 
-# Return 0 when <dir> is a complete snapshot: a real folder with a snapshot
-# name, a COMPLETE manifest of top-level regular files only, and exactly
-# those files at those sizes beside it. (restore checks every SHA-256 at
-# the end.)
+# Print the manifest (tree_manifest) of snapshot folder <dir> without its
+# own COMPLETE and SOURCE files.
+snapshot_manifest() {
+  local m
+  m=$(tree_manifest "$1") || return 1
+  grep -vE '^f [0-9]+ [0-9a-f]{64} (COMPLETE|SOURCE)$' <<<"$m" || true
+}
+
+# Return 0 when <dir> is a complete snapshot of <storage>: a real folder
+# with a snapshot name, a SOURCE naming <storage>, a COMPLETE manifest of
+# top-level install files only, and exactly those files at those sizes
+# beside them. (restore checks every SHA-256 before it writes anything.)
 snapshot_valid() {
-  local d=$1 kind size sum name want="" have
-  [[ ${d##*/} =~ $LANAI_SNAP_RE && -d $d && ! -L $d && -f $d/COMPLETE && ! -L $d/COMPLETE ]] || return 1
+  local d=$1 storage=$2 kind size sum name want="" have
+  [[ ${d##*/} =~ $LANAI_SNAP_RE && -d $d && ! -L $d ]] || return 1
+  [[ -f $d/SOURCE && ! -L $d/SOURCE && -f $d/COMPLETE && ! -L $d/COMPLETE ]] || return 1
+  [[ $(<"$d/SOURCE") == "$storage" ]] || return 1
   while read -r kind size sum name; do
-    [[ $kind == f && $size =~ ^[0-9]+$ && $sum =~ ^[0-9a-f]{64}$ && -n $name && $name != */* &&
-      $name != COMPLETE ]] || return 1
+    [[ $kind == f && $size =~ ^[0-9]+$ && $sum =~ ^[0-9a-f]{64}$ &&
+      $LANAI_STORE_NAMES == *" $name "* ]] || return 1
     want+="f $name $size"$'\n'
   done <"$d/COMPLETE"
-  [[ -n $want ]] || return 1
-  have=$(find "$d" -mindepth 1 -maxdepth 1 ! -name COMPLETE -printf '%y %P %s\n' | LC_ALL=C sort)
+  [[ $want == *" data.img "* ]] || return 1
+  have=$(find "$d" -mindepth 1 -maxdepth 1 ! -name COMPLETE ! -name SOURCE -printf '%y %P %s\n' |
+    LC_ALL=C sort)
   [[ $have == "$(LC_ALL=C sort <<<"${want%$'\n'}")" ]]
 }
 
@@ -63,7 +87,7 @@ snapshot_list() {
   local root d
   while IFS= read -r root; do
     for d in "$root"/*; do
-      if snapshot_valid "$d"; then printf '%s\t%s\n' "${d##*/}" "$d"; fi
+      if snapshot_valid "$d" "$1"; then printf '%s\t%s\n' "${d##*/}" "$d"; fi
     done
   done < <(snapshot_roots "$1") | LC_ALL=C sort | cut -f2-
 }
@@ -81,21 +105,41 @@ snapshot_find() {
   return 1
 }
 
-# Print why a snapshot or restore must wait, and fail: Lanai's VM runs, a
-# container VM runs or prepares, or a restore did not finish. The disk lock
-# the caller then takes also refuses while any VM holds the disk.
+# Print why the storage location <dir> is not one a snapshot or restore may
+# touch, and succeed; fail when it is fine. It must be an existing real
+# folder holding only regular files with install names, dockur's leftover
+# setup image, or a restore's temp files. Anything else (a folder, a
+# symlink, someone's own file) means Lanai's storage may point at the wrong
+# place, so nothing is copied, replaced or removed.
+storage_problem() {
+  local dir=$1 e
+  local -a bad=()
+  if [[ ! -d $dir || -L $dir ]]; then
+    echo "$dir is not an existing folder. Lanai snapshots and restores only an existing storage location."
+    return 0
+  fi
+  while IFS= read -r -d '' e; do
+    if [[ $LANAI_STORE_NAMES$LANAI_STORE_LEFTOVERS != *" $e "* && $e != .lanai-restore.* ]]; then
+      bad+=("$e")
+    elif [[ ! -f $dir/$e || -L $dir/$e ]]; then
+      bad+=("$e (not a regular file)")
+    fi
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0')
+  ((${#bad[@]})) || return 1
+  echo "$dir holds $(printf '%s, ' "${bad[@]}" | sed 's/, $//'), which Lanai will not copy, replace or remove. Check that Lanai's storage points at the right folder, and move those out first."
+}
+
+# Print why a snapshot or restore must wait, and succeed: the user manager
+# does not answer, Lanai's VM runs, or a container VM runs or prepares. The
+# disk lock the caller then takes also refuses while any VM holds the disk.
 snapshot_blocked() {
   local st
   if ! st=$(unit_state); then
     echo "Lanai cannot reach the systemd user manager."
   elif [[ $st != inactive && $st != failed ]]; then
     echo "Windows is running under Lanai. Shut it down first."
-  elif container_running >/dev/null; then
-    echo "a Docker VM is running (possibly omarchy-windows-vm). Stop it with omarchy-windows-vm stop first."
-  elif container_preparing; then
-    echo "a Docker container (possibly omarchy-windows-vm) is preparing a VM. Stop it with omarchy-windows-vm stop first."
   else
-    return 1
+    container_blocked
   fi
 }
 
@@ -110,17 +154,16 @@ snapshot_remove() {
 snapshot_create() {
   local dir reason root name part m d
   dir=$(storage_dir) || return 1
-  if reason=$(snapshot_blocked); then
+  if [[ $dir == *$'\n'* ]]; then
+    echo "the storage location's path holds a newline"
+    return 1
+  fi
+  if reason=$(snapshot_blocked) || reason=$(restore_pending) || reason=$(storage_problem "$dir"); then
     echo "$reason"
     return 1
   fi
-  if [[ -e $(state_dir)/restore-in-progress ]]; then
-    echo "a restore did not finish: run lanai restore again"
-    return 1
-  fi
-  if [[ ! -f $dir/data.img || -L $dir/data.img ]] ||
-    [[ -n $(find "$dir" -mindepth 1 -maxdepth 1 ! -type f -print -quit) ]]; then
-    echo "$dir is not a storage location Lanai can snapshot: it needs data.img and only files"
+  if [[ ! -f $dir/data.img ]]; then
+    echo "$dir has no data.img to snapshot"
     return 1
   fi
   root=$(snapshot_root "$dir") || {
@@ -131,19 +174,27 @@ snapshot_create() {
     echo "cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it first."
     return 1
   fi
-  # Leftovers of an interrupted snapshot; ours, since we hold the lock.
+  # Leftovers of an interrupted snapshot of this location. Under lanai_flock
+  # no snapshot is being built, so one without a SOURCE yet (stopped
+  # mid-copy) is a leftover too; another location's are left alone.
   for d in "$root"/*.partial; do
-    [[ ! -d $d || -L $d || ! ${d##*/} =~ ^[0-9]{8}T[0-9]{6}Z\.partial$ ]] || snapshot_remove "$d"
+    [[ -d $d && ! -L $d ]] || continue
+    d=${d%.partial}
+    [[ ${d##*/} =~ $LANAI_SNAP_RE ]] || continue
+    if [[ ! -e $d.partial/SOURCE || $(<"$d.partial/SOURCE") == "$dir" ]]; then
+      snapshot_remove "$d.partial"
+    fi
   done
   name=$(date -u +%Y%m%dT%H%M%SZ)
   part=$root/$name.partial
-  if [[ -e $root/$name ]] || ! mkdir -- "$part"; then
+  if [[ -e $root/$name ]] || ! mkdir -m 700 -- "$part"; then
     unlock_disk
     echo "a snapshot named $name already exists; try again in a second"
     return 1
   fi
-  if reflink_tree "$dir" "$part" && m=$(tree_manifest "$dir") &&
-    [[ $m == "$(tree_manifest "$part")" ]] && printf '%s\n' "$m" >"$part/COMPLETE" &&
+  if reflink_tree "$dir" "$part" && printf '%s\n' "$dir" >"$part/SOURCE" &&
+    m=$(tree_manifest "$dir") && [[ $m == "$(snapshot_manifest "$part")" ]] &&
+    printf '%s\n' "$m" >"$part/COMPLETE" && sync -- "$part/SOURCE" "$part/COMPLETE" &&
     mv -T -- "$part" "$root/$name"; then
     unlock_disk
     printf '%s\n' "$root/$name"
@@ -155,52 +206,74 @@ snapshot_create() {
   return 1
 }
 
-# restore [<name>]: return the storage location to snapshot <name>. First
-# the "restore-in-progress" marker names the snapshot; then, under QEMU's
-# write lock, every file but data.img is replaced through a temp file and a
-# rename, and data.img is cloned in place with ficlone.py, so it is never
-# empty and the locked inode is the one written; files not in the snapshot
-# are removed; the result is checked against the manifest, and only then
-# is the marker deleted. While the marker exists, a restore without a name
-# resumes the same snapshot. Prints what it did, or why it stopped.
+# Write the restore-in-progress marker <marker> (the snapshot, then the
+# storage location) and flush it and its folder to disk before any storage
+# file changes.
+restore_mark() {
+  local marker=$1
+  printf '%s\n%s\n' "$2" "$3" >"$marker.tmp" && sync -- "$marker.tmp" &&
+    mv -f -- "$marker.tmp" "$marker" && sync -- "${marker%/*}"
+}
+
+# restore [<name>]: return the storage location to snapshot <name>. The
+# storage location must pass storage_problem, and the snapshot's files must
+# match its manifest, before anything is written. Then the
+# "restore-in-progress" marker names the snapshot and the storage location;
+# under QEMU's write lock every file but data.img is replaced through a temp
+# file and a rename, and data.img is cloned in place with ficlone.py, so it
+# is never empty and the locked inode is the one written; other regular
+# files are removed; the result is checked against the manifest, flushed,
+# and only then is the marker deleted. While the marker exists, a restore
+# without a name resumes it; when its snapshot is gone or damaged, a named
+# restore of another snapshot replaces it. Prints what it did, or why it
+# stopped.
 snapshot_restore() {
-  local want=${1:-} dir s marker snap reason kind size sum name rc=0 e
+  local want=${1:-} dir s marker snap="" msrc="" reason note="" kind size sum name rc=0 e
   local -a order=()
   local -A keep=()
   dir=$(storage_dir) || return 1
   s=$(state_dir)
   marker=$s/restore-in-progress
   if [[ -f $marker ]]; then
-    snap=$(<"$marker")
-    if [[ -n $want && $want != "${snap##*/}" ]]; then
-      echo "a restore of ${snap##*/} did not finish: run lanai restore again to finish it first"
+    { IFS= read -r snap && IFS= read -r msrc; } <"$marker" || true
+    if [[ $msrc != "$dir" ]]; then
+      echo "the unfinished restore ($marker) was for ${msrc:-an unknown storage location}, not $dir. Point Lanai's storage back at it, then run lanai restore again."
+      return 1
+    elif snapshot_valid "$snap" "$dir"; then
+      if [[ -n $want && $want != "${snap##*/}" ]]; then
+        echo "a restore of ${snap##*/} did not finish: run lanai restore again to finish it first"
+        return 1
+      fi
+    elif [[ -z $want ]]; then
+      echo "the unfinished restore's snapshot ($snap) is gone or damaged. Restore another snapshot by name (lanai snapshots lists them); that replaces $marker."
+      return 1
+    else
+      note="replacing the unfinished restore of ${snap##*/} ($marker); "
+      snap=""
+    fi
+  fi
+  if [[ -z $snap ]]; then
+    if [[ -z $want ]]; then
+      echo "name a snapshot to restore (lanai snapshots lists them)"
+      return 1
+    elif ! snap=$(snapshot_find "$dir" "$want"); then
+      echo "there is no complete snapshot named $want for $dir"
       return 1
     fi
-  elif [[ -z $want ]]; then
-    echo "name a snapshot to restore (lanai snapshots lists them)"
-    return 1
-  elif ! snap=$(snapshot_find "$dir" "$want"); then
-    echo "there is no complete snapshot named $want"
-    return 1
   fi
-  if ! snapshot_valid "$snap"; then
-    echo "$snap is not a complete snapshot"
-    return 1
-  fi
-  if reason=$(snapshot_blocked); then
+  if reason=$(snapshot_blocked) || reason=$(storage_problem "$dir"); then
     echo "$reason"
+    return 1
+  fi
+  if [[ $(snapshot_manifest "$snap") != "$(<"$snap/COMPLETE")" ]]; then
+    echo "$snap is damaged: its files do not match its manifest. Nothing was changed."
     return 1
   fi
   while read -r kind size sum name; do
     keep[$name]=1
     [[ $name == data.img ]] || order+=("$name")
   done <"$snap/COMPLETE"
-  [[ -n ${keep[data.img]:-} ]] || {
-    echo "$snap has no data.img"
-    return 1
-  }
   order+=(data.img)
-  mkdir -p -- "$dir"
   if [[ ! -f $dir/data.img ]]; then
     # dockur deleted the disk: put it back first, so its lock can be taken.
     if ! reflink_file "$snap/data.img" "$dir/.lanai-restore.data.img" ||
@@ -213,8 +286,11 @@ snapshot_restore() {
     echo "cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it first."
     return 1
   fi
-  mkdir -p -- "$s"
-  printf '%s\n' "$snap" >"$marker"
+  if ! restore_mark "$marker" "$snap" "$dir"; then
+    unlock_disk
+    echo "cannot write $marker; nothing was changed"
+    return 1
+  fi
   for name in "${order[@]}"; do
     if [[ $name == data.img ]]; then
       python3 "$LANAI_LIB/ficlone.py" "$snap/data.img" "$dir/data.img" || rc=1
@@ -226,9 +302,12 @@ snapshot_restore() {
   done
   if ((rc == 0)); then
     while IFS= read -r -d '' e; do
-      [[ -n ${keep[$e]:-} ]] || rm -rf -- "${dir:?}/$e"
+      if [[ -z ${keep[$e]:-} && -f $dir/$e && ! -L $dir/$e ]]; then
+        rm -f -- "${dir:?}/$e" || rc=1
+      fi
     done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0')
     [[ $(tree_manifest "$dir") == "$(<"$snap/COMPLETE")" ]] || rc=1
+    ((rc != 0)) || sync -f -- "$dir" || rc=1
   fi
   unlock_disk
   if ((rc != 0)); then
@@ -236,5 +315,5 @@ snapshot_restore() {
     return 1
   fi
   rm -f -- "$marker"
-  echo "restored $dir from $snap"
+  echo "${note}restored $dir from $snap"
 }

@@ -11,11 +11,12 @@
 #   junk      0xFF, then a line that is not JSON
 #   string    0xFF, then {"return": "<id>"}
 #   error     0xFF, then an error object
-#   big-pre   4200 bytes before the 0xFF
+#   big-pre   4200 newlines before the 0xFF (many short lines, one long wait)
 #   big-line  0xFF, then a 4200-byte line
 #   silent    nothing at all
 # After a good sync, the command's reply is FAKE_QGA_CMD:
-#   empty (default) {"return": {}}; other {"return": {"x": 1}};
+#   empty (default) {"return": {}}; other {"return": {"x": 1}}; big {"return": {}}
+#   padded past 4 KiB;
 #   generic a GenericError; disabled the CommandNotFound "has been disabled"
 #   error proof 3 recorded; notfound a CommandNotFound "has not been found"
 set -uo pipefail
@@ -45,7 +46,7 @@ case ${FAKE_QGA:-ok} in
   junk) printf '%snot json at all\n' "$FF" ;;
   string) printf '%s{"return": "%s"}\n' "$FF" "$id" ;;
   error) printf '%s{"error": {"class": "GenericError", "desc": "x"}}\n' "$FF" ;;
-  big-pre) printf '%*s%s{"return": %s}\n' 4200 "" "$FF" "$id" ;;
+  big-pre) printf '\n%.0s' {1..4200} && printf '%s{"return": %s}\n' "$FF" "$id" ;;
   big-line) printf '%s{"return": %s%*s}\n' "$FF" "$id" 4200 "" ;;
   silent) cat >/dev/null ;;
 esac
@@ -55,6 +56,7 @@ printf 'cmd %s\n' "$cmd" >>"$log"
 case ${FAKE_QGA_CMD:-empty} in
   empty) printf '{"return": {}}\n' ;;
   other) printf '{"return": {"x": 1}}\n' ;;
+  big) printf '{"return": %*s{}}\n' 4200 "" ;;
   generic) printf '{"error": {"class": "GenericError", "desc": "failed"}}\n' ;;
   disabled) printf '{"error": {"class": "CommandNotFound", "desc": "Command guest-exec has been disabled: the command is not allowed"}}\n' ;;
   notfound) printf '{"error": {"class": "CommandNotFound", "desc": "The command guest-foo has not been found"}}\n' ;;

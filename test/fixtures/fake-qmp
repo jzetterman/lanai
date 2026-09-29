@@ -9,7 +9,8 @@
 #                    SHUTDOWN event (FAKE_QMP_GUEST, default true) and hang up
 #   FAKE_QMP_STATUS  query-status's status (default running)
 #   FAKE_QMP_QGA     query-chardev's frontend-open for qga0 (default true)
-#   FAKE_QMP_KILL    a pid to kill when system_powerdown arrives
+#   FAKE_QMP_KILL    a pid to kill when system_powerdown arrives; with
+#   FAKE_QMP_KILL_ON=N, only once N have arrived (counted in FAKE_QMP_LOG)
 #   FAKE_QMP_RECORD  a file to write a guest SHUTDOWN record to on powerdown,
 #                    stamped with FAKE_QMP_INVOCATION
 set -uo pipefail
@@ -41,7 +42,11 @@ while IFS= read -r line; do
         printf '{"invocation":"%s","guest":true,"reason":"guest-shutdown"}\n' \
           "${FAKE_QMP_INVOCATION:-}" >"$FAKE_QMP_RECORD"
       fi
-      [[ -z ${FAKE_QMP_KILL:-} ]] || kill "$FAKE_QMP_KILL" 2>/dev/null
+      if [[ -n ${FAKE_QMP_KILL:-} ]] &&
+        { [[ -z ${FAKE_QMP_KILL_ON:-} ]] ||
+          (($(grep -c "\"system_powerdown\"" "$log") >= FAKE_QMP_KILL_ON)); }; then
+        kill "$FAKE_QMP_KILL" 2>/dev/null
+      fi
       ;;
     *)
       printf '{"id": %s, "error": {"class": "CommandNotFound", "desc": "The command %s has not been found"}}\n' "$id" "$cmd"

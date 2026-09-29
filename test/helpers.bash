@@ -1,13 +1,58 @@
 # Shared setup for Lanai's bats tests. Load with `load helpers`.
 # shellcheck shell=bash
 # The globals set here (REPO, FIX, B, QEMU_PID) are read by the test files.
-# shellcheck disable=SC2034
+# shellcheck disable=SC2034,SC2154
 
 bats_load_library bats-support
 bats_load_library bats-assert
+bats_require_minimum_version 1.5.0
 
 REPO=$(cd -- "$BATS_TEST_DIRNAME/.." && pwd)
 FIX=$BATS_TEST_DIRNAME/fixtures
+
+# Run bin/lanai with bats' run (stdout only in $output; stderr apart), and
+# keep its JSON for field.
+lanai_run() {
+  run --separate-stderr "$REPO/bin/lanai" "$@"
+  JSON=$output
+}
+
+# Print field <name> of the JSON in $JSON, or "null".
+field() {
+  jq -r --arg k "$1" '.[$k] | if . == null then "null" else tostring end' <<<"$JSON"
+}
+
+# Set the fake servers' knobs (KEY=value lines, test/fixtures/fake-*) for
+# their next connection.
+conf() {
+  printf '%s\n' "$@" >"$FAKE_CONF"
+}
+
+# Serve <socket> with the fake server <script> (one run per connection) in
+# the background, and wait until the socket exists.
+serve() {
+  local i
+  mkdir -p "$(dirname "$1")"
+  socat "UNIX-LISTEN:$1,fork" "EXEC:$2" >/dev/null 2>&1 3>&- &
+  BG_PIDS+=("$!")
+  for ((i = 0; i < 100; i++)); do
+    [[ -S $1 ]] && return 0
+    sleep 0.05
+  done
+  fail "the fake server did not create $1"
+}
+
+# Stop every background job in BG_PIDS: its direct children, its process
+# group when it leads one (setsid), and itself. Call it from teardown.
+stop_bg() {
+  local p
+  for p in "${BG_PIDS[@]}"; do
+    pkill -P "$p" 2>/dev/null || true
+    kill -- "-$p" 2>/dev/null || kill "$p" 2>/dev/null || true
+  done
+  for p in "${BG_PIDS[@]}"; do wait "$p" 2>/dev/null || true; done
+  BG_PIDS=()
+}
 
 # Point HOME, every XDG_* path, TMPDIR and Lanai's overrides at fresh temp
 # paths, so no test can reach the real ~/.windows, compose file, settings,
@@ -24,10 +69,12 @@ isolate_home() {
   export TMPDIR=$BATS_TEST_TMPDIR/tmp
   export OMARCHY_WINDOWS_DIR=$BATS_TEST_TMPDIR/var-lib-omarchy-windows
   export LANAI_PROC=$BATS_TEST_TMPDIR/proc LANAI_LOCKS=$BATS_TEST_TMPDIR/locks
+  export FAKE_CONF=$BATS_TEST_TMPDIR/fake.conf
   mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" \
     "$TMPDIR" "$LANAI_PROC"
   : >"$LANAI_LOCKS"
   mkdir -m 700 "$XDG_RUNTIME_DIR"
+  BG_PIDS=() JSON=""
 }
 
 # Put an executable shim <name> with body <script> in $T/shims, which tests
@@ -38,13 +85,15 @@ shim() {
   chmod +x "$T/shims/$1"
 }
 
-# Write a fake /proc entry: fake_proc <pid> <cgroup path> <argv...>.
+# Write a fake /proc entry: fake_proc <pid> <cgroup path> <argv...>. Its
+# stat says the process is sleeping (S); a test may rewrite it.
 fake_proc() {
   local pid=$1 cg=$2
   shift 2
   mkdir -p "$T/proc/$pid"
   printf '%s\0' "$@" >"$T/proc/$pid/cmdline"
   printf '0::%s\n' "$cg" >"$T/proc/$pid/cgroup"
+  printf '%s (bash) S 1 %s %s 0 -1\n' "$pid" "$pid" "$pid" >"$T/proc/$pid/stat"
 }
 
 # Build a finished omarchy-windows-vm install at <dir>: a 1 MiB data.img with
