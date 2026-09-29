@@ -520,11 +520,13 @@ Where the code differs from the text above, the code and this list win:
 Where the code differs from the text above, the code and this list win. The code is
 in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 
-- `lanai setup-host` never runs sudo. It checks the list with `pacman -Qq` and, only
-  when a package is missing, runs `setsid -f omarchy launch terminal --
-  bin/lanai-setup-host` and returns the missing packages and the exact command. In
-  that terminal, `lanai-setup-host` refuses unless stdin and stdout are a terminal,
-  prints the command, runs `sudo pacman -S --needed <list>` from the same array, and
+- `lanai setup-host` never runs sudo. It checks the list with `pacman -T` (deptest,
+  which honours provides, so `jq-git` counts for `jq`) and, only when a package is
+  missing, runs `setsid -f omarchy launch terminal -- bin/lanai-setup-host` and
+  returns the missing packages and the exact command. In that terminal,
+  `lanai-setup-host` refuses unless stdin and stdout are a terminal, checks again,
+  prints the command, runs `sudo pacman -S --needed <missing packages>` from the same
+  array (never the whole list, which would offer to replace a `-git` provider), and
   waits for Enter. Every package name exists in the Arch repositories (`pacman -Si`,
   2026-09-29); the clean-container check before release is still open.
 - `lanai build-client`: the tarball has no `.gitmodules`, so `lib/pins.sh` pins the
@@ -550,10 +552,12 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   since the user manager may lack them, and `--expand-environment=no`, so a `$` in a
   path stays literal. It sets `PartOf=lanai-vm.service`: every stop of the VM unit
   stops the client too, even when ExecStop is killed at `TimeoutStopSec`, and unlike
-  `Requires=` or `BindsTo=` it never starts the VM.
-- `lanai-client-exec`'s wait runs `qmp_call` with a 2 s budget per try
-  (`LANAI_QMP_BUDGET`), so every try closes its connection, even one that got no
-  status; a test on a one-client socket checks it.
+  `Requires=` or `BindsTo=` it never starts the VM. It runs in `session.slice`, like
+  the VM, since Omarchy has oomd kill in `app.slice` under memory pressure.
+- `lanai-client-exec`'s wait runs one `qmp_call` per try. `qmp_call` always closes its
+  connection, even after a reply without a status; the 2 s budget
+  (`LANAI_QMP_BUDGET`) only bounds how long a try takes. A test on a one-client
+  socket checks it.
 - Status reads the client's result from `$RUN/client.log`, not from `journalctl -I`:
   with `--collect`, a failed transient unit is unloaded, so its invocation id is gone.
   `lanai-client-exec` rewrites the log on each start (a `lanai: client started at
@@ -579,7 +583,13 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   is stale) and once Windows has booted (QMP running, the agent's port open, setup
   done), since a client opened at boot waits for the IDD too; it is `failed`, with
   the client log as `logs` and the `omarchy-windows-vm` fallback. A client that gave
-  up waiting is a warning. `lanai status` also records the guest version it reads.
+  up waiting is a warning, but not while a new client waits.
+- `lanai status` and `lanai open` record the guest version a client log names only
+  when that client started (the log's first line) no earlier than the record was
+  written (`guest-version`'s mtime), and never from a log without that line. So the
+  pin `lanai setup-guest` records (phase 6) is not undone by this run's older client
+  log, which would bring back the old build and the "run setup again" warning.
+  `guest_version_set` always rewrites the file, so its mtime is the record's time.
 - A pin bump the guest has not caught up with (req 8): when the recorded guest version
   is not the pinned build, `build_select` keeps the old build, so the window works,
   and status adds a warning in every state but `version-mismatch`: the driver's
@@ -799,6 +809,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   pending shutdown, with a second confirming click; setup steps with progress; settings
   (memory, cores); the error view with cause, next step, log path and the
   `omarchy-windows-vm` fallback.
+- Guest-controlled text (from phase 5 review): show `client.log`, the guest's driver
+  version and any other text from the guest or its logs with `Text.PlainText`, never
+  QML's default `AutoText`, which would render markup the guest wrote.
 - Polling: `lanai status` every 2 s while the panel is open or the VM is starting or
   stopping, every 15 s otherwise; 10 s deadline per call; QML calls never block on stop.
 - README: install; removal (first, inside Windows, under Lanai or over RDP under
