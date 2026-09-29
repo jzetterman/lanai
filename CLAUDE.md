@@ -8,9 +8,12 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
 - `docs/` holds specs and plans, with review logs in each doc.
 - `spike/` holds the software-mode test harness. `spike/work/` is gitignored scratch.
 - The Lanai plugin sits at the root: `manifest.json`, `bin/` (the `lanai` CLI,
-  `lanai-copy`, and the VM unit's `lanai-vm-exec`, `lanai-vm-stop` and
-  `lanai-vm-helper`), `lib/`, `systemd/` (the VM unit template), `guest/` and `test/`
-  (bats; fake QMP and guest agent servers in `test/fixtures/`).
+  `lanai-copy`, the VM unit's `lanai-vm-exec`, `lanai-vm-stop` and
+  `lanai-vm-helper`, the client unit's `lanai-client-exec`, and `lanai-setup-host`,
+  which installs the host packages in a terminal), `lib/` (`client.sh` holds the
+  Looking Glass client code, `pins.sh` the pinned downloads), `systemd/` (the VM
+  unit template), `guest/` and `test/` (bats; fake QMP and guest agent servers and
+  trimmed client logs in `test/fixtures/`).
   `docs/plugin/proof-kit/` holds the phase 1 proof scripts.
 - Tests: `bats test spike/test`; btrfs tests read `LANAI_TEST_BTRFS_DIR` (the ignored
   `.btrfs-test/` works). CI runs the same in an Arch container

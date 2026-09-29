@@ -53,7 +53,9 @@ Run `bats test spike/test`. Tests that need btrfs read `LANAI_TEST_BTRFS_DIR` (f
 example `LANAI_TEST_BTRFS_DIR=$PWD/.btrfs-test`, which git ignores) and skip when it is
 unset or not on btrfs; CI runs them on a loop-mounted btrfs image. No test boots Windows
 or talks to your systemd user manager; QEMU runs only paused (TCG) on 1 MiB scratch
-disks for the lock tests. Lint with
+disks for the lock tests. No test downloads or builds the Looking Glass client, runs
+sudo, or opens a window: curl, cmake, pacman, sudo, omarchy, systemd-run and hyprctl
+are stand-ins. Lint with
 `shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
 docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
 docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga`.

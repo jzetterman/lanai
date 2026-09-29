@@ -515,6 +515,62 @@ Where the code differs from the text above, the code and this list win:
   `Incompatible` line is a hard mismatch; `transport source is not available` for 30 s
   means the IDD is missing. Wire it into `status_map`.
 
+### As built (2026-09-29)
+
+Where the code differs from the text above, the code and this list win. The code is
+in `lib/client.sh`; the commands are in `lib/lanai.sh`.
+
+- `lanai setup-host` never runs sudo. It checks the list with `pacman -Qq` and, only
+  when a package is missing, runs `setsid -f omarchy launch terminal --
+  bin/lanai-setup-host` and returns the missing packages and the exact command. In
+  that terminal, `lanai-setup-host` refuses unless stdin and stdout are a terminal,
+  prints the command, runs `sudo pacman -S --needed <list>` from the same array, and
+  waits for Enter. Every package name exists in the Arch repositories (`pacman -Si`,
+  2026-09-29); the clean-container check before release is still open.
+- `lanai build-client`: the tarball has no `.gitmodules`, so `lib/pins.sh` pins the
+  six submodule folders (`LG_SUBMODULES`), and a missing or empty one stops the
+  build. The USB audio check reads cmake's feature summary and needs
+  `ENABLE_USB_AUDIO` among the enabled features, which also catches audio turned off
+  as a whole. The client has no version flag, so `client_version` reads the
+  `Looking Glass (<build>)` line it logs first, also for `--help`; the installed
+  binary must report the pin. Downloads go to `$XDG_CACHE_HOME/lanai/downloads/`,
+  the build to a work folder there (removed after), the output to
+  `$XDG_STATE_HOME/lanai/build-client.log`. It installs through
+  `<build>.partial/`, holds `build.lock`, and does nothing when the pinned build is
+  already installed. Older builds are removed only by `build-client`, once
+  `guest-version` matches the pin. One real run on 2026-09-29: the download matched
+  the pinned SHA-256, and the build took 22 s and reported `B7-826-236efcb1`.
+- `lanai open` needs the VM unit active. It focuses with `hyprctl dispatch
+  focuswindow pid:<MainPID>` (`lanai-client-exec` execs the client, so the unit's
+  main pid is the client), not by app id, which every Looking Glass client shares.
+  Before it starts the unit it records the guest version the last client log names.
+  `systemd-run` passes `WAYLAND_DISPLAY` and the `XDG_*` folders with `--setenv`,
+  since the user manager may lack them.
+- Status reads the client's result from `$RUN/client.log`, not from `journalctl -I`:
+  with `--collect`, a failed transient unit is unloaded, so its invocation id is gone.
+  `lanai-client-exec` rewrites the log on each start (a `lanai: client started at
+  <epoch>` line, then the client's output, appended so an emptied log stays whole),
+  or writes the timeout message as its only line; the message also goes to the
+  journal. So the log always holds the latest try only.
+- `version_check` prints `match`, `mismatch`, `idd-missing`, `waiting` or `unknown`,
+  plus the guest's version when the log names one. The latest event wins (a guest that
+  comes back after a mismatch counts). A guest version the client reports as
+  `unknown` is a mismatch. The 30 s count needs the start line, since the client's log
+  times count from its own start. The client logs "transport source is not
+  available" only on its first wait, so a missing IDD is detected for the first
+  session of each client, not after a guest restart mid-session.
+- `status_map`: a mismatch is `version-mismatch` (as in phase 4). A missing IDD counts
+  only once Windows has booted (QMP running, the agent's port open, setup done), since
+  a client opened at boot waits for the IDD too; it is `failed`, with the client log as
+  `logs` and the `omarchy-windows-vm` fallback. A client that gave up waiting is a
+  warning on the active states. `lanai status` also records the guest version it reads.
+- Added: `lanai-vm-stop` stops `lanai-client.service` once QEMU is gone, so a client
+  never holds an old run's shared memory, and `lanai open` never focuses a dead
+  window. `qmp_open` takes a time budget (the client wait uses 2 s per try).
+- For phase 6: `lanai setup-guest` calls `guest_version_set "$LG_BUILD"` when it
+  succeeds; step 2 uses `host_packages_missing`, step 4 `client_version`, and step 6
+  `version_check`.
+
 ## Phase 6: Guest setup media and the setup flow
 
 - `guest/setup.cmd` self-elevates once. Before the prompt it reads the signed-in user's
