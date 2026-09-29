@@ -47,7 +47,7 @@ case ${FAKE_QGA:-ok} in
   error) printf '%s{"error": {"class": "GenericError", "desc": "x"}}\n' "$FF" ;;
   big-pre) printf '%*s%s{"return": %s}\n' 4200 "" "$FF" "$id" ;;
   big-line) printf '%s{"return": %s%*s}\n' "$FF" "$id" 4200 "" ;;
-  silent) sleep 30 ;;
+  silent) cat >/dev/null ;;
 esac
 
 IFS= read -r cmd || exit 0

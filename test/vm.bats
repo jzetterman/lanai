@@ -4,7 +4,7 @@
 # supervision, and the unit's ExecStart and ExecStop scripts. No real VM
 # starts: QEMU, systemctl, systemd-inhibit, dbus-monitor and virtiofsd are
 # PATH shims or fakes, and every socket lives in the test's temp dir.
-# shellcheck disable=SC2030,SC2031,SC2016
+# shellcheck disable=SC2030,SC2031,SC2016,SC2329
 
 load helpers
 
@@ -29,15 +29,10 @@ conf() {
 teardown() {
   local p
   for p in "${BG_PIDS[@]}"; do
+    pkill -P "$p" 2>/dev/null || true
     kill -- "-$p" 2>/dev/null || kill "$p" 2>/dev/null || true
   done
   for p in "${BG_PIDS[@]}"; do wait "$p" 2>/dev/null || true; done
-}
-
-# Put an executable shim <name> with body <script> first on PATH.
-shim() {
-  printf '#!/usr/bin/env bash\n%s\n' "$2" >"$T/shims/$1"
-  chmod +x "$T/shims/$1"
 }
 
 # --- vm_args ---
@@ -566,4 +561,313 @@ wait_for_line() {
   assert_failure
   run qga_reply "$T/g.sock" exec '{"execute":"guest-exec"}'
   assert_failure
+}
+
+# --- helper supervision ---
+
+@test "restart_delay: backs off 1, 2, then 4 s by restarts in the last minute" {
+  run restart_delay 1000
+  assert_output 1
+  run restart_delay 1000 990
+  assert_output 2
+  run restart_delay 1000 990 995
+  assert_output 4
+  run restart_delay 1000 950 960 970 980
+  assert_output 4
+}
+
+@test "restart_delay: gives up after 5 restarts in a minute, and only counts that minute" {
+  run restart_delay 1000 941 950 960 970 980
+  assert_failure
+  # The oldest restart is now more than 60 s ago.
+  run restart_delay 1001 940 950 960 970 980
+  assert_success
+  assert_output 4
+  # Restarts long ago do not count at all.
+  run restart_delay 5000 100 200 300 400 500 600
+  assert_output 1
+}
+
+@test "supervise: restarts a crashing helper with backoff, then gives up and drops its pid file" {
+  mkdir -m 700 "$RUN"
+  shim sleep 'echo "$1" >>"$SLEEP_LOG"'
+  export SLEEP_LOG=$T/sleeps
+  printf '#!/usr/bin/env bash\necho run >>"%s"\nexit 3\n' "$T/runs" >"$T/crash"
+  chmod +x "$T/crash"
+  PATH=$T/shims:$PATH run supervise crasher "$T/crash"
+  assert_failure
+  assert_equal "$(wc -l <"$T/runs")" 6
+  assert_equal "$(paste -sd' ' "$T/sleeps")" "1 2 4 4 4"
+  assert_output --partial "crasher exited (3) 5 times in a minute"
+  assert [ ! -e "$RUN/crasher.pid" ]
+}
+
+@test "supervise: writes its own pid while the helper runs" {
+  mkdir -m 700 "$RUN"
+  supervise holder sleep 30 >/dev/null 2>&1 3>&- &
+  BG_PIDS+=("$!")
+  local i
+  for ((i = 0; i < 60; i++)); do
+    [[ -s $RUN/holder.pid ]] && break
+    sleep 0.05
+  done
+  assert_equal "$(<"$RUN/holder.pid")" "${BG_PIDS[0]}"
+}
+
+# --- helpers: event logger, shutdown and sleep watchers ---
+
+@test "event_log: records the guest's SHUTDOWN with this run's invocation id" {
+  mkdir -m 700 "$RUN"
+  export FAKE_QMP_MODE=shutdown INVOCATION_ID=inv-1
+  serve "$RUN/qmp-events.sock" "$FIX/fake-qmp"
+  run timeout 10 bash -c 'source "$1"; event_log' _ "$REPO/lib/lanai.sh"
+  assert_success
+  assert_equal "$(jq -c . "$S/last-shutdown")" '{"invocation":"inv-1","guest":true,"reason":"guest-shutdown"}'
+}
+
+@test "event_log: records a host-initiated SHUTDOWN as not the guest's" {
+  mkdir -m 700 "$RUN"
+  export FAKE_QMP_MODE=shutdown FAKE_QMP_GUEST=false INVOCATION_ID=inv-2
+  serve "$RUN/qmp-events.sock" "$FIX/fake-qmp"
+  run timeout 10 bash -c 'source "$1"; event_log' _ "$REPO/lib/lanai.sh"
+  assert_success
+  assert_equal "$(jq -c .guest "$S/last-shutdown")" false
+}
+
+@test "event_log: waits for QEMU to create its socket, then connects" {
+  mkdir -m 700 "$RUN"
+  export FAKE_QMP_MODE=shutdown INVOCATION_ID=inv-3
+  timeout 20 bash -c 'source "$1"; event_log' _ "$REPO/lib/lanai.sh" >/dev/null 2>&1 3>&- &
+  local logger=$!
+  BG_PIDS+=("$logger")
+  sleep 1
+  assert [ ! -e "$S/last-shutdown" ]
+  serve "$RUN/qmp-events.sock" "$FIX/fake-qmp"
+  wait "$logger"
+  assert_equal "$(jq -r .invocation "$S/last-shutdown")" inv-3
+}
+
+@test "shutdown_watch_lines: PrepareForShutdown(true) stops the unit without blocking" {
+  shim systemctl 'echo "$*" >>"$CALLS"'
+  export CALLS=$T/calls
+  PATH=$T/shims:$PATH run shutdown_watch_lines <<'EOF'
+signal time=1727560849.995 sender=:1.3 -> destination=(null destination) serial=1 path=/org/freedesktop/login1; interface=org.freedesktop.login1.Manager; member=PrepareForShutdown
+   boolean false
+signal time=1727560850.000 sender=:1.3 -> destination=(null destination) serial=2 path=/org/freedesktop/login1; interface=org.freedesktop.login1.Manager; member=PrepareForShutdown
+   boolean true
+EOF
+  assert_success
+  assert_equal "$(<"$T/calls")" "--user stop --no-block lanai-vm.service"
+}
+
+@test "sleep_watch_lines: a resume sets the guest clock to the host's, a suspend does nothing" {
+  # Stand-in for the agent call: log the mode and command.
+  qga_reply() { printf '%s %s\n' "$2" "$3" >>"$T/qga-calls"; }
+  run sleep_watch_lines <<'EOF'
+   boolean true
+   boolean false
+EOF
+  assert_success
+  assert_equal "$(wc -l <"$T/qga-calls")" 1
+  local mode cmd ns
+  read -r mode cmd <"$T/qga-calls"
+  assert_equal "$mode" command
+  assert_equal "$(jq -r .execute <<<"$cmd")" guest-set-time
+  ns=$(jq -r .arguments.time <<<"$cmd")
+  # Nanoseconds since the epoch, within 5 s of now.
+  (((ns / 1000000000) - $(date +%s) <= 5 && $(date +%s) - (ns / 1000000000) <= 5)) ||
+    fail "time $ns is not now"
+}
+
+@test "clock_sync: retries a busy agent, and stops trying after 60 s" {
+  shim sleep ':'
+  echo 0 >"$T/count"
+  # Busy twice, then answers.
+  qga_reply() {
+    local n=$(($(<"$T/count") + 1))
+    echo "$n" >"$T/count"
+    ((n >= 3))
+  }
+  PATH=$T/shims:$PATH run clock_sync
+  assert_success
+  assert_equal "$(<"$T/count")" 3
+  # Never answers: it gives up after its 30 tries of 2 s.
+  echo 0 >"$T/count"
+  qga_reply() {
+    echo $(($(<"$T/count") + 1)) >"$T/count"
+    return 1
+  }
+  PATH=$T/shims:$PATH run clock_sync
+  assert_failure
+  assert_equal "$(<"$T/count")" 30
+}
+
+# --- lanai-vm-exec ---
+
+# Shims for everything lanai-vm-exec starts: QEMU records its arguments and
+# TMPDIR, virtiofsd creates its socket (unless NO_VFS_SOCKET is set), the
+# inhibitor and dbus-monitor just wait, and ip reports a default route.
+exec_shims() {
+  shim qemu-system-x86_64 'printf "%s\n" "$@" >"$T/qemu.args.tmp"; echo "$TMPDIR" >"$T/qemu.tmpdir"
+mv "$T/qemu.args.tmp" "$T/qemu.args"; exec sleep 30'
+  shim virtiofsd 'printf "%s\n" "$@" >"$T/virtiofsd.args"
+[[ -z ${NO_VFS_SOCKET:-} ]] || exec sleep 30
+for a; do [[ $a != --socket-path=* ]] || p=${a#*=}; done
+exec socat "UNIX-LISTEN:$p,fork" EXEC:/bin/true'
+  shim systemd-inhibit 'printf "%s\n" "$@" >"$T/inhibit.args"; exec sleep 30'
+  shim dbus-monitor 'exec sleep 30'
+  shim ip 'echo "default via 192.168.1.1 dev wlan0 proto dhcp src 192.168.1.20 metric 600"'
+  export T LANAI_VIRTIOFSD=$T/shims/virtiofsd INVOCATION_ID=inv-exec
+  make_install "$T/win"
+  mkdir -p "$HOME/Windows" "$XDG_CONFIG_HOME/lanai"
+  echo '{"storage": "'"$T/win"'", "memory_gib": 8, "cores": 4}' >"$XDG_CONFIG_HOME/lanai/settings.json"
+}
+
+# Start lanai-vm-exec in its own process group, in the background, with its
+# output in $T/exec.out. Sets EXEC_PID (also the group id).
+start_exec() {
+  PATH=$T/shims:$PATH setsid "$REPO/bin/lanai-vm-exec" >"$T/exec.out" 2>&1 3>&- &
+  EXEC_PID=$!
+  BG_PIDS+=("$EXEC_PID")
+}
+
+@test "lanai-vm-exec: prepares \$RUN, starts the helpers, writes the marker, then becomes QEMU" {
+  exec_shims
+  mkdir -m 700 "$RUN"
+  : >"$RUN/qmp.sock"
+  : >"$RUN/ivshmem"
+  echo "old client log" >"$RUN/client.log"
+  mkdir -p "$S"
+  echo '{"scale": 150, "setup": false}' >"$S/boot.json"
+  start_exec
+  local i
+  for ((i = 0; i < 100; i++)); do
+    [[ -e $T/qemu.args ]] && break
+    sleep 0.05
+  done
+  [[ -e $T/qemu.args ]] || fail "QEMU never started: $(cat "$T/exec.out")"
+  # The stale files are gone and the log is empty.
+  assert [ ! -e "$RUN/qmp.sock" ]
+  assert [ ! -e "$RUN/ivshmem" ]
+  assert [ ! -s "$RUN/client.log" ]
+  assert_equal "$(stat -c %a "$RUN")" 700
+  # QEMU runs as the unit's main process, with the arguments vm_args builds.
+  assert_equal "$(<"$T/qemu.args")" "$(vm_args "$T/win" 02:4B:81:73:3C:96 8 4 150 192.168.1.1)"
+  assert_equal "$(<"$T/qemu.tmpdir")" "$RUN"
+  assert_equal "$(tr '\0' ' ' </proc/"$EXEC_PID"/cmdline)" "sleep 30 "
+  assert_equal "$(<"$S/running")" inv-exec
+  # Each helper runs under its supervisor, whose pid is in $RUN.
+  local name
+  for name in virtiofsd inhibitor sleep-watcher event-logger; do
+    [[ -s $RUN/$name.pid ]] || fail "no pid file for $name"
+    kill -0 "$(<"$RUN/$name.pid")" || fail "$name's supervisor is not running"
+  done
+  assert_equal "$(paste -sd' ' "$T/virtiofsd.args")" \
+    "--sandbox namespace --shared-dir $HOME/Windows --socket-path=$RUN/virtiofs.sock"
+  run cat "$T/inhibit.args"
+  assert_line --index 0 --partial "--what=shutdown"
+  assert_line --index 1 --partial "--mode=delay"
+  assert_line --partial "lanai-vm-helper"
+  assert_line shutdown-watch
+}
+
+@test "lanai-vm-exec: the setup boot attaches the setup media" {
+  exec_shims
+  mkdir -p "$S/setup-media"
+  echo '{"scale": 100, "setup": true}' >"$S/boot.json"
+  start_exec
+  local i
+  for ((i = 0; i < 100; i++)); do
+    [[ -e $T/qemu.args ]] && break
+    sleep 0.05
+  done
+  run cat "$T/qemu.args"
+  assert_line "if=none,id=setup,file=fat:$S/setup-media,format=raw,readonly=on"
+  assert_line "gtk,window-close=off"
+}
+
+@test "lanai-vm-exec: a bad runtime folder stops it before anything starts" {
+  exec_shims
+  mkdir -m 755 "$RUN"
+  start_exec
+  local rc=0
+  wait "$EXEC_PID" || rc=$?
+  ((rc != 0)) || fail "lanai-vm-exec succeeded"
+  assert [ ! -e "$T/qemu.args" ]
+  assert [ ! -e "$T/virtiofsd.args" ]
+  assert [ ! -e "$S/running" ]
+  run cat "$T/exec.out"
+  assert_output --partial "0700"
+}
+
+@test "lanai-vm-exec: without virtiofsd's socket it fails and writes no marker" {
+  exec_shims
+  export NO_VFS_SOCKET=1
+  start_exec
+  local rc=0
+  wait "$EXEC_PID" || rc=$?
+  ((rc != 0)) || fail "lanai-vm-exec succeeded"
+  assert [ ! -e "$T/qemu.args" ]
+  assert [ ! -e "$S/running" ]
+  run cat "$T/exec.out"
+  assert_output --partial "virtiofsd"
+}
+
+@test "lanai-vm-exec: refuses bad settings through vm_args" {
+  exec_shims
+  echo '{"storage": "'"$T/win"'", "memory_gib": "8,share=off", "cores": 4}' \
+    >"$XDG_CONFIG_HOME/lanai/settings.json"
+  start_exec
+  local rc=0
+  wait "$EXEC_PID" || rc=$?
+  ((rc != 0)) || fail "lanai-vm-exec succeeded"
+  assert [ ! -e "$T/qemu.args" ]
+  run cat "$T/exec.out"
+  assert_output --partial "memory"
+}
+
+# --- lanai-vm-stop ---
+
+# Start a stand-in for QEMU that is not this shell's child (so it never
+# lingers as a zombie). Sets FAKE_PID.
+fake_main() {
+  FAKE_PID=$(bash -c 'sleep 60 >/dev/null 2>&1 3>&- & echo $!')
+}
+
+@test "lanai-vm-stop: sends system_powerdown, waits for QEMU, then for this run's record" {
+  mkdir -m 700 "$RUN"
+  fake_main
+  export FAKE_QMP_LOG=$T/qmp.log FAKE_QMP_KILL=$FAKE_PID FAKE_QMP_RECORD=$S/last-shutdown \
+    FAKE_QMP_INVOCATION=inv-stop
+  mkdir -p "$S"
+  serve "$RUN/qmp.sock" "$FIX/fake-qmp"
+  local start=$SECONDS
+  INVOCATION_ID=inv-stop MAINPID=$FAKE_PID run "$REPO/bin/lanai-vm-stop"
+  assert_success
+  grep -q '"execute":"system_powerdown"' "$T/qmp.log" || fail "no system_powerdown sent"
+  ! kill -0 "$FAKE_PID" 2>/dev/null || fail "returned while QEMU still ran"
+  # The record was already there, so there was no 2 s wait.
+  (((SECONDS - start) <= 1)) || fail "took $((SECONDS - start)) s"
+}
+
+@test "lanai-vm-stop: after QEMU exited on its own it skips the powerdown" {
+  mkdir -m 700 "$RUN"
+  export FAKE_QMP_LOG=$T/qmp.log
+  serve "$RUN/qmp.sock" "$FIX/fake-qmp"
+  mkdir -p "$S"
+  printf '{"invocation":"inv-x","guest":true,"reason":"guest-shutdown"}\n' >"$S/last-shutdown"
+  EXIT_CODE=exited EXIT_STATUS=0 INVOCATION_ID=inv-x MAINPID="" run "$REPO/bin/lanai-vm-stop"
+  assert_success
+  assert [ ! -e "$T/qmp.log" ]
+}
+
+@test "lanai-vm-stop: waits at most about 2 s for a record that never comes" {
+  mkdir -m 700 "$RUN"
+  mkdir -p "$S"
+  # Another run's record does not end the wait.
+  printf '{"invocation":"inv-old","guest":true,"reason":"guest-shutdown"}\n' >"$S/last-shutdown"
+  local start=$SECONDS
+  EXIT_CODE=killed EXIT_STATUS=KILL INVOCATION_ID=inv-new run "$REPO/bin/lanai-vm-stop"
+  assert_success
+  (((SECONDS - start) >= 1 && (SECONDS - start) <= 4)) || fail "took $((SECONDS - start)) s"
 }

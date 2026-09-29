@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# lanai-vm-exec: ExecStart of lanai-vm.service. Prepares $RUN, starts the
+# supervised helpers, writes the "running" marker and becomes QEMU. It runs
+# from Lanai's runtime copy, never from the plugin folder. See vm_exec in
+# lib/vm.sh.
+set -euo pipefail
+
+# shellcheck source-path=SCRIPTDIR source=../lib/lanai.sh
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib/lanai.sh"
+vm_exec

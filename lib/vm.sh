@@ -8,6 +8,23 @@
 # at a copy.
 LANAI_ARGS_TEMPLATE=${LANAI_ARGS_TEMPLATE:-$LANAI_LIB/dockur-6.05.args}
 
+# The folder of Lanai's scripts (bin/ beside lib/, in the plugin or its
+# runtime copy), and the virtiofsd binary (tests swap in a stand-in).
+LANAI_BIN=$(cd -- "$LANAI_LIB/../bin" && pwd)
+LANAI_VIRTIOFSD=${LANAI_VIRTIOFSD:-/usr/lib/virtiofsd}
+
+# The VM unit's name.
+LANAI_UNIT=lanai-vm.service
+
+# The helpers lanai-vm-exec supervises, each with what is lost while it is
+# down (lanai status shows it as a warning on the running state).
+declare -A LANAI_HELPERS=(
+  [virtiofsd]="file sharing through ~/Windows is off"
+  [inhibitor]="a clean Windows shutdown at reboot or power-off is off"
+  [sleep-watcher]="clock sync after suspend is off"
+  [event-logger]="clean-shutdown tracking is off, so the next start may report a forced stop"
+)
+
 # The Windows display scale steps (spec 12), for validation.
 LANAI_SCALE_STEPS=" 100 125 150 175 200 225 250 300 350 400 450 500 "
 
@@ -256,33 +273,53 @@ sock_send() {
 # Fails when it cannot connect, a line is not JSON, or the replies take
 # longer than 5 s in all.
 qmp_call() {
-  local sock=$1 cmd line reply deadline t n=0 rc=0
+  local sock=$1 cmd rc=0
   shift
-  sock_open "$sock" || return 1
-  deadline=$(($(now_us) + 5000000))
-  if ! t=$(time_left "$deadline") || ! IFS= read -r -t "$t" -u "$LANAI_SOCK_R" line ||
-    ! jq -e 'has("QMP")' <<<"$line" >/dev/null 2>&1; then
-    rc=1
-  fi
-  for cmd in '{"execute":"qmp_capabilities"}' "$@"; do
-    ((rc == 0)) || break
-    n=$((n + 1))
-    if ! cmd=$(jq -c --argjson id "$n" '. + {id: $id}' <<<"$cmd" 2>/dev/null) || ! sock_send "$cmd"; then
+  qmp_open "$sock" || return 1
+  for cmd; do
+    qmp_send "$cmd" || {
       rc=1
       break
-    fi
-    reply=""
-    while [[ -z $reply ]]; do
-      if ! t=$(time_left "$deadline") || ! IFS= read -r -t "$t" -u "$LANAI_SOCK_R" line ||
-        ! reply=$(jq -c --argjson id "$n" 'select(.id == $id) | del(.id)' <<<"$line" 2>/dev/null); then
-        rc=1
-        break
-      fi
-    done
-    ((rc != 0 || n == 1)) || printf '%s\n' "$reply"
+    }
   done
   sock_close
   return "$rc"
+}
+
+# qmp_open <socket>: connect, read QEMU's greeting and negotiate
+# capabilities, leaving the connection open for qmp_send or for reading
+# events on LANAI_SOCK_R. Starts the session's 5 s budget. On failure the
+# connection is closed.
+qmp_open() {
+  local t line
+  sock_open "$1" || return 1
+  LANAI_QMP_DEADLINE=$(($(now_us) + 5000000)) LANAI_QMP_ID=0
+  if t=$(time_left "$LANAI_QMP_DEADLINE") && IFS= read -r -t "$t" -u "$LANAI_SOCK_R" line &&
+    jq -e 'has("QMP")' <<<"$line" >/dev/null 2>&1 &&
+    qmp_send '{"execute":"qmp_capabilities"}' >/dev/null; then
+    return 0
+  fi
+  sock_close
+  return 1
+}
+
+# qmp_send <command-json>: on the connection from qmp_open, send one command
+# with the next id and print its reply (compact, id removed); events before
+# it are skipped. Fails on a line that is not JSON, or when the session's
+# 5 s run out. Call it directly, not in $(...), so the id count survives.
+qmp_send() {
+  local cmd line t reply="" id=$((LANAI_QMP_ID + 1))
+  LANAI_QMP_ID=$id
+  if ! cmd=$(jq -c --argjson id "$id" '. + {id: $id}' <<<"$1" 2>/dev/null) || ! sock_send "$cmd"; then
+    return 1
+  fi
+  while [[ -z $reply ]]; do
+    if ! { t=$(time_left "$LANAI_QMP_DEADLINE") && IFS= read -r -t "$t" -u "$LANAI_SOCK_R" line &&
+      reply=$(jq -c --argjson id "$id" 'select(.id == $id) | del(.id)' <<<"$line" 2>/dev/null); }; then
+      return 1
+    fi
+  done
+  printf '%s\n' "$reply"
 }
 
 # qga_reply <socket> sync|command|refusal [<command-json>]: talk to the QEMU
@@ -338,4 +375,259 @@ qga_reply() {
   fi
   sock_close
   return "$rc"
+}
+
+# --- helper supervision ---
+
+# restart_delay <now> [<restart-time>...]: print the seconds to wait before
+# the next restart of a helper: 1, 2, then 4, by the number of restarts in
+# the last 60 s. Fails (give up) when 5 restarts already fell in that minute.
+restart_delay() {
+  local now=$1 t n=0
+  shift
+  for t; do
+    ((now - t >= 60)) || n=$((n + 1))
+  done
+  ((n < 5)) || return 1
+  case $n in
+    0) echo 1 ;;
+    1) echo 2 ;;
+    *) echo 4 ;;
+  esac
+}
+
+# supervise <name> <command>...: run a helper and restart it whenever it
+# exits, with restart_delay's backoff, until it has restarted 5 times in a
+# minute. Writes its own pid to $RUN/<name>.pid for lanai status and removes
+# it on giving up. Logs to stderr, the unit's journal.
+supervise() {
+  local name=$1 run pidfile delay rc
+  local -a restarts=()
+  shift
+  run=$(run_dir) || return 1
+  pidfile=$run/$name.pid
+  printf '%s\n' "$BASHPID" >"$pidfile"
+  while :; do
+    rc=0
+    "$@" || rc=$?
+    if ! delay=$(restart_delay "$EPOCHSECONDS" "${restarts[@]}"); then
+      echo "lanai: $name exited ($rc) 5 times in a minute; not restarting it" >&2
+      rm -f -- "$pidfile"
+      return 1
+    fi
+    echo "lanai: $name exited ($rc); restarting it in $delay s" >&2
+    sleep "$delay"
+    restarts+=("$EPOCHSECONDS")
+  done
+}
+
+# --- helpers (run by bin/lanai-vm-helper under supervise) ---
+
+# The logind signals the watchers listen for on the system bus.
+LANAI_LOGIND_MATCH="type='signal',interface='org.freedesktop.login1.Manager'"
+
+# Read dbus-monitor's output for PrepareForShutdown on stdin; on true (the
+# host begins a reboot or power-off), stop the VM unit without waiting, so
+# its ExecStop shuts Windows down while the delay inhibitor holds.
+shutdown_watch_lines() {
+  local line
+  while IFS= read -r line; do
+    case $line in
+      *"boolean true"*)
+        echo "lanai: the host is shutting down; stopping Windows" >&2
+        systemctl --user stop --no-block "$LANAI_UNIT"
+        ;;
+    esac
+  done
+}
+
+# shutdown-watch helper: runs under `systemd-inhibit --mode=delay`.
+shutdown_watch() {
+  dbus-monitor --system "$LANAI_LOGIND_MATCH,member='PrepareForShutdown'" | shutdown_watch_lines
+}
+
+# Read dbus-monitor's output for PrepareForSleep on stdin; on false (the
+# host resumed), set the guest clock (spec 21).
+sleep_watch_lines() {
+  local line
+  while IFS= read -r line; do
+    case $line in
+      *"boolean false"*)
+        echo "lanai: the host resumed; setting the Windows clock" >&2
+        clock_sync || echo "lanai: could not set the Windows clock after resume" >&2
+        ;;
+    esac
+  done
+}
+
+# sleep-watch helper.
+sleep_watch() {
+  dbus-monitor --system "$LANAI_LOGIND_MATCH,member='PrepareForSleep'" | sleep_watch_lines
+}
+
+# Set the guest clock to the host's through the guest agent: a sync, then
+# guest-set-time with the host's time in nanoseconds. Retries every 2 s while
+# the agent's socket is busy (only this watcher and setup's step 6 use it),
+# for at most 60 s and 30 tries.
+clock_sync() {
+  local run end i
+  run=$(run_dir) || return 1
+  end=$((EPOCHSECONDS + 60))
+  for ((i = 0; i < 30; i++)); do
+    qga_reply "$run/qga.sock" command \
+      "{\"execute\":\"guest-set-time\",\"arguments\":{\"time\":$(date +%s%N)}}" && return 0
+    ((EPOCHSECONDS < end)) || break
+    sleep 2
+  done
+  return 1
+}
+
+# Write the QMP line <line> to <state>/last-shutdown when it is a SHUTDOWN
+# event, stamped with this run's $INVOCATION_ID: {"invocation", "guest",
+# "reason"}. Other lines are ignored.
+event_record() {
+  local rec s
+  rec=$(jq -c --arg inv "${INVOCATION_ID:-}" 'select(.event == "SHUTDOWN") |
+    {invocation: $inv, guest: (.data.guest == true), reason: (.data.reason // "")}' <<<"$1" 2>/dev/null) ||
+    return 0
+  [[ -n $rec ]] || return 0
+  s=$(state_dir)
+  mkdir -p -- "$s"
+  printf '%s\n' "$rec" >"$s/last-shutdown.tmp" && mv -f -- "$s/last-shutdown.tmp" "$s/last-shutdown"
+}
+
+# event-log helper: hold qmp-events.sock for the VM's life and record each
+# SHUTDOWN event. Retries until QEMU answers on the socket; returns when
+# QEMU closes it.
+event_log() {
+  local run line
+  run=$(run_dir) || return 1
+  until qmp_open "$run/qmp-events.sock"; do
+    sleep 0.5
+  done
+  while IFS= read -r line <&"$LANAI_SOCK_R"; do
+    event_record "$line"
+  done
+  sock_close
+}
+
+# --- the unit's ExecStart and ExecStop ---
+
+# Print the VM's memory (GiB) and cores: "memory_gib" and "cores" from
+# settings.json, each falling back to settings_seed when absent. vm_args
+# checks the values.
+vm_settings() {
+  local f mem="" cores="" seed
+  f=$(settings_file)
+  if [[ -f $f && ! -L $f ]]; then
+    mem=$(jq -r '.memory_gib // empty' "$f") || return 1
+    cores=$(jq -r '.cores // empty' "$f") || return 1
+  fi
+  if [[ -z $mem || -z $cores ]]; then
+    seed=$(settings_seed) || return 1
+    [[ -n $mem ]] || mem=$(jq -r .memory_gib <<<"$seed")
+    [[ -n $cores ]] || cores=$(jq -r .cores <<<"$seed")
+  fi
+  printf '%s %s\n' "$mem" "$cores"
+}
+
+# lanai-vm-exec, the unit's ExecStart (plan: Architecture). It checks $RUN,
+# removes stale sockets and shared memory, empties client.log, starts the
+# supervised helpers in the background (in the unit's cgroup; systemd stops
+# them after ExecStop), waits for virtiofsd's fresh socket, writes the
+# "running" marker with $INVOCATION_ID, and execs QEMU. The start path
+# leaves the scale and boot mode in <state>/boot.json. Prints why and fails
+# on any problem, before QEMU starts.
+vm_exec() {
+  local run s storage mac="" mem cores scale=100 setup=false media="" gw out problem i name
+  local -a args
+  : "${INVOCATION_ID:?lanai-vm-exec runs only as lanai-vm.service}"
+  run=$(run_dir) || return 1
+  problem=$(run_dir_check) || {
+    echo "lanai: $problem" >&2
+    return 1
+  }
+  for name in qmp qmp-events qmp-cli spice qga virtiofs; do
+    rm -f -- "$run/$name.sock"
+  done
+  for name in "${!LANAI_HELPERS[@]}"; do
+    rm -f -- "$run/$name.pid"
+  done
+  rm -f -- "$run/ivshmem"
+  : >"$run/client.log"
+
+  s=$(state_dir)
+  storage=$(storage_dir) || return 1
+  read -r mem cores < <(vm_settings) || {
+    echo "lanai: cannot read the VM settings" >&2
+    return 1
+  }
+  read -r mac <"$storage/windows.mac" || [[ -n $mac ]] || {
+    echo "lanai: cannot read $storage/windows.mac" >&2
+    return 1
+  }
+  mac=${mac//[[:space:]]/}
+  if [[ -f $s/boot.json ]]; then
+    scale=$(jq -r '.scale // 100' "$s/boot.json") || return 1
+    setup=$(jq -r '.setup // false' "$s/boot.json") || return 1
+  fi
+  [[ $setup != true ]] || media=$s/setup-media
+  gw=$(ip -4 route show default | awk '{ print $3; exit }') || gw=""
+  [[ -n $gw ]] || {
+    echo "lanai: no IPv4 default route; the VM's network needs one to forward DNS" >&2
+    return 1
+  }
+  out=$(vm_args "$storage" "$mac" "$mem" "$cores" "$scale" "$gw" "$media") || {
+    echo "lanai: $out" >&2
+    return 1
+  }
+  mapfile -t args <<<"$out"
+
+  supervise virtiofsd "$LANAI_VIRTIOFSD" --sandbox namespace --shared-dir "$HOME/Windows" \
+    --socket-path="$run/virtiofs.sock" &
+  supervise inhibitor systemd-inhibit --what=shutdown --mode=delay --who=Lanai \
+    --why="Shutting Windows down cleanly" "$LANAI_BIN/lanai-vm-helper" shutdown-watch &
+  supervise sleep-watcher "$LANAI_BIN/lanai-vm-helper" sleep-watch &
+  supervise event-logger "$LANAI_BIN/lanai-vm-helper" event-log &
+  for ((i = 0; i < 50; i++)); do
+    [[ -S $run/virtiofs.sock ]] && break
+    sleep 0.1
+  done
+  [[ -S $run/virtiofs.sock ]] || {
+    echo "lanai: virtiofsd did not create $run/virtiofs.sock" >&2
+    return 1
+  }
+  mkdir -p -- "$s"
+  printf '%s\n' "$INVOCATION_ID" >"$s/running"
+  # QEMU starts passt, which writes its pid file under TMPDIR.
+  TMPDIR=$run exec qemu-system-x86_64 "${args[@]}"
+}
+
+# lanai-vm-stop, the unit's ExecStop; systemd runs it after every stop.
+# When QEMU still runs (a session end, the shutdown inhibitor, or systemctl
+# stop) it sends system_powerdown on qmp.sock and waits for QEMU to exit;
+# the unit's TimeoutStopSec bounds that wait. When QEMU already exited
+# ($EXIT_CODE is set) it skips that. Either way it then waits up to 2 s for
+# this run's last-shutdown record, so systemd does not kill the event
+# logger before it writes.
+vm_stop() {
+  local run s i
+  run=$(run_dir) || return 1
+  s=$(state_dir)
+  if [[ -z ${EXIT_CODE:-} && -n ${MAINPID:-} ]] && kill -0 "$MAINPID" 2>/dev/null; then
+    if qmp_call "$run/qmp.sock" '{"execute":"system_powerdown"}' >/dev/null; then
+      echo "lanai: sent system_powerdown; waiting for Windows to shut down" >&2
+    else
+      echo "lanai: could not send system_powerdown on $run/qmp.sock" >&2
+    fi
+    while kill -0 "$MAINPID" 2>/dev/null; do
+      sleep 0.2
+    done
+  fi
+  for ((i = 0; i < 10; i++)); do
+    jq -e --arg inv "${INVOCATION_ID:-}" '.invocation == $inv' "$s/last-shutdown" >/dev/null 2>&1 &&
+      return 0
+    sleep 0.2
+  done
+  return 0
 }
