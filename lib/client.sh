@@ -89,7 +89,9 @@ version_check() {
     IFS= read -r start
   } < <(awk -v prefix="$LANAI_CLIENT_START " '
     function secs(t, p) { split(t, p, ":"); return p[1] * 3600 + p[2] * 60 + p[3] }
-    index($0, prefix) == 1 { start = substr($0, length(prefix) + 1); next }
+    # Only the first line: the guest can put text at the start of a later
+    # line through its version string.
+    NR == 1 && index($0, prefix) == 1 { start = substr($0, length(prefix) + 1); next }
     {
       # <time> [L] <file>:<line> | <function> | <message>
       i = index($0, " | "); if (!i) next
@@ -128,10 +130,11 @@ version_check() {
 # Record <version> as the guest's IDD version in <state>/guest-version, so
 # lanai open picks the matching client build (plan phase 5). lanai status
 # and lanai open record it from the client log; lanai setup-guest records
-# the pin when it succeeds (phase 6). Refuses anything but a version name.
+# the pin when it succeeds (phase 6). Refuses anything lg_version_key cannot
+# read, such as "unknown".
 guest_version_set() {
   local s
-  [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  lg_version_key "$1" >/dev/null || return 1
   s=$(state_dir)
   [[ ! -f $s/guest-version || $(<"$s/guest-version") != "$1" ]] || return 0
   mkdir -p -- "$s" && printf '%s\n' "$1" >"$s/guest-version.tmp" &&
@@ -142,7 +145,16 @@ guest_version_set() {
 guest_version_note() {
   local guest=""
   read -r _ guest < <(version_check "$1") || return 0
-  [[ -z $guest || $guest == unknown ]] || guest_version_set "$guest" || true
+  [[ -z $guest ]] || guest_version_set "$guest" || true
+}
+
+# Print the recorded guest version when it is not the pinned build: the old
+# client build keeps the window working, but the guest needs the new IDD
+# (req 8). Prints nothing otherwise.
+guest_version_behind() {
+  local g=""
+  [[ ! -r $(state_dir)/guest-version ]] || g=$(<"$(state_dir)/guest-version")
+  [[ -z $g ]] || lg_same_build "$LG_BUILD" "$g" || printf '%s\n' "$g"
 }
 
 # Print the folder that holds Lanai's client builds, one folder per build.
@@ -194,10 +206,9 @@ client_version() {
 client_wait() {
   local sock=$1 end=$((EPOCHSECONDS + $2)) reply
   while :; do
-    if qmp_open "$sock" 2; then
-      reply=$(qmp_send '{"execute":"query-status"}') || reply=""
-      sock_close
-      jq -e '.return.status | type == "string"' <<<"$reply" >/dev/null 2>&1 && return 0
+    if reply=$(LANAI_QMP_BUDGET=2 qmp_call "$sock" '{"execute":"query-status"}') &&
+      jq -e '.return.status | type == "string"' <<<"$reply" >/dev/null 2>&1; then
+      return 0
     fi
     ((EPOCHSECONDS < end)) || return 1
     sleep 0.5
@@ -241,7 +252,10 @@ client_exec() {
 
 # Start lanai-client.service running lanai-client-exec <client>, outside
 # Hyprland's cgroup, and return at once. The user manager's environment
-# may lack the session's, so the display and XDG paths go along.
+# may lack the session's, so the display and XDG paths go along, taken
+# literally (no $ expansion). PartOf= makes every stop of the VM unit stop
+# the client too (even when ExecStop is killed at TimeoutStopSec), and
+# unlike Requires= or BindsTo= it never starts the VM.
 client_start() {
   local v
   local -a env=()
@@ -249,18 +263,21 @@ client_start() {
     [[ -z ${!v:-} ]] || env+=("--setenv=$v=${!v}")
   done
   systemd-run --user --collect --quiet --unit="${LANAI_CLIENT_UNIT%.service}" \
-    --description="Lanai Windows window" "${env[@]}" -- "$LANAI_BIN/lanai-client-exec" "$1"
+    --description="Lanai Windows window" --property="PartOf=$LANAI_UNIT" \
+    --expand-environment=no "${env[@]}" -- "$LANAI_BIN/lanai-client-exec" "$1"
 }
 
 # --- the client build (spec 7, 26) ---
 
 # fetch_verified <url> <dst> <sha256>: download <url> to <dst> over HTTPS
 # only, unless a copy that matches the pin is already there. A mismatch
-# deletes the file and fails.
+# deletes the file and fails. A stalled download (under 1 KiB/s for 60 s)
+# fails, so it cannot hold build.lock forever.
 fetch_verified() {
   local url=$1 dst=$2 sum=$3
   if [[ -f $dst ]] && verify_sha256 "$dst" "$sum" 2>/dev/null; then return 0; fi
-  curl -fsSL --proto '=https' --tlsv1.2 -o "$dst.part" "$url" || {
+  curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 20 --speed-limit 1024 --speed-time 60 \
+    -o "$dst.part" "$url" || {
     rm -f -- "$dst.part"
     echo "lanai: could not download $url" >&2
     return 1
@@ -270,11 +287,12 @@ fetch_verified() {
 }
 
 # Print each submodule folder (LG_SUBMODULES) of source tree <src> that is
-# missing or holds no file. Prints nothing when all are populated.
+# missing or holds no file. Prints nothing when all are populated. A
+# symlink counts as missing: find does not follow a symlinked start.
 submodules_missing() {
   local d
   for d in "${LG_SUBMODULES[@]}"; do
-    [[ -d $1/$d && ! -L $1/$d && -n $(find "$1/$d" -type f -print -quit 2>/dev/null) ]] ||
+    [[ -d $1/$d && -n $(find "$1/$d" -type f -print -quit 2>/dev/null) ]] ||
       printf '%s\n' "$d"
   done
 }

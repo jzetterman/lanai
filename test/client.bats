@@ -150,10 +150,25 @@ fake_build() {
   : >"$T/empty.log"
   run version_check "$T/empty.log"
   assert_output "unknown"
-  # The EGL renderer's "Version :" line is not the guest's.
+  # The EGL renderer's "Version :" line is not the guest's, nor is a
+  # "Version  :" line outside a Guest Information block.
   head -n 6 "$LOGS/match.log" >"$T/log"
+  echo "00:00:00.300 [I]              main.c:4017 | lg_run                         | Version  : B7-826-g236efcb155" >>"$T/log"
   run version_check "$T/log"
   assert_output "unknown"
+}
+
+@test "version_check: the start line counts only as the log's first line" {
+  local now=1000000
+  # A guest version string with a newline can put text at the start of a
+  # log line; an older start there must not make the wait look long.
+  { echo "lanai: client started at $((now - 10))"; cat "$LOGS/waiting.log"
+    echo "lanai: client started at $((now - 500))"; } >"$T/log"
+  run version_check "$T/log" "$now"
+  assert_output "waiting"
+  { cat "$LOGS/waiting.log"; echo "lanai: client started at $((now - 500))"; } >"$T/log"
+  run version_check "$T/log" "$now"
+  assert_output "waiting"
 }
 
 @test "version_check: a guest version the client cannot tell is a mismatch" {
@@ -217,21 +232,44 @@ fake_build() {
   assert_failure
   run guest_version_set "../x"
   assert_failure
+  run guest_version_set unknown
+  assert_failure
+  run guest_version_set B7
+  assert_failure
   assert [ ! -e "$S/guest-version" ]
 }
 
 # --- lanai-client-exec: wait for QEMU's reply on qmp-cli.sock, then exec ---
 
-# A stand-in client: records its arguments, whether the QMP connection was
-# closed before it ran, and prints the version line like the real client.
+# A stand-in client: records its arguments and prints the version line like
+# the real client. With $T/probe-qmp it first asks QMP itself, which on a
+# one-client server works only if the wrapper closed its connection.
 fake_client() {
   cat >"$T/fake-client" <<'EOF'
 #!/usr/bin/env bash
+if [[ -e $T/probe-qmp ]]; then
+  source "$REPO/lib/lanai.sh"
+  if qmp_call "$XDG_RUNTIME_DIR/lanai/qmp-cli.sock" '{"execute":"query-status"}' >/dev/null; then
+    echo free >"$T/client.qmp"
+  fi
+fi
 printf '%s\n' "$@" >"$T/client.args"
-if [[ $(tail -n 1 "$T/qmp.log" 2>/dev/null) == "<closed>" ]]; then echo closed >"$T/client.qmp"; fi
 echo "00:00:00.000 [I]              main.c:4303 | main                           | Looking Glass (B7-826-236efcb1)"
 EOF
   chmod +x "$T/fake-client"
+  export REPO
+}
+
+# Serve <socket> with fake-qmp, one connection at a time, as QEMU does.
+serve_one() {
+  local i
+  socat "UNIX-LISTEN:$1,fork,max-children=1" "EXEC:$FIX/fake-qmp" >/dev/null 2>&1 3>&- &
+  BG_PIDS+=("$!")
+  for ((i = 0; i < 100; i++)); do
+    [[ -S $1 ]] && return 0
+    sleep 0.05
+  done
+  fail "the fake server did not create $1"
 }
 
 @test "lanai-client-exec: waits for a status reply, closes QMP, then execs the client with its flags" {
@@ -245,7 +283,6 @@ EOF
   # The handshake: capabilities, then query-status.
   assert_equal "$(sed -n 1p "$T/qmp.log")" '{"execute":"qmp_capabilities","id":1}'
   assert_equal "$(sed -n 2p "$T/qmp.log")" '{"execute":"query-status","id":2}'
-  assert_equal "$(cat "$T/client.qmp")" closed
   run cat "$T/client.args"
   assert_output -- "-f
 $RUN/ivshmem
@@ -257,6 +294,28 @@ win:setGuestRes=yes"
   assert_line --index 0 --regexp '^lanai: client started at [0-9]+$'
   assert_line --index 1 --partial "Looking Glass (B7-826-236efcb1)"
   refute_output --partial "an old client"
+}
+
+@test "lanai-client-exec: on a one-client socket, a try without a status leaks nothing" {
+  mkdir -m 700 "$RUN"
+  fake_client
+  touch "$T/probe-qmp"
+  export FAKE_QMP_LOG=$T/qmp.log
+  # The first connection gets no status; once query-status has arrived,
+  # later connections get a real answer. A connection left open would block
+  # every later one, as in QEMU.
+  conf FAKE_QMP_MODE=nostatus
+  serve_one "$RUN/qmp-cli.sock"
+  (
+    until grep -q query-status "$T/qmp.log" 2>/dev/null; do sleep 0.05; done
+    : >"$FAKE_CONF"
+  ) 3>&- &
+  BG_PIDS+=("$!")
+  LANAI_CLIENT_WAIT=8 run timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client"
+  assert_success
+  assert [ -e "$T/client.args" ]
+  # The client itself could reach QMP: the wrapper closed its connection.
+  assert_equal "$(cat "$T/client.qmp")" free
 }
 
 @test "lanai-client-exec: retries while the socket is missing, then starts" {
@@ -336,6 +395,12 @@ win:setGuestRes=yes"
   assert_equal "${lines[0]}" --user
   assert_equal "${lines[1]}" --collect
   assert_line -- --unit=lanai-client
+  # Stopping the VM unit stops the client too (without ever starting the
+  # VM), and no path is expanded as a variable.
+  assert_line -- --property=PartOf=lanai-vm.service
+  refute_line --partial Requires=
+  refute_line --partial BindsTo=
+  assert_line -- --expand-environment=no
   assert_line -- --setenv=WAYLAND_DISPLAY=wayland-7
   assert_line -- "--setenv=XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
   # The wrapper and the client come last, after --.
@@ -404,6 +469,75 @@ win:setGuestRes=yes"
   echo "lanai: QEMU did not answer on qmp-cli.sock within 60 s; the Windows window did not open" >"$RUN/client.log"
   run status_facts
   assert_line LanaiClient=timeout
+}
+
+@test "status_facts: a missing IDD counts only while the client runs" {
+  unit_is lanai-vm.service active
+  mkdir -m 700 "$RUN"
+  { echo "lanai: client started at $((EPOCHSECONDS - 120))"; cat "$LOGS/waiting.log"; } >"$RUN/client.log"
+  # The user closed a black window while Windows booted: the log is stale.
+  run status_facts
+  assert_line LanaiVersion=unknown
+  unit_is lanai-client.service active
+  run status_facts
+  assert_line LanaiVersion=idd-missing
+}
+
+@test "status_facts: a guest driver from another build than the pin is named" {
+  unit_is lanai-vm.service active
+  mkdir -m 700 "$RUN"
+  # The old client build matches the old driver, so the window works, but
+  # the pin moved on (req 8).
+  cp "$LOGS/other-build.log" "$RUN/client.log"
+  sed -i "1s/.*/00:00:00.000 [I]              main.c:4303 | main                           | Looking Glass (B7-801-1a2b3c4d)/" \
+    "$RUN/client.log"
+  run status_facts
+  assert_line LanaiVersion=match
+  assert_line LanaiDriverOld=B7-801-g1a2b3c4d5e
+  # Recorded, it shows while Windows is stopped too.
+  unit_is lanai-vm.service inactive
+  run status_facts
+  assert_line LanaiDriverOld=B7-801-g1a2b3c4d5e
+  guest_version_set B7-826-g236efcb155
+  run status_facts
+  refute_line --partial LanaiDriverOld=
+}
+
+# Run status_map on the active VM unit plus the given fact lines, and keep
+# its JSON for field.
+smap() {
+  unit_is lanai-vm.service active
+  run status_map < <(cat "$T/show-lanai-vm.service"; printf '%s\n' "$@")
+  JSON=$output
+}
+
+@test "status_map: a mismatch does not hide a stop in progress or a QEMU error" {
+  smap LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running LanaiQga=open \
+    LanaiStopAge=150 LanaiVersion=mismatch
+  assert_equal "$(field state)" stopping
+  assert_equal "$(field force_stop)" true
+  smap LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=guest-panicked \
+    LanaiVersion=mismatch
+  assert_equal "$(field state)" failed
+  smap LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running LanaiQga=open \
+    LanaiVersion=mismatch
+  assert_equal "$(field state)" version-mismatch
+}
+
+@test "status_map: a driver from another build than the pin is a warning with the fix" {
+  smap LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running LanaiQga=open \
+    LanaiVersion=match LanaiDriverOld=B7-801-g1a2b3c4d5e
+  assert_equal "$(field state)" running
+  run field warning
+  assert_output --partial "B7-801-g1a2b3c4d5e"
+  assert_output --partial "run Lanai setup again"
+  unit_is lanai-vm.service inactive
+  run status_map < <(cat "$T/show-lanai-vm.service"
+    printf '%s\n' LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiDriverOld=B7-801-g1a2b3c4d5e)
+  JSON=$output
+  assert_equal "$(field state)" stopped
+  run field warning
+  assert_output --partial "run Lanai setup again"
 }
 
 @test "status_map: an IDD that never answered is failed on a booted VM, with the client log" {
@@ -536,6 +670,31 @@ esac'
   assert_failure
   assert_output --partial "$d"
   assert [ ! -e "$LGDIR/$LG_BUILD" ]
+  # A symlink to a populated folder in the tree is not the submodule's tree.
+  ln -s ../client "$T/src/looking-glass-$LG_BUILD/$d"
+  tar -czf "$T/lg.tar.gz" -C "$T/src" "looking-glass-$LG_BUILD"
+  LG_SOURCE_SHA=$(sha256sum "$T/lg.tar.gz" | cut -d' ' -f1)
+  run build_client
+  assert_failure
+  assert_output --partial "$d"
+  assert [ ! -e "$T/cmake.calls" ]
+}
+
+@test "build_client: a cached tarball that no longer matches the pin is fetched again" {
+  lg_source
+  local dl=$XDG_CACHE_HOME/lanai/downloads/looking-glass-$LG_BUILD-source.tar.gz
+  mkdir -p "${dl%/*}"
+  echo tampered >"$dl"
+  run build_client
+  assert_success
+  assert [ -e "$T/curl.calls" ]
+  verify_sha256 "$dl" "$LG_SOURCE_SHA"
+  # A cached file that matches is used as is.
+  rm "$T/curl.calls" "$T/cmake.calls"
+  rm -rf "${LGDIR:?}/$LG_BUILD"
+  run build_client
+  assert_success
+  assert [ ! -e "$T/curl.calls" ]
 }
 
 @test "build_client: fails when cmake disables USB audio, and installs nothing" {
@@ -590,9 +749,9 @@ esac'
 @test "lanai build-client: refuses while another build runs" {
   fake_build "$LG_BUILD"
   mkdir -p "$S"
-  flock "$S/build.lock" sleep 30 3>&- &
+  flock "$S/build.lock" bash -c 'touch "$1"; exec sleep 30' _ "$T/locked" 3>&- &
   BG_PIDS+=("$!")
-  sleep 0.3
+  wait_for_file "$T/locked"
   lanai_run build-client
   assert_failure
   run field message

@@ -758,10 +758,12 @@ helper_alive() {
 # unit's `systemctl --user show` output, then Lanai's own (LanaiInstall,
 # LanaiSetup, LanaiContainer, LanaiForced, LanaiLastRun, and for an active
 # unit LanaiQmp, LanaiQga, LanaiHelpersMissing, LanaiStopAge and
-# LanaiClient=timeout when the client gave up waiting for QEMU), and
+# LanaiClient=timeout when the client gave up waiting for QEMU),
 # LanaiVersion (version_check's verdict on client.log for an active unit,
-# else "unknown"). QMP is asked on qmp-cli.sock, in one short session. It
-# also records the guest version the client log names (guest_version_set).
+# else "unknown"; idd-missing only while the client runs), and
+# LanaiDriverOld=<version> when the recorded guest driver is not the pinned
+# build. QMP is asked on qmp-cli.sock, in one short session. It also
+# records the guest version the client log names (guest_version_set).
 status_facts() {
   local show active inv dir rc s run out name missing="" rinv at version=unknown guest="" first=""
   show=$(systemctl --user show "$LANAI_UNIT" -p ActiveState -p SubState -p Result \
@@ -807,12 +809,16 @@ status_facts() {
     fi
     if [[ -f $run/client.log ]]; then
       read -r version guest < <(version_check "$run/client.log") || version=unknown
-      [[ -z $guest || $guest == unknown ]] || guest_version_set "$guest" || true
+      [[ -z $guest ]] || guest_version_set "$guest" || true
+      # A log whose client was closed says nothing about the IDD now.
+      [[ $version != idd-missing ]] || client_active || version=unknown
       IFS= read -r first <"$run/client.log" || true
       [[ $first != "$LANAI_CLIENT_TIMEOUT"* ]] || echo LanaiClient=timeout
     fi
   fi
   echo "LanaiVersion=$version"
+  guest=$(guest_version_behind) || guest=""
+  [[ -z $guest ]] || echo "LanaiDriverOld=$guest"
 }
 
 # status_map: read status_facts' lines on stdin and emit the state the bar
@@ -822,11 +828,12 @@ status_facts() {
 # a forced stop, with its likely causes, spec 19; only from last-run, which
 # the panel clears once shown), forced_pending (the VM was force-stopped or
 # its stop timed out, and the next start will report it), warning (helpers
-# that stopped, or a client that gave up waiting for QEMU), force_stop (true
-# once a shutdown from the bar has run 2 minutes, spec 16) and, for failed,
-# logs. The client log's verdict (LanaiVersion) makes a mismatch
-# version-mismatch, and a missing IDD on a booted VM failed, with the client
-# log as its logs (spec 8).
+# that stopped, a client that gave up waiting for QEMU, or a guest driver
+# that is not the pinned build), force_stop (true once a shutdown from the
+# bar has run 2 minutes, spec 16) and, for failed, logs. The client log's
+# verdict (LanaiVersion) makes a mismatch version-mismatch, and a missing
+# IDD on a booted VM failed, with the client log as its logs (spec 8); a
+# stop in progress and a QEMU error come first.
 status_map() {
   local line state message next notice="" warning="" force=false name logs=""
   local -A f=()
@@ -842,11 +849,7 @@ status_map() {
   [[ ${f[LanaiLastRun]:-} != forced ]] || notice=$LANAI_FORCED_NOTICE
   case $active in
     active | reloading)
-      if [[ ${f[LanaiVersion]:-} == mismatch ]]; then
-        state="version-mismatch"
-        message="The Looking Glass client and the driver in Windows come from different builds."
-        next="run Lanai setup again to update Windows, $LANAI_FALLBACK"
-      elif [[ -n ${f[LanaiStopAge]:-} || $qmp == shutdown ]]; then
+      if [[ -n ${f[LanaiStopAge]:-} || $qmp == shutdown ]]; then
         state=stopping message="Windows is shutting down." next="wait up to 2 minutes"
         if ((${f[LanaiStopAge]:-0} >= 120)); then
           force=true
@@ -859,6 +862,10 @@ status_map() {
         # dockur installs its own guest agent, so the port says nothing yet.
         state="setup-needed" message="Windows is running, but Lanai setup has not finished."
         next="finish setup in the Lanai panel"
+      elif [[ ${f[LanaiVersion]:-} == mismatch ]]; then
+        state="version-mismatch"
+        message="The Looking Glass client and the driver in Windows come from different builds."
+        next="run Lanai setup again to update Windows, $LANAI_FALLBACK"
       elif [[ $qmp == running && ${f[LanaiQga]:-} == open && ${f[LanaiVersion]:-} == idd-missing ]]; then
         # Windows has booted, but the IDD never answered the client (spec 8).
         state=failed logs="$(run_dir 2>/dev/null)/client.log"
@@ -901,8 +908,12 @@ status_map() {
       ;;
     *) state=failed message="Lanai cannot read the VM's state from systemd." next=$failed_next ;;
   esac
-  if [[ ${f[LanaiClient]:-} == timeout && ($active == active || $active == reloading) ]]; then
+  # status_facts reports LanaiClient only for an active unit.
+  if [[ ${f[LanaiClient]:-} == timeout ]]; then
     warning+="${warning:+ }The Windows window did not open: QEMU did not answer within $LANAI_CLIENT_WAIT s. Try Open again."
+  fi
+  if [[ -n ${f[LanaiDriverOld]:-} && $state != version-mismatch ]]; then
+    warning+="${warning:+ }The Windows display driver (${f[LanaiDriverOld]}) is not Lanai's pinned build ($LG_BUILD); run Lanai setup again to update it."
   fi
   [[ $state != failed || -n $logs ]] || logs=$LANAI_LOGS
   emit true "$state" "$message" "$next" "$(jq -n -c --arg notice "$notice" --arg warning "$warning" \
@@ -1137,7 +1148,7 @@ cmd_open() {
     # Another open may have started it meanwhile.
     if ! client_active; then
       emit false "" "Lanai could not open the Windows window." \
-        "see the logs with journalctl --user -u lanai-client"
+        "see the logs with journalctl --user -u $LANAI_CLIENT_UNIT"
       return 1
     fi
   fi

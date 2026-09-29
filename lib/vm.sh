@@ -302,14 +302,15 @@ qmp_call() {
   return "$rc"
 }
 
-# qmp_open <socket> [<seconds>]: connect, read QEMU's greeting and negotiate
+# qmp_open <socket>: connect, read QEMU's greeting and negotiate
 # capabilities, leaving the connection open for qmp_send or for reading
-# events on LANAI_SOCK_R. Starts the session's budget (default 5 s; the
-# client wait uses 2 s per try). On failure the connection is closed.
+# events on LANAI_SOCK_R. Starts the session's budget: LANAI_QMP_BUDGET
+# seconds, default 5 (the client wait uses 2 per try). On failure the
+# connection is closed.
 qmp_open() {
   local t line
   sock_open "$1" || return 1
-  LANAI_QMP_DEADLINE=$(($(now_us) + ${2:-5} * 1000000)) LANAI_QMP_ID=0
+  LANAI_QMP_DEADLINE=$(($(now_us) + ${LANAI_QMP_BUDGET:-5} * 1000000)) LANAI_QMP_ID=0
   if t=$(time_left "$LANAI_QMP_DEADLINE") && IFS= read -r -t "$t" -u "$LANAI_SOCK_R" line &&
     jq -e 'has("QMP")' <<<"$line" >/dev/null 2>&1 &&
     qmp_send '{"execute":"qmp_capabilities"}' >/dev/null; then
@@ -759,8 +760,9 @@ vm_stop() {
     done
   fi
   # The Looking Glass client is useless once QEMU is gone, and would hold
-  # the old shared memory into the next run.
-  systemctl --user stop --no-block lanai-client.service >/dev/null 2>&1 || true
+  # the old shared memory into the next run. The client unit's PartOf= covers
+  # a stop job; this covers a QEMU that exits on its own.
+  systemctl --user stop --no-block "$LANAI_CLIENT_UNIT" >/dev/null 2>&1 || true
   for ((i = 0; i < 10; i++)); do
     jq -e --arg inv "${INVOCATION_ID:-}" '.invocation == $inv' "$s/last-shutdown" >/dev/null 2>&1 &&
       return 0
