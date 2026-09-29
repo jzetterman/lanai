@@ -913,3 +913,6 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 | diff (phase 4) | b Grok (substitute), part B (snapshot and restore) | 1 (full) | 2 P2, 1 P3; all confirmed and integrated (restore marks before recreating a deleted disk; snapshots flushed before success; layout check before snapshot) |
 | diff (phase 4) | b Grok (substitute), part B | 2 (full) | 1 P2; integrated (restore holds the disk lock while it hashes the snapshot) |
 | diff (phase 4) | b Grok (substitute), part B | 3 (full, cap) | 1 P2, 1 P3; integrated by Claude, test-first (sync -f after a snapshot, since XFS does not flush clones on fsync of other files; cp errors shown). Not re-reviewed: at the cap |
+| diff (phase 5) | a | 1 (panel: correctness+reliability, security+supply chain, testing+maintainability) | 0 blockers, 6 should-fix, about 12 nits; all integrated. Heavy round: one more full round |
+| diff (phase 5) | a | 2 (full, 2 reviewers) | 0 blockers, 3 should-fix, 8 nits; all integrated |
+| diff (phase 5) | a | 3 (delta) | clean; 3 nits, 2 taken by Claude test-first (a missing pacman counts all missing; no empty install command). Stage a closed |
