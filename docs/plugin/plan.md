@@ -444,10 +444,14 @@ Where the code differs from the text above, the code and this list win:
   runs is kept, named, and the restore stays unfinished. The marker holds the snapshot and the storage
   location, is flushed to disk before any write, and resumes only for that location;
   when its snapshot is gone or damaged, `lanai restore <other>` replaces it. Files go
-  in name order with `data.img` last. The marker is written before the first write to
-  the storage folder: only then is a deleted `data.img` put back (so its lock can be
-  taken) and the lock taken; if either fails, the marker stays, `lanai start` keeps
-  refusing, and `lanai restore` finishes it once the other VM is stopped.
+  in name order with `data.img` last. Lock order: when `data.img` exists, QEMU's write
+  lock is taken right after the cheap read-only checks and held to the end, through
+  the minutes of hashing too (req 7), so no container VM or direct start of
+  `lanai-vm` can boot meanwhile; a refusal after it (a damaged snapshot) releases it
+  and leaves no marker and nothing written. The marker is written before the first
+  write to the storage folder. When `data.img` is missing, the order is marker, then
+  the disk put back, then the lock; if either fails, the marker stays, `lanai start`
+  keeps refusing, and `lanai restore` finishes it once the other VM is stopped.
 - `ficlone.py` cuts a larger `data.img` to the snapshot's size before the clone, not
   after (btrfs refuses to clone a source that ends mid-block into a larger file); it
   never cuts to zero, refuses an empty source, symlinks, and two files that differ in
