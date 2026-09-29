@@ -259,6 +259,53 @@ take_snapshot() {
   done
 }
 
+@test "snapshot: refuses a storage folder that fails the adoption checks" {
+  use_install "$T/win"
+  plain_cp
+  rm "$T/win/windows.mac"
+  lanai_run snapshot
+  assert_failure
+  run field message
+  assert_output --partial "windows.mac is missing or empty"
+  refute_output --partial "instant copy"
+}
+
+@test "snapshot: flushes the folder before the rename and both names after, before it reports" {
+  use_install "$T/win"
+  plain_cp
+  shim sync 'echo "$*" >>"$T/sync.calls"; exec /usr/bin/sync "$@"'
+  take_snapshot
+  local root=${SNAP%/*}
+  run cat "$T/sync.calls"
+  assert_line "-- $SNAP.partial"
+  assert_line "-- $root $SNAP"
+  # The folder is flushed before the rename, the names after it.
+  local before after
+  before=$(grep -nxF -- "-- $SNAP.partial" "$T/sync.calls" | cut -d: -f1)
+  after=$(grep -nxF -- "-- $root $SNAP" "$T/sync.calls" | cut -d: -f1)
+  ((before < after)) || fail "the order of the syncs is wrong"
+}
+
+@test "restore: marks itself before it recreates a deleted disk, and keeps the mark when the lock fails" {
+  use_install "$T/win"
+  plain_cp
+  take_snapshot
+  rm "$T/win/data.img"
+  # Another VM grabs the disk the moment it is back.
+  shim qemu-io 'echo "qemu-io: Failed to get \"write\" lock" >&2; exit 1'
+  lanai_run restore "$NAME"
+  assert_failure
+  run field message
+  assert_output --partial "did not finish"
+  assert_output --partial "run lanai restore again"
+  refute_output --partial "nothing was changed"
+  assert [ -f "$T/win/data.img" ]
+  assert [ -e "$S/restore-in-progress" ]
+  run preflight
+  assert_failure
+  assert_output --partial "a restore did not finish"
+}
+
 @test "snapshot: a copy that does not match its source is removed, and the lock released" {
   use_install "$T/win"
   plain_cp
@@ -658,11 +705,14 @@ damage() {
   assert_output --partial "Nothing was changed"
   assert_equal "$(tree_manifest "$B/win")" "$before"
   assert [ ! -e "$S/restore-in-progress" ]
-  # An empty disk in a snapshot (of an empty data.img) cannot be cloned.
+  # An empty disk in a snapshot cannot be cloned. (lanai snapshot refuses
+  # an empty data.img, so the test empties the snapshot's copy and its
+  # manifest to match.)
   use_install "$B/win2"
-  : >"$B/win2/data.img"
   sleep 1
   take_snapshot
+  : >"$SNAP/data.img"
+  snapshot_manifest "$SNAP" >"$SNAP/COMPLETE"
   echo changed >"$B/win2/windows.vars"
   before=$(tree_manifest "$B/win2")
   lanai_run restore "$NAME"

@@ -189,8 +189,10 @@ snapshot_create() {
     echo "$reason"
     return 1
   fi
-  if [[ ! -f $dir/data.img ]]; then
-    echo "$dir has no data.img to snapshot"
+  # The adoption checks (the setup flow's snapshot step comes after them),
+  # which also make sure snapshot_root's probe file, windows.mac, exists.
+  if ! reason=$(layout_check "$dir"); then
+    printf '%s\n' "$reason"
     return 1
   fi
   root=$(snapshot_root "$dir") || {
@@ -224,11 +226,18 @@ snapshot_create() {
     echo "cannot create $part"
     return 1
   fi
+  # Success is reported only once the tree, its rename and its final name
+  # are on disk: a crash must not leave the reported snapshot named
+  # *.partial, which the next snapshot would remove as a leftover.
   if reflink_tree "$dir" "$part" && printf '%s\n' "$dir" >"$part/SOURCE" &&
     m=$(tree_manifest "$dir") && [[ $m == "$(snapshot_manifest "$part")" ]] &&
     printf '%s\n' "$m" >"$part/COMPLETE" && sync -- "$part/SOURCE" "$part/COMPLETE" &&
-    mv -T -- "$part" "$root/$name"; then
+    sync -- "$part" && mv -T -- "$part" "$root/$name"; then
     unlock_disk
+    if ! sync -- "$root" "$root/$name"; then
+      echo "the snapshot at $root/$name could not be flushed to disk, so it may not survive a crash; delete it with rm -rf ${root@Q}/$name and try again"
+      return 1
+    fi
     printf '%s\n' "$root/$name"
     return 0
   fi
@@ -315,21 +324,23 @@ snapshot_restore() {
     [[ $name == data.img ]] || order+=("$name")
   done <"$snap/COMPLETE"
   order+=(data.img)
+  # The marker comes before the first write to the storage folder, so a
+  # restore that stops anywhere after it blocks lanai start until it is
+  # finished.
+  if ! restore_mark "$marker" "$snap" "$dir"; then
+    echo "cannot write $marker; nothing was changed"
+    return 1
+  fi
   if [[ ! -f $dir/data.img ]]; then
     # dockur deleted the disk: put it back first, so its lock can be taken.
     if ! reflink_file "$snap/data.img" "$dir/.lanai-restore.data.img" ||
       ! mv -f -T -- "$dir/.lanai-restore.data.img" "$dir/data.img"; then
-      echo "cannot copy data.img back from $snap"
+      echo "the restore did not finish: cannot copy data.img back from $snap; run lanai restore again"
       return 1
     fi
   fi
   if ! lock_disk "$dir/data.img"; then
-    echo "cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it first."
-    return 1
-  fi
-  if ! restore_mark "$marker" "$snap" "$dir"; then
-    unlock_disk
-    echo "cannot write $marker; nothing was changed"
+    echo "the restore did not finish: cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it, then run lanai restore again."
     return 1
   fi
   for name in "${order[@]}"; do
