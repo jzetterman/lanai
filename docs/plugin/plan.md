@@ -428,7 +428,11 @@ Where the code differs from the text above, the code and this list win:
   from only when it is a real folder owned by the user with no group or other write
   (`own_dir`; new ones are made 0700), and each snapshot folder must be the user's.
   A snapshot takes install files only: dockur's `setup.img` leftovers or a restore's
-  temp files must be deleted first. `lanai snapshots` lists them.
+  temp files must be deleted first, and the folder must pass `layout_check` (so
+  `windows.mac`, the reflink probe file, exists). Success is reported only after the
+  tree is flushed before its rename and the snapshot place and final name after it, so
+  a crash cannot leave a reported snapshot named `*.partial` for the next snapshot to
+  remove. `lanai snapshots` lists them.
 - Restore touches only an existing storage folder that holds nothing but regular files
   named in `layout_check`'s allow-list, dockur's `setup.img` leftovers and its own
   `.lanai-restore.*` temp files; anything else (a folder, a symlink, a user's file)
@@ -440,8 +444,10 @@ Where the code differs from the text above, the code and this list win:
   runs is kept, named, and the restore stays unfinished. The marker holds the snapshot and the storage
   location, is flushed to disk before any write, and resumes only for that location;
   when its snapshot is gone or damaged, `lanai restore <other>` replaces it. Files go
-  in name order with `data.img` last; a deleted `data.img` is put back first so its
-  lock can be taken.
+  in name order with `data.img` last. The marker is written before the first write to
+  the storage folder: only then is a deleted `data.img` put back (so its lock can be
+  taken) and the lock taken; if either fails, the marker stays, `lanai start` keeps
+  refusing, and `lanai restore` finishes it once the other VM is stopped.
 - `ficlone.py` cuts a larger `data.img` to the snapshot's size before the clone, not
   after (btrfs refuses to clone a source that ends mid-block into a larger file); it
   never cuts to zero, refuses an empty source, symlinks, and two files that differ in
