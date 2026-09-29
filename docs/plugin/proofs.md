@@ -2,8 +2,9 @@
 
 Plan: [plan.md](plan.md), "Phase 1". Spec: [spec.md](spec.md).
 
-These four proofs settle the riskiest unknowns before the VM work builds on them. You run
-all of them by hand. Each proof runs on a full reflink copy of `~/.windows`, never on
+These four proofs settle the riskiest unknowns before the VM work builds on them. Proof 5
+is phase 6's lock proof, which runs before the rest of phase 6. You run all of them by
+hand. Each proof runs on a full reflink copy of `~/.windows`, never on
 `~/.windows` itself. If a proof fails, stop and record why. Phase 4 (VM lifecycle) waits.
 
 Record every time with its timezone, for example `2026-09-28 14:00 EDT`. Paste command
@@ -17,6 +18,7 @@ output into the Result sections as it printed.
 | `docs/plugin/proof-kit/proof-vm` | Builds and runs the proof VM from the spike's `vm_args` and the captured `omarchy-windows-vm` command line (`spike/test/fixtures/dockur-cmdline.txt`), plus each proof's devices. Refuses `~/.windows`, and refuses a copy that holds a symlink, a hard link, or a file that is the live one. `proof-vm help` lists its commands. `proof-vm args <copy> [options]` prints the QEMU line without starting anything. |
 | `docs/plugin/proof-kit/lanai-proof.service`, `proof-unit-start`, `proof-unit-stop` | Proof 4's throwaway unit and its start and stop scripts. |
 | `guest/lanai-scale.ps1` | Proof 1's scale script (first draft). |
+| `guest/lanai-lock.cmd` | Proof 5's script: turns off locking inside Windows. `setup.cmd` will run the same file. |
 | `lib/pins.sh` | The pinned downloads below. |
 
 The proof VM differs from the spike VM in three ways. Its name is `lanai-proof`. It has
@@ -488,6 +490,203 @@ present at first reply`. QEMU creates the QMP chardev before the memory backends
 (`object_create_early` leaves `memory-backend-*` for later) and runs non-OOB QMP
 commands only from its main loop, after every backend exists. The greeting may come
 earlier, so only a command reply counts.
+
+## Proof 5: Windows lock off (phase 6)
+
+Plan: [plan.md](plan.md), "Phase 6", the lock proof. Spec: requirement 7 and row 7b.
+
+Proof 4 found that a locked Windows drops the ACPI power button. `system_powerdown` did
+nothing, and systemd killed QEMU at its stop timeout. So setup turns off every way
+Windows can lock (spec requirement 7), with `guest/lanai-lock.cmd`. This proof runs the
+real script on the test copy. First it shows that each lock path does lock Windows
+before the script (the positive controls). Then it shows that after the script and one
+restart, none of them does, and a stop from the host ends in a clean shutdown.
+
+The copy already has the Looking Glass IDD, so QEMU's own window stays black. Do every
+step in the Looking Glass client. The proof runs on `$S/lanai-proof`, never on
+`~/.windows`.
+
+"Locked" below means Windows shows the lock screen or the sign-in screen, and wants the
+password.
+
+Before you start:
+
+1. Run `source ~/lanai-proofs/env`. Switch the main checkout (`$R`) to the branch that
+   holds this section and `guest/lanai-lock.cmd`. It needs the spike's client in
+   `$R/spike/work/`, as before.
+2. Refresh the setup disk, so it holds `lanai-lock.cmd`: `"$K/proof-vm" media "$S/kit"`.
+   It ends with `media ready`.
+3. Stop the container VM with `omarchy-windows-vm stop`.
+4. Have the Windows password at hand. Most controls end at the sign-in screen.
+
+Start the VM and the client:
+
+```sh
+"$K/proof-vm" run "$S/lanai-proof" --setup "$S/kit/setup"   # terminal 1
+"$K/proof-vm" client                                         # terminal 2
+```
+
+`client` waits up to 60 s for QEMU to answer a command on `qmp.sock`, disconnects, then
+starts the client. A Windows restart keeps QEMU running. If the client window closes
+during a restart, run `"$K/proof-vm" client` again. In Explorer, note the setup USB
+drive's letter. The steps below call it `E:`.
+
+Two key presses go in over QMP, from terminal 3. `qmp.sock` serves one client at a
+time, and `client` has already let go of it. Each command holds the connection open for
+1 s, because QEMU drops requests still queued when the client disconnects. Each prints
+QEMU's greeting, then `{"return": {}}` twice. Check for both.
+
+Windows key + L:
+
+```sh
+{ printf '%s\n' '{"execute":"qmp_capabilities"}' \
+    '{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"meta_l"},{"type":"qcode","data":"l"}]}}'
+  sleep 1; } | socat - "UNIX-CONNECT:$XDG_RUNTIME_DIR/lanai-proof/qmp.sock"
+```
+
+Ctrl+Alt+Del:
+
+```sh
+{ printf '%s\n' '{"execute":"qmp_capabilities"}' \
+    '{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"ctrl"},{"type":"qcode","data":"alt"},{"type":"qcode","data":"delete"}]}}'
+  sleep 1; } | socat - "UNIX-CONNECT:$XDG_RUNTIME_DIR/lanai-proof/qmp.sock"
+```
+
+Step 1, the positive controls. Run each one on its own. After each one that locks, sign
+back in before the next.
+
+1. Lock in Start: Start, your user icon, Lock.
+2. Lock in Ctrl+Alt+Del: send Ctrl+Alt+Del with the command above, then choose Lock.
+3. Windows key + L: send it with the command above. It is a control, not a warm-up.
+4. The call apps use: in Command Prompt, run `rundll32 user32.dll,LockWorkStation`.
+5. Switch user: from Start, your user icon, or from the Ctrl+Alt+Del screen.
+6. The secure screen saver alone: Settings, Personalization, Lock screen, Screen saver.
+   Choose a screen saver (Blank works), set Wait to 1 minute, tick "On resume, display
+   logon screen", and choose OK. Keep your hands off the client window for 2 minutes.
+   The screen saver starts. Move the mouse: Windows must be locked. Sign in, then set
+   the screen saver back to (None) and choose OK.
+7. The inactivity limit alone. In an elevated Command Prompt (Start, type `cmd`, Run as
+   administrator):
+
+   ```bat
+   reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v InactivityTimeoutSecs /t REG_DWORD /d 60 /f
+   ```
+
+   Restart Windows (Start, Power, Restart). Sign in if Windows asks. Keep your hands off
+   for 2 minutes: Windows must be locked.
+
+If a control does not lock, fix the control before step 2: find out why, and try again.
+A path with no working control counts as unproven.
+
+Then set up a user's earlier lock settings: turn the 1-minute secure screen saver back
+on, as in control 6. `InactivityTimeoutSecs` is still 60 from control 7. From here on,
+Windows locks after each idle minute until step 2; sign in each time.
+
+Step 2, run the script:
+
+1. From a normal Command Prompt (not elevated), run `E:\lanai-lock.cmd`, then
+   `echo %errorlevel%`. It must print that it needs administrator rights, then `1`. It
+   changes nothing.
+2. From an elevated Command Prompt, run `E:\lanai-lock.cmd`, then `echo %errorlevel%`.
+   It must print `lanai-lock: locking inside Windows is off.`, then `0`. This copy is
+   not in a domain or MDM, so no policy warning may appear.
+3. Restart Windows. Some values load only at sign-in.
+
+Step 3, nothing locks. Leave the settings as the script left them. Do not open the
+screen saver dialog: saving it can write `ScreenSaverIsSecure` back.
+
+1. In Command Prompt:
+
+   ```bat
+   reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System /v DisableLockWorkstation
+   reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v HideFastUserSwitching
+   reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v InactivityTimeoutSecs
+   reg query "HKCU\Control Panel\Desktop" /v ScreenSaveTimeOut
+   reg query "HKCU\Control Panel\Desktop" /v ScreenSaverIsSecure
+   ```
+
+   Expect `0x1`, `0x1`, an error (the value is gone), `60` and `0`.
+2. Repeat controls 1 to 5 from step 1. None may lock Windows. Record what each one
+   shows: Lock and Switch user should be gone from Start and the Ctrl+Alt+Del screen.
+   Leave the Ctrl+Alt+Del screen with Cancel.
+3. Keep your hands off the client window for 3 minutes or more. The screen saver starts
+   after 1 minute. Move the mouse: the desktop must come back, not the sign-in screen.
+4. In PowerShell:
+
+   ```powershell
+   powercfg /a
+   Get-PnpDevice -Class Bluetooth
+   ```
+
+   `powercfg /a` must show no Standby (S1, S2, S3 or S0 Low Power Idle), Hibernate or
+   Hybrid Sleep as available. `Get-PnpDevice` must list no device; an error that
+   nothing matches is fine. If either finds one, stop here and record it. The script
+   leaves sign-in on wake and Dynamic Lock alone because neither can fire in this VM,
+   and spec row 7b needs both unable to fire.
+
+Step 4, the domain and MDM warning. In an elevated Command Prompt:
+
+```bat
+set LANAI_FAKE_MANAGED=1
+E:\lanai-lock.cmd
+```
+
+It must print the policy warning: `lanai-lock: this Windows is joined to a domain or
+enrolled in MDM.`, then that a policy may turn the lock back on and shutdowns may end in
+a forced stop. `setup.cmd` elevates itself, which drops the caller's environment, so the
+variable works only when set in the elevated prompt that runs the script. Close that
+prompt.
+
+Step 5, stop from the host:
+
+1. Keep your hands off the client window until the screen saver (no longer secure)
+   shows. Then, in terminal 3, run `"$K/proof-vm" stop`. It must print `QEMU exited`.
+   After `system_powerdown`, QEMU exits only when Windows powers off.
+2. Start the VM and the client again, and wait for the desktop. Open the Ctrl+Alt+Del
+   screen with the command above and leave it open. Run `"$K/proof-vm" stop`. Record
+   the result either way. If Windows ignores the stop, `stop` gives up after 300 s with
+   `still runs after 300 s`. Then choose Cancel on that screen and run
+   `"$K/proof-vm" stop` again.
+
+What failure looks like: a path in step 3 still locks Windows, a `reg query` result
+differs, Windows asks for the password after the idle wait, or step 5.1 ends with
+`still runs after 300 s`. If any lock path survives, stop and record it. The rest of
+phase 6 waits.
+
+Pass: in step 1, every control locked Windows. In step 3, none did, the `reg query`
+results match, Windows stayed unlocked through 3 minutes of idle, and there is no sleep
+state and no Bluetooth device. Step 2 printed no policy warning, and step 4 printed it.
+Step 5.1 printed `QEMU exited`. Step 5.2 is recorded, clean or not; if not, the README
+names it (row 7b).
+
+### Result
+
+- Date and time:
+- Branch and commit of `$R`:
+- Step 1, before the script (locked yes or no, and what Windows showed):
+  - Lock in Start:
+  - Lock in Ctrl+Alt+Del:
+  - Windows key + L (both `{"return": {}}` lines?):
+  - `rundll32 user32.dll,LockWorkStation`:
+  - Switch user:
+  - Secure screen saver at 1 minute:
+  - `InactivityTimeoutSecs` 60, after a restart:
+- Step 2, not elevated (output and error level):
+- Step 2, elevated (output and error level):
+- Step 3, `reg query` output:
+- Step 3, after the script (locked yes or no, and what Windows showed):
+  - Lock in Start:
+  - Lock in Ctrl+Alt+Del:
+  - Windows key + L (both `{"return": {}}` lines?):
+  - `rundll32 user32.dll,LockWorkStation`:
+  - Switch user:
+- Step 3, after 3 minutes idle (still unlocked?):
+- Step 3, `powercfg /a` output:
+- Step 3, `Get-PnpDevice -Class Bluetooth` output:
+- Step 4, the warning as printed:
+- Step 5.1, stop with the screen saver showing (`stop`'s output):
+- Step 5.2, stop with the Ctrl+Alt+Del screen open (`stop`'s output, clean or not):
+- Pass (yes/no), and why:
 
 ## After the proofs
 
