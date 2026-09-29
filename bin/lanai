@@ -4,7 +4,6 @@
 # in lib/lanai.sh.
 set -euo pipefail
 
-LANAI_LIB=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib" && pwd)
 # shellcheck source-path=SCRIPTDIR source=../lib/lanai.sh
-source "$LANAI_LIB/lanai.sh"
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib/lanai.sh"
 lanai_main "$@"

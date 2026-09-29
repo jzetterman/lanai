@@ -201,17 +201,23 @@ map() {
 }
 
 @test "status_map: after a forced stop or a stop timeout, the failed unit shows as stopped" {
+  # The notice comes from last-run only (shown once, then cleared by the
+  # panel); a forced stop the next start has not recorded yet is its own
+  # field.
   unit_show failed "Result=signal"
   map LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiForced=yes
   assert_equal "$(field state)" stopped
-  run field notice
-  assert_output --partial "force-stopped"
+  assert_equal "$(field notice)" null
+  assert_equal "$(field forced_pending)" true
   # TimeoutStopSec ran out (logout with lingering on): a forced stop.
   unit_show failed "Result=timeout"
   map LanaiInstall=present LanaiSetup=done LanaiContainer=none
   assert_equal "$(field state)" stopped
-  run field notice
-  assert_output --partial "force-stopped"
+  assert_equal "$(field forced_pending)" true
+  # A clean stop has nothing pending.
+  unit_show inactive
+  map LanaiInstall=present LanaiSetup=done LanaiContainer=none
+  assert_equal "$(field forced_pending)" false
 }
 
 @test "status_map: a version mismatch (phase 5 input) wins on a running VM" {
@@ -277,6 +283,14 @@ map() {
   unit_show inactive
   lanai_run status
   assert_equal "$(field state)" stopped
+}
+
+@test "lanai status: no install at the storage location is not installed" {
+  ready
+  rm -rf "$HOME/.windows"
+  lanai_run status
+  assert_success
+  assert_equal "$(field state)" not-installed
 }
 
 @test "lanai status: the guest agent's port closed means starting; a panicked guest is failed" {
@@ -364,11 +378,10 @@ assert_both_refuse() {
 
 @test "preflight: refuses while the container VM runs or prepares" {
   ready
-  local scope=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff.scope
-  fake_proc 700 "$scope" /usr/bin/qemu-system-x86_64 -name windows
+  fake_proc 700 "$DOCKER_SCOPE" /usr/bin/qemu-system-x86_64 -name windows
   assert_both_refuse "a Docker VM is running (possibly omarchy-windows-vm)"
   rm -rf "$T/proc/700"
-  fake_proc 701 "$scope" /bin/bash /run/entry.sh
+  fake_proc 701 "$DOCKER_SCOPE" /bin/bash /run/entry.sh
   assert_both_refuse "preparing a VM"
 }
 
@@ -490,6 +503,20 @@ assert_both_refuse() {
     "$XDG_CONFIG_HOME/systemd/user/lanai-vm.service" || fail "the unit still points at the old copy"
   run grep -c daemon-reload "$T/systemctl.calls"
   assert_output 1
+}
+
+@test "lanai start: a data folder the unit file cannot hold stops the start, with no unit" {
+  ready
+  local bad
+  for bad in "$HOME/my data" "$HOME/100%"; do
+    export XDG_DATA_HOME=$bad
+    mkdir -p "$bad"
+    : >"$T/systemctl.calls"
+    lanai_run start
+    assert_failure
+    assert [ ! -e "$XDG_CONFIG_HOME/systemd/user/lanai-vm.service" ]
+    ! grep -qE -- '--user (daemon-reload|start)' "$T/systemctl.calls" || fail "systemd was touched"
+  done
 }
 
 @test "lanai start: a failed runtime copy stops the start and is repaired next time" {

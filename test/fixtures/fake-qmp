@@ -6,7 +6,8 @@
 # system_powerdown, echoing each command's id. Knobs (environment):
 #   FAKE_QMP_MODE    silent: greet, then never answer; events: send an event
 #                    before each reply; shutdown: after capabilities, send a
-#                    SHUTDOWN event (FAKE_QMP_GUEST, default true) and hang up
+#                    SHUTDOWN event (FAKE_QMP_GUEST, default true), another
+#                    event, and hang up
 #   FAKE_QMP_STATUS  query-status's status (default running)
 #   FAKE_QMP_QGA     query-chardev's frontend-open for qga0 (default true)
 #   FAKE_QMP_KILL    a pid to kill when system_powerdown arrives; with
@@ -58,6 +59,8 @@ while IFS= read -r line; do
     printf '%s\n' "$event"
     printf '{"timestamp": {"seconds": 3, "microseconds": 4}, "event": "SHUTDOWN", "data": {"guest": %s, "reason": "guest-shutdown"}}\n' \
       "${FAKE_QMP_GUEST:-true}"
+    # Another event after it must not replace the SHUTDOWN record.
+    printf '%s\n' "$event"
     break
   fi
 done

@@ -808,10 +808,12 @@ status_facts() {
 # status_map: read status_facts' lines on stdin and emit the state the bar
 # shows (spec 10), with its cause and one next step: not-installed,
 # setup-needed, stopped, starting, running, stopping, in-use,
-# version-mismatch or failed. Details: notice (a forced stop last time,
-# with its likely causes, spec 19), warning (helpers that stopped),
-# force_stop (true once a shutdown from the bar has run 2 minutes, spec 16)
-# and, for failed, logs.
+# version-mismatch or failed. Details: notice (the last start's verdict was
+# a forced stop, with its likely causes, spec 19; only from last-run, which
+# the panel clears once shown), forced_pending (the VM was force-stopped or
+# its stop timed out, and the next start will report it), warning (helpers
+# that stopped), force_stop (true once a shutdown from the bar has run 2
+# minutes, spec 16) and, for failed, logs.
 status_map() {
   local line state message next notice="" warning="" force=false name logs=""
   local -A f=()
@@ -824,7 +826,7 @@ status_map() {
   # A stop that ran out of time (TimeoutStopSec, at logout with lingering)
   # is a forced stop, not a crash.
   [[ ! ($active == failed && ${f[Result]:-} == timeout) ]] || forced=yes
-  [[ ${f[LanaiLastRun]:-} != forced && $forced != yes ]] || notice=$LANAI_FORCED_NOTICE
+  [[ ${f[LanaiLastRun]:-} != forced ]] || notice=$LANAI_FORCED_NOTICE
   case $active in
     active | reloading)
       if [[ ${f[LanaiVersion]:-} == mismatch ]]; then
@@ -883,10 +885,10 @@ status_map() {
   esac
   [[ $state != failed ]] || logs=$LANAI_LOGS
   emit true "$state" "$message" "$next" "$(jq -n -c --arg notice "$notice" --arg warning "$warning" \
-    --argjson force "$force" --arg logs "$logs" \
+    --argjson force "$force" --arg logs "$logs" --argjson pending "$([[ $forced == yes ]] && echo true || echo false)" \
     '{notice: (if $notice == "" then null else $notice end),
       warning: (if $warning == "" then null else $warning end),
-      force_stop: $force} + (if $logs == "" then {} else {logs: $logs} end)')"
+      force_stop: $force, forced_pending: $pending} + (if $logs == "" then {} else {logs: $logs} end)')"
 }
 
 # Check everything that must hold before the VM unit starts, and print the

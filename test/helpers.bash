@@ -42,6 +42,19 @@ serve() {
   fail "the fake server did not create $1"
 }
 
+# Wait up to 5 s for file <path> to exist; fail with <what> otherwise.
+wait_for_file() {
+  local i
+  for ((i = 0; i < 100; i++)); do
+    [[ -e $1 ]] && return 0
+    sleep 0.05
+  done
+  fail "${2:-$1 never appeared}"
+}
+
+# A Docker container's cgroup, as systemd names its scope.
+DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff.scope
+
 # Stop every background job in BG_PIDS: its direct children, its process
 # group when it leads one (setsid), and itself. Call it from teardown.
 stop_bg() {

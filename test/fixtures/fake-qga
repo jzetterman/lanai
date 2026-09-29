@@ -16,7 +16,7 @@
 #   silent    nothing at all
 # After a good sync, the command's reply is FAKE_QGA_CMD:
 #   empty (default) {"return": {}}; other {"return": {"x": 1}}; big {"return": {}}
-#   padded past 4 KiB;
+#   padded past 4 KiB; len4096 and len4097 the same padded to exactly that length;
 #   generic a GenericError; disabled the CommandNotFound "has been disabled"
 #   error proof 3 recorded; notfound a CommandNotFound "has not been found"
 set -uo pipefail
@@ -57,6 +57,9 @@ case ${FAKE_QGA_CMD:-empty} in
   empty) printf '{"return": {}}\n' ;;
   other) printf '{"return": {"x": 1}}\n' ;;
   big) printf '{"return": %*s{}}\n' 4200 "" ;;
+  # {"return": {}} is 14 bytes; these pad it to exactly 4096 and 4097.
+  len4096) printf '{"return": %*s{}}\n' 4082 "" ;;
+  len4097) printf '{"return": %*s{}}\n' 4083 "" ;;
   generic) printf '{"error": {"class": "GenericError", "desc": "failed"}}\n' ;;
   disabled) printf '{"error": {"class": "CommandNotFound", "desc": "Command guest-exec has been disabled: the command is not allowed"}}\n' ;;
   notfound) printf '{"error": {"class": "CommandNotFound", "desc": "The command guest-foo has not been found"}}\n' ;;

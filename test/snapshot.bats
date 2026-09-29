@@ -66,11 +66,20 @@ if [[ -e $T/probe-lock && ( ${src##*/} == data.img || ${dst##*/} == .lanai-resto
   echo "$rc" >>"$T/vm-open"
 fi
 if [[ -e $T/real-reflink ]] && ((reflink)); then args=(--reflink=always "${args[@]}"); fi
+if [[ -e $T/plant && ${dst##*/} == .lanai-restore.* ]]; then echo mine >"$(<"$T/plant")"; fi
 /usr/bin/cp "${args[@]}" || exit
 if [[ -e $T/damage ]] && [[ $dst == $(<"$T/damage") ]]; then
   printf "\\x$(printf %02x $(( ($(od -An -tu1 -N1 "$dst") + 1) % 256 )))" |
     dd of="$dst" bs=1 count=1 conv=notrunc status=none
 fi'
+}
+
+# Skip the test unless $T is on a filesystem without reflinks (tmpfs or
+# overlayfs, as here and in CI).
+need_no_reflink() {
+  local fs
+  fs=$(stat -f -c %T "$T")
+  [[ $fs != btrfs && $fs != xfs ]] || skip "the temp dir can reflink"
 }
 
 # Flip the first byte of <file>, keeping its size.
@@ -119,9 +128,9 @@ take_snapshot() {
   plain_cp
   take_snapshot
   echo changed >"$T/win/windows.vars"
-  local before scope=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff.scope
+  local before
   before=$(tree_manifest "$T/win")
-  fake_proc 700 "$scope" /usr/bin/qemu-system-x86_64
+  fake_proc 700 "$DOCKER_SCOPE" /usr/bin/qemu-system-x86_64
   lanai_run snapshot
   assert_failure
   run field message
@@ -131,7 +140,7 @@ take_snapshot() {
   run field message
   assert_output --partial "Docker VM is running"
   rm -rf "$T/proc/700"
-  fake_proc 701 "$scope" /bin/bash /run/entry.sh
+  fake_proc 701 "$DOCKER_SCOPE" /bin/bash /run/entry.sh
   lanai_run snapshot
   assert_failure
   run field message
@@ -185,8 +194,8 @@ take_snapshot() {
 }
 
 @test "snapshot: without reflinks it says so, suggests a backup, and leaves nothing" {
+  need_no_reflink
   use_install "$T/win"
-  [[ $(stat -f -c %T "$T") != btrfs && $(stat -f -c %T "$T") != xfs ]] || skip "the temp dir can reflink"
   lanai_run snapshot
   assert_failure
   run field message
@@ -198,6 +207,7 @@ take_snapshot() {
 }
 
 @test "snapshot and restore hold the disk lock while they copy, then release it" {
+  need_no_reflink
   use_install "$T/win"
   plain_cp
   : >"$T/probe-lock"
@@ -209,16 +219,16 @@ take_snapshot() {
   assert_equal "$(<"$SNAP/COMPLETE")" "$(tree_manifest "$T/win")"
   assert_equal "$(<"$SNAP/SOURCE")" "$T/win"
   # Restore: the other files go first, under the lock; FICLONE needs a
-  # reflink filesystem, so on tmpfs the restore stops there, unfinished.
+  # reflink filesystem, so here the restore stops there, unfinished, and
+  # says the snapshot is intact.
   : >"$T/vm-open"
   echo changed >"$T/win/windows.vars"
   lanai_run restore "$NAME"
-  if [[ $(stat -f -c %T "$T") != btrfs && $(stat -f -c %T "$T") != xfs ]]; then
-    assert_failure
-    run field message
-    assert_output --partial "run lanai restore again"
-    assert [ -e "$S/restore-in-progress" ]
-  fi
+  assert_failure
+  run field message
+  assert_output --partial "run lanai restore again"
+  assert_output --partial "the snapshot is intact"
+  assert [ -e "$S/restore-in-progress" ]
   [[ -s $T/vm-open ]] || fail "the restore copied nothing"
   run sort -u "$T/vm-open"
   assert_output 1
@@ -308,24 +318,68 @@ take_snapshot() {
 }
 
 @test "restore: when the unfinished restore's snapshot is gone, another can replace it" {
-  use_install "$T/win"
-  plain_cp
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
+  local before
+  before=$(tree_manifest "$B/win")
   take_snapshot
   local first=$SNAP
   sleep 1
   take_snapshot
-  mark_restore "$first" "$T/win"
+  mark_restore "$first" "$B/win"
   rm -rf "$first"
+  echo changed >"$B/win/windows.vars"
   lanai_run restore
   assert_failure
   run field message
   assert_output --partial "gone or damaged"
   assert_output --partial "$S/restore-in-progress"
-  # On tmpfs the clone step fails, but the marker now names the new snapshot.
   lanai_run restore "$NAME"
-  assert_equal "$(head -n1 "$S/restore-in-progress" 2>/dev/null || echo "$SNAP")" "$SNAP"
+  assert_success
   run field message
-  if [[ $(field ok) == true ]]; then assert_output --partial "replacing the unfinished restore"; fi
+  assert_output --partial "replacing the unfinished restore"
+  assert [ ! -e "$S/restore-in-progress" ]
+  assert_equal "$(tree_manifest "$B/win")" "$before"
+}
+
+@test "snapshot: refuses dockur's leftovers and restore temp files, which no snapshot may hold" {
+  use_install "$T/win"
+  plain_cp
+  local f
+  for f in setup.img setup.img.tmp .lanai-restore.windows.vars; do
+    echo stray >"$T/win/$f"
+    lanai_run snapshot
+    assert_failure
+    run field message
+    assert_output --partial "$f"
+    assert_output --partial "delete it"
+    rm "$T/win/$f"
+  done
+  run bash -c 'ls -A "$1" 2>/dev/null || true' _ "$XDG_DATA_HOME/lanai/snapshots"
+  assert_output ""
+}
+
+@test "snapshot: a snapshot folder that is a symlink or open to others is not used" {
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
+  mkdir -p "$B/data/lanai" "$B/elsewhere"
+  ln -s "$B/elsewhere" "$B/data/lanai/snapshots"
+  take_snapshot
+  assert_equal "${SNAP%/*}" "$B/win.lanai-snapshots"
+  run ls -A "$B/elsewhere"
+  assert_output ""
+  # A snapshot placed in the symlinked folder's target is not listed.
+  cp -a --reflink=always "$SNAP" "$B/elsewhere/"
+  lanai_run snapshots
+  assert_equal "$(jq -r '.snapshots | length' <<<"$JSON")" 1
+  # A group-writable folder is not trusted either.
+  rm "$B/data/lanai/snapshots"
+  mkdir -m 770 "$B/data/lanai/snapshots"
+  cp -a --reflink=always "$SNAP" "$B/data/lanai/snapshots/"
+  lanai_run snapshots
+  assert_equal "$(jq -r '.snapshots[]' <<<"$JSON")" "$SNAP"
 }
 
 @test "restore: refuses an unknown snapshot, one without COMPLETE, and no name" {
@@ -531,6 +585,60 @@ damage() {
   rm "$T/damage"
   lanai_run restore
   assert_success
+}
+
+@test "restore: a file that appears while it runs is kept, and the restore does not finish" {
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
+  take_snapshot
+  damage "$B/win" 2M
+  plain_cp
+  : >"$T/real-reflink"
+  echo "$B/win/notes.txt" >"$T/plant"
+  lanai_run restore "$NAME"
+  assert_failure
+  run field message
+  assert_output --partial "notes.txt"
+  assert_equal "$(<"$B/win/notes.txt")" mine
+  assert [ -e "$S/restore-in-progress" ]
+}
+
+@test "restore: a NOCOW mismatch or an empty snapshot disk is refused before anything changes" {
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
+  take_snapshot
+  # The live disk becomes NOCOW after the snapshot: btrfs cannot clone
+  # between the two.
+  local before
+  head -c 1M /dev/urandom >"$B/disk"
+  rm "$B/win/data.img"
+  : >"$B/win/data.img"
+  chattr +C "$B/win/data.img"
+  cat "$B/disk" >>"$B/win/data.img"
+  echo changed >"$B/win/windows.vars"
+  before=$(tree_manifest "$B/win")
+  lanai_run restore "$NAME"
+  assert_failure
+  run field message
+  assert_output --partial "NOCOW"
+  assert_output --partial "Nothing was changed"
+  assert_equal "$(tree_manifest "$B/win")" "$before"
+  assert [ ! -e "$S/restore-in-progress" ]
+  # An empty disk in a snapshot (of an empty data.img) cannot be cloned.
+  use_install "$B/win2"
+  : >"$B/win2/data.img"
+  sleep 1
+  take_snapshot
+  echo changed >"$B/win2/windows.vars"
+  before=$(tree_manifest "$B/win2")
+  lanai_run restore "$NAME"
+  assert_failure
+  run field message
+  assert_output --partial "empty"
+  assert_equal "$(tree_manifest "$B/win2")" "$before"
+  assert [ ! -e "$S/restore-in-progress" ]
 }
 
 @test "restore: puts back a disk that dockur deleted" {

@@ -51,9 +51,17 @@ def main(argv):
             print(f"ficlone.py: {argv[1]} and {argv[2]} differ in NOCOW; nothing was changed",
                   file=sys.stderr)
             return 1
-        if os.fstat(dst).st_size > size:
+        cut = os.fstat(dst).st_size > size
+        if cut:
             os.ftruncate(dst, size)
-        fcntl.ioctl(dst, FICLONE, src)
+        try:
+            fcntl.ioctl(dst, FICLONE, src)
+        except OSError as err:
+            shortened = ", after it was shortened to the snapshot's size" if cut else ""
+            print(f"ficlone.py: cannot clone {argv[1]} onto {argv[2]} ({err.strerror}){shortened}; "
+                  "the snapshot is intact: run lanai restore again, or restore another snapshot",
+                  file=sys.stderr)
+            return 1
         os.fsync(dst)
     except OSError as err:
         print(f"ficlone.py: {err}", file=sys.stderr)

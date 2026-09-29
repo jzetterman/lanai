@@ -39,8 +39,6 @@ write_compose() {
   done
 }
 
-DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff.scope
-
 # --- storage_dir ---
 
 @test "storage_dir: defaults to ~/.windows" {

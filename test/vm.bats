@@ -241,11 +241,21 @@ EOF
   local extra
   for extra in '-vnc\n:1' '-chardev\nsocket,id=m,host=127.0.0.1,port=4444,server=on' \
     '-serial\nmon:stdio' '-netdev\nuser,id=n,hostfwd=tcp::2222-:22' '-drive\nfile=/storage/x.img' \
-    '-chardev\nsocket,id=x,path=/run/shm/x.sock' '-netdev\nuser,id=n2'; do
+    '-chardev\nsocket,id=x,path=/run/shm/x.sock' '-netdev\nuser,id=n2' \
+    '-device\nfoo,tcp-ports=2222' '-device\nfoo,udp-ports=53' '-object\nfoo,param=--tcp-ports=22'; do
     { cat "$REPO/lib/dockur-6.05.args"; printf '%b\n' "$extra"; } >"$T/args"
     LANAI_ARGS_TEMPLATE=$T/args run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 192.168.1.1
     assert_failure
     assert_output --partial "refusing"
+  done
+}
+
+@test "vm_args: the user's own storage path may contain storage or run/shm" {
+  local p
+  for p in /mnt/storage/win /home/u/run/shm/win /storage2/win; do
+    run vm_args "$p" 02:4B:81:73:3C:96 8 4 100 192.168.1.1
+    assert_success
+    assert_line "file=$p/data.img,id=data3,format=raw,cache=none,aio=native,discard=unmap,detect-zeroes=on,if=none"
   done
 }
 
@@ -552,6 +562,16 @@ wait_for_line() {
   done
 }
 
+@test "qga_reply command: a reply of exactly 4096 bytes passes, 4097 does not" {
+  serve "$T/g.sock" "$FIX/fake-qga"
+  conf FAKE_QGA_CMD=len4096
+  run qga_reply "$T/g.sock" command '{"execute":"guest-set-time"}'
+  assert_success
+  conf FAKE_QGA_CMD=len4097
+  run qga_reply "$T/g.sock" command '{"execute":"guest-set-time"}'
+  assert_failure
+}
+
 @test "qga_reply command: fills @NOW_NS@ with the host's time as the command goes out" {
   export FAKE_QGA_LOG=$T/qga.log
   serve "$T/g.sock" "$FIX/fake-qga"
@@ -684,23 +704,55 @@ wait_for_line() {
   assert_equal "$(jq -r .invocation "$S/last-shutdown")" inv-3
 }
 
-@test "shutdown_watch_lines: PrepareForShutdown(true) stops the unit without blocking" {
+# dbus-monitor's header line for a logind signal <member> with serial <n>,
+# broadcast, or sent to <dest> when given (a unicast signal: any local
+# process may send one to the watcher's own name, whatever its match rule).
+signal_header() {
+  printf 'signal time=1727560849.995 sender=:1.3 -> destination=%s serial=%s path=/org/freedesktop/login1; interface=org.freedesktop.login1.Manager; member=%s\n' \
+    "${3:-(null destination)}" "$2" "$1"
+}
+
+@test "shutdown_watch_lines: a broadcast PrepareForShutdown(true) stops the unit without blocking" {
   shim systemctl 'echo "$*" >>"$CALLS"'
   export CALLS=$T/calls
-  PATH=$T/shims:$PATH run shutdown_watch_lines <<'EOF'
-signal time=1727560849.995 sender=:1.3 -> destination=(null destination) serial=1 path=/org/freedesktop/login1; interface=org.freedesktop.login1.Manager; member=PrepareForShutdown
-   boolean false
-signal time=1727560850.000 sender=:1.3 -> destination=(null destination) serial=2 path=/org/freedesktop/login1; interface=org.freedesktop.login1.Manager; member=PrepareForShutdown
-   boolean true
-EOF
+  {
+    signal_header PrepareForShutdown 1
+    echo "   boolean false"
+    signal_header PrepareForShutdown 2
+    echo "   boolean true"
+  } >"$T/in"
+  PATH=$T/shims:$PATH run shutdown_watch_lines <"$T/in"
   assert_success
   assert_equal "$(<"$T/calls")" "--user stop --no-block lanai-vm.service"
 }
 
+@test "shutdown_watch_lines: ignores a unicast signal, another member, and a body without a header" {
+  shim systemctl 'echo "$*" >>"$CALLS"'
+  export CALLS=$T/calls
+  {
+    signal_header PrepareForShutdown 1 :1.0
+    echo "   boolean true"
+    signal_header PrepareForSleep 2
+    echo "   boolean true"
+    echo "   boolean true"
+    echo "method call time=1 sender=:1.9 -> destination=org.freedesktop.DBus serial=3 path=/; member=Hello"
+    echo "   boolean true"
+  } >"$T/in"
+  PATH=$T/shims:$PATH run shutdown_watch_lines <"$T/in"
+  assert_success
+  assert [ ! -e "$T/calls" ]
+}
+
 @test "shutdown-watch: listens only to logind, and keeps watching when a stop fails" {
   export T
+  {
+    signal_header PrepareForShutdown 1
+    echo "   boolean true"
+    signal_header PrepareForShutdown 2
+    echo "   boolean true"
+  } >"$T/signals"
   # dbus-monitor logs its match and reports two shutdown signals.
-  shim dbus-monitor 'printf "%s\n" "$@" >"$T/match"; printf "   boolean true\n   boolean true\n"'
+  shim dbus-monitor 'printf "%s\n" "$@" >"$T/match"; cat "$T/signals"'
   shim systemctl 'echo "$*" >>"$T/calls"; exit 1'
   PATH=$T/shims:$PATH run "$REPO/bin/lanai-vm-helper" shutdown-watch
   assert_success
@@ -719,13 +771,18 @@ EOF
   assert_line --partial "member='PrepareForSleep'"
 }
 
-@test "sleep_watch_lines: a resume sets the guest clock, a suspend does nothing" {
+@test "sleep_watch_lines: a broadcast resume sets the guest clock; a suspend or a unicast does nothing" {
   # Stand-in for the agent call: log the mode and command.
   qga_reply() { printf '%s %s\n' "$2" "$3" >>"$T/qga-calls"; }
-  run sleep_watch_lines <<'EOF'
-   boolean true
-   boolean false
-EOF
+  {
+    signal_header PrepareForSleep 1
+    echo "   boolean true"
+    signal_header PrepareForSleep 2 :1.0
+    echo "   boolean false"
+    signal_header PrepareForSleep 3
+    echo "   boolean false"
+  } >"$T/in"
+  run sleep_watch_lines <"$T/in"
   assert_success
   assert_equal "$(wc -l <"$T/qga-calls")" 1
   # qga_reply fills in the time as the command goes out (tested above).
@@ -796,12 +853,7 @@ start_exec() {
   mkdir -p "$S"
   echo '{"scale": 150, "setup": false}' >"$S/boot.json"
   start_exec
-  local i
-  for ((i = 0; i < 100; i++)); do
-    [[ -e $T/qemu.args ]] && break
-    sleep 0.05
-  done
-  [[ -e $T/qemu.args ]] || fail "QEMU never started: $(cat "$T/exec.out")"
+  wait_for_file "$T/qemu.args" "QEMU never started: $(cat "$T/exec.out")"
   # The stale files are gone and the log is empty.
   assert [ ! -e "$RUN/qmp.sock" ]
   assert [ ! -e "$RUN/ivshmem" ]
@@ -832,11 +884,7 @@ start_exec() {
   mkdir -p "$S/setup-media"
   echo '{"scale": 100, "setup": true}' >"$S/boot.json"
   start_exec
-  local i
-  for ((i = 0; i < 100; i++)); do
-    [[ -e $T/qemu.args ]] && break
-    sleep 0.05
-  done
+  wait_for_file "$T/qemu.args" "QEMU never started"
   run cat "$T/qemu.args"
   assert_line "if=none,id=setup,file=fat:$S/setup-media,format=raw,readonly=on"
   assert_line "gtk,window-close=off"
@@ -860,11 +908,7 @@ start_exec() {
   exec_shims
   echo '[{"dst":"default","dev":"wg0","scope":"link","flags":[]}]' >"$T/route.json"
   start_exec
-  local i
-  for ((i = 0; i < 100; i++)); do
-    [[ -e $T/qemu.args ]] && break
-    sleep 0.05
-  done
+  wait_for_file "$T/qemu.args" "QEMU never started"
   run cat "$T/qemu.args"
   assert_line "passt,id=hostnet0,ipv6=off,map-host-loopback=none"
   run cat "$T/exec.out"
@@ -886,6 +930,28 @@ start_exec() {
   assert [ ! -e "$S/running" ]
   run cat "$T/exec.out"
   assert_output --partial "virtiofsd"
+}
+
+@test "lanai-vm-exec: refuses an unfinished restore and a replaced share, as preflight does" {
+  exec_shims
+  mkdir -p "$S"
+  printf '/snap\n%s\n' "$T/win" >"$S/restore-in-progress"
+  start_exec
+  local rc=0
+  wait "$EXEC_PID" || rc=$?
+  ((rc != 0)) || fail "lanai-vm-exec booted a half-restored disk"
+  run cat "$T/exec.out"
+  assert_output --partial "a restore did not finish"
+  rm "$S/restore-in-progress"
+  rmdir "$HOME/Windows"
+  ln -s /tmp "$HOME/Windows"
+  start_exec
+  rc=0
+  wait "$EXEC_PID" || rc=$?
+  ((rc != 0)) || fail "lanai-vm-exec shared a symlink"
+  assert [ ! -e "$T/qemu.args" ]
+  run cat "$T/exec.out"
+  assert_output --partial "symlink"
 }
 
 @test "lanai-vm-exec: refuses bad settings through vm_args" {
@@ -917,10 +983,10 @@ fake_main() {
   mkdir -p "$S"
   serve "$RUN/qmp.sock" "$FIX/fake-qmp"
   local start=${EPOCHREALTIME//[!0-9]/}
-  INVOCATION_ID=inv-stop MAINPID=$FAKE_PID run "$REPO/bin/lanai-vm-stop"
+  INVOCATION_ID=inv-stop MAINPID=$FAKE_PID run timeout 20 "$REPO/bin/lanai-vm-stop"
   assert_success
   grep -q '"execute":"system_powerdown"' "$T/qmp.log" || fail "no system_powerdown sent"
-  ! kill -0 "$FAKE_PID" 2>/dev/null || fail "returned while QEMU still ran"
+  ! pid_running "$FAKE_PID" || fail "returned while QEMU still ran"
   # The record was already there, so there was no 2 s wait.
   local ms=$(((${EPOCHREALTIME//[!0-9]/} - start) / 1000))
   ((ms < 1500)) || fail "took $ms ms"
@@ -936,7 +1002,25 @@ fake_main() {
   LANAI_POWERDOWN_INTERVAL=1 INVOCATION_ID=inv-r MAINPID=$FAKE_PID run timeout 20 "$REPO/bin/lanai-vm-stop"
   assert_success
   assert_equal "$(grep -c '"execute":"system_powerdown"' "$T/qmp.log")" 2
-  ! kill -0 "$FAKE_PID" 2>/dev/null || fail "returned while QEMU still ran"
+  ! pid_running "$FAKE_PID" || fail "returned while QEMU still ran"
+}
+
+@test "lanai-vm-stop: a QEMU that exited but was not reaped counts as gone" {
+  mkdir -m 700 "$RUN"
+  # A parent that never reaps: its child becomes a zombie, which kill -0
+  # still finds. (CI's container init did not reap either.)
+  bash -c 'sleep 0.1 & echo $! >"$1"; exec sleep 30' _ "$T/zombie" 3>&- &
+  BG_PIDS+=("$!")
+  wait_for_file "$T/zombie"
+  local z i
+  z=$(<"$T/zombie")
+  for ((i = 0; i < 100; i++)); do
+    [[ $(sed 's/.*) //' "/proc/$z/stat" | cut -c1) == Z ]] && break
+    sleep 0.05
+  done
+  kill -0 "$z" || fail "no zombie to test with"
+  INVOCATION_ID=inv-z MAINPID=$z run timeout 20 "$REPO/bin/lanai-vm-stop"
+  assert_success
 }
 
 @test "lanai-vm-stop: after QEMU exited on its own it skips the powerdown" {
@@ -947,7 +1031,7 @@ fake_main() {
   printf '{"invocation":"inv-x","guest":true,"reason":"guest-shutdown"}\n' >"$S/last-shutdown"
   # MAINPID names a live process: only EXIT_CODE says QEMU is gone.
   fake_main
-  EXIT_CODE=exited EXIT_STATUS=0 INVOCATION_ID=inv-x MAINPID=$FAKE_PID run "$REPO/bin/lanai-vm-stop"
+  EXIT_CODE=exited EXIT_STATUS=0 INVOCATION_ID=inv-x MAINPID=$FAKE_PID run timeout 20 "$REPO/bin/lanai-vm-stop"
   assert_success
   assert [ ! -e "$T/qmp.log" ]
   kill "$FAKE_PID"
@@ -959,7 +1043,7 @@ fake_main() {
   # Another run's record does not end the wait.
   printf '{"invocation":"inv-old","guest":true,"reason":"guest-shutdown"}\n' >"$S/last-shutdown"
   local start=$SECONDS
-  EXIT_CODE=killed EXIT_STATUS=KILL INVOCATION_ID=inv-new run "$REPO/bin/lanai-vm-stop"
+  EXIT_CODE=killed EXIT_STATUS=KILL INVOCATION_ID=inv-new run timeout 20 "$REPO/bin/lanai-vm-stop"
   assert_success
   (((SECONDS - start) >= 1 && (SECONDS - start) <= 4)) || fail "took $((SECONDS - start)) s"
 }

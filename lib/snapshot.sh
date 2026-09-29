@@ -21,6 +21,16 @@ LANAI_SNAP_RE='^[0-9]{8}T[0-9]{6}Z$'
 LANAI_STORE_NAMES=" data.img windows.base windows.boot windows.mac windows.rom windows.vars windows.ver "
 LANAI_STORE_LEFTOVERS=" setup.img setup.img.tmp "
 
+# Return 0 when <dir> is a folder Lanai may trust with snapshots: a real
+# folder (not a symlink), owned by the user, that no group or other user can
+# write to.
+own_dir() {
+  local st
+  [[ -d $1 && ! -L $1 ]] || return 1
+  st=$(stat -c '%u %a' -- "$1") || return 1
+  [[ ${st% *} == "$(id -u)" ]] && (((8#${st#* } & 8#022) == 0))
+}
+
 # Print the places snapshots of <storage> may live, in order of preference.
 snapshot_roots() {
   printf '%s\n' "$(data_dir)/snapshots" "$1.lanai-snapshots"
@@ -28,8 +38,8 @@ snapshot_roots() {
 
 # Print the first snapshot place that can hold an instant copy of the
 # install at <storage>, probed with a real reflink of windows.mac (a small
-# file). Places are made with mode 0700; one that is a symlink or belongs to
-# another user is skipped. A folder the probe had to create is removed again
+# file). Places are made with mode 0700; one that fails own_dir is
+# skipped. A folder the probe had to create is removed again
 # when it fails. Fails when neither place can reflink.
 snapshot_root() {
   local storage=$1 root probe made
@@ -41,7 +51,7 @@ snapshot_root() {
       fi
       made=1
     fi
-    [[ -d $root && ! -L $root && $(stat -c %u -- "$root") == "$(id -u)" ]] || continue
+    own_dir "$root" || continue
     probe=$root/.lanai-probe.$$
     if reflink_file "$storage/windows.mac" "$probe"; then
       rm -f -- "$probe"
@@ -63,12 +73,14 @@ snapshot_manifest() {
 }
 
 # Return 0 when <dir> is a complete snapshot of <storage>: a real folder
-# with a snapshot name, a SOURCE naming <storage>, a COMPLETE manifest of
-# top-level install files only, and exactly those files at those sizes
-# beside them. (restore checks every SHA-256 before it writes anything.)
+# owned by the user, in a snapshot place that passes own_dir, with a
+# snapshot name, a SOURCE naming <storage>, a COMPLETE manifest of top-level
+# install files only, and exactly those files at those sizes beside them.
+# (restore checks every SHA-256 before it writes anything.)
 snapshot_valid() {
   local d=$1 storage=$2 kind size sum name want="" have
   [[ ${d##*/} =~ $LANAI_SNAP_RE && -d $d && ! -L $d ]] || return 1
+  [[ $(stat -c %u -- "$d") == "$(id -u)" ]] && own_dir "${d%/*}" || return 1
   [[ -f $d/SOURCE && ! -L $d/SOURCE && -f $d/COMPLETE && ! -L $d/COMPLETE ]] || return 1
   [[ $(<"$d/SOURCE") == "$storage" ]] || return 1
   while read -r kind size sum name; do
@@ -105,28 +117,43 @@ snapshot_find() {
   return 1
 }
 
-# Print why the storage location <dir> is not one a snapshot or restore may
-# touch, and succeed; fail when it is fine. It must be an existing real
-# folder holding only regular files with install names, dockur's leftover
-# setup image, or a restore's temp files. Anything else (a folder, a
-# symlink, someone's own file) means Lanai's storage may point at the wrong
-# place, so nothing is copied, replaced or removed.
+# Return 0 when <name> is one a restore may replace or remove: an install
+# file, dockur's leftover setup image, or a restore's own temp file.
+restorable_name() {
+  [[ $LANAI_STORE_NAMES$LANAI_STORE_LEFTOVERS == *" $1 "* || $1 == .lanai-restore.* ]]
+}
+
+# storage_problem <dir> snapshot|restore: print why the storage location
+# <dir> is not one a snapshot or restore may touch, and succeed; fail when
+# it is fine. It must be an existing real folder holding only regular files.
+# A snapshot takes install files only, so dockur's leftover setup image or
+# a restore's temp file must be deleted first; a restore may replace those.
+# Anything else (a folder, a symlink, someone's own file) means Lanai's
+# storage may point at the wrong place, so nothing is copied, replaced or
+# removed.
 storage_problem() {
-  local dir=$1 e
-  local -a bad=()
+  local dir=$1 mode=$2 e
+  local -a bad=() leftovers=()
   if [[ ! -d $dir || -L $dir ]]; then
     echo "$dir is not an existing folder. Lanai snapshots and restores only an existing storage location."
     return 0
   fi
   while IFS= read -r -d '' e; do
-    if [[ $LANAI_STORE_NAMES$LANAI_STORE_LEFTOVERS != *" $e "* && $e != .lanai-restore.* ]]; then
+    if ! restorable_name "$e"; then
       bad+=("$e")
     elif [[ ! -f $dir/$e || -L $dir/$e ]]; then
       bad+=("$e (not a regular file)")
+    elif [[ $mode == snapshot && $LANAI_STORE_NAMES != *" $e "* ]]; then
+      leftovers+=("$e")
     fi
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0')
-  ((${#bad[@]})) || return 1
-  echo "$dir holds $(printf '%s, ' "${bad[@]}" | sed 's/, $//'), which Lanai will not copy, replace or remove. Check that Lanai's storage points at the right folder, and move those out first."
+  if ((${#bad[@]})); then
+    echo "$dir holds $(printf '%s, ' "${bad[@]}" | sed 's/, $//'), which Lanai will not copy, replace or remove. Check that Lanai's storage points at the right folder, and move those out first."
+  elif ((${#leftovers[@]})); then
+    echo "$dir holds $(printf '%s, ' "${leftovers[@]}" | sed 's/, $//'): left over from an unfinished dockur start or restore, not Windows data; delete it, then take the snapshot."
+  else
+    return 1
+  fi
 }
 
 # Print why a snapshot or restore must wait, and succeed: the user manager
@@ -158,7 +185,7 @@ snapshot_create() {
     echo "the storage location's path holds a newline"
     return 1
   fi
-  if reason=$(snapshot_blocked) || reason=$(restore_pending) || reason=$(storage_problem "$dir"); then
+  if reason=$(snapshot_blocked) || reason=$(restore_pending) || reason=$(storage_problem "$dir" snapshot); then
     echo "$reason"
     return 1
   fi
@@ -187,9 +214,14 @@ snapshot_create() {
   done
   name=$(date -u +%Y%m%dT%H%M%SZ)
   part=$root/$name.partial
-  if [[ -e $root/$name ]] || ! mkdir -m 700 -- "$part"; then
+  if [[ -e $root/$name || -e $part ]]; then
     unlock_disk
     echo "a snapshot named $name already exists; try again in a second"
+    return 1
+  fi
+  if ! mkdir -m 700 -- "$part"; then
+    unlock_disk
+    echo "cannot create $part"
     return 1
   fi
   if reflink_tree "$dir" "$part" && printf '%s\n' "$dir" >"$part/SOURCE" &&
@@ -229,7 +261,8 @@ restore_mark() {
 # stopped.
 snapshot_restore() {
   local want=${1:-} dir s marker snap="" msrc="" reason note="" kind size sum name rc=0 e
-  local -a order=()
+  local fail="run lanai restore again"
+  local -a order=() strays=()
   local -A keep=()
   dir=$(storage_dir) || return 1
   s=$(state_dir)
@@ -261,8 +294,16 @@ snapshot_restore() {
       return 1
     fi
   fi
-  if reason=$(snapshot_blocked) || reason=$(storage_problem "$dir"); then
+  if reason=$(snapshot_blocked) || reason=$(storage_problem "$dir" restore); then
     echo "$reason"
+    return 1
+  fi
+  if [[ ! -s $snap/data.img ]]; then
+    echo "$snap's data.img is empty, so it cannot be cloned onto the disk. Nothing was changed."
+    return 1
+  fi
+  if [[ -f $dir/data.img ]] && [[ $(has_nocow "$snap/data.img" && echo C) != "$(has_nocow "$dir/data.img" && echo C)" ]]; then
+    echo "$dir/data.img and $snap/data.img differ in NOCOW (the C attribute), so btrfs cannot clone one onto the other. Nothing was changed."
     return 1
   fi
   if [[ $(snapshot_manifest "$snap") != "$(<"$snap/COMPLETE")" ]]; then
@@ -293,7 +334,9 @@ snapshot_restore() {
   fi
   for name in "${order[@]}"; do
     if [[ $name == data.img ]]; then
-      python3 "$LANAI_LIB/ficlone.py" "$snap/data.img" "$dir/data.img" || rc=1
+      if ! reason=$(python3 "$LANAI_LIB/ficlone.py" "$snap/data.img" "$dir/data.img" 2>&1); then
+        rc=1 fail=${reason#ficlone.py: }
+      fi
     elif ! reflink_file "$snap/$name" "$dir/.lanai-restore.$name" ||
       ! mv -f -T -- "$dir/.lanai-restore.$name" "$dir/$name"; then
       rc=1
@@ -301,17 +344,26 @@ snapshot_restore() {
     ((rc == 0)) || break
   done
   if ((rc == 0)); then
+    # Only names a restore may remove; anything that appeared while the
+    # disk was being hashed or cloned stays, and the restore does not finish.
     while IFS= read -r -d '' e; do
-      if [[ -z ${keep[$e]:-} && -f $dir/$e && ! -L $dir/$e ]]; then
+      [[ -z ${keep[$e]:-} ]] || continue
+      if restorable_name "$e" && [[ -f $dir/$e && ! -L $dir/$e ]]; then
         rm -f -- "${dir:?}/$e" || rc=1
+      else
+        strays+=("$e")
       fi
     done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0')
-    [[ $(tree_manifest "$dir") == "$(<"$snap/COMPLETE")" ]] || rc=1
+    if ((${#strays[@]})); then
+      rc=1
+      fail="$(printf '%s, ' "${strays[@]}" | sed 's/, $//') appeared in $dir while it ran; move that out, then run lanai restore again"
+    fi
+    ((rc != 0)) || [[ $(tree_manifest "$dir") == "$(<"$snap/COMPLETE")" ]] || rc=1
     ((rc != 0)) || sync -f -- "$dir" || rc=1
   fi
   unlock_disk
   if ((rc != 0)); then
-    echo "the restore did not finish: run lanai restore again"
+    echo "the restore did not finish: $fail"
     return 1
   fi
   rm -f -- "$marker"

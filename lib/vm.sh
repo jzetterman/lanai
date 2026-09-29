@@ -103,6 +103,12 @@ vm_args() {
 
   while IFS= read -r arg; do
     [[ -n $arg && $arg != \#* ]] || continue
+    # A container path the template kept by mistake. Checked before the
+    # user's own paths are filled in, which may well contain "storage".
+    if [[ $arg == */storage* || $arg == */run/shm* ]]; then
+      echo "refusing a container path in the VM's arguments: $arg"
+      return 1
+    fi
     # The inner quotes keep a & in a path literal (bash 5.2 patsub_replacement).
     arg=${arg//@STORAGE@/"$storage"}
     arg=${arg//@MAC@/"$mac"}
@@ -139,18 +145,16 @@ vm_args() {
     out+=(-vga none -display none)
   fi
 
-  # Fail closed (spec 25): no network listener, port forward, serial monitor
-  # or container path. Options match only at a boundary, so vmport=off is
-  # not port=. The only -netdev is Lanai's passt line.
-  local listener='^-(vnc|gdb|s|incoming|nic|net|serial|monitor)$|(^|,)(tls-)?port=|(^|,)(vnc|websocket)=|(^|[,=:])(tcp|telnet|udp):|hostfwd|mon:'
+  # Fail closed (spec 25): no network listener, port forward (passt's
+  # tcp-ports, udp-ports or raw param) or serial monitor. Options match only
+  # at a boundary, so vmport=off is not port=. The only -netdev is Lanai's
+  # passt line.
+  local listener='^-(vnc|gdb|s|incoming|nic|net|serial|monitor)$|(^|,)(tls-)?port=|(^|,)(vnc|websocket|tcp-ports|udp-ports|param)=|(^|[,=:])(tcp|telnet|udp):|hostfwd|mon:'
   local netdevs=0
   for arg in "${out[@]}"; do
     [[ $arg != -netdev ]] || netdevs=$((netdevs + 1))
     if [[ $arg =~ $listener ]]; then
       echo "refusing a network listener or monitor in the VM's arguments: $arg"
-      return 1
-    elif [[ $arg == */storage* || $arg == */run/shm* ]]; then
-      echo "refusing a container path in the VM's arguments: $arg"
       return 1
     fi
   done
@@ -459,20 +463,43 @@ run_once() {
 # like its PrepareForShutdown.
 LANAI_LOGIND_MATCH="type='signal',sender='org.freedesktop.login1',interface='org.freedesktop.login1.Manager'"
 
-# Read dbus-monitor's output for PrepareForShutdown on stdin; on true (the
-# host begins a reboot or power-off), stop the VM unit without waiting, so
-# its ExecStop shuts Windows down while the delay inhibitor holds.
-shutdown_watch_lines() {
-  local line
+# logind_broadcasts <member>: read dbus-monitor's output on stdin and print
+# "true" or "false" for each broadcast signal <member> (a header line with
+# destination=(null destination), then its boolean body line). A user's
+# dbus-monitor on the system bus falls back to eavesdropping, where the
+# sender match rule does not filter signals sent to the monitor's own name,
+# and any local process may send one; so a unicast signal, another member,
+# or a body line without its header is ignored.
+logind_broadcasts() {
+  local member=$1 line armed=0
   while IFS= read -r line; do
     case $line in
-      *"boolean true"*)
-        echo "lanai: the host is shutting down; stopping Windows" >&2
-        systemctl --user stop --no-block "$LANAI_UNIT" ||
-          echo "lanai: could not stop $LANAI_UNIT" >&2
+      [![:space:]]*)
+        armed=0
+        [[ $line != signal\ * || $line != *"destination=(null destination) "* ||
+          $line != *"member=$member" ]] || armed=1
         ;;
+      *"boolean true" | *"boolean false")
+        ((armed)) && printf '%s\n' "${line##* }"
+        armed=0
+        ;;
+      *) armed=0 ;;
     esac
   done
+}
+
+# Read dbus-monitor's output for PrepareForShutdown on stdin; on a
+# broadcast true (the host begins a reboot or power-off), stop the VM unit
+# without waiting, so its ExecStop shuts Windows down while the delay
+# inhibitor holds.
+shutdown_watch_lines() {
+  local value
+  while IFS= read -r value; do
+    [[ $value == true ]] || continue
+    echo "lanai: the host is shutting down; stopping Windows" >&2
+    systemctl --user stop --no-block "$LANAI_UNIT" ||
+      echo "lanai: could not stop $LANAI_UNIT" >&2
+  done < <(logind_broadcasts PrepareForShutdown)
 }
 
 # shutdown-watch helper: runs under `systemd-inhibit --mode=delay`.
@@ -480,18 +507,15 @@ shutdown_watch() {
   dbus-monitor --system "$LANAI_LOGIND_MATCH,member='PrepareForShutdown'" | shutdown_watch_lines
 }
 
-# Read dbus-monitor's output for PrepareForSleep on stdin; on false (the
-# host resumed), set the guest clock (spec 21).
+# Read dbus-monitor's output for PrepareForSleep on stdin; on a broadcast
+# false (the host resumed), set the guest clock (spec 21).
 sleep_watch_lines() {
-  local line
-  while IFS= read -r line; do
-    case $line in
-      *"boolean false"*)
-        echo "lanai: the host resumed; setting the Windows clock" >&2
-        clock_sync || echo "lanai: could not set the Windows clock after resume" >&2
-        ;;
-    esac
-  done
+  local value
+  while IFS= read -r value; do
+    [[ $value == false ]] || continue
+    echo "lanai: the host resumed; setting the Windows clock" >&2
+    clock_sync || echo "lanai: could not set the Windows clock after resume" >&2
+  done < <(logind_broadcasts PrepareForSleep)
 }
 
 # sleep-watch helper.
@@ -582,6 +606,17 @@ default_gateway() {
 # the user sees why; lanai-vm-exec runs it again as the backstop.
 vm_plan() {
   local problem storage mem="" cores="" mac=""
+  # Repeated from preflight: a direct `systemctl --user start lanai-vm`
+  # skips it, and must not boot a half-restored disk or share a replaced
+  # ~/Windows.
+  if problem=$(restore_pending); then
+    echo "$problem"
+    return 1
+  fi
+  problem=$(share_check) || {
+    echo "$problem"
+    return 1
+  }
   problem=$(run_dir_check) || {
     echo "$problem"
     return 1
@@ -657,6 +692,17 @@ vm_exec() {
   TMPDIR=$run exec qemu-system-x86_64 "${args[@]}"
 }
 
+# Return 0 while process <pid> runs: it exists and is not a zombie (one
+# that exited but was not reaped still answers kill -0). Reads the real
+# /proc.
+pid_running() {
+  local stat
+  kill -0 "$1" 2>/dev/null || return 1
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  stat=${stat##*) }
+  [[ ${stat:0:1} != [ZX] ]]
+}
+
 # lanai-vm-stop, the unit's ExecStop; systemd runs it after every stop.
 # When QEMU still runs (a session end, the shutdown inhibitor, or systemctl
 # stop) it sends system_powerdown on qmp.sock, and again every
@@ -670,7 +716,7 @@ vm_stop() {
   run=$(run_dir) || return 1
   s=$(state_dir)
   if [[ -z ${EXIT_CODE:-} && -n ${MAINPID:-} ]]; then
-    while kill -0 "$MAINPID" 2>/dev/null; do
+    while pid_running "$MAINPID"; do
       if ((last < 0 || SECONDS - last >= LANAI_POWERDOWN_INTERVAL)); then
         last=$SECONDS
         if qmp_call "$run/qmp.sock" '{"execute":"system_powerdown"}' >/dev/null; then
