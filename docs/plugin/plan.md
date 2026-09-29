@@ -523,7 +523,10 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 - `lanai setup-host` never runs sudo. It checks the list with `pacman -T` (deptest,
   which honours provides, so `jq-git` counts for `jq`) and, only when a package is
   missing, runs `setsid -f omarchy launch terminal -- bin/lanai-setup-host` and
-  returns the missing packages and the exact command. In that terminal,
+  returns the missing packages and the exact command. `setsid -f` returns once it has
+  forked, so Lanai cannot see the window: it fails only when that launch fails, and
+  otherwise says a terminal should open and names `bin/lanai-setup-host` (full
+  path) to run by hand if none appears. In that terminal,
   `lanai-setup-host` refuses unless stdin and stdout are a terminal, checks again,
   prints the command, runs `sudo pacman -S --needed <missing packages>` from the same
   array (never the whole list, which would offer to replace a `-git` provider), and
@@ -596,7 +599,10 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   version, the pin, and "run Lanai setup again to update it".
 - Added: `lanai-vm-stop` stops the client unit once QEMU is gone (a QEMU that exits on
   its own starts no stop job, so `PartOf=` does not cover it), so a client never holds
-  an old run's shared memory, and `lanai open` never focuses a dead window.
+  an old run's shared memory, and `lanai open` never focuses a dead window. It then
+  waits up to 3 s for the unit to leave active, activating or deactivating, so a
+  quick Start then Open starts a client for the new VM; a client that ignores SIGTERM
+  costs at most those 3 s before ExecStop goes on (systemd kills it later).
 - For phase 6: `lanai setup-guest` calls `guest_version_set "$LG_BUILD"` when it
   succeeds; step 2 uses `host_packages_missing`, step 4 `client_version`, and step 6
   `version_check`.
