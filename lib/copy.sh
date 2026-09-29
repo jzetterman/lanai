@@ -44,8 +44,8 @@ has_nocow() {
 # copy shares its data blocks and costs no space. btrfs refuses to clone
 # between a NOCOW and a COW file, so <dst> is created (or emptied) and given
 # <src>'s NOCOW attribute, or has an inherited one removed, first. Keeps the
-# mode and file times. Fails when the two are not on one filesystem that
-# supports reflinks.
+# mode and file times. Fails, with cp's own error on stderr, when the two
+# are not on one filesystem that supports reflinks or the copy fails.
 reflink_file() {
   : >"$2" || return 1
   if has_nocow "$1"; then
@@ -53,7 +53,7 @@ reflink_file() {
   elif has_nocow "$2"; then
     chattr -C -- "$2" || return 1
   fi
-  cp --reflink=always --preserve=mode,timestamps -- "$1" "$2" 2>/dev/null
+  cp --reflink=always --preserve=mode,timestamps -- "$1" "$2"
 }
 
 # Copy the tree <src> into <dst>, an empty folder the caller made (so the

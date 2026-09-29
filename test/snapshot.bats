@@ -323,19 +323,20 @@ exec /usr/bin/sha256sum "$@"'
   refute_output --partial "instant copy"
 }
 
-@test "snapshot: flushes the folder before the rename and both names after, before it reports" {
+@test "snapshot: flushes the whole filesystem before the rename and again after, before it reports" {
   use_install "$T/win"
   plain_cp
   shim sync 'echo "$*" >>"$T/sync.calls"; exec /usr/bin/sync "$@"'
   take_snapshot
   local root=${SNAP%/*}
   run cat "$T/sync.calls"
-  assert_line "-- $SNAP.partial"
-  assert_line "-- $root $SNAP"
-  # The folder is flushed before the rename, the names after it.
+  # sync -f (syncfs) also commits the cloned files; a plain sync FILE is an
+  # fsync of that file only, which on XFS leaves the clones unflushed.
+  assert_line "-f -- $SNAP.partial"
+  assert_line "-f -- $root"
   local before after
-  before=$(grep -nxF -- "-- $SNAP.partial" "$T/sync.calls" | cut -d: -f1)
-  after=$(grep -nxF -- "-- $root $SNAP" "$T/sync.calls" | cut -d: -f1)
+  before=$(grep -nxF -- "-f -- $SNAP.partial" "$T/sync.calls" | cut -d: -f1)
+  after=$(grep -nxF -- "-f -- $root" "$T/sync.calls" | cut -d: -f1)
   ((before < after)) || fail "the order of the syncs is wrong"
 }
 

@@ -52,8 +52,9 @@ snapshot_root() {
       made=1
     fi
     own_dir "$root" || continue
+    # A place that cannot reflink is expected here, so cp's error is hidden.
     probe=$root/.lanai-probe.$$
-    if reflink_file "$storage/windows.mac" "$probe"; then
+    if reflink_file "$storage/windows.mac" "$probe" 2>/dev/null; then
       rm -f -- "$probe"
       printf '%s\n' "$root"
       return 0
@@ -228,13 +229,15 @@ snapshot_create() {
   fi
   # Success is reported only once the tree, its rename and its final name
   # are on disk: a crash must not leave the reported snapshot named
-  # *.partial, which the next snapshot would remove as a leftover.
+  # *.partial, which the next snapshot would remove as a leftover. sync -f
+  # commits the whole filesystem, cloned files included; sync FILE would
+  # fsync only the files named, which on XFS leaves the clones unflushed.
   if reflink_tree "$dir" "$part" && printf '%s\n' "$dir" >"$part/SOURCE" &&
     m=$(tree_manifest "$dir") && [[ $m == "$(snapshot_manifest "$part")" ]] &&
-    printf '%s\n' "$m" >"$part/COMPLETE" && sync -- "$part/SOURCE" "$part/COMPLETE" &&
-    sync -- "$part" && mv -T -- "$part" "$root/$name"; then
+    printf '%s\n' "$m" >"$part/COMPLETE" && sync -f -- "$part" &&
+    mv -T -- "$part" "$root/$name"; then
     unlock_disk
-    if ! sync -- "$root" "$root/$name"; then
+    if ! sync -f -- "$root"; then
       echo "the snapshot at $root/$name could not be flushed to disk, so it may not survive a crash; delete it with rm -rf ${root@Q}/$name and try again"
       return 1
     fi
