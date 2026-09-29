@@ -272,18 +272,6 @@ EOF
   export REPO
 }
 
-# Serve <socket> with fake-qmp, one connection at a time, as QEMU does.
-serve_one() {
-  local i
-  socat "UNIX-LISTEN:$1,fork,max-children=1" "EXEC:$FIX/fake-qmp" >/dev/null 2>&1 3>&- &
-  BG_PIDS+=("$!")
-  for ((i = 0; i < 100; i++)); do
-    [[ -S $1 ]] && return 0
-    sleep 0.05
-  done
-  fail "the fake server did not create $1"
-}
-
 @test "lanai-client-exec: waits for a status reply, closes QMP, then execs the client with its flags" {
   mkdir -m 700 "$RUN"
   echo "an old client's log" >"$RUN/client.log"

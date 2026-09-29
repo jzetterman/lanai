@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# proof-vm: throwaway harness for the Lanai phase 1 proofs. The runbook is
-# docs/plugin/proofs.md. It builds the VM's QEMU line with the spike's vm_args
-# (spike/lgtest) from the captured omarchy-windows-vm command line, points it
-# at a lanai-copy of ~/.windows, and adds each proof's devices. It refuses to
-# run on ~/.windows itself. Run `proof-vm help` for the subcommands.
+# proof-vm: throwaway harness for the Lanai proofs (phase 1, and phase 6's
+# lock proof). The runbook is docs/plugin/proofs.md. It builds the VM's QEMU
+# line with the spike's vm_args (spike/lgtest) from the captured
+# omarchy-windows-vm command line, points it at a lanai-copy of ~/.windows,
+# and adds each proof's devices. It refuses to run on ~/.windows itself. Run
+# `proof-vm help` for the subcommands.
 set -euo pipefail
 
 KIT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)
@@ -161,15 +162,31 @@ cmd_run() {
   TMPDIR=$RUN exec qemu-system-x86_64 "${args[@]}"
 }
 
-# client: start the spike's Looking Glass client on the proof VM.
+# qmp_ready <seconds>: wait until QEMU answers a command on qmp.sock, with
+# production's client_wait (lib/client.sh): greeting, qmp_capabilities, then
+# a query-status reply that holds a status, retrying a missing socket, a
+# refused connect or a read timeout. Each try disconnects, so the socket is
+# free afterwards. QEMU creates ivshmem before it answers any command
+# (proofs.md, "Extra check"), so a stale file never counts. It runs in a
+# subshell because lib/vm.sh has its own vm_args, which must not replace the
+# spike's.
+qmp_ready() {
+  (
+    LANAI_LIB=$REPO/lib
+    # shellcheck source-path=SCRIPTDIR source=../../../lib/vm.sh
+    source "$LANAI_LIB/vm.sh"
+    # shellcheck source-path=SCRIPTDIR source=../../../lib/client.sh
+    source "$LANAI_LIB/client.sh"
+    client_wait "$RUN/qmp.sock" "$1"
+  )
+}
+
+# client: wait up to PROOF_CLIENT_WAIT seconds (default 60) for QEMU, then
+# start the spike's Looking Glass client on the proof VM.
 cmd_client() {
-  local i
+  local wait=${PROOF_CLIENT_WAIT:-60}
   [[ -x $CLIENT ]] || die "missing $CLIENT; build it with spike/lgtest build"
-  for ((i = 0; i < 30; i++)); do
-    [[ -f $RUN/ivshmem ]] && break
-    sleep 1
-  done
-  [[ -f $RUN/ivshmem ]] || die "no shared memory at $RUN/ivshmem; is the VM running?"
+  qmp_ready "$wait" || die "QEMU did not answer on $RUN/qmp.sock within $wait s; is the VM running?"
   exec "$CLIENT" -f "$RUN/ivshmem" spice:host="$RUN/spice.sock" spice:port=0 win:setGuestRes=yes
 }
 
@@ -246,9 +263,11 @@ cmd_stop() {
   log "QEMU exited"
 }
 
-# media <dir>: download and verify the pinned guest files for proofs 1-3.
-# <dir>/setup becomes the setup USB disk; the virtio-win ISO is attached as a
-# CD with --iso, because it is too big for QEMU's FAT disk.
+# media <dir>: download and verify the pinned guest files for proofs 1-3,
+# and copy the checkout's guest scripts (proof 1's lanai-scale.ps1, proof
+# 5's lanai-lock.cmd). <dir>/setup becomes the setup USB disk; the
+# virtio-win ISO is attached as a CD with --iso, because it is too big for
+# QEMU's FAT disk.
 cmd_media() {
   local dir=${1:?media needs a folder}
   local zip=$dir/looking-glass-$LG_BUILD-idd.zip vdagent=spice-vdagent-x64-$VDAGENT_VERSION.msi
@@ -263,7 +282,7 @@ cmd_media() {
   download "$QEMU_GA_URL" "$dir/setup/qemu-ga-x86_64.msi" "$QEMU_GA_SHA"
   download "$VIRTIO_WIN_URL" "$dir/virtio-win-$VIRTIO_WIN_VERSION.iso" "$VIRTIO_WIN_SHA"
   unzip -q -o -- "$zip" looking-glass-idd-setup.exe -d "$dir/setup"
-  cp -- "$dir/$vdagent" "$REPO/guest/lanai-scale.ps1" "$dir/setup/"
+  cp -- "$dir/$vdagent" "$REPO/guest/lanai-scale.ps1" "$REPO/guest/lanai-lock.cmd" "$dir/setup/"
   log "media ready: $dir/setup and $dir/virtio-win-$VIRTIO_WIN_VERSION.iso"
 }
 
@@ -274,7 +293,7 @@ usage: proof-vm <command> [args]
   args <copy> [options]            print the QEMU arguments
   run <copy> [options]             start the proof VM in the foreground
     options: --scale <pct> --share <dir> --qga --setup <dir> --iso <file>
-  client                           start the Looking Glass client
+  client                           wait for QEMU, then start the Looking Glass client
   stop                             clean shutdown over QMP
   qga <json> | set-time            guest agent command | set the guest clock
   sleep-watch | shutdown-watch     proof 3 and proof 4 watchers
