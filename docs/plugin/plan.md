@@ -75,7 +75,14 @@ use.
     `sender='org.freedesktop.login1'`, and act only on a broadcast: a user's
     `dbus-monitor --system` falls back to eavesdropping, where a signal sent to its own
     name (which any local process may send) passes the match rule, so a header with a
-    destination other than `(null destination)` is ignored.
+    destination other than `(null destination)` is ignored. dbus-monitor also prints
+    string arguments raw, newlines included, so a unicast signal can carry lines that
+    look exactly like a broadcast; its output is therefore only a trigger. Before
+    acting, each watcher asks logind itself (`busctl get-property
+    org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager`):
+    the shutdown watcher stops the unit only when `PreparingForShutdown` is `b true`,
+    the sleep watcher syncs the clock only when `PreparingForSleep` is `b false`. When
+    busctl does not answer, it does nothing and logs why.
   - The event logger retries its connection until QEMU creates `qmp-events.sock`, then
     records each QMP `SHUTDOWN` event (`guest`, `reason`) to
     `$XDG_STATE_HOME/lanai/last-shutdown`, stamped with the unit's `$INVOCATION_ID`
@@ -402,6 +409,10 @@ Where the code differs from the text above, the code and this list win:
   "stopped", not "failed". The forced-stop `notice` comes only from `last-run` (the
   next start's verdict), so the panel can show it once and clear it; a forced stop
   the next start has not recorded yet shows as `forced_pending: true`.
+- The logind watchers treat dbus-monitor's output only as a trigger and confirm with
+  logind's own `PreparingForShutdown` / `PreparingForSleep` property (via `busctl`)
+  before they act, since a unicast signal's string argument can forge a broadcast
+  (see Architecture).
 - `lanai-vm-exec` repeats `restore_pending` and `share_check` (in `vm_plan`), since a
   direct `systemctl --user start lanai-vm` skips `preflight`. `lanai-vm-stop` counts a
   zombie `MAINPID` as exited.
