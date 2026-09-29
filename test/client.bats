@@ -34,7 +34,12 @@ if [[ " $* " == *" show "* ]]; then
   fi
 fi
 exit 0'
-  shim systemd-run 'printf "%s\n" "$@" >"$T/systemd-run.args"; [[ ! -e $T/systemd-run-fails ]]'
+  # systemd-run: log its arguments; with $T/systemd-run-fails it fails, and
+  # with $T/race too, the client unit shows as started by someone else.
+  shim systemd-run 'printf "%s\n" "$@" >"$T/systemd-run.args"
+[[ -e $T/systemd-run-fails ]] || exit 0
+[[ ! -e $T/race ]] || printf "ActiveState=active\nMainPID=77\n" >"$T/show-lanai-client.service"
+exit 1'
   shim hyprctl 'echo "$*" >>"$T/hyprctl.calls"; echo ok'
   export PATH=$T/shims:$PATH
 }
@@ -59,6 +64,13 @@ fake_build() {
   printf '#!/usr/bin/env bash\necho "00:00:00.000 [I]              main.c:4303 | main                           | Looking Glass (%s)" >&2\n' \
     "${2:-$1}" >"$bin"
   chmod +x "$bin"
+}
+
+# Print client log <file> as lanai-client-exec leaves it: its start line
+# (<age> seconds ago, default 5), then the client's output.
+started_log() {
+  echo "lanai: client started at $((EPOCHSECONDS - ${2:-5}))"
+  cat "$1"
 }
 
 # --- version normalization ---
@@ -338,9 +350,9 @@ win:setGuestRes=yes"
   export FAKE_QMP_LOG=$T/qmp.log FAKE_QMP_MODE=silent
   serve "$RUN/qmp-cli.sock" "$FIX/fake-qmp"
   local start=$SECONDS
-  LANAI_CLIENT_WAIT=3 run --separate-stderr timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client"
+  LANAI_CLIENT_WAIT=4 run --separate-stderr timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client"
   assert_failure
-  (((SECONDS - start) <= 8)) || fail "took $((SECONDS - start)) s"
+  (((SECONDS - start) <= 9)) || fail "took $((SECONDS - start)) s"
   assert [ ! -e "$T/client.args" ]
   # Each try is its own short connection (2 s), so there were several.
   (($(grep -c qmp_capabilities "$T/qmp.log") >= 2)) || fail "only one try: $(cat "$T/qmp.log")"
@@ -361,17 +373,48 @@ win:setGuestRes=yes"
   assert [ ! -e "$T/client.args" ]
 }
 
-@test "lanai-client-exec: refuses a runtime folder with the wrong mode, and a missing client" {
+@test "lanai-client-exec: refuses a runtime folder with the wrong mode, and leaves its log alone" {
   mkdir -m 755 "$RUN"
+  echo sentinel >"$RUN/client.log"
   fake_client
   serve "$RUN/qmp-cli.sock" "$FIX/fake-qmp"
   run --separate-stderr timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client"
   assert_failure
   [[ $stderr == *"0700"* ]] || fail "no reason: $stderr"
   assert [ ! -e "$T/client.args" ]
-  chmod 700 "$RUN"
-  run timeout 20 "$REPO/bin/lanai-client-exec" "$T/no-such-client"
+  assert_equal "$(cat "$RUN/client.log")" sentinel
+}
+
+@test "lanai-client-exec: a missing client stops it before the wait, and the log is untouched" {
+  mkdir -m 700 "$RUN"
+  echo sentinel >"$RUN/client.log"
+  export FAKE_QMP_LOG=$T/qmp.log
+  serve "$RUN/qmp-cli.sock" "$FIX/fake-qmp"
+  run --separate-stderr timeout 20 "$REPO/bin/lanai-client-exec" "$T/no-such-client"
   assert_failure
+  [[ $stderr == *"no Looking Glass client"* ]] || fail "no reason: $stderr"
+  assert_equal "$(cat "$RUN/client.log")" sentinel
+  assert [ ! -e "$T/qmp.log" ]
+}
+
+@test "lanai-client-exec: a timeout writes its message only into a sound runtime folder" {
+  fake_client
+  # No $RUN at all: a timeout never creates it.
+  LANAI_CLIENT_WAIT=1 run timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client"
+  assert_failure
+  assert [ ! -e "$RUN" ]
+  # A $RUN with the wrong mode: the log is not written through it.
+  mkdir -m 755 "$RUN"
+  echo sentinel >"$RUN/client.log"
+  LANAI_CLIENT_WAIT=1 run timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client"
+  assert_failure
+  assert_equal "$(cat "$RUN/client.log")" sentinel
+  # A sound $RUN gets the message.
+  chmod 700 "$RUN"
+  LANAI_CLIENT_WAIT=1 run timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client"
+  assert_failure
+  run cat "$RUN/client.log"
+  assert_output --regexp '^lanai: QEMU did not answer'
 }
 
 # --- lanai open ---
@@ -398,6 +441,8 @@ win:setGuestRes=yes"
   # Stopping the VM unit stops the client too (without ever starting the
   # VM), and no path is expanded as a variable.
   assert_line -- --property=PartOf=lanai-vm.service
+  # Out of app.slice, where oomd kills under memory pressure.
+  assert_line -- --slice=session.slice
   refute_line --partial Requires=
   refute_line --partial BindsTo=
   assert_line -- --expand-environment=no
@@ -426,7 +471,7 @@ win:setGuestRes=yes"
   fake_build B7-801-1a2b3c4d
   unit_is lanai-vm.service active
   mkdir -m 700 "$RUN"
-  cp "$LOGS/other-build.log" "$RUN/client.log"
+  started_log "$LOGS/other-build.log" >"$RUN/client.log"
   lanai_run open
   assert_success
   assert_equal "$(cat "$S/guest-version")" B7-801-g1a2b3c4d5e
@@ -453,12 +498,23 @@ win:setGuestRes=yes"
   assert_output --partial "journalctl --user -u lanai-client"
 }
 
+@test "lanai open: when a second open started the client meanwhile, it focuses that one" {
+  fake_build "$LG_BUILD"
+  unit_is lanai-vm.service active
+  # systemd-run fails because the unit exists: another open won the race.
+  touch "$T/systemd-run-fails" "$T/race"
+  lanai_run open
+  assert_success
+  run cat "$T/hyprctl.calls"
+  assert_output "dispatch focuswindow pid:77"
+}
+
 # --- status: the version check wired into status_facts and status_map ---
 
 @test "status_facts: reads the client log for the version, and records the guest's" {
   unit_is lanai-vm.service active
   mkdir -m 700 "$RUN"
-  cp "$LOGS/match.log" "$RUN/client.log"
+  started_log "$LOGS/match.log" >"$RUN/client.log"
   run status_facts
   assert_line LanaiVersion=match
   refute_line --partial LanaiClient=
@@ -469,6 +525,39 @@ win:setGuestRes=yes"
   echo "lanai: QEMU did not answer on qmp-cli.sock within 60 s; the Windows window did not open" >"$RUN/client.log"
   run status_facts
   assert_line LanaiClient=timeout
+  # While a second open waits, the old timeout is not shown.
+  unit_is lanai-client.service active
+  run status_facts
+  refute_line --partial LanaiClient=
+}
+
+@test "status_facts and open: a client log older than the record does not undo it" {
+  fake_build "$LG_BUILD"
+  fake_build B7-801-1a2b3c4d
+  unit_is lanai-vm.service active
+  mkdir -m 700 "$RUN"
+  # This run's client saw the old driver; then setup-guest recorded the pin
+  # (phase 6).
+  started_log "$LOGS/other-build.log" 60 >"$RUN/client.log"
+  guest_version_set "$LG_BUILD"
+  run status_facts
+  refute_line --partial LanaiDriverOld=
+  assert_equal "$(cat "$S/guest-version")" "$LG_BUILD"
+  lanai_run open
+  assert_success
+  assert_equal "$(cat "$S/guest-version")" "$LG_BUILD"
+  run tail -n 1 "$T/systemd-run.args"
+  assert_output "$LGDIR/$LG_BUILD/bin/looking-glass-client"
+  # A client started after the record does record what it sees.
+  touch -d '-120 seconds' "$S/guest-version"
+  run status_facts
+  assert_equal "$(cat "$S/guest-version")" B7-801-g1a2b3c4d5e
+  # A log without Lanai's start line is not trusted for the record.
+  guest_version_set "$LG_BUILD"
+  touch -d '-120 seconds' "$S/guest-version"
+  cp "$LOGS/other-build.log" "$RUN/client.log"
+  run status_facts
+  assert_equal "$(cat "$S/guest-version")" "$LG_BUILD"
 }
 
 @test "status_facts: a missing IDD counts only while the client runs" {
@@ -488,9 +577,9 @@ win:setGuestRes=yes"
   mkdir -m 700 "$RUN"
   # The old client build matches the old driver, so the window works, but
   # the pin moved on (req 8).
-  cp "$LOGS/other-build.log" "$RUN/client.log"
-  sed -i "1s/.*/00:00:00.000 [I]              main.c:4303 | main                           | Looking Glass (B7-801-1a2b3c4d)/" \
-    "$RUN/client.log"
+  sed "1s/.*/00:00:00.000 [I]              main.c:4303 | main                           | Looking Glass (B7-801-1a2b3c4d)/" \
+    "$LOGS/other-build.log" >"$T/old.log"
+  started_log "$T/old.log" >"$RUN/client.log"
   run status_facts
   assert_line LanaiVersion=match
   assert_line LanaiDriverOld=B7-801-g1a2b3c4d5e
@@ -541,37 +630,34 @@ smap() {
 }
 
 @test "status_map: an IDD that never answered is failed on a booted VM, with the client log" {
-  unit_is lanai-vm.service active
-  run status_map < <(cat "$T/show-lanai-vm.service"
-    printf '%s\n' LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running \
-      LanaiQga=open LanaiVersion=idd-missing)
-  JSON=$output
+  smap LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running \
+    LanaiQga=open LanaiVersion=idd-missing
   assert_equal "$(field state)" failed
   assert_equal "$(field logs)" "$RUN/client.log"
   run field next
   assert_output --partial "omarchy-windows-vm"
   # While Windows still boots it is only starting.
-  run status_map < <(cat "$T/show-lanai-vm.service"
-    printf '%s\n' LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running \
-      LanaiQga=closed LanaiVersion=idd-missing)
-  JSON=$output
+  smap LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running \
+    LanaiQga=closed LanaiVersion=idd-missing
   assert_equal "$(field state)" starting
 }
 
 @test "status_map: a client that gave up waiting is a warning, and a match changes nothing" {
-  unit_is lanai-vm.service active
-  run status_map < <(cat "$T/show-lanai-vm.service"
-    printf '%s\n' LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running \
-      LanaiQga=open LanaiVersion=match LanaiClient=timeout)
-  JSON=$output
+  smap LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running \
+    LanaiQga=open LanaiVersion=match LanaiClient=timeout
   assert_equal "$(field state)" running
   run field warning
   assert_output --partial "did not open"
-  run status_map < <(cat "$T/show-lanai-vm.service"
-    printf '%s\n' LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running \
-      LanaiQga=open LanaiVersion=match)
-  JSON=$output
+  smap LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running \
+    LanaiQga=open LanaiVersion=match
   assert_equal "$(field state)" running
+  assert_equal "$(field warning)" null
+}
+
+@test "status_map: under a version mismatch the old-driver warning is not repeated" {
+  smap LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running \
+    LanaiQga=open LanaiVersion=mismatch LanaiDriverOld=B7-801-g1a2b3c4d5e
+  assert_equal "$(field state)" version-mismatch
   assert_equal "$(field warning)" null
 }
 
@@ -593,11 +679,20 @@ lg_source() {
   done
   tar -czf "$T/lg.tar.gz" -C "$T/src" "looking-glass-$LG_BUILD"
   LG_SOURCE_SHA=$(sha256sum "$T/lg.tar.gz" | cut -d' ' -f1)
+  # With $T/curl-fails, curl leaves half a file and exits 22 (HTTP error).
   shim curl 'echo "$*" >>"$T/curl.calls"
-while (($#)); do [[ $1 == -o ]] && cp "$T/lg.tar.gz" "$2"; shift; done'
+while (($#)); do
+  if [[ $1 == -o ]]; then
+    if [[ -e $T/curl-fails ]]; then echo half >"$2"; exit 22; fi
+    cp "$T/lg.tar.gz" "$2"
+  fi
+  shift
+done'
+  # With $T/configure-fails, cmake cannot configure.
   shim cmake 'echo "$*" >>"$T/cmake.calls"
 case $1 in
   -S)
+    [[ ! -e $T/configure-fails ]] || { echo "CMake Error: boom"; exit 1; }
     mkdir -p "$4"
     if [[ -e $T/no-usb ]]; then
       echo "-- libusbredirparser was not found, disabling USB audio support"
@@ -712,6 +807,39 @@ esac'
   run build_client
   assert_failure
   assert [ ! -e "$LGDIR/$LG_BUILD" ]
+  assert [ ! -e "$LGDIR/$LG_BUILD.partial" ]
+}
+
+@test "build_client: a failed download leaves no partial file and builds nothing" {
+  lg_source
+  touch "$T/curl-fails"
+  run build_client
+  assert_failure
+  assert_output --partial "could not download"
+  run find "$XDG_CACHE_HOME/lanai/downloads" -type f
+  assert_output ""
+  assert [ ! -e "$T/cmake.calls" ]
+}
+
+@test "build_client: a failed configure stops it" {
+  lg_source
+  touch "$T/configure-fails"
+  run build_client
+  assert_failure
+  assert_output --partial "could not configure"
+  assert [ ! -e "$LGDIR/$LG_BUILD" ]
+  run grep -c -- --build "$T/cmake.calls"
+  assert_output 0
+}
+
+@test "build_client: a leftover .partial folder from a crash is not installed with it" {
+  lg_source
+  mkdir -p "$LGDIR/$LG_BUILD.partial"
+  echo junk >"$LGDIR/$LG_BUILD.partial/junk"
+  run build_client
+  assert_success
+  assert [ ! -e "$LGDIR/$LG_BUILD/junk" ]
+  assert [ ! -e "$LGDIR/$LG_BUILD.partial" ]
 }
 
 @test "build_client: keeps older builds until the guest's IDD matches the pin" {
@@ -760,13 +888,16 @@ esac'
 
 # --- lanai setup-host (spec 7; the one sudo, in the panel's terminal) ---
 
-# pacman: -Qq prints which of its arguments are listed in $T/installed.
+# pacman: -T (deptest, which honours provides) prints each argument not
+# listed in $T/installed and exits 127 when it printed any, as pacman does.
 host_shims() {
   shim pacman 'echo "$*" >>"$T/pacman.calls"
-[[ $1 == -Qq ]] || exit 0
+[[ $1 == -T ]] || exit 0
 shift
-for p; do grep -qxF -- "$p" "$T/installed" 2>/dev/null && echo "$p"; done
-exit 0'
+[[ $1 != -- ]] || shift
+rc=0
+for p; do grep -qxF -- "$p" "$T/installed" 2>/dev/null || { echo "$p"; rc=127; }; done
+exit $rc'
   shim sudo 'echo "$*" >>"$T/sudo.calls"; echo "sudo ran here"
 exit "$(cat "$T/sudo-rc" 2>/dev/null || echo 0)"'
   shim omarchy 'echo "$*" >>"$T/omarchy.calls"'
@@ -790,7 +921,9 @@ exit "$(cat "$T/sudo-rc" 2>/dev/null || echo 0)"'
   assert_success
   run jq -r '.missing | join(" ")' <<<"$JSON"
   assert_output "passt cmake"
-  assert_equal "$(field command)" "sudo pacman -S --needed ${LANAI_HOST_PACKAGES[*]}"
+  # Only what is missing: a package provided by another (jq-git for jq)
+  # counts as installed, and is never offered for replacement.
+  assert_equal "$(field command)" "sudo pacman -S --needed passt cmake"
   wait_for_file "$T/omarchy.calls"
   run cat "$T/omarchy.calls"
   assert_output "launch terminal -- $REPO/bin/lanai-setup-host"
@@ -819,6 +952,23 @@ exit "$(cat "$T/sudo-rc" 2>/dev/null || echo 0)"'
   ran=$(grep -n -F "sudo ran here" <<<"$output" | head -n1 | cut -d: -f1)
   [[ -n $printed && -n $ran ]] || fail "missing the command or the run: $output"
   ((printed < ran)) || fail "sudo ran before the command was printed"
+}
+
+@test "lanai-setup-host: installs only the missing packages, and nothing when none are" {
+  host_shims
+  printf '%s\n' "${LANAI_HOST_PACKAGES[@]}" | grep -v -x -e cmake -e passt >"$T/installed"
+  run script -q -e -c "$REPO/bin/lanai-setup-host" /dev/null <<<""
+  assert_success
+  output=${output//$'\r'/}
+  assert_output --partial "sudo pacman -S --needed passt cmake"
+  assert_equal "$(cat "$T/sudo.calls")" "pacman -S --needed passt cmake"
+  rm "$T/sudo.calls"
+  printf '%s\n' "${LANAI_HOST_PACKAGES[@]}" >"$T/installed"
+  run script -q -e -c "$REPO/bin/lanai-setup-host" /dev/null <<<""
+  assert_success
+  output=${output//$'\r'/}
+  assert_output --partial "already installed"
+  assert [ ! -e "$T/sudo.calls" ]
 }
 
 @test "lanai-setup-host: a failed install says so and exits non-zero" {

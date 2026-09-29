@@ -285,9 +285,9 @@ sock_send() {
 # greeting, negotiates capabilities, sends each command with its own id,
 # and prints each command's reply on its own line as compact JSON (a
 # "return" or an "error" object, id removed); events are skipped. It
-# disconnects before it returns, since QEMU serves one client per socket.
-# Fails when it cannot connect, a line is not JSON, or the replies take
-# longer than 5 s in all.
+# always disconnects before it returns, since QEMU serves one client per
+# socket. Fails when it cannot connect, a line is not JSON, or the replies
+# take longer than the session's budget (LANAI_QMP_BUDGET, default 5 s).
 qmp_call() {
   local sock=$1 cmd rc=0
   shift

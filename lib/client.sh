@@ -131,30 +131,53 @@ version_check() {
 # lanai open picks the matching client build (plan phase 5). lanai status
 # and lanai open record it from the client log; lanai setup-guest records
 # the pin when it succeeds (phase 6). Refuses anything lg_version_key cannot
-# read, such as "unknown".
+# read, such as "unknown". It always rewrites the file: its time is when the
+# record was made, which guest_version_note compares with a client's start.
 guest_version_set() {
   local s
   lg_version_key "$1" >/dev/null || return 1
   s=$(state_dir)
-  [[ ! -f $s/guest-version || $(<"$s/guest-version") != "$1" ]] || return 0
   mkdir -p -- "$s" && printf '%s\n' "$1" >"$s/guest-version.tmp" &&
     mv -f -- "$s/guest-version.tmp" "$s/guest-version"
 }
 
-# Record the guest version that client log <log> names, if any.
+# Print the recorded guest version, or nothing when there is none.
+guest_version_get() {
+  local f
+  f=$(state_dir)/guest-version
+  [[ ! -r $f ]] || printf '%s\n' "$(<"$f")"
+}
+
+# Record the guest version that client log <log> names, if any, but only
+# when the log's client started after the record was written: a record from
+# lanai setup-guest (phase 6) is newer than what this run's client saw
+# before the update. A log without Lanai's start line records nothing.
 guest_version_note() {
-  local guest=""
-  read -r _ guest < <(version_check "$1") || return 0
-  [[ -z $guest ]] || guest_version_set "$guest" || true
+  local log=$1 guest="" first="" start f
+  read -r _ guest < <(version_check "$log") || return 0
+  [[ -n $guest ]] || return 0
+  IFS= read -r first <"$log" || return 0
+  start=${first#"$LANAI_CLIENT_START "}
+  [[ $first == "$LANAI_CLIENT_START "* && $start =~ ^[0-9]+$ ]] || return 0
+  f=$(state_dir)/guest-version
+  if [[ -f $f ]] && ((start < $(stat -c %Y -- "$f"))); then return 0; fi
+  guest_version_set "$guest" || true
 }
 
 # Print the recorded guest version when it is not the pinned build: the old
 # client build keeps the window working, but the guest needs the new IDD
 # (req 8). Prints nothing otherwise.
 guest_version_behind() {
-  local g=""
-  [[ ! -r $(state_dir)/guest-version ]] || g=$(<"$(state_dir)/guest-version")
+  local g
+  g=$(guest_version_get)
   [[ -z $g ]] || lg_same_build "$LG_BUILD" "$g" || printf '%s\n' "$g"
+}
+
+# Return 0 while lanai-client.service runs or is starting.
+client_active() {
+  local st
+  st=$(systemctl --user show -p ActiveState --value "$LANAI_CLIENT_UNIT" 2>/dev/null) || return 1
+  [[ $st == active || $st == activating || $st == reloading ]]
 }
 
 # Print the folder that holds Lanai's client builds, one folder per build.
@@ -166,9 +189,9 @@ client_builds() {
 # matches the recorded guest version, else the pinned build. Fails when
 # neither is installed.
 build_select() {
-  local root g="" d name
+  local root g d name
   root=$(client_builds)
-  [[ ! -r $(state_dir)/guest-version ]] || g=$(<"$(state_dir)/guest-version")
+  g=$(guest_version_get)
   if [[ -n $g ]] && ! lg_same_build "$LG_BUILD" "$g"; then
     for d in "$root"/*/; do
       name=${d%/}
@@ -234,6 +257,9 @@ client_exec() {
   if ! client_wait "$run/qmp-cli.sock" "$LANAI_CLIENT_WAIT"; then
     msg="$LANAI_CLIENT_TIMEOUT $LANAI_CLIENT_WAIT s; the Windows window did not open"
     echo "$msg" >&2
+    # -d first: run_dir_check would create a missing $RUN, and a timeout
+    # never creates it (the VM does); ! -L, so the log is never written
+    # through a symlink.
     if [[ -d $run && ! -L $run ]] && run_dir_check >/dev/null; then
       printf '%s\n' "$msg" >"$log"
     fi
@@ -255,7 +281,8 @@ client_exec() {
 # may lack the session's, so the display and XDG paths go along, taken
 # literally (no $ expansion). PartOf= makes every stop of the VM unit stop
 # the client too (even when ExecStop is killed at TimeoutStopSec), and
-# unlike Requires= or BindsTo= it never starts the VM.
+# unlike Requires= or BindsTo= it never starts the VM. session.slice, like
+# the VM's: Omarchy has oomd kill in app.slice under memory pressure.
 client_start() {
   local v
   local -a env=()
@@ -263,7 +290,7 @@ client_start() {
     [[ -z ${!v:-} ]] || env+=("--setenv=$v=${!v}")
   done
   systemd-run --user --collect --quiet --unit="${LANAI_CLIENT_UNIT%.service}" \
-    --description="Lanai Windows window" --property="PartOf=$LANAI_UNIT" \
+    --description="Lanai Windows window" --property="PartOf=$LANAI_UNIT" --slice=session.slice \
     --expand-environment=no "${env[@]}" -- "$LANAI_BIN/lanai-client-exec" "$1"
 }
 
@@ -309,9 +336,8 @@ usb_audio_enabled() {
 # Remove every client build but the pin's, once the guest's IDD is the
 # pinned build (req 8: until then the old build keeps the window working).
 builds_prune() {
-  local g="" d
-  [[ ! -r $(state_dir)/guest-version ]] || g=$(<"$(state_dir)/guest-version")
-  lg_same_build "$LG_BUILD" "$g" || return 0
+  local d
+  lg_same_build "$LG_BUILD" "$(guest_version_get)" || return 0
   for d in "$(client_builds)"/*; do
     [[ ! -e $d || ${d##*/} == "$LG_BUILD" ]] || rm -rf -- "$d"
   done
@@ -386,7 +412,10 @@ build_client() {
       echo "the built client reports $out, not $LG_BUILD"
       exit 1
     }
-    rm -rf -- "$dest" && mv -T -- "$part" "$dest" || exit 1
+    rm -rf -- "$dest" && mv -T -- "$part" "$dest" || {
+      echo "cannot install into $dest"
+      exit 1
+    }
   ) || return 1
   builds_prune
   printf '%s\n' "$dest/bin/looking-glass-client"
@@ -394,35 +423,46 @@ build_client() {
 
 # --- host packages (spec 7) ---
 
-# Print each package of LANAI_HOST_PACKAGES that pacman does not list as
-# installed, one per line.
+# Print each package of LANAI_HOST_PACKAGES that is not installed, one per
+# line. pacman -T (deptest) honours provides, so jq-git counts for jq and is
+# never offered for replacement. When pacman fails otherwise, every package
+# counts as missing.
 host_packages_missing() {
-  local installed="" p
-  installed=$(pacman -Qq -- "${LANAI_HOST_PACKAGES[@]}" 2>/dev/null) || true
-  for p in "${LANAI_HOST_PACKAGES[@]}"; do
-    grep -qxF -- "$p" <<<"$installed" || printf '%s\n' "$p"
-  done
+  local out rc=0
+  out=$(pacman -T -- "${LANAI_HOST_PACKAGES[@]}" 2>/dev/null) || rc=$?
+  case $rc in
+    0) ;;
+    127) [[ -z $out ]] || printf '%s\n' "$out" ;;
+    *) printf '%s\n' "${LANAI_HOST_PACKAGES[@]}" ;;
+  esac
 }
 
-# Print the one command that installs the host packages, exactly as
+# Print the one command that installs packages <pkg>..., exactly as
 # lanai-setup-host runs it.
 host_install_command() {
-  printf '%s\n' "sudo pacman -S --needed ${LANAI_HOST_PACKAGES[*]}"
+  printf '%s\n' "sudo pacman -S --needed $*"
 }
 
 # lanai-setup-host: in the terminal the panel opened, print the exact
-# command, run it (sudo asks for the password there), and wait for Enter so
-# the result stays readable. The one place Lanai runs sudo (CLAUDE.md);
-# it refuses outside a terminal.
+# command for the missing packages, run it (sudo asks for the password
+# there), and wait for Enter so the result stays readable. The one place
+# Lanai runs sudo (CLAUDE.md); it refuses outside a terminal.
 host_install() {
   local rc=0
+  local -a pkgs
   if [[ ! -t 0 || ! -t 1 ]]; then
     echo "lanai-setup-host: runs only in a terminal; use setup in the Lanai panel" >&2
     return 1
   fi
+  mapfile -t pkgs < <(host_packages_missing)
+  if ((${#pkgs[@]} == 0)); then
+    echo "The host packages Lanai needs are already installed."
+    read -r -p "Press Enter to close this window. " _ || true
+    return 0
+  fi
   printf 'Lanai needs these host packages from the Arch repositories. It runs:\n\n  %s\n\n' \
-    "$(host_install_command)"
-  sudo pacman -S --needed "${LANAI_HOST_PACKAGES[@]}" || rc=$?
+    "$(host_install_command "${pkgs[@]}")"
+  sudo pacman -S --needed "${pkgs[@]}" || rc=$?
   echo
   if ((rc == 0)); then
     echo "Done. Go back to the Lanai panel to continue setup."

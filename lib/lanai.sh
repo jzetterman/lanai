@@ -765,7 +765,7 @@ helper_alive() {
 # build. QMP is asked on qmp-cli.sock, in one short session. It also
 # records the guest version the client log names (guest_version_set).
 status_facts() {
-  local show active inv dir rc s run out name missing="" rinv at version=unknown guest="" first=""
+  local show active inv dir rc s run out name missing="" rinv at version=unknown old="" first=""
   show=$(systemctl --user show "$LANAI_UNIT" -p ActiveState -p SubState -p Result \
     -p InvocationID -p ExecMainStatus 2>/dev/null) || show=ActiveState=unknown
   printf '%s\n' "$show"
@@ -808,17 +808,20 @@ status_facts() {
       echo "LanaiStopAge=$((EPOCHSECONDS - at))"
     fi
     if [[ -f $run/client.log ]]; then
-      read -r version guest < <(version_check "$run/client.log") || version=unknown
-      [[ -z $guest ]] || guest_version_set "$guest" || true
-      # A log whose client was closed says nothing about the IDD now.
+      read -r version _ < <(version_check "$run/client.log") || version=unknown
+      guest_version_note "$run/client.log"
+      # A log whose client was closed says nothing about the IDD now, and a
+      # timeout is old news while a new client waits.
       [[ $version != idd-missing ]] || client_active || version=unknown
       IFS= read -r first <"$run/client.log" || true
-      [[ $first != "$LANAI_CLIENT_TIMEOUT"* ]] || echo LanaiClient=timeout
+      if [[ $first == "$LANAI_CLIENT_TIMEOUT"* ]] && ! client_active; then
+        echo LanaiClient=timeout
+      fi
     fi
   fi
   echo "LanaiVersion=$version"
-  guest=$(guest_version_behind) || guest=""
-  [[ -z $guest ]] || echo "LanaiDriverOld=$guest"
+  old=$(guest_version_behind) || old=""
+  [[ -z $old ]] || echo "LanaiDriverOld=$old"
 }
 
 # status_map: read status_facts' lines on stdin and emit the state the bar
@@ -1161,13 +1164,6 @@ cmd_open() {
   fi
 }
 
-# Return 0 while lanai-client.service runs or is starting.
-client_active() {
-  local st
-  st=$(systemctl --user show -p ActiveState --value "$LANAI_CLIENT_UNIT" 2>/dev/null) || return 1
-  [[ $st == active || $st == activating || $st == reloading ]]
-}
-
 # build-client: build and install the pinned Looking Glass client (spec 7,
 # 26). It takes about a minute; the panel runs it detached (phases 6-7).
 # Holds <state>/build.lock, so two builds never share the work folder.
@@ -1194,8 +1190,10 @@ cmd_build_client() {
 # Returns at once, with the missing packages and the command.
 cmd_setup_host() {
   local missing cmd details
+  local -a list
   missing=$(host_packages_missing)
-  cmd=$(host_install_command)
+  mapfile -t list <<<"$missing"
+  cmd=$(host_install_command "${list[@]}")
   details=$(jq -n -c --arg m "$missing" --arg c "$cmd" \
     '{missing: ($m | split("\n") | map(select(. != ""))), command: $c}')
   if [[ -z $missing ]]; then
