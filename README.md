@@ -33,7 +33,7 @@ Out of v1: GPU passthrough, and a dedicated partition or NVMe for Windows.
 Lanai is an Omarchy bar plugin (id `io.github.jzetterman.lanai`) that runs your
 `omarchy-windows-vm` Windows install in plain QEMU, as your user, and shows it in a
 Looking Glass window. The plugin sits at the repository root: `manifest.json`, `bin/`,
-`lib/`, `guest/` and `test/`. It is under construction; see the
+`lib/`, `systemd/`, `guest/` and `test/`. It is under construction; see the
 [plan](docs/plugin/plan.md).
 
 These sections are filled in phase 7:
@@ -51,9 +51,10 @@ These sections are filled in phase 7:
 
 Run `bats test spike/test`. Tests that need btrfs read `LANAI_TEST_BTRFS_DIR` (for
 example `LANAI_TEST_BTRFS_DIR=$PWD/.btrfs-test`, which git ignores) and skip when it is
-unset or not on btrfs. Lint with
+unset or not on btrfs. No test starts a Windows VM or talks to your systemd user
+manager: QEMU, systemctl and the other system tools are stand-ins on `PATH`. Lint with
 `shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
 docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
-docs/plugin/proof-kit/proof-unit-stop`.
+docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga`.
 
 Lanai is MIT licensed; see [LICENSE](LICENSE).
