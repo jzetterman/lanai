@@ -749,7 +749,7 @@ forged_shutdown() {
   assert_success
   assert_equal "$(<"$T/calls")" "--user stop --no-block lanai-vm.service"
   assert_equal "$(<"$T/busctl.calls")" \
-    "get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager PreparingForShutdown"
+    "--timeout=5 get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager PreparingForShutdown"
 }
 
 @test "shutdown_watch_lines: a forged broadcast inside a unicast string does nothing unless logind confirms" {

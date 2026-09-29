@@ -493,10 +493,14 @@ logind_broadcasts() {
 # that value. dbus-monitor prints string arguments raw, newlines included,
 # so a unicast signal can carry lines that look exactly like a broadcast:
 # its output is only a trigger, and only logind can answer this. Fails, and
-# logs, when busctl does not answer.
+# logs, when busctl does not answer within 5 s (inside logind's 15 s delay).
+# For shutdown this blocks forgery: logind reports true only while a
+# shutdown is pending. For sleep it only filters a false seen while a sleep
+# is still pending, since false is the resting value; a forged resume can
+# only set the guest clock to the correct time.
 logind_confirms() {
   local got
-  if ! got=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
+  if ! got=$(busctl --timeout=5 get-property org.freedesktop.login1 /org/freedesktop/login1 \
     org.freedesktop.login1.Manager "$1" 2>/dev/null); then
     echo "lanai: cannot read logind's $1" >&2
     return 1
