@@ -16,6 +16,8 @@ LANAI_LIB=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$LANAI_LIB/copy.sh"
 # shellcheck source-path=SCRIPTDIR source=vm.sh
 source "$LANAI_LIB/vm.sh"
+# shellcheck source-path=SCRIPTDIR source=snapshot.sh
+source "$LANAI_LIB/snapshot.sh"
 
 # --- output ---
 
@@ -1105,4 +1107,42 @@ cmd_force_stop() {
     return 1
   fi
   emit true stopped "Windows was force-stopped." "start Windows again when you need it"
+}
+
+# snapshot: make an instant, verified copy of the storage location (spec 7),
+# and say where it lives, that it grows, and how to delete or restore it.
+cmd_snapshot() {
+  local out rc=0 dir name
+  out=$(snapshot_create) || rc=$?
+  if ((rc == 3)); then
+    dir=$(storage_dir) || dir="the storage location"
+    emit false "" "$out Lanai cannot make an instant snapshot on this filesystem." \
+      "make a backup of $dir before Lanai's first boot"
+    return 1
+  elif ((rc != 0)); then
+    emit false "" "$out" ""
+    return 1
+  fi
+  name=${out##*/}
+  emit true "" "Snapshot saved at $out. It shares its data with the Windows disk, so it costs little space at first and grows as Windows changes. Delete it with: rm -rf $out. Restore it with: lanai restore $name." "" \
+    "$(jq -n -c --arg p "$out" --arg n "$name" '{snapshot: $p, name: $n}')"
+}
+
+# snapshots: list the complete snapshots, oldest first.
+cmd_snapshots() {
+  local dir list
+  dir=$(storage_dir) || return 1
+  list=$(snapshot_list "$dir" | jq -R . | jq -s -c .)
+  emit true "" "$(jq -r 'length' <<<"$list") snapshot(s)" "" "{\"snapshots\": $list}"
+}
+
+# restore [<name>]: return the storage location to a snapshot (spec 7).
+# Without a name it resumes a restore that did not finish.
+cmd_restore() {
+  local out
+  if ! out=$(snapshot_restore "${1:-}"); then
+    emit false "" "$out" ""
+    return 1
+  fi
+  emit true "" "$out" "start Windows"
 }
