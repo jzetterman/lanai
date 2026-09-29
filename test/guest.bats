@@ -12,6 +12,18 @@ load helpers
   [[ $(tail -c 2 "$f" | od -An -tx1 | tr -d ' ') == 0d0a ]] || fail "the last line has no CRLF"
 }
 
+@test "lanai-lock.cmd: checks for administrator rights with fltmc before any registry write" {
+  local f=$REPO/guest/lanai-lock.cmd check write
+  # fltmc needs the administrator token and, unlike net session, no Server
+  # service.
+  check=$(grep -niE '^fltmc( |$)' "$f" | head -n 1 | cut -d: -f1)
+  write=$(grep -niE '(^|[^a-z])reg (add|delete)' "$f" | head -n 1 | cut -d: -f1)
+  [[ -n $check && -n $write ]] || fail "no fltmc check or no registry write"
+  ((check < write)) || fail "fltmc on line $check comes after a write on line $write"
+  run grep -viE '^[[:space:]]*rem([[:space:]]|$)' "$f"
+  refute_line --regexp '[nN][eE][tT] +[sS][eE][sS][sS][iI][oO][nN]'
+}
+
 @test "lanai-lock.cmd: returns to its caller and never relaunches itself" {
   local f=$REPO/guest/lanai-lock.cmd
   # A bare exit would end setup.cmd's cmd too, and a relaunch would add a

@@ -13,8 +13,9 @@ rem membership (spec row 7b). It parses no localized text: only reg value
 rem names and dsregcmd's key names.
 setlocal EnableExtensions DisableDelayedExpansion
 
-rem net session fails without administrator rights.
-net session >nul 2>&1
+rem fltmc fails without the administrator token. Unlike net session, it
+rem does not need the Server service.
+fltmc >nul 2>&1
 if errorlevel 1 goto :not_elevated
 
 set "USER_POL=HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System"
@@ -44,7 +45,11 @@ powershell -NoProfile -NonInteractive -Command "(Get-CimInstance Win32_ComputerS
 if not errorlevel 1 set "MANAGED=1"
 dsregcmd /status 2>nul | findstr /r /i /c:"AzureAdJoined *: *YES" /c:"WorkplaceJoined *: *YES" >nul
 if not errorlevel 1 set "MANAGED=1"
-reg query "HKLM\SOFTWARE\Microsoft\Enrollments" /s /v ProviderID 2>nul | findstr /r /i /c:"^ *ProviderID  *REG_SZ  *[^ ]" >nul
+rem Stock Windows 11 has built-in Enrollments subkeys with a ProviderID, so
+rem only a subkey with a discovery URL or a UPN counts as an MDM enrollment.
+reg query "HKLM\SOFTWARE\Microsoft\Enrollments" /s /v DiscoveryServiceFullURL 2>nul | findstr /r /i /c:"^ *DiscoveryServiceFullURL  *REG_SZ  *[^ ]" >nul
+if not errorlevel 1 set "MANAGED=1"
+reg query "HKLM\SOFTWARE\Microsoft\Enrollments" /s /v UPN 2>nul | findstr /r /i /c:"^ *UPN  *REG_SZ  *[^ ]" >nul
 if not errorlevel 1 set "MANAGED=1"
 if not defined MANAGED exit /b 0
 echo lanai-lock: this Windows is joined to a domain or enrolled in MDM. A policy

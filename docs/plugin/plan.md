@@ -656,7 +656,8 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   - runs `call "%~dp0lanai-lock.cmd"` (spec req 7; without `call`, control never returns
     to `setup.cmd`). `lanai-lock.cmd` never relaunches itself, so the one administrator
     prompt stays the only one (spec req 7) and every write finishes in the caller's
-    process: if it is not elevated (`net session` fails), it prints a message and runs
+    process: if it is not elevated (`fltmc` fails; it needs the administrator token
+    and, unlike `net session`, not the Server service), it prints a message and runs
     `exit /b 1`, and it always ends with `exit /b`, never `exit`. `setup.cmd` stops if
     it returns non-zero. With `reg add /f` and `reg delete /f`,
     which are safe to rerun, it sets `DisableLockWorkstation` REG_DWORD 1 under
@@ -673,9 +674,12 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
     and `disable_s4=1`, and the VM has no Bluetooth), so it leaves them alone; the lock
     proof confirms both. Last, if `(Get-CimInstance Win32_ComputerSystem).PartOfDomain`
     is true, `dsregcmd /status` reports `AzureAdJoined : YES` or `WorkplaceJoined :
-    YES`, or a subkey of `HKLM\SOFTWARE\Microsoft\Enrollments` holds a `ProviderID`
-    (an MDM enrollment), it prints that a policy may turn the lock back on, and that
-    shutdowns may then end in the forced stop. `LANAI_FAKE_MANAGED=1` makes that check
+    YES`, or a subkey of `HKLM\SOFTWARE\Microsoft\Enrollments` holds a non-empty
+    `DiscoveryServiceFullURL` or `UPN` (an MDM enrollment; each found with `reg query
+    ... /s /v <name>` piped to `findstr /r "^ *<name>  *REG_SZ  *[^ ]"`), it prints
+    that a policy may turn the lock back on, and that shutdowns may then end in the
+    forced stop. `ProviderID` alone does not count: stock Windows 11 has built-in
+    `Enrollments` subkeys that hold one. `LANAI_FAKE_MANAGED=1` makes that check
     report membership, for row 7b; self-elevation drops the caller's environment, so it
     must be set in an elevated prompt that runs `lanai-lock.cmd` directly;
   - installs the Looking Glass IDD last (`/S /ivshmem`, exit code checked), because it
