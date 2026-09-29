@@ -198,3 +198,144 @@ record_previous_run() {
   rm -f -- "$s/running" "$s/forced" "$s/last-shutdown" "$s/stop-requested"
   [[ -z $verdict ]] || printf '%s\n' "$verdict"
 }
+
+# --- socket clients (QMP and the guest agent) ---
+
+# Print the time in microseconds since the epoch.
+now_us() {
+  printf '%s\n' "${EPOCHREALTIME//[!0-9]/}"
+}
+
+# Print the seconds left until <deadline> (microseconds since the epoch) as
+# a decimal for read -t, or fail when none are left.
+time_left() {
+  local left=$(($1 - $(now_us)))
+  ((left > 0)) || return 1
+  printf '%d.%06d\n' $((left / 1000000)) $((left % 1000000))
+}
+
+# Connect to the Unix socket <sock> through socat. Sets LANAI_SOCK_R and
+# LANAI_SOCK_W (read and write fds) and LANAI_SOCK_PID. One connection at a
+# time; sock_close ends it. Fails when there is no socket or socat died.
+sock_open() {
+  LANAI_SOCK_R="" LANAI_SOCK_W="" LANAI_SOCK_PID=""
+  [[ -S $1 ]] || return 1
+  coproc LANAI_SOCK_CO { exec socat - "UNIX-CONNECT:$1" 2>/dev/null; }
+  LANAI_SOCK_PID=$LANAI_SOCK_CO_PID
+  # Copies of the coproc's fds: bash closes its own as soon as socat exits.
+  if [[ -z ${LANAI_SOCK_CO[0]:-} || -z ${LANAI_SOCK_CO[1]:-} ]] ||
+    ! { exec {LANAI_SOCK_R}<&"${LANAI_SOCK_CO[0]}" {LANAI_SOCK_W}>&"${LANAI_SOCK_CO[1]}"; } 2>/dev/null; then
+    sock_close
+    return 1
+  fi
+}
+
+# Close the connection from sock_open and wait for socat to exit.
+sock_close() {
+  [[ -z ${LANAI_SOCK_W:-} ]] || exec {LANAI_SOCK_W}>&-
+  [[ -z ${LANAI_SOCK_R:-} ]] || exec {LANAI_SOCK_R}<&-
+  if [[ -n ${LANAI_SOCK_PID:-} ]]; then
+    kill "$LANAI_SOCK_PID" 2>/dev/null || true
+    wait "$LANAI_SOCK_PID" 2>/dev/null || true
+  fi
+  LANAI_SOCK_R="" LANAI_SOCK_W="" LANAI_SOCK_PID=""
+}
+
+# Write <line> and a newline to the open connection. The write runs in a
+# subshell, so a closed connection fails it instead of killing the caller
+# with SIGPIPE.
+sock_send() {
+  (printf '%s\n' "$1" >&"$LANAI_SOCK_W") 2>/dev/null
+}
+
+# qmp_call <socket> <command-json>...: one QMP session. It reads the
+# greeting, negotiates capabilities, sends each command with its own id,
+# and prints each command's reply on its own line as compact JSON (a
+# "return" or an "error" object, id removed); events are skipped. It
+# disconnects before it returns, since QEMU serves one client per socket.
+# Fails when it cannot connect, a line is not JSON, or the replies take
+# longer than 5 s in all.
+qmp_call() {
+  local sock=$1 cmd line reply deadline t n=0 rc=0
+  shift
+  sock_open "$sock" || return 1
+  deadline=$(($(now_us) + 5000000))
+  if ! t=$(time_left "$deadline") || ! IFS= read -r -t "$t" -u "$LANAI_SOCK_R" line ||
+    ! jq -e 'has("QMP")' <<<"$line" >/dev/null 2>&1; then
+    rc=1
+  fi
+  for cmd in '{"execute":"qmp_capabilities"}' "$@"; do
+    ((rc == 0)) || break
+    n=$((n + 1))
+    if ! cmd=$(jq -c --argjson id "$n" '. + {id: $id}' <<<"$cmd" 2>/dev/null) || ! sock_send "$cmd"; then
+      rc=1
+      break
+    fi
+    reply=""
+    while [[ -z $reply ]]; do
+      if ! t=$(time_left "$deadline") || ! IFS= read -r -t "$t" -u "$LANAI_SOCK_R" line ||
+        ! reply=$(jq -c --argjson id "$n" 'select(.id == $id) | del(.id)' <<<"$line" 2>/dev/null); then
+        rc=1
+        break
+      fi
+    done
+    ((rc != 0 || n == 1)) || printf '%s\n' "$reply"
+  done
+  sock_close
+  return "$rc"
+}
+
+# qga_reply <socket> sync|command|refusal [<command-json>]: talk to the QEMU
+# guest agent (plan phase 4). Every mode first syncs: it sends a 0xFF byte
+# (to flush a half-read request), then guest-sync-delimited with a fresh
+# random id, skips to the 0xFF that starts the agent's reply (past the
+# parse error the flush byte earns, phase 1 proof 3), discards replies with
+# any other id (left from an abandoned connection), and accepts only
+# {"return": <that id>}. command mode then sends <command-json> and accepts
+# only {"return": {}}. refusal mode (setup's step 6) passes only on a
+# CommandNotFound error saying the command has been disabled, and fails on
+# any return. All fail on a reply over 4 KiB, junk or wrong JSON, and after
+# 5 s in all.
+qga_reply() {
+  local sock=$1 mode=$2 cmd=${3:-} id deadline t skipped line rc=1 test
+  local LC_ALL=C
+  case $mode in
+    sync) ;;
+    command) test='. == {"return": {}}' ;;
+    refusal) test='(has("return") | not) and .error.class == "CommandNotFound" and (.error.desc | type == "string" and test("has been disabled"))' ;;
+    *) return 1 ;;
+  esac
+  [[ $mode == sync || -n $cmd ]] || return 1
+  sock_open "$sock" || return 1
+  id=$((SRANDOM % 2147483647 + 1))
+  deadline=$(($(now_us) + 5000000))
+  if sock_send $'\xff{"execute":"guest-sync-delimited","arguments":{"id":'"$id"'}}'; then
+    while :; do
+      # Up to the agent's 0xFF: at most 4 KiB of anything, then one line.
+      if ! { t=$(time_left "$deadline") &&
+        IFS= read -r -d $'\xff' -n 4097 -t "$t" -u "$LANAI_SOCK_R" skipped 2>/dev/null &&
+        ((${#skipped} <= 4096)) &&
+        t=$(time_left "$deadline") &&
+        IFS= read -r -n 4097 -t "$t" -u "$LANAI_SOCK_R" line 2>/dev/null &&
+        ((${#line} <= 4096)) &&
+        line=$(jq -c 'if type == "object" and keys == ["return"] and (.return | type) == "number"
+          then .return else error("not a sync reply") end' <<<"$line" 2>/dev/null); }; then
+        break
+      fi
+      if [[ $line == "$id" ]]; then
+        rc=0
+        break
+      fi
+    done
+  fi
+  if ((rc == 0)) && [[ $mode != sync ]]; then
+    rc=1
+    if sock_send "$cmd" && t=$(time_left "$deadline") &&
+      IFS= read -r -n 4097 -t "$t" -u "$LANAI_SOCK_R" line 2>/dev/null &&
+      ((${#line} <= 4096)) && jq -e "$test" <<<"$line" >/dev/null 2>&1; then
+      rc=0
+    fi
+  fi
+  sock_close
+  return "$rc"
+}

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# A QEMU guest agent stand-in for the tests. socat runs it once per
+# connection (UNIX-LISTEN:<sock>,fork EXEC:fake-qga). It reads the client's
+# flush byte and guest-sync-delimited request, then answers as FAKE_QGA says,
+# and logs to FAKE_QGA_LOG: the flush byte in hex, the sync request, and any
+# command. The real agent answers the 0xFF flush byte with a JSON parse
+# error, then sends 0xFF before the sync reply (phase 1, proof 3).
+#   ok        parse error, then the sync reply with the client's id
+#   stale     a sync reply with another id first (an abandoned connection's)
+#   stale-only  only a sync reply with another id, then hang up
+#   junk      0xFF, then a line that is not JSON
+#   string    0xFF, then {"return": "<id>"}
+#   error     0xFF, then an error object
+#   big-pre   4200 bytes before the 0xFF
+#   big-line  0xFF, then a 4200-byte line
+#   silent    nothing at all
+# After a good sync, the command's reply is FAKE_QGA_CMD:
+#   empty (default) {"return": {}}; other {"return": {"x": 1}};
+#   generic a GenericError; disabled the CommandNotFound "has been disabled"
+#   error proof 3 recorded; notfound a CommandNotFound "has not been found"
+set -uo pipefail
+# Knobs come from the environment, or from FAKE_CONF, which a test may
+# rewrite between connections.
+# shellcheck source=/dev/null
+[[ -z ${FAKE_CONF:-} || ! -f $FAKE_CONF ]] || source "$FAKE_CONF"
+export LC_ALL=C
+
+log=${FAKE_QGA_LOG:-/dev/null}
+FF=$'\xff'
+parse_error='{"error": {"class": "GenericError", "desc": "JSON parse error, stray '"'"'�'"'"'"}}'
+
+IFS= read -r -N 1 flush || exit 0
+printf 'flush %s\n' "$(printf '%s' "$flush" | od -An -tx1 | tr -d ' ')" >>"$log"
+IFS= read -r req || exit 0
+printf 'sync %s\n' "$req" >>"$log"
+id=$(jq -r '.arguments.id' <<<"$req")
+
+case ${FAKE_QGA:-ok} in
+  ok) printf '%s\n%s{"return": %s}\n' "$parse_error" "$FF" "$id" ;;
+  stale) printf '%s{"return": 99}\n%s\n%s{"return": %s}\n' "$FF" "$parse_error" "$FF" "$id" ;;
+  stale-only)
+    printf '%s{"return": 99}\n' "$FF"
+    exit 0
+    ;;
+  junk) printf '%snot json at all\n' "$FF" ;;
+  string) printf '%s{"return": "%s"}\n' "$FF" "$id" ;;
+  error) printf '%s{"error": {"class": "GenericError", "desc": "x"}}\n' "$FF" ;;
+  big-pre) printf '%*s%s{"return": %s}\n' 4200 "" "$FF" "$id" ;;
+  big-line) printf '%s{"return": %s%*s}\n' "$FF" "$id" 4200 "" ;;
+  silent) sleep 30 ;;
+esac
+
+IFS= read -r cmd || exit 0
+printf 'cmd %s\n' "$cmd" >>"$log"
+case ${FAKE_QGA_CMD:-empty} in
+  empty) printf '{"return": {}}\n' ;;
+  other) printf '{"return": {"x": 1}}\n' ;;
+  generic) printf '{"error": {"class": "GenericError", "desc": "failed"}}\n' ;;
+  disabled) printf '{"error": {"class": "CommandNotFound", "desc": "Command guest-exec has been disabled: the command is not allowed"}}\n' ;;
+  notfound) printf '{"error": {"class": "CommandNotFound", "desc": "The command guest-foo has not been found"}}\n' ;;
+esac
+sleep 1

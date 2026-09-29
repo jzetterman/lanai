@@ -17,6 +17,13 @@ setup() {
   S=$XDG_STATE_HOME/lanai
   mkdir -p "$T/shims"
   BG_PIDS=()
+  # The fake servers (test/fixtures/fake-*) read their knobs from here.
+  export FAKE_CONF=$T/fake.conf
+}
+
+# Set the fake servers' knobs (KEY=value lines) for their next connection.
+conf() {
+  printf '%s\n' "$@" >"$FAKE_CONF"
 }
 
 teardown() {
@@ -391,4 +398,172 @@ assert_markers_gone() {
   printf 'aaaa1111 1700000000\n' >"$S/stop-requested"
   run record_previous_run
   assert [ ! -e "$S/stop-requested" ]
+}
+
+# --- the QMP and guest agent clients ---
+
+# Serve <socket> with the fake server <script> (one run per connection) in
+# the background, and wait until the socket exists.
+serve() {
+  local i
+  socat "UNIX-LISTEN:$1,fork" "EXEC:$2" >/dev/null 2>&1 3>&- &
+  BG_PIDS+=("$!")
+  for ((i = 0; i < 100; i++)); do
+    [[ -S $1 ]] && return 0
+    sleep 0.05
+  done
+  fail "the fake server did not create $1"
+}
+
+# Wait until file <f> holds a line matching <regex> (up to 3 s).
+wait_for_line() {
+  local i
+  for ((i = 0; i < 60; i++)); do
+    grep -qE -- "$2" "$1" 2>/dev/null && return 0
+    sleep 0.05
+  done
+  fail "no line matching $2 in $1"
+}
+
+@test "qmp_call: negotiates, then prints each command's reply without its id" {
+  export FAKE_QMP_LOG=$T/qmp.log
+  serve "$T/q.sock" "$FIX/fake-qmp"
+  run qmp_call "$T/q.sock" '{"execute":"query-status"}' '{"execute":"query-chardev"}'
+  assert_success
+  assert_line --index 0 '{"return":{"status":"running","singlestep":false,"running":true}}'
+  assert_line --index 1 --partial '"label":"qga0"'
+  assert_equal "${#lines[@]}" 2
+  # qmp_capabilities goes first; every command carries its own id.
+  assert_equal "$(sed -n 1p "$T/qmp.log")" '{"execute":"qmp_capabilities","id":1}'
+  assert_equal "$(sed -n 2p "$T/qmp.log")" '{"execute":"query-status","id":2}'
+  assert_equal "$(sed -n 3p "$T/qmp.log")" '{"execute":"query-chardev","id":3}'
+}
+
+@test "qmp_call: skips events that arrive before a reply" {
+  export FAKE_QMP_MODE=events
+  serve "$T/q.sock" "$FIX/fake-qmp"
+  run qmp_call "$T/q.sock" '{"execute":"query-status"}'
+  assert_success
+  assert_output '{"return":{"status":"running","singlestep":false,"running":true}}'
+}
+
+@test "qmp_call: prints an error reply for the caller to judge" {
+  serve "$T/q.sock" "$FIX/fake-qmp"
+  run qmp_call "$T/q.sock" '{"execute":"no-such-thing"}'
+  assert_success
+  assert_output --partial '"class":"CommandNotFound"'
+}
+
+@test "qmp_call: disconnects before it returns, since QEMU serves one client per socket" {
+  export FAKE_QMP_LOG=$T/qmp.log
+  serve "$T/q.sock" "$FIX/fake-qmp"
+  run qmp_call "$T/q.sock" '{"execute":"query-status"}'
+  assert_success
+  wait_for_line "$T/qmp.log" '^<closed>$'
+}
+
+@test "qmp_call: fails at once without a socket, and in 5 s when QEMU does not answer" {
+  run qmp_call "$T/none.sock" '{"execute":"query-status"}'
+  assert_failure
+  export FAKE_QMP_MODE=silent
+  serve "$T/q.sock" "$FIX/fake-qmp"
+  local start=$SECONDS
+  run qmp_call "$T/q.sock" '{"execute":"query-status"}'
+  assert_failure
+  (((SECONDS - start) >= 4 && (SECONDS - start) <= 7)) || fail "took $((SECONDS - start)) s"
+}
+
+@test "qga_reply sync: flushes with 0xFF, skips the parse error, accepts its own id" {
+  export FAKE_QGA_LOG=$T/qga.log
+  serve "$T/g.sock" "$FIX/fake-qga"
+  run qga_reply "$T/g.sock" sync
+  assert_success
+  assert_equal "$(sed -n 1p "$T/qga.log")" "flush ff"
+  local req
+  req=$(sed -n 's/^sync //p' "$T/qga.log")
+  run jq -r '.execute + " " + (.arguments.id | type)' <<<"$req"
+  assert_output "guest-sync-delimited number"
+}
+
+@test "qga_reply sync: uses a fresh id each time" {
+  export FAKE_QGA_LOG=$T/qga.log
+  serve "$T/g.sock" "$FIX/fake-qga"
+  qga_reply "$T/g.sock" sync
+  qga_reply "$T/g.sock" sync
+  run sed -n 's/^sync //p' "$T/qga.log"
+  assert_equal "${#lines[@]}" 2
+  [[ ${lines[0]} != "${lines[1]}" ]] || fail "the same id twice: ${lines[0]}"
+}
+
+@test "qga_reply sync: discards a stale reply with another id" {
+  export FAKE_QGA=stale
+  serve "$T/g.sock" "$FIX/fake-qga"
+  run qga_reply "$T/g.sock" sync
+  assert_success
+  # A stale reply alone never counts as the sync.
+  conf FAKE_QGA=stale-only
+  run qga_reply "$T/g.sock" sync
+  assert_failure
+}
+
+@test "qga_reply: rejects junk, wrong JSON and replies over 4 KiB" {
+  serve "$T/g.sock" "$FIX/fake-qga"
+  local mode
+  for mode in junk string error big-pre big-line; do
+    conf "FAKE_QGA=$mode"
+    run qga_reply "$T/g.sock" sync
+    assert_failure
+    conf "FAKE_QGA=$mode"
+    run qga_reply "$T/g.sock" command '{"execute":"guest-set-time"}'
+    assert_failure
+    conf "FAKE_QGA=$mode"
+    run qga_reply "$T/g.sock" refusal '{"execute":"guest-exec"}'
+    assert_failure
+  done
+}
+
+@test "qga_reply: times out at 5 s when the agent is silent" {
+  export FAKE_QGA=silent
+  serve "$T/g.sock" "$FIX/fake-qga"
+  local start=$SECONDS
+  run qga_reply "$T/g.sock" sync
+  assert_failure
+  (((SECONDS - start) >= 4 && (SECONDS - start) <= 7)) || fail "took $((SECONDS - start)) s"
+}
+
+@test "qga_reply command: syncs first, then accepts only an empty return" {
+  export FAKE_QGA_LOG=$T/qga.log
+  serve "$T/g.sock" "$FIX/fake-qga"
+  run qga_reply "$T/g.sock" command '{"execute":"guest-set-time","arguments":{"time":1}}'
+  assert_success
+  assert_equal "$(sed -n 3p "$T/qga.log")" 'cmd {"execute":"guest-set-time","arguments":{"time":1}}'
+  local reply
+  for reply in other generic disabled notfound; do
+    conf "FAKE_QGA_CMD=$reply"
+    run qga_reply "$T/g.sock" command '{"execute":"guest-set-time"}'
+    assert_failure
+  done
+}
+
+@test "qga_reply refusal: passes only on the 'has been disabled' CommandNotFound" {
+  serve "$T/g.sock" "$FIX/fake-qga"
+  conf FAKE_QGA_CMD=disabled
+  run qga_reply "$T/g.sock" refusal '{"execute":"guest-exec"}'
+  assert_success
+  local reply
+  for reply in empty other generic notfound; do
+    conf "FAKE_QGA_CMD=$reply"
+    run qga_reply "$T/g.sock" refusal '{"execute":"guest-exec"}'
+    assert_failure
+  done
+}
+
+@test "qga_reply: refuses an unknown mode, a missing command, and a missing socket" {
+  run qga_reply "$T/g.sock" sync
+  assert_failure
+  serve "$T/g.sock" "$FIX/fake-qga"
+  run qga_reply "$T/g.sock" command
+  assert_failure
+  run qga_reply "$T/g.sock" exec '{"execute":"guest-exec"}'
+  assert_failure
 }

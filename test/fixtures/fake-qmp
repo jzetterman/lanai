@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# A QMP server stand-in for the tests. socat runs it once per connection
+# (UNIX-LISTEN:<sock>,fork EXEC:fake-qmp), with the connection on stdin and
+# stdout. It greets like QEMU, logs every line it reads to FAKE_QMP_LOG, and
+# answers qmp_capabilities, query-status, query-chardev and
+# system_powerdown, echoing each command's id. Knobs (environment):
+#   FAKE_QMP_MODE    silent: greet, then never answer; events: send an event
+#                    before each reply; shutdown: after capabilities, send a
+#                    SHUTDOWN event (FAKE_QMP_GUEST, default true) and hang up
+#   FAKE_QMP_STATUS  query-status's status (default running)
+#   FAKE_QMP_QGA     query-chardev's frontend-open for qga0 (default true)
+#   FAKE_QMP_KILL    a pid to kill when system_powerdown arrives
+#   FAKE_QMP_RECORD  a file to write a guest SHUTDOWN record to on powerdown,
+#                    stamped with FAKE_QMP_INVOCATION
+set -uo pipefail
+# Knobs come from the environment, or from FAKE_CONF, which a test may
+# rewrite between connections.
+# shellcheck source=/dev/null
+[[ -z ${FAKE_CONF:-} || ! -f $FAKE_CONF ]] || source "$FAKE_CONF"
+
+log=${FAKE_QMP_LOG:-/dev/null}
+event='{"event": "RTC_CHANGE", "data": {"offset": 0}, "timestamp": {"seconds": 1, "microseconds": 2}}'
+printf '%s\n' '{"QMP": {"version": {"qemu": {"micro": 0, "minor": 0, "major": 10}, "package": ""}, "capabilities": ["oob"]}}'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >>"$log"
+  [[ ${FAKE_QMP_MODE:-} != silent ]] || continue
+  id=$(jq -c '.id // null' <<<"$line" 2>/dev/null) || id=null
+  cmd=$(jq -r '.execute // ""' <<<"$line" 2>/dev/null) || cmd=""
+  [[ ${FAKE_QMP_MODE:-} != events ]] || printf '%s\n' "$event"
+  case $cmd in
+    qmp_capabilities) r='{}' ;;
+    query-status) r="{\"status\": \"${FAKE_QMP_STATUS:-running}\", \"singlestep\": false, \"running\": true}" ;;
+    query-chardev)
+      r="[{\"frontend-open\": true, \"filename\": \"spicevmc\", \"label\": \"vdagent\"},
+{\"frontend-open\": ${FAKE_QMP_QGA:-true}, \"filename\": \"unix:/r/qga.sock,server=on\", \"label\": \"qga0\"}]"
+      r=$(jq -c . <<<"$r")
+      ;;
+    system_powerdown)
+      r='{}'
+      if [[ -n ${FAKE_QMP_RECORD:-} ]]; then
+        printf '{"invocation":"%s","guest":true,"reason":"guest-shutdown"}\n' \
+          "${FAKE_QMP_INVOCATION:-}" >"$FAKE_QMP_RECORD"
+      fi
+      [[ -z ${FAKE_QMP_KILL:-} ]] || kill "$FAKE_QMP_KILL" 2>/dev/null
+      ;;
+    *)
+      printf '{"id": %s, "error": {"class": "CommandNotFound", "desc": "The command %s has not been found"}}\n' "$id" "$cmd"
+      continue
+      ;;
+  esac
+  printf '{"return": %s, "id": %s}\n' "$r" "$id"
+  if [[ $cmd == qmp_capabilities && ${FAKE_QMP_MODE:-} == shutdown ]]; then
+    printf '%s\n' "$event"
+    printf '{"timestamp": {"seconds": 3, "microseconds": 4}, "event": "SHUTDOWN", "data": {"guest": %s, "reason": "guest-shutdown"}}\n' \
+      "${FAKE_QMP_GUEST:-true}"
+    break
+  fi
+done
+printf '<closed>\n' >>"$log"
