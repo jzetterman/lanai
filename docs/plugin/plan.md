@@ -72,8 +72,10 @@ use.
     (the CLI; every call connects, reads with a timeout, and disconnects, because QEMU
     serves one client per socket at a time). The inhibitor never uses QMP; it runs
     `systemctl --user stop --no-block lanai-vm.service`. Both logind watchers match
-    `sender='org.freedesktop.login1'`, since any local process can send a signal that
-    looks like logind's.
+    `sender='org.freedesktop.login1'`, and act only on a broadcast: a user's
+    `dbus-monitor --system` falls back to eavesdropping, where a signal sent to its own
+    name (which any local process may send) passes the match rule, so a header with a
+    destination other than `(null destination)` is ignored.
   - The event logger retries its connection until QEMU creates `qmp-events.sock`, then
     records each QMP `SHUTDOWN` event (`guest`, `reason`) to
     `$XDG_STATE_HOME/lanai/last-shutdown`, stamped with the unit's `$INVOCATION_ID`
@@ -397,20 +399,34 @@ Where the code differs from the text above, the code and this list win:
 - Status: before setup is done, a booted VM is "setup needed" even with an agent port
   open (dockur installs its own guest agent). A unit that failed with
   `Result=timeout` (a stop that ran out of time, as at logout with lingering) is
-  "stopped" with the forced-stop notice, not "failed".
+  "stopped", not "failed". The forced-stop `notice` comes only from `last-run` (the
+  next start's verdict), so the panel can show it once and clear it; a forced stop
+  the next start has not recorded yet shows as `forced_pending: true`.
+- `lanai-vm-exec` repeats `restore_pending` and `share_check` (in `vm_plan`), since a
+  direct `systemctl --user start lanai-vm` skips `preflight`. `lanai-vm-stop` counts a
+  zombie `MAINPID` as exited.
+- `vm_args` checks the template for container paths before the user's paths are
+  filled in (a storage location may well contain `storage`), and also refuses passt's
+  `tcp-ports=`, `udp-ports=` and `param=`.
 - `guest-set-time` carries `@NOW_NS@`, which `qga_reply` fills with the host clock as
   the command goes out, after the sync. The resume retry stops after 60 s.
 - Snapshots record their source: a `SOURCE` file beside `COMPLETE` holds the storage
   location's real path, and only snapshots of the current location are listed,
   restored or cleaned (`.partial` leftovers of this location, or with no `SOURCE` yet;
-  the flock means none is being built). The snapshot folders are made 0700 and must
-  be the user's own. `lanai snapshots` lists them.
+  the flock means none is being built). A snapshot place is used, listed or resumed
+  from only when it is a real folder owned by the user with no group or other write
+  (`own_dir`; new ones are made 0700), and each snapshot folder must be the user's.
+  A snapshot takes install files only: dockur's `setup.img` leftovers or a restore's
+  temp files must be deleted first. `lanai snapshots` lists them.
 - Restore touches only an existing storage folder that holds nothing but regular files
   named in `layout_check`'s allow-list, dockur's `setup.img` leftovers and its own
   `.lanai-restore.*` temp files; anything else (a folder, a symlink, a user's file)
-  refuses the restore, since Lanai's storage may point at the wrong place. It checks
-  every file of the snapshot against `COMPLETE` before it writes, and removes extras
-  with `rm -f`, regular files only. The marker holds the snapshot and the storage
+  refuses the restore, since Lanai's storage may point at the wrong place. Before it
+  writes, it checks every file of the snapshot against `COMPLETE`, and refuses an
+  empty snapshot disk or a NOCOW difference between the two `data.img` files, which
+  `ficlone.py` could not clone (a marker it could never finish). It removes only
+  extras a restore may remove, with `rm -f`; any other file that appears while it
+  runs is kept, named, and the restore stays unfinished. The marker holds the snapshot and the storage
   location, is flushed to disk before any write, and resumes only for that location;
   when its snapshot is gone or damaged, `lanai restore <other>` replaces it. Files go
   in name order with `data.img` last; a deleted `data.img` is put back first so its
@@ -421,6 +437,10 @@ Where the code differs from the text above, the code and this list win:
   NOCOW.
 - Phases 6 and 7 must run `lanai snapshot` and `lanai restore` detached from the QML
   call: they read the whole disk (minutes), far past the 10 s deadline.
+- For phase 7: a Shut down click during early boot, before Windows handles the ACPI
+  button, is lost, and status then offers the forced stop after 2 minutes. The
+  panel's Shut down must stay usable while the state is stopping; each `lanai stop`
+  sends `system_powerdown` again and keeps the first request's time.
 
 ## Phase 5: Looking Glass client and host setup (TDD for the parsers)
 
