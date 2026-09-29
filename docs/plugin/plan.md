@@ -816,3 +816,7 @@ Where the code differs from the text above, the code and this list win:
 | diff (phase 4) | a | 2 (full, 3 reviewers) | 1 blocker (CI hang: a zombie under the job container's non-reaping PID 1), 9 should-fix, 12 nits; all integrated. CI green after `--init` and per-test timeouts |
 | diff (phase 4) | a | 3 (delta) | 1 should-fix (a forged logind signal inside a string argument), 2 nits; integrated: logind's own property confirms before acting |
 | diff (phase 4) | a | 4 (delta) | clean; logind ordering checked against systemd v262 source. 2 nits taken (5 s busctl timeout, sleep-check comment). Stage a closed |
+| diff (phase 4) | b Grok (substitute), part A (lifecycle, about 3,300 lines) | 1 (full) | no findings |
+| diff (phase 4) | b Grok (substitute), part B (snapshot and restore) | 1 (full) | 2 P2, 1 P3; all confirmed and integrated (restore marks before recreating a deleted disk; snapshots flushed before success; layout check before snapshot) |
+| diff (phase 4) | b Grok (substitute), part B | 2 (full) | 1 P2; integrated (restore holds the disk lock while it hashes the snapshot) |
+| diff (phase 4) | b Grok (substitute), part B | 3 (full, cap) | 1 P2, 1 P3; integrated by Claude, test-first (sync -f after a snapshot, since XFS does not flush clones on fsync of other files; cp errors shown). Not re-reviewed: at the cap |
