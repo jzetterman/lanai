@@ -18,6 +18,8 @@ source "$LANAI_LIB/copy.sh"
 source "$LANAI_LIB/vm.sh"
 # shellcheck source-path=SCRIPTDIR source=snapshot.sh
 source "$LANAI_LIB/snapshot.sh"
+# shellcheck source-path=SCRIPTDIR source=client.sh
+source "$LANAI_LIB/client.sh"
 
 # --- output ---
 
@@ -755,11 +757,13 @@ helper_alive() {
 # Print the facts lanai status maps to a state, as Key=Value lines: the
 # unit's `systemctl --user show` output, then Lanai's own (LanaiInstall,
 # LanaiSetup, LanaiContainer, LanaiForced, LanaiLastRun, and for an active
-# unit LanaiQmp, LanaiQga, LanaiHelpersMissing and LanaiStopAge), and
-# LanaiVersion (phase 5 fills it; "unknown" until then). QMP is asked on
-# qmp-cli.sock, in one short session.
+# unit LanaiQmp, LanaiQga, LanaiHelpersMissing, LanaiStopAge and
+# LanaiClient=timeout when the client gave up waiting for QEMU), and
+# LanaiVersion (version_check's verdict on client.log for an active unit,
+# else "unknown"). QMP is asked on qmp-cli.sock, in one short session. It
+# also records the guest version the client log names (guest_version_set).
 status_facts() {
-  local show active inv dir rc s run out name missing="" rinv at
+  local show active inv dir rc s run out name missing="" rinv at version=unknown guest="" first=""
   show=$(systemctl --user show "$LANAI_UNIT" -p ActiveState -p SubState -p Result \
     -p InvocationID -p ExecMainStatus 2>/dev/null) || show=ActiveState=unknown
   printf '%s\n' "$show"
@@ -801,8 +805,14 @@ status_facts() {
       [[ $rinv == "$inv" && $at =~ ^[0-9]+$ ]]; then
       echo "LanaiStopAge=$((EPOCHSECONDS - at))"
     fi
+    if [[ -f $run/client.log ]]; then
+      read -r version guest < <(version_check "$run/client.log") || version=unknown
+      [[ -z $guest || $guest == unknown ]] || guest_version_set "$guest" || true
+      IFS= read -r first <"$run/client.log" || true
+      [[ $first != "$LANAI_CLIENT_TIMEOUT"* ]] || echo LanaiClient=timeout
+    fi
   fi
-  echo LanaiVersion=unknown
+  echo "LanaiVersion=$version"
 }
 
 # status_map: read status_facts' lines on stdin and emit the state the bar
@@ -812,8 +822,11 @@ status_facts() {
 # a forced stop, with its likely causes, spec 19; only from last-run, which
 # the panel clears once shown), forced_pending (the VM was force-stopped or
 # its stop timed out, and the next start will report it), warning (helpers
-# that stopped), force_stop (true once a shutdown from the bar has run 2
-# minutes, spec 16) and, for failed, logs.
+# that stopped, or a client that gave up waiting for QEMU), force_stop (true
+# once a shutdown from the bar has run 2 minutes, spec 16) and, for failed,
+# logs. The client log's verdict (LanaiVersion) makes a mismatch
+# version-mismatch, and a missing IDD on a booted VM failed, with the client
+# log as its logs (spec 8).
 status_map() {
   local line state message next notice="" warning="" force=false name logs=""
   local -A f=()
@@ -846,6 +859,11 @@ status_map() {
         # dockur installs its own guest agent, so the port says nothing yet.
         state="setup-needed" message="Windows is running, but Lanai setup has not finished."
         next="finish setup in the Lanai panel"
+      elif [[ $qmp == running && ${f[LanaiQga]:-} == open && ${f[LanaiVersion]:-} == idd-missing ]]; then
+        # Windows has booted, but the IDD never answered the client (spec 8).
+        state=failed logs="$(run_dir 2>/dev/null)/client.log"
+        message="Windows is running, but the Looking Glass driver in Windows has not answered for $LANAI_IDD_WAIT s, so the window stays empty."
+        next="shut Windows down, then run Lanai setup again to reinstall it, $LANAI_FALLBACK"
       elif [[ $qmp == running && ${f[LanaiQga]:-} == open ]]; then
         state=running message="Windows is running." next="open the Windows window"
         if [[ -n ${f[LanaiHelpersMissing]:-} ]]; then
@@ -883,7 +901,10 @@ status_map() {
       ;;
     *) state=failed message="Lanai cannot read the VM's state from systemd." next=$failed_next ;;
   esac
-  [[ $state != failed ]] || logs=$LANAI_LOGS
+  if [[ ${f[LanaiClient]:-} == timeout && ($active == active || $active == reloading) ]]; then
+    warning+="${warning:+ }The Windows window did not open: QEMU did not answer within $LANAI_CLIENT_WAIT s. Try Open again."
+  fi
+  [[ $state != failed || -n $logs ]] || logs=$LANAI_LOGS
   emit true "$state" "$message" "$next" "$(jq -n -c --arg notice "$notice" --arg warning "$warning" \
     --argjson force "$force" --arg logs "$logs" --argjson pending "$([[ $forced == yes ]] && echo true || echo false)" \
     '{notice: (if $notice == "" then null else $notice end),
@@ -1089,6 +1110,95 @@ cmd_stop() {
     printf '%s %s\n' "$inv" "$EPOCHSECONDS" >"$s/stop-requested"
   fi
   emit true stopping "Windows is shutting down." "wait up to 2 minutes"
+}
+
+# open: open the Windows window (spec 11, 17). Focuses the client's window
+# when lanai-client.service already runs, so there is never a second
+# client; else records the guest version the last client log names, picks
+# the client build (build_select) and starts the unit, which waits for QEMU
+# itself. Returns at once.
+cmd_open() {
+  local st pid client out
+  st=$(unit_state) || st=""
+  if [[ $st != active ]]; then
+    emit false "" "Windows is not running." "start Windows"
+    return 1
+  fi
+  if ! client_active; then
+    guest_version_note "$(run_dir)/client.log"
+    if ! client=$(build_select); then
+      emit false "" "The Looking Glass client is not built." "run Lanai setup, or lanai build-client"
+      return 1
+    fi
+    if client_start "$client" >&2; then
+      emit true "" "The Windows window is opening." "" "$(jq -n -c --arg c "$client" '{client: $c}')"
+      return 0
+    fi
+    # Another open may have started it meanwhile.
+    if ! client_active; then
+      emit false "" "Lanai could not open the Windows window." \
+        "see the logs with journalctl --user -u lanai-client"
+      return 1
+    fi
+  fi
+  pid=$(systemctl --user show -p MainPID --value "$LANAI_CLIENT_UNIT" 2>/dev/null) || pid=""
+  if [[ $pid =~ ^[1-9][0-9]*$ ]] && out=$(timeout 5 hyprctl dispatch focuswindow "pid:$pid" 2>/dev/null) &&
+    [[ $out == ok ]]; then
+    emit true "" "Focused the Windows window." ""
+  else
+    emit true "" "The Windows window is opening." ""
+  fi
+}
+
+# Return 0 while lanai-client.service runs or is starting.
+client_active() {
+  local st
+  st=$(systemctl --user show -p ActiveState --value "$LANAI_CLIENT_UNIT" 2>/dev/null) || return 1
+  [[ $st == active || $st == activating || $st == reloading ]]
+}
+
+# build-client: build and install the pinned Looking Glass client (spec 7,
+# 26). It takes about a minute; the panel runs it detached (phases 6-7).
+# Holds <state>/build.lock, so two builds never share the work folder.
+cmd_build_client() {
+  local out s
+  s=$(state_dir)
+  mkdir -p -- "$s"
+  exec {LANAI_BUILD_FD}>>"$s/build.lock"
+  if ! flock -n "$LANAI_BUILD_FD"; then
+    emit false "" "Another Looking Glass client build is running." "wait for it to finish"
+    return 1
+  fi
+  if ! out=$(build_client); then
+    emit false "" "The Looking Glass client was not built: $out" "fix the cause, then run setup again"
+    return 1
+  fi
+  emit true "" "The Looking Glass client $LG_BUILD is ready." "" \
+    "$(jq -n -c --arg c "$out" --arg b "$LG_BUILD" '{client: $c, build: $b}')"
+}
+
+# setup-host: when a host package is missing, open a terminal (omarchy
+# launch terminal) running lanai-setup-host, which prints the exact
+# pacman command and runs it with sudo (spec 7). Never runs sudo itself.
+# Returns at once, with the missing packages and the command.
+cmd_setup_host() {
+  local missing cmd details
+  missing=$(host_packages_missing)
+  cmd=$(host_install_command)
+  details=$(jq -n -c --arg m "$missing" --arg c "$cmd" \
+    '{missing: ($m | split("\n") | map(select(. != ""))), command: $c}')
+  if [[ -z $missing ]]; then
+    emit true "" "The host packages Lanai needs are installed." "" "$details"
+    return 0
+  fi
+  if ! command -v omarchy >/dev/null; then
+    emit false "" "Lanai cannot open a terminal: the omarchy command is missing." \
+      "install the packages yourself with: $cmd" "$details"
+    return 1
+  fi
+  setsid -f omarchy launch terminal -- "$LANAI_BIN/lanai-setup-host" </dev/null >/dev/null 2>&1
+  emit true "" "A terminal opened to install the host packages. It shows the command before it runs." \
+    "enter your password in the terminal, then continue setup" "$details"
 }
 
 # force-stop --confirm: kill the VM at once, like pulling the power (spec

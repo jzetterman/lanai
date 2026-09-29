@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# lanai-client-exec <client>: ExecStart of lanai-client.service, which
+# lanai open starts. Waits until QEMU answers on qmp-cli.sock, then becomes
+# the Looking Glass client, its output in $RUN/client.log. See client_exec
+# in lib/client.sh.
+set -euo pipefail
+
+# shellcheck source-path=SCRIPTDIR source=../lib/lanai.sh
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib/lanai.sh"
+client_exec "${1:?usage: lanai-client-exec <client>}"

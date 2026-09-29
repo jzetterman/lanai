@@ -1,0 +1,20 @@
+-- The following features have been enabled:
+
+ * OPTIMIZE_FOR_NATIVE, Optimized for native
+ * ENABLE_OPENGL, Legacy OpenGL renderer.
+ * ENABLE_EGL, EGL renderer.
+ * ENABLE_BACKTRACE, Backtrace support.
+ * ENABLE_PIPEWIRE, PipeWire audio support.
+ * ENABLE_PULSEAUDIO, PulseAudio audio support.
+ * ENABLE_AUDIO, Audio support.
+ * ENABLE_USB_AUDIO, USB audio support.
+ * ENABLE_WAYLAND, Wayland support.
+ * ENABLE_LIBDECOR, libdecor support.
+
+-- The following features have been disabled:
+
+ * ENABLE_TESTS, Client unit and integration tests with synthetic transport support.
+ * ENABLE_ASAN, AddressSanitizer support.
+ * ENABLE_UBSAN, UndefinedBehaviorSanitizer support.
+ * ENABLE_X11, X11 support.
+

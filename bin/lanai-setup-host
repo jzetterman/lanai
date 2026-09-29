@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# lanai-setup-host: installs the host packages Lanai needs, in the terminal
+# that `lanai setup-host` opens from the panel. Prints the exact command,
+# then runs it with sudo. It refuses outside a terminal. See host_install in
+# lib/client.sh.
+set -euo pipefail
+
+# shellcheck source-path=SCRIPTDIR source=../lib/lanai.sh
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib/lanai.sh"
+host_install
