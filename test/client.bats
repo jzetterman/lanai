@@ -938,6 +938,25 @@ exit "$(cat "$T/sudo-rc" 2>/dev/null || echo 0)"'
   run cat "$T/omarchy.calls"
   assert_output "launch terminal -- $REPO/bin/lanai-setup-host"
   assert [ ! -e "$T/sudo.calls" ]
+  # Lanai cannot see the window, so it does not claim one opened, and it
+  # names the script to run by hand.
+  run field message
+  assert_output --partial "should open"
+  refute_output --partial "opened"
+  assert_output --partial "$REPO/bin/lanai-setup-host"
+}
+
+@test "lanai setup-host: fails when the terminal cannot be launched" {
+  host_shims
+  printf '%s\n' "${LANAI_HOST_PACKAGES[@]}" | grep -v -x -e cmake >"$T/installed"
+  shim setsid 'echo "$*" >>"$T/setsid.calls"; exit 1'
+  lanai_run setup-host
+  assert_failure
+  assert_equal "$(field ok)" false
+  run field next
+  assert_output --partial "$REPO/bin/lanai-setup-host"
+  assert [ -e "$T/setsid.calls" ]
+  assert [ ! -e "$T/sudo.calls" ]
 }
 
 @test "lanai-setup-host: refuses outside a terminal and runs nothing" {

@@ -739,9 +739,9 @@ pid_running() {
 # LANAI_POWERDOWN_INTERVAL seconds (a stop during early boot, before QMP or
 # the guest's ACPI is ready), until QEMU exits; the unit's TimeoutStopSec
 # bounds that wait. When QEMU already exited ($EXIT_CODE is set) it skips
-# that. Either way it then stops the Looking Glass client's unit and waits
-# up to 2 s for this run's last-shutdown record, so systemd does not kill
-# the event logger before it writes.
+# that. Either way it then stops the Looking Glass client's unit, waits up
+# to 3 s for it to go, and waits up to 2 s for this run's last-shutdown
+# record, so systemd does not kill the event logger before it writes.
 vm_stop() {
   local run s i last=-1
   run=$(run_dir) || return 1
@@ -761,8 +761,16 @@ vm_stop() {
   fi
   # The Looking Glass client is useless once QEMU is gone, and would hold
   # the old shared memory into the next run. The client unit's PartOf= covers
-  # a stop job; this covers a QEMU that exits on its own.
+  # a stop job; this covers a QEMU that exits on its own. Wait up to 3 s for
+  # the unit to go, so a quick Start then Open starts a new client instead
+  # of focusing the old one.
   systemctl --user stop --no-block "$LANAI_CLIENT_UNIT" >/dev/null 2>&1 || true
+  for ((i = 0; i < 15; i++)); do
+    case $(systemctl --user show -p ActiveState --value "$LANAI_CLIENT_UNIT" 2>/dev/null) in
+      active | activating | deactivating | reloading) sleep 0.2 ;;
+      *) break ;;
+    esac
+  done
   for ((i = 0; i < 10; i++)); do
     jq -e --arg inv "${INVOCATION_ID:-}" '.invocation == $inv' "$s/last-shutdown" >/dev/null 2>&1 &&
       return 0

@@ -1107,11 +1107,49 @@ fake_main() {
   export FAKE_PID
   INVOCATION_ID=inv-c MAINPID=$FAKE_PID PATH=$T/shims:$PATH run timeout 20 "$REPO/bin/lanai-vm-stop"
   assert_success
-  assert_equal "$(cat "$T/systemctl.calls")" "--user stop --no-block lanai-client.service"
+  run grep -F -- "stop --no-block lanai-client.service" "$T/systemctl.calls"
+  assert_output "--user stop --no-block lanai-client.service"
   rm "$T/systemctl.calls"
   EXIT_CODE=exited INVOCATION_ID=inv-c run timeout 20 "$REPO/bin/lanai-vm-stop"
   assert_success
-  assert_equal "$(cat "$T/systemctl.calls")" "--user stop --no-block lanai-client.service"
+  run grep -F -- "stop --no-block lanai-client.service" "$T/systemctl.calls"
+  assert_output "--user stop --no-block lanai-client.service"
+}
+
+# A systemctl that logs every call and reports the client unit as active
+# for its first <n> state reads, then inactive (n=-1: always active).
+client_stops_after() {
+  echo 0 >"$T/reads"
+  shim systemctl 'echo "$*" >>"$T/systemctl.calls"
+if [[ " $* " == *" show "* && " $* " == *" lanai-client.service "* ]]; then
+  r=$(($(cat "$T/reads") + 1)); echo "$r" >"$T/reads"
+  if (('"$1"' < 0 || r <= '"$1"')); then echo active; else echo inactive; fi
+fi'
+}
+
+@test "lanai-vm-stop: returns only once the client unit has stopped" {
+  mkdir -m 700 "$RUN"
+  mkdir -p "$S"
+  # This run's record is there, so only the client wait can delay it.
+  printf '{"invocation":"inv-w","guest":true,"reason":"guest-shutdown"}\n' >"$S/last-shutdown"
+  client_stops_after 4
+  EXIT_CODE=exited INVOCATION_ID=inv-w PATH=$T/shims:$PATH run timeout 20 "$REPO/bin/lanai-vm-stop"
+  assert_success
+  # The stop came first, then reads until the unit was gone.
+  assert_equal "$(head -n 1 "$T/systemctl.calls")" "--user stop --no-block lanai-client.service"
+  assert_equal "$(cat "$T/reads")" 5
+}
+
+@test "lanai-vm-stop: waits at most about 3 s for a client that will not stop" {
+  mkdir -m 700 "$RUN"
+  mkdir -p "$S"
+  printf '{"invocation":"inv-k","guest":true,"reason":"guest-shutdown"}\n' >"$S/last-shutdown"
+  client_stops_after -1
+  local start=${EPOCHREALTIME//[!0-9]/}
+  EXIT_CODE=exited INVOCATION_ID=inv-k PATH=$T/shims:$PATH run timeout 20 "$REPO/bin/lanai-vm-stop"
+  assert_success
+  local ms=$(((${EPOCHREALTIME//[!0-9]/} - start) / 1000))
+  ((ms >= 2500 && ms <= 5000)) || fail "took $ms ms"
 }
 
 @test "lanai-vm-stop: waits at most about 2 s for a record that never comes" {

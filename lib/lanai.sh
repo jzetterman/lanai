@@ -1208,8 +1208,14 @@ cmd_setup_host() {
       "install the packages yourself with: $cmd" "$details"
     return 1
   fi
-  setsid -f omarchy launch terminal -- "$LANAI_BIN/lanai-setup-host" </dev/null >/dev/null 2>&1
-  emit true "" "A terminal opened to install the host packages. It shows the command before it runs." \
+  # setsid -f returns once it has forked, so only a failed launch of the
+  # launcher shows here; the message does not claim a window it cannot see.
+  if ! setsid -f omarchy launch terminal -- "$LANAI_BIN/lanai-setup-host" </dev/null >/dev/null 2>&1; then
+    emit false "" "Lanai could not open a terminal for the install." \
+      "run $LANAI_BIN/lanai-setup-host in a terminal" "$details"
+    return 1
+  fi
+  emit true "" "A terminal should open with the install command. If none appears, run $LANAI_BIN/lanai-setup-host in a terminal." \
     "enter your password in the terminal, then continue setup" "$details"
 }
 
