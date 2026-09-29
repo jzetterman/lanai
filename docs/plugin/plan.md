@@ -53,41 +53,52 @@ use.
     The user manager is not stopped while that session is open, lingering on or off.
     Proof 4 verifies this. If it fails, the 2-minute logout requirement cannot be met
     as designed, and that goes to John as a spec question before phase 4.
-  - `ExecStart=lanai-vm-exec`: create and check `$RUN` (below); remove stale sockets
-    and a stale `ivshmem`, and truncate `client.log`; start in the background
-    virtiofsd, the shutdown inhibitor, the sleep watcher and the event logger (one
-    cgroup; with the default `KillMode` systemd kills them only after `ExecStop`
-    returns); wait for a fresh `virtiofs.sock`; write the "running" marker; exec QEMU.
+  - `ExecStart=lanai-vm-exec`: create and check `$RUN` (below) and build QEMU's
+    arguments (`vm_plan`, which `boot_vm` also runs as a dry run before it starts the
+    unit); remove stale sockets and a stale `ivshmem`, and truncate `client.log`; start
+    in the background virtiofsd, the shutdown inhibitor, the sleep watcher and the event
+    logger (one cgroup; with the default `KillMode` systemd kills them only after
+    `ExecStop` returns); wait for a fresh `virtiofs.sock`; write the "running" marker;
+    exec QEMU. The scale and boot mode come from `$XDG_STATE_HOME/lanai/boot.json`, which
+    `boot_vm` writes.
   - `ExecStop=lanai-vm-stop`: systemd runs it after every stop. When QEMU has already
     exited (`$EXIT_CODE` set) it goes straight to the final wait. Otherwise (a session
-    end or the inhibitor, req 19) it sends QMP `system_powerdown` on `qmp.sock` and waits
-    for the process to exit. Both paths end with the same wait of up to 2 s for this
+    end or the inhibitor, req 19) it sends QMP `system_powerdown` on `qmp.sock`, and again
+    every 10 s while QEMU runs (a stop during early boot), and waits for the process to
+    exit. Both paths end with the same wait of up to 2 s for this
     run's `last-shutdown` record, so the event logger is not killed before it writes.
   - Three QMP sockets, each with one owner: `qmp.sock` (the unit's stop path),
     `qmp-events.sock` (the event logger, connected for the VM's life), and `qmp-cli.sock`
     (the CLI; every call connects, reads with a timeout, and disconnects, because QEMU
     serves one client per socket at a time). The inhibitor never uses QMP; it runs
-    `systemctl --user stop --no-block lanai-vm.service`.
+    `systemctl --user stop --no-block lanai-vm.service`. Both logind watchers match
+    `sender='org.freedesktop.login1'`, since any local process can send a signal that
+    looks like logind's.
   - The event logger retries its connection until QEMU creates `qmp-events.sock`, then
     records each QMP `SHUTDOWN` event (`guest`, `reason`) to
     `$XDG_STATE_HOME/lanai/last-shutdown`, stamped with the unit's `$INVOCATION_ID`
     (systemd gives `ExecStart` and `ExecStop` the same value, so "this run's record"
     means a matching stamp). "Clean" (spec: a guest-initiated shutdown) means that event
-    with `"guest": true`, nothing else.
+    with `"guest": true`, nothing else. Once QEMU answers on the socket, the logger also
+    writes `$XDG_STATE_HOME/lanai/started` with the invocation id: the run really
+    started.
   - Run bookkeeping has one owner, `record_previous_run`, called by every path that
     starts the unit (`lanai start`, `lanai setup-guest`, setup's step 6 boot) before
     starting it. It turns the previous run's markers into a verdict in
     `$XDG_STATE_HOME/lanai/last-run` (forced when the "forced" marker exists, which takes
     precedence even over a guest `SHUTDOWN` event that arrived just before the kill;
-    else clean when a matching guest `SHUTDOWN` record exists; else forced when a
-    "running" marker exists), then deletes the "running" marker, the "forced"
-    marker and `last-shutdown`. `lanai-vm-exec` only writes the "running" marker, with
+    else, for a "running" marker whose invocation also has the "started" stamp, clean
+    when a matching guest `SHUTDOWN` record exists and forced otherwise; a "running"
+    marker without the stamp is a start that failed, not a forced stop), then deletes
+    the "running" marker, the stamp, the "forced" marker, `last-shutdown` and
+    `stop-requested`. `lanai-vm-exec` only writes the "running" marker, with
     `$INVOCATION_ID`, right before it execs QEMU. `status_map` reads `last-run`, and the
     panel clears it once it has shown a forced-stop notice, so each is shown once. The
     notice names a locked Windows, an open Windows security screen, or a shutdown that
     did not finish in time as likely causes (spec req 19).
 - **Stopping from the UI never uses `systemctl stop`** (req 16). `lanai stop` sends
-  `system_powerdown` on `qmp-cli.sock` and records the request time; the unit stays
+  `system_powerdown` on `qmp-cli.sock` and records the request time (`stop-requested`:
+  the invocation id and the time; a repeated stop keeps the first time); the unit stays
   active until QEMU exits by itself. After 2 minutes the panel offers the forced stop.
   `lanai force-stop --confirm` writes the "forced" marker, then
   `systemctl --user kill --signal=SIGKILL lanai-vm.service`.
@@ -96,18 +107,28 @@ use.
   with `hyprctl dispatch focuswindow` when the unit is already active, so there is never
   a second client.
 - **Paths.** Settings: `$XDG_CONFIG_HOME/lanai/settings.json`. Setup state and markers:
-  `$XDG_STATE_HOME/lanai/`. Builds and runtime copies: `$XDG_DATA_HOME/lanai/`. Runtime:
-  `$RUN=$XDG_RUNTIME_DIR/lanai/`, created by `lanai-vm-exec` with mode 0700; refuse if
+  `$XDG_STATE_HOME/lanai/` (`setup.json`, whose `"done": true` marks finished setup;
+  `boot.json`; `running`, `started`, `forced`, `last-shutdown`, `last-run`,
+  `stop-requested`, `restore-in-progress`, and `lock`, which `lanai start`, `snapshot`
+  and `restore` hold with `flock` so they never overlap). Settings keys: `storage`,
+  `memory_gib`, `cores`. Builds and runtime copies: `$XDG_DATA_HOME/lanai/`. Runtime:
+  `$RUN=$XDG_RUNTIME_DIR/lanai/`, created by `lanai-vm-exec` (or `boot_vm`'s dry run)
+  with mode 0700; refuse if
   it exists and is a symlink, is not a directory, is not owned by the user, or has any
   mode other than 0700 (checked before any runtime file is created). It holds
   `qmp.sock`, `qmp-events.sock`, `qmp-cli.sock`, `spice.sock`, `qga.sock`, `virtiofs.sock`, `ivshmem`,
-  passt's pid file and `client.log`. Not `RuntimeDirectory=`, which would delete the
+  passt's pid file, `client.log`, and a pid file per helper (`virtiofsd.pid`,
+  `shutdown-watch.pid`, `sleep-watch.pid`, `event-log.pid`). Not `RuntimeDirectory=`,
+  which would delete the
   client log at stop.
 - **VM hardware.** `lib/dockur-6.05.args` is a static template from the spike's capture
-  (`spike/work/dockur-cmdline.txt`), filled with the user's `windows.mac`, storage
+  (committed as `spike/test/fixtures/dockur-cmdline.txt`), filled with the user's `windows.mac`, storage
   path, memory and cores. Inputs are validated before use: the storage path must not
   contain a comma (refused; QEMU option syntax); the MAC must match
-  `^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$`; memory and cores must be integers in range.
+  `^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$`; memory must be 1 to 512 GiB and cores 1 to 64,
+  as integers. The passt line's `dns-forward=` is the host's IPv4 default gateway (from
+  `ip -j -4 route`); with no default route it is left out and Windows boots without a
+  network (passt starts in local mode; `lanai start` says so; John to confirm).
   Rewrites: `-name Lanai,process=lanai` (req 30), guest RAM as
   `-object memory-backend-memfd,id=mem,size=<RAM>,share=on -machine memory-backend=mem`
   (not `-numa`, which adds guest-visible tables), `-serial mon:stdio` dropped. The
@@ -350,6 +371,56 @@ Then:
   - Tests use `LANAI_TEST_BTRFS_DIR` for reflink; the lock test (a real
     `qemu-system-x86_64` start that must fail on `qemu-io`'s lock) runs on any
     filesystem, in CI too.
+
+### As built (2026-09-28)
+
+Where the code differs from the text above, the code and this list win:
+
+- `preflight` checks the unit first: while it is not stopped (active, starting, or
+  still shutting down) it refuses before `record_previous_run`, so a second start
+  cannot delete a live run's markers. An unreachable user manager refuses too.
+- `boot_vm <setup true|false>` is the one start path (`lanai start` now; phase 6's
+  `lanai setup-guest` and step 6 boot). Under the `lock` flock it runs `preflight`,
+  the scale step, a dry run of `lanai-vm-exec`'s own checks (`vm_plan`: `$RUN`, the
+  settings, `windows.mac`, the gateway, `vm_args`), so a refusal is explained instead
+  of showing as a failed unit; then the runtime copy (`bin/` and `lib/`; every step's
+  failure stops it), `boot.json`, and `systemctl --user start`.
+- Setup counts as finished when `setup.json` has `"done": true` (phase 6 writes it).
+- The unit carries `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_DATA_HOME` as
+  `Environment=`; those paths and the runtime copy's path may hold only
+  `A-Z a-z 0-9 . _ / @ + : , ~ = -` (anything else is refused rather than quoted).
+- virtiofsd runs once, not under the restart loop: QEMU's vhost-user device never
+  reconnects, so a restarted virtiofsd would serve nothing. Its pid file goes when it
+  exits, and status warns. The other helpers restart as planned. Each pid file holds
+  the supervisor's (or virtiofsd's runner's) pid; status counts a helper alive only
+  when that pid is in `lanai-vm.service`'s cgroup and is not a zombie.
+- Status: before setup is done, a booted VM is "setup needed" even with an agent port
+  open (dockur installs its own guest agent). A unit that failed with
+  `Result=timeout` (a stop that ran out of time, as at logout with lingering) is
+  "stopped" with the forced-stop notice, not "failed".
+- `guest-set-time` carries `@NOW_NS@`, which `qga_reply` fills with the host clock as
+  the command goes out, after the sync. The resume retry stops after 60 s.
+- Snapshots record their source: a `SOURCE` file beside `COMPLETE` holds the storage
+  location's real path, and only snapshots of the current location are listed,
+  restored or cleaned (`.partial` leftovers of this location, or with no `SOURCE` yet;
+  the flock means none is being built). The snapshot folders are made 0700 and must
+  be the user's own. `lanai snapshots` lists them.
+- Restore touches only an existing storage folder that holds nothing but regular files
+  named in `layout_check`'s allow-list, dockur's `setup.img` leftovers and its own
+  `.lanai-restore.*` temp files; anything else (a folder, a symlink, a user's file)
+  refuses the restore, since Lanai's storage may point at the wrong place. It checks
+  every file of the snapshot against `COMPLETE` before it writes, and removes extras
+  with `rm -f`, regular files only. The marker holds the snapshot and the storage
+  location, is flushed to disk before any write, and resumes only for that location;
+  when its snapshot is gone or damaged, `lanai restore <other>` replaces it. Files go
+  in name order with `data.img` last; a deleted `data.img` is put back first so its
+  lock can be taken.
+- `ficlone.py` cuts a larger `data.img` to the snapshot's size before the clone, not
+  after (btrfs refuses to clone a source that ends mid-block into a larger file); it
+  never cuts to zero, refuses an empty source, symlinks, and two files that differ in
+  NOCOW.
+- Phases 6 and 7 must run `lanai snapshot` and `lanai restore` detached from the QML
+  call: they read the whole disk (minutes), far past the 10 s deadline.
 
 ## Phase 5: Looking Glass client and host setup (TDD for the parsers)
 
