@@ -153,7 +153,7 @@ use.
 | `-rtc base=localtime,clock=host,driftfix=slew` | clock in the host's time zone |
 | `qemu-xhci` + `usb-tablet`, `virtio-rng-pci`, `-fw_cfg` entry, `-smbios type=1,serial=...` | baseline hardware (serial allowed to differ) |
 | passt, `ivshmem-plain`, SPICE + `usb-redir`, `virtio-serial-pci` with the SPICE and QEMU guest agent ports, `vhost-user-fs-pci`, `-smbios type=11,value=lanai-scale=<step>` | allowed additions |
-| `-vga virtio -display gtk,window-close=off` + read-only vvfat USB | setup boot only |
+| read-only vvfat USB; `-vga virtio -display gtk,window-close=off` only while Windows has no IDD (phase 6) | setup boot only |
 
   No port forwards and no other listeners (req 25).
 
@@ -689,7 +689,8 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
     startup), so QEMU exits and `lanai setup` starts the normal boot (the one restart).
     No service is restarted before that: both services start automatically, so the next
     boot applies their new settings, and step 6 checks them.
-- Lock proof before the rest of phase 6, with John at the keyboard. It uses the existing
+- Lock proof (done 2026-10-01: passed; `proofs.md` Proof 5 holds the results and the
+  notes folded in below), with John at the keyboard. It uses the existing
   test copy `$S/lanai-proof` and the proof kit. First write `guest/lanai-lock.cmd`,
   since the proof runs the real file. Extend `proof-vm client` to wait on the kit's
   only QMP socket, `qmp.sock`, with the same handshake as `lanai-client-exec` (greeting,
@@ -773,18 +774,39 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   vvfat USB disk. Then `preflight` and the `--setup` boot. Tests: a wrong checksum for
   each pinned file stops the build and leaves no unverified file in the media folder;
   the media holds `viofs\w11\amd64\` and never the ISO itself.
+- The setup boot's display (proof 5): when Windows has the IDD, QEMU's window adds a
+  second screen. Windows extends the desktop across both, the pointer goes missing in
+  Looking Glass, and QEMU's screen goes black once Windows drops it. So the setup disk
+  and QEMU's window become two separate choices in `boot.json` and `vm_args`. The
+  setup boot always attaches the disk. It shows QEMU's window (`-vga virtio -display
+  gtk,window-close=off`) only when no guest version is recorded (`guest_version_get`
+  is empty: Windows has no IDD, as on a fresh dockur install). With a recorded
+  version, it keeps `-vga none -display none`, as a normal boot does, and
+  `setup-guest` runs `lanai open`, whose `build_select` picks the client build that
+  matches the guest's IDD. When step 6's `version_check` reports `idd-missing`, step 6
+  removes the record, so the step 5 rerun shows QEMU's
+  window. A mismatched IDD needs nothing new: phase 5 already records the version the
+  client log names, and `build_select` keeps a matching older build. The proof kit
+  splits the same way: `--setup DIR` attaches only the disk, and `--window` shows
+  QEMU's window. Tests: `vm_args` with the disk and no window; `setup-guest` with and
+  without a record; step 6's missing IDD clears the record.
+- Host keys never reach Windows (proof 5): Hyprland takes Super shortcuts, and
+  Omarchy's Ctrl+Alt+Del closes every host window. Setup and the README never ask the
+  user to press either. Where Windows needs one, they give a click path inside Windows
+  or a Lanai route (QMP `send-key`, or the client's own key binding, checked on the
+  pinned build first).
 - `lanai setup` is a resumable state machine; each step's state lives in
   `$XDG_STATE_HOME/lanai/setup.json`, and each is detected, not assumed:
 
 | Step | Done when |
 |---|---|
 | 1. Checks | `layout_check`, `share_check` and `container_running` pass |
-| 2. Host packages | every package in the list is installed (`pacman -Q`); the snapshot needs `qemu-img` |
+| 2. Host packages | `host_packages_missing` (phase 5, `pacman -T`) prints nothing; the snapshot needs `qemu-img` |
 | 3. Snapshot offer | the user accepted (a snapshot with a valid `COMPLETE` exists) or declined (recorded); always before any Lanai boot |
 | 3a. Normalize base | if `windows.base` is empty or missing (a missing file counts as empty everywhere, as it does for dockur's `readBase`), write the same name dockur's `readBase` would write, so a later container start rewrites nothing, and tell the user. Runs after the snapshot, so a restore returns the original empty file; `layout_check` itself stays read-only. Tested: restore after normalizing an empty base matches the pre-adoption hashes |
-| 4. Client build | the pinned client binary exists and reports the pinned version |
+| 4. Client build | `client_version` (phase 5) reports the pinned version for the pinned binary |
 | 5. Guest setup boot | `lanai setup-guest` booted with `--setup` and QEMU exited after `setup.cmd`'s full shutdown |
-| 6. Normal boot | each guest component is checked, not assumed: the client log shows the matching IDD version; the guest agent answers a sync and a `guest-set-time` to the current host time (the channel's allowed use, which also proves the clock path), and refuses an argument-free `guest-exec` with `CommandNotFound ... has been disabled`, the reply proof 3 recorded (the allow-list took effect; spec req 27; without arguments the command could not run anything even if the allow-list had failed); QMP `query-chardev` shows `frontend-open: true` for the SPICE agent's port (`vdagent`), as it does for the guest agent; the panel asks the user two one-click questions: does `~/Windows` show in Explorer, and does Windows' text look the right size (the scale task). Any missing component sends setup back to step 5 with "setup did not finish: run setup.cmd again"; `setup.cmd` is idempotent (each installer skips what is already installed at the pinned version). Tests cover a shutdown after a partly failed `setup.cmd` |
+| 6. Normal boot | each guest component is checked, not assumed: `version_check` (phase 5) finds the matching IDD version in the client log; the guest agent answers a sync and a `guest-set-time` to the current host time (the channel's allowed use, which also proves the clock path), and refuses an argument-free `guest-exec` with `CommandNotFound ... has been disabled`, the reply proof 3 recorded (the allow-list took effect; spec req 27; without arguments the command could not run anything even if the allow-list had failed); QMP `query-chardev` shows `frontend-open: true` for the SPICE agent's port (`vdagent`), as it does for the guest agent; the panel asks the user two one-click questions: does `~/Windows` show in Explorer, and does Windows' text look the right size (the scale task). Any missing component sends setup back to step 5 with "setup did not finish: run setup.cmd again"; `setup.cmd` is idempotent (each installer skips what is already installed at the pinned version). Tests cover a shutdown after a partly failed `setup.cmd` |
 | 7. Done | all of the above |
 
   bats tests interrupt the flow after each step and check that `lanai setup` resumes at
@@ -868,6 +890,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   note whether the guest agent's port opens before the IDD first reports. If it does,
   status shows a brief false "IDD missing" (failed) until the IDD answers; record how
   long, and take it to John if it is more than a poll or two.
+- Client closes (proof 5): the Looking Glass window closed on its own several times
+  while QEMU kept running. Record each unexpected close during acceptance with the
+  time and the last lines of `client.log`, and take a repeat to John.
 - Checklist for rows 10-17 and 20, recorded in `docs/plugin/acceptance.md`:
 
 | Row | Check |
