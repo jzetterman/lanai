@@ -786,15 +786,22 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   - A record: keep `-vga none -display none`, as a normal boot does, and run `lanai
     open`, whose `build_select` picks the client build that matches the guest's IDD.
     If Windows boots without an IDD (the record is stale: a restore, another storage
-    location, a failed install), the user would see nothing. So `setup-guest` watches,
-    with the test `status_map` already uses: once the guest agent's port is open
-    (`frontend-open`; dockur installs its own agent) and `version_check` reports
-    `idd-missing`, it says why, removes the record, sends `system_powerdown`, waits for
-    QEMU to exit (the same wait as `lanai stop`, with its forced-stop offer), and boots
-    again with QEMU's window. One fallback per run: a second `idd-missing` after the
+    location, a failed install), the user would see nothing. So `setup-guest` watches
+    for an absent IDD. The guest agent can answer before the IDD starts (the reason
+    for phase 8's client timing check), so a single `idd-missing` proves nothing. The
+    IDD counts as absent only when the agent's port (`frontend-open`; dockur installs
+    its own agent) has been open for 60 s and, in all that time, the client log shows
+    no guest session (`version_check` still says `idd-missing`, never `match` or a
+    mismatch). Then `setup-guest` says why, removes the record, sends
+    `system_powerdown` (as `lanai stop` does), and itself waits up to 2 minutes for
+    the unit to stop. If Windows has not stopped by then, it stops with an error that
+    names the panel's forced stop and boots nothing. Once the unit has stopped, it
+    boots again with QEMU's window. One fallback per run: an absent IDD after the
     fallback is an error with the client log.
-  - Step 6's `idd-missing` also removes the record, so a step 5 rerun goes straight to
-    QEMU's window.
+  - Step 6 judges the IDD by the same 60 s rule. An absent IDD there also removes the
+    record, so the step 5 rerun goes straight to QEMU's window. If phase 8's timing
+    check finds the IDD starting more than 30 s after the agent, take the 60 s figure
+    to John.
   - A mismatched IDD needs nothing new: phase 5 already records the version the client
     log names, and `build_select` keeps a matching older build.
   - Left open: no record but an IDD in Windows (a disk set up under another Lanai
@@ -807,9 +814,12 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   The proof kit splits the same way: `--setup DIR` attaches only the disk, and
   `--window` shows QEMU's window. Tests: `vm_args` with the disk and no window, and
   with both; `setup-guest` with no record (window, no client) and with a record
-  (client, no window); a stale record (agent port open, then `idd-missing`) leads to
-  the record removed, a powerdown and a window boot; a second `idd-missing` stops with
-  an error; step 6's `idd-missing` removes the record.
+  (client, no window); a stale record (agent port open 60 s, `idd-missing` all along)
+  leads to the record removed, a powerdown, a wait for the unit, and a window boot; an
+  IDD that reports within the 60 s (`match` after an early `idd-missing`) keeps the
+  record and boots nothing; a unit still running after 2 minutes stops with the error
+  and no second boot; a second absent IDD stops with an error; step 6's absent IDD
+  removes the record, and its early `idd-missing` followed by `match` does not.
 - Host keys never reach Windows (proof 5): Hyprland takes Super shortcuts, and
   Omarchy's Ctrl+Alt+Del closes every host window. Setup and the README never ask the
   user to press either. Where Windows needs one, they give a click path inside Windows
@@ -977,3 +987,4 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 | diff (phase 5) | b Grok (substitute) | 1 (full) | 1 P2 (VM stop returned before the client unit left, so a quick Start then Open could focus the old window), 1 P3 (setup-host claimed a terminal opened); both integrated |
 | diff (phase 5) | b Grok (substitute) | 2 (full) | no findings (reboot timing budget weighed). Gate closed |
 | plan amendment (proof 5) | a Grok (substitute) (grok-4.6) | 1 (full) | Codex out of credits. 2 P2, 2 P3; all confirmed and integrated (the guest version record is per user, not per disk, so a stale record falls back to QEMU's window once the agent answers and the IDD is missing; row 7b's kit boot adds `--window`; the device table names `boot.json`, not a guest fact; 12 GiB before the live boot) |
+| plan amendment (proof 5) | a Grok (substitute) (grok-4.6) | 2 (full) | 1 P2, 1 P3; both confirmed and integrated (an absent IDD needs 60 s of an open agent port with no guest session, since the agent can answer first; `setup-guest` waits for the unit itself, since `lanai stop` returns at once) |
