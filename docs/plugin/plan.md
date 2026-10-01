@@ -153,7 +153,7 @@ use.
 | `-rtc base=localtime,clock=host,driftfix=slew` | clock in the host's time zone |
 | `qemu-xhci` + `usb-tablet`, `virtio-rng-pci`, `-fw_cfg` entry, `-smbios type=1,serial=...` | baseline hardware (serial allowed to differ) |
 | passt, `ivshmem-plain`, SPICE + `usb-redir`, `virtio-serial-pci` with the SPICE and QEMU guest agent ports, `vhost-user-fs-pci`, `-smbios type=11,value=lanai-scale=<step>` | allowed additions |
-| read-only vvfat USB; `-vga virtio -display gtk,window-close=off` only while Windows has no IDD (phase 6) | setup boot only |
+| read-only vvfat USB; `-vga virtio -display gtk,window-close=off` only when `boot.json` asks for QEMU's window (phase 6 decides) | setup boot only |
 
   No port forwards and no other listeners (req 25).
 
@@ -745,7 +745,7 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 - Row 7b's different-account refusal runs in phase 8 on a copy that has not been
   through setup (a fresh `lanai-copy` of the test install, or a restored snapshot).
   Boot it with the setup media attached (`lanai setup-guest`, or `proof-vm run
-  --setup`). dockur signs in the administrator automatically, so first take the
+  --setup <dir> --window`, since that copy has no IDD). dockur signs in the administrator automatically, so first take the
   inventory: the lock values (`reg query`), installed drivers (`pnputil
   /enum-drivers`), services (`sc.exe qc` for `QEMU-GA` and `VirtioFsSvc`), installed
   programs and scheduled tasks. Then create a standard local account, sign out, sign
@@ -778,18 +778,38 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   second screen. Windows extends the desktop across both, the pointer goes missing in
   Looking Glass, and QEMU's screen goes black once Windows drops it. So the setup disk
   and QEMU's window become two separate choices in `boot.json` and `vm_args`. The
-  setup boot always attaches the disk. It shows QEMU's window (`-vga virtio -display
-  gtk,window-close=off`) only when no guest version is recorded (`guest_version_get`
-  is empty: Windows has no IDD, as on a fresh dockur install). With a recorded
-  version, it keeps `-vga none -display none`, as a normal boot does, and
-  `setup-guest` runs `lanai open`, whose `build_select` picks the client build that
-  matches the guest's IDD. When step 6's `version_check` reports `idd-missing`, step 6
-  removes the record, so the step 5 rerun shows QEMU's
-  window. A mismatched IDD needs nothing new: phase 5 already records the version the
-  client log names, and `build_select` keeps a matching older build. The proof kit
-  splits the same way: `--setup DIR` attaches only the disk, and `--window` shows
-  QEMU's window. Tests: `vm_args` with the disk and no window; `setup-guest` with and
-  without a record; step 6's missing IDD clears the record.
+  setup boot always attaches the disk. Lanai cannot see inside the disk, so the
+  guest version record (`guest_version_get`, one per user, not per disk) is only a
+  first guess, and the guest corrects it:
+  - No record (a fresh dockur install): show QEMU's window (`-vga virtio -display
+    gtk,window-close=off`) and no client.
+  - A record: keep `-vga none -display none`, as a normal boot does, and run `lanai
+    open`, whose `build_select` picks the client build that matches the guest's IDD.
+    If Windows boots without an IDD (the record is stale: a restore, another storage
+    location, a failed install), the user would see nothing. So `setup-guest` watches,
+    with the test `status_map` already uses: once the guest agent's port is open
+    (`frontend-open`; dockur installs its own agent) and `version_check` reports
+    `idd-missing`, it says why, removes the record, sends `system_powerdown`, waits for
+    QEMU to exit (the same wait as `lanai stop`, with its forced-stop offer), and boots
+    again with QEMU's window. One fallback per run: a second `idd-missing` after the
+    fallback is an error with the client log.
+  - Step 6's `idd-missing` also removes the record, so a step 5 rerun goes straight to
+    QEMU's window.
+  - A mismatched IDD needs nothing new: phase 5 already records the version the client
+    log names, and `build_select` keeps a matching older build.
+  - Left open: no record but an IDD in Windows (a disk set up under another Lanai
+    state folder, or the proof copy) gives Windows two screens, as in proof 5, and
+    QEMU's window may show only the desktop background. Setup's message for the
+    window boot names the fix: if QEMU's window shows no taskbar, run `lanai open` to
+    see the other screen too, then in Windows choose Settings, System, Display,
+    select QEMU's screen and tick "Disconnect this display".
+
+  The proof kit splits the same way: `--setup DIR` attaches only the disk, and
+  `--window` shows QEMU's window. Tests: `vm_args` with the disk and no window, and
+  with both; `setup-guest` with no record (window, no client) and with a record
+  (client, no window); a stale record (agent port open, then `idd-missing`) leads to
+  the record removed, a powerdown and a window boot; a second `idd-missing` stops with
+  an error; step 6's `idd-missing` removes the record.
 - Host keys never reach Windows (proof 5): Hyprland takes Super shortcuts, and
   Omarchy's Ctrl+Alt+Del closes every host window. Setup and the README never ask the
   user to press either. Where Windows needs one, they give a click path inside Windows
@@ -885,7 +905,10 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   `lanai-copy` and run every spec acceptance row that does not start the container.
 - **Test install** (rows 3, 4, 30-32): a separate machine or VM running Omarchy with
   `omarchy-windows-vm` and a copy of a Windows install. John picks the machine.
-- **Live install** (John only, after the rehearsal passes).
+- **Live install** (John only, after the rehearsal passes). Before its first boot,
+  set memory to 12 GiB in Lanai's settings: the proof sessions ran dockur's 16 GiB and
+  caused memory pressure on John's 32 GiB machine (proof 5). This is John's setting,
+  not a new default.
 - Client timing check (phase 5 review): open the client right at `lanai start` and
   note whether the guest agent's port opens before the IDD first reports. If it does,
   status shows a brief false "IDD missing" (failed) until the IDD answers; record how
@@ -953,3 +976,4 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 | diff (phase 5) | a | 3 (delta) | clean; 3 nits, 2 taken by Claude test-first (a missing pacman counts all missing; no empty install command). Stage a closed |
 | diff (phase 5) | b Grok (substitute) | 1 (full) | 1 P2 (VM stop returned before the client unit left, so a quick Start then Open could focus the old window), 1 P3 (setup-host claimed a terminal opened); both integrated |
 | diff (phase 5) | b Grok (substitute) | 2 (full) | no findings (reboot timing budget weighed). Gate closed |
+| plan amendment (proof 5) | a Grok (substitute) (grok-4.6) | 1 (full) | Codex out of credits. 2 P2, 2 P3; all confirmed and integrated (the guest version record is per user, not per disk, so a stale record falls back to QEMU's window once the agent answers and the IDD is missing; row 7b's kit boot adds `--window`; the device table names `boot.json`, not a guest fact; 12 GiB before the live boot) |
