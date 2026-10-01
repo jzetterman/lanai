@@ -745,8 +745,10 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 - Row 7b's different-account refusal runs in phase 8 on a copy that has not been
   through setup (a fresh `lanai-copy` of the test install, or a restored snapshot).
   Boot it with the setup media attached (`lanai setup-guest`, or `proof-vm run
-  --setup <dir> --window`, since that copy has no IDD). dockur signs in the administrator automatically, so first take the
-  inventory: the lock values (`reg query`), installed drivers (`pnputil
+  --setup`). dockur signs in the administrator automatically, so first take the
+  inventory: `EnableLUA` (the check needs UAC on, so that the standard user gets an
+  administrator credential prompt; proof 5 found `0x1` on John's install), the lock
+  values (`reg query`), installed drivers (`pnputil
   /enum-drivers`), services (`sc.exe qc` for `QEMU-GA` and `VirtioFsSvc`), installed
   programs and scheduled tasks. Then create a standard local account, sign out, sign
   in as it, run `setup.cmd` from the setup disk, and approve the prompt with the
@@ -778,53 +780,46 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   second screen. Windows extends the desktop across both, the pointer goes missing in
   Looking Glass, and QEMU's screen goes black once Windows drops it. So the setup disk
   and QEMU's window become two separate choices in `boot.json` and `vm_args`. The
-  setup boot always attaches the disk. Lanai cannot see inside the disk, so the
-  guest version record (`guest_version_get`, one per user, not per disk) is only a
-  first guess, and the guest corrects it:
-  - No record (a fresh dockur install): show QEMU's window (`-vga virtio -display
-    gtk,window-close=off`) and no client.
-  - A record: keep `-vga none -display none`, as a normal boot does, and run `lanai
-    open`, whose `build_select` picks the client build that matches the guest's IDD.
-    If Windows boots without an IDD (the record is stale: a restore, another storage
-    location, a failed install), the user would see nothing. So `setup-guest` watches
-    for an absent IDD. The guest agent can answer before the IDD starts (the reason
-    for phase 8's client timing check), so a single `idd-missing` proves nothing. The
-    IDD counts as absent only when, from the moment the agent's port opens
-    (`frontend-open`; dockur installs its own agent) until 60 s later
-    (`LANAI_IDD_ABSENT_WAIT`, so tests can shorten it), `version_check` never reports
-    `match` or a mismatch, and at the end of that wait it reports `idd-missing` (it
-    says `waiting` for its first 30 s, `LANAI_IDD_WAIT`). Then `setup-guest` says why,
-    removes the record, and makes the same request as `lanai stop` (`system_powerdown`
-    plus the `stop-requested` record, so the panel's forced stop is offered on time;
-    reuse `cmd_stop`'s code). It then waits up to 2 minutes
-    (`LANAI_SETUP_STOP_WAIT`) for the unit to stop. If Windows has not stopped by then
-    (a Windows that locked in the meantime drops the power button, proof 4), it stops
-    with an error that names the panel's forced stop and boots nothing. Once the unit has stopped, it
-    boots again with QEMU's window. One fallback per run: an absent IDD after the
-    fallback is an error with the client log.
-  - Step 6 judges the IDD by the same 60 s rule. An absent IDD there also removes the
-    record, so the step 5 rerun goes straight to QEMU's window. If phase 8's timing
-    check finds the IDD starting more than 30 s after the agent, take the 60 s figure
-    to John.
-  - A mismatched IDD needs nothing new: phase 5 already records the version the client
-    log names, and `build_select` keeps a matching older build.
-  - Left open: no record but an IDD in Windows (a disk set up under another Lanai
-    state folder, or the proof copy) gives Windows two screens, as in proof 5, and
-    QEMU's window may show only the desktop background. Setup's message for the
-    window boot names the fix: if QEMU's window shows no taskbar, run `lanai open` to
-    see the other screen too, then in Windows choose Settings, System, Display,
-    select QEMU's screen and tick "Disconnect this display".
+  setup boot always attaches the disk. Lanai cannot see inside the disk, so it guesses
+  from the guest version record (`guest_version_get`), and the user can override the
+  guess:
+  - No record (a fresh dockur install): QEMU's window (`-vga virtio -display
+    gtk,window-close=off`) and no client. The unit needs `WAYLAND_DISPLAY` for this
+    window, as `client_start` passes it to the client (the user manager may lack it;
+    the proofs ran the window only from a terminal). `boot_vm` refuses a window boot
+    with a message when it is unset.
+  - A record: `-vga none -display none`, as a normal boot does, then `lanai open`,
+    whose `build_select` picks the client build that matches the guest's IDD.
+  - `lanai setup-guest --window` forces QEMU's window and no client. A wrong record
+    (Windows has no IDD, or an IDD that no installed build matches) leaves the client
+    window empty, so step 5 in the panel says: "Windows window empty? Shut down, then
+    start setup on QEMU's screen". That runs the existing Shut down (forced stop
+    included) and then `setup-guest --window`. There is no automatic watch: a stale
+    record is rare once setup state follows the disk (below), and a watch would need
+    its own timing, lock and stop handling.
+  - Setup state follows the disk. `setup.json` records the storage location it was
+    made for, and `setup_done` (phase 4) also requires it to match `storage_dir`, so
+    `lanai start` refuses a disk that setup has not seen. When they differ, setup
+    removes `setup.json` and `guest-version` and starts again at step 1, so phase 8's
+    rehearsal on a copy never marks the live install as set up or skips its snapshot
+    offer. `lanai
+    restore` clears `setup.json`'s `done`, since the snapshot may predate setup;
+    setup is idempotent, so a rerun costs little.
+  - Left open: no record but an IDD in Windows (the proof copy, or a disk set up under
+    another Lanai state folder) gives Windows two screens, as in proof 5. Phase 6 finds
+    the fix on the proof copy, which is this case, and writes the verified steps into
+    the window boot's message. Candidates: QMP `send-key` Windows key + P, then "PC
+    screen only" (proof 5 fixed it with "Second screen only" from the Looking Glass
+    side); or `lanai open` to see the other screen, then Windows' display settings.
 
-  The proof kit splits the same way: `--setup DIR` attaches only the disk, and
-  `--window` shows QEMU's window. Tests: `vm_args` with the disk and no window, and
-  with both; `setup-guest` with no record (window, no client) and with a record
-  (client, no window); a stale record (agent port open for the wait, no `match` or
-  mismatch, `idd-missing` at its end) leads to the record removed, `stop-requested`
-  written, a powerdown, a wait for the unit, and a window boot; an
-  IDD that reports within the 60 s (`match` after an early `idd-missing`) keeps the
-  record and boots nothing; a unit still running after 2 minutes stops with the error
-  and no second boot; a second absent IDD stops with an error; step 6's absent IDD
-  removes the record, and its early `idd-missing` followed by `match` does not.
+  The proof kit keeps `--setup DIR` as it is (disk and window): every runbook boot
+  that attaches the disk wants the window. Tests: `vm_args` with the disk and no
+  window, and with both; `setup-guest` with no record (window, no client), with a
+  record (client, no window), and with `--window` and a record (window, no client); a
+  window boot with `WAYLAND_DISPLAY` unset refuses, and with it set passes it to the
+  unit; a `setup.json` made for another storage location fails `setup_done`,
+  restarts setup at step 1 and removes `guest-version`; `lanai restore` clears
+  `done`.
 - Host keys never reach Windows (proof 5): Hyprland takes Super shortcuts, and
   Omarchy's Ctrl+Alt+Del closes every host window. Setup and the README never ask the
   user to press either. Where Windows needs one, they give a click path inside Windows
@@ -994,3 +989,4 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 | plan amendment (proof 5) | a Grok (substitute) (grok-4.6) | 1 (full) | Codex out of credits. 2 P2, 2 P3; all confirmed and integrated (the guest version record is per user, not per disk, so a stale record falls back to QEMU's window once the agent answers and the IDD is missing; row 7b's kit boot adds `--window`; the device table names `boot.json`, not a guest fact; 12 GiB before the live boot) |
 | plan amendment (proof 5) | a Grok (substitute) (grok-4.6) | 2 (full) | 1 P2, 1 P3; both confirmed and integrated (an absent IDD needs 60 s of an open agent port with no guest session, since the agent can answer first; `setup-guest` waits for the unit itself, since `lanai stop` returns at once) |
 | plan amendment (proof 5) | a Grok (substitute) (grok-4.6) | 3 (full, cap) | 2 P2, 1 P3; all confirmed and integrated (the absent-IDD test matches `version_check`'s 30 s `waiting` phase; the fallback stop writes `stop-requested`, so the panel's forced stop is offered; test knobs for the new waits). Stage closed at the cap |
+| plan amendment (proof 5) | b single (opus-5.5) | 1 (full) | 6 should-fix, 6 nits; all confirmed. Seven (the self-lock on a second `boot_vm`, a closed client read as a missing IDD, outcomes with no screen, "one fallback", how a long watch runs, the stop wait, a redundant check) came from the automatic fallback, so Claude replaced it with a manual override: `setup-guest --window` behind a panel prompt. Also integrated: setup state follows the disk (`setup_done` checks the storage location; restore clears `done`); `WAYLAND_DISPLAY` for the window boot; the kit keeps `--setup`; the two-screen fix is verified on the proof copy; row 7b records `EnableLUA` |
