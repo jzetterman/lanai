@@ -789,13 +789,17 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
     location, a failed install), the user would see nothing. So `setup-guest` watches
     for an absent IDD. The guest agent can answer before the IDD starts (the reason
     for phase 8's client timing check), so a single `idd-missing` proves nothing. The
-    IDD counts as absent only when the agent's port (`frontend-open`; dockur installs
-    its own agent) has been open for 60 s and, in all that time, the client log shows
-    no guest session (`version_check` still says `idd-missing`, never `match` or a
-    mismatch). Then `setup-guest` says why, removes the record, sends
-    `system_powerdown` (as `lanai stop` does), and itself waits up to 2 minutes for
-    the unit to stop. If Windows has not stopped by then, it stops with an error that
-    names the panel's forced stop and boots nothing. Once the unit has stopped, it
+    IDD counts as absent only when, from the moment the agent's port opens
+    (`frontend-open`; dockur installs its own agent) until 60 s later
+    (`LANAI_IDD_ABSENT_WAIT`, so tests can shorten it), `version_check` never reports
+    `match` or a mismatch, and at the end of that wait it reports `idd-missing` (it
+    says `waiting` for its first 30 s, `LANAI_IDD_WAIT`). Then `setup-guest` says why,
+    removes the record, and makes the same request as `lanai stop` (`system_powerdown`
+    plus the `stop-requested` record, so the panel's forced stop is offered on time;
+    reuse `cmd_stop`'s code). It then waits up to 2 minutes
+    (`LANAI_SETUP_STOP_WAIT`) for the unit to stop. If Windows has not stopped by then
+    (a Windows that locked in the meantime drops the power button, proof 4), it stops
+    with an error that names the panel's forced stop and boots nothing. Once the unit has stopped, it
     boots again with QEMU's window. One fallback per run: an absent IDD after the
     fallback is an error with the client log.
   - Step 6 judges the IDD by the same 60 s rule. An absent IDD there also removes the
@@ -814,8 +818,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   The proof kit splits the same way: `--setup DIR` attaches only the disk, and
   `--window` shows QEMU's window. Tests: `vm_args` with the disk and no window, and
   with both; `setup-guest` with no record (window, no client) and with a record
-  (client, no window); a stale record (agent port open 60 s, `idd-missing` all along)
-  leads to the record removed, a powerdown, a wait for the unit, and a window boot; an
+  (client, no window); a stale record (agent port open for the wait, no `match` or
+  mismatch, `idd-missing` at its end) leads to the record removed, `stop-requested`
+  written, a powerdown, a wait for the unit, and a window boot; an
   IDD that reports within the 60 s (`match` after an early `idd-missing`) keeps the
   record and boots nothing; a unit still running after 2 minutes stops with the error
   and no second boot; a second absent IDD stops with an error; step 6's absent IDD
@@ -988,3 +993,4 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 | diff (phase 5) | b Grok (substitute) | 2 (full) | no findings (reboot timing budget weighed). Gate closed |
 | plan amendment (proof 5) | a Grok (substitute) (grok-4.6) | 1 (full) | Codex out of credits. 2 P2, 2 P3; all confirmed and integrated (the guest version record is per user, not per disk, so a stale record falls back to QEMU's window once the agent answers and the IDD is missing; row 7b's kit boot adds `--window`; the device table names `boot.json`, not a guest fact; 12 GiB before the live boot) |
 | plan amendment (proof 5) | a Grok (substitute) (grok-4.6) | 2 (full) | 1 P2, 1 P3; both confirmed and integrated (an absent IDD needs 60 s of an open agent port with no guest session, since the agent can answer first; `setup-guest` waits for the unit itself, since `lanai stop` returns at once) |
+| plan amendment (proof 5) | a Grok (substitute) (grok-4.6) | 3 (full, cap) | 2 P2, 1 P3; all confirmed and integrated (the absent-IDD test matches `version_check`'s 30 s `waiting` phase; the fallback stop writes `stop-requested`, so the panel's forced stop is offered; test knobs for the new waits). Stage closed at the cap |
