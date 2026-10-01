@@ -709,36 +709,80 @@ warning. Step 5.1 printed `QEMU exited` within 120 s of `sent system_powerdown`.
 
 ### Result
 
-- Date and time:
-- Branch and commit of the kit's checkout:
-- Starting state, `EnableLUA`:
-- Starting state, `Enrollments` queries (`ProviderID`, `DiscoveryServiceFullURL`, `UPN`):
-- Step 1, before the script (locked yes or no, and what Windows showed):
-  - Lock in Start:
-  - Lock in Ctrl+Alt+Del:
-  - Windows key + L (both `{"return": {}}` lines?):
-  - `rundll32 user32.dll,LockWorkStation`:
-  - Switch user:
-  - Secure screen saver at 1 minute:
-  - `InactivityTimeoutSecs` 60, after a restart:
-- Step 2.1, restricted prompt (the `whoami` line, then output and error level, or
-  skipped and why):
-- Step 2.2, elevated (output and error level):
-- Step 3, `reg query` output:
-- Step 3, after the script (locked yes or no, and what Windows showed):
-  - Lock in Start:
-  - Lock in Ctrl+Alt+Del:
-  - Windows key + L (both `{"return": {}}` lines?):
-  - `rundll32 user32.dll,LockWorkStation`:
-  - Switch user:
-- Step 3, after 3 minutes idle (still unlocked?):
-- Step 3, `powercfg /a` output:
-- Step 3, `Get-PnpDevice -Class Bluetooth` output:
-- Step 3, extra: `tsdiscon` (sign-in screen or not):
-- Step 4, the warning as printed:
-- Step 5.1, stop with the screen saver showing (`stop`'s output, seconds to `QEMU exited`):
-- Step 5.2, stop with the Ctrl+Alt+Del screen open (`stop`'s output, seconds, clean or not):
-- Pass (yes/no), and why:
+- Date and time: 2026-10-01, 16:43 to 18:53 EDT (20:43 to 22:53 UTC).
+- Branch and commit of the kit's checkout: `plugin/phase6` at a6bbc1f, used through
+  `K=<worktree>/docs/plugin/proof-kit` and `PROOF_CLIENT=$R/spike/work/build/looking-glass-client`.
+- Starting state, `EnableLUA`: `0x1`. UAC is on in John's install, so the runbook's
+  expectation of `0x0` (taken from dockur's stock unattend file) does not hold for every
+  dockur install. Spec requirement 7's one administrator prompt stands.
+- Starting state, `Enrollments` queries: `ProviderID` found 3 built-in subkeys ("Deploy
+  Authority", "Cloud Authority", "Local Authority"); `DiscoveryServiceFullURL` and `UPN`
+  found 0. The first version of the MDM check (ProviderID alone) would have warned on
+  this unmanaged copy; the shipped check does not.
+- Step 1, before the script (all locked, sign-in needed after each):
+  - Lock in Start: locked.
+  - Lock in Ctrl+Alt+Del (sent over QMP at 20:51:22 UTC): locked.
+  - Windows key + L (QMP, 20:51:47 UTC, both `{"return": {}}` lines): locked.
+  - `rundll32 user32.dll,LockWorkStation`: locked.
+  - Switch user: not in Start with one account; offered on the Ctrl+Alt+Del screen, and
+    it left the session at the sign-in screen.
+  - Secure screen saver at 1 minute: locked.
+  - `InactivityTimeoutSecs` 60, after a restart: locked.
+- Step 2.1, refusal: UAC is on, so a normal Command Prompt has a filtered token and
+  replaced the `runas /trustlevel` check. Output `lanai-lock: needs administrator rights.
+  Run it from an elevated Command Prompt.`, error level `1`. (A first attempt ran in an
+  elevated prompt by mistake and applied the settings, as it should there.)
+- Step 2.2, elevated: `lanai-lock: locking inside Windows is off.`, error level `0`, no
+  policy warning.
+- Step 3, `reg query` output, after a restart: `DisableLockWorkstation` `0x1`,
+  `HideFastUserSwitching` `0x1`, `InactivityTimeoutSecs` not found, `ScreenSaveTimeOut`
+  `60`, `ScreenSaverIsSecure` `0`.
+- Step 3, after the script (none locked):
+  - Lock in Start: gone. Switch user: gone.
+  - Lock in Ctrl+Alt+Del (QMP, 21:18:47 UTC): Lock and Switch user both gone.
+  - Windows key + L (QMP, 21:18:58 and 21:19:30 UTC): stayed at the desktop.
+  - `rundll32 user32.dll,LockWorkStation`: stayed at the desktop.
+- Step 3, idle: 15 minutes idle, still at the desktop. No screen saver ran: after
+  control 6 the screen saver had been set back to (None), and choosing Blank again in
+  Settings never wrote `SCRNSAVE.EXE` (still absent at the end). So the idle check proved
+  the inactivity lock gone, and the screen saver check was done directly:
+  `scrnsave.scr /s` started the Blank screen saver, and a key press returned to the
+  desktop with no password. Before that, the user's earlier secure screen saver was set
+  again and `lanai-lock.cmd` rerun (error level `0`, `ScreenSaverIsSecure` back to `0`).
+- Step 3, `powercfg /a`: S1, S2, S3, S0 Low Power Idle, Hibernate, Hybrid Sleep and Fast
+  Startup all "not available" (firmware does not support them).
+- Step 3, `Get-PnpDevice -Class Bluetooth`: "No Win32_PnPEntity objects found".
+- Step 3, extra, `tsdiscon`: the Looking Glass screen went black and the session needed
+  a sign-in (done from QEMU's screen). The script does not block it, and the spec does
+  not require it. Whether Windows drops the power button in that state is not tested.
+- Step 4, the warning as printed: `lanai-lock: locking inside Windows is off.` then
+  `lanai-lock: this Windows is joined to a domain or enrolled in MDM. A policy` / `may
+  turn the lock back on, and Lanai's shutdowns may then end in a forced stop.`
+- Step 5.1, stop with the screen saver showing (started with a 20 s delayed
+  `scrnsave.scr /s`): `sent system_powerdown` 22:48:33.545 UTC, `QEMU exited`
+  22:48:43.554 UTC, 10 s. Clean.
+- Step 5.2, stop with the Ctrl+Alt+Del screen open (QMP at 22:52:16 UTC): `sent
+  system_powerdown` 22:52:22.184 UTC, `QEMU exited` 22:52:29.189 UTC, 7 s. Clean.
+- Pass (yes/no), and why: **yes.** Every positive control locked Windows before the
+  script, none did after it and a restart, the refusal and the elevated run returned 1
+  and 0, the registry holds the planned values, no sleep state or Bluetooth exists, the
+  MDM warning fires only when forced, and Windows shut down cleanly from the host with
+  the screen saver showing (10 s) and with the Ctrl+Alt+Del screen open (7 s).
+- Notes for later phases:
+  - The setup boot shows QEMU's own screen as well as the Looking Glass screen, and
+    Windows extends the desktop across both. The pointer then sits on QEMU's screen and
+    is invisible in Looking Glass, and QEMU's screen goes black when Windows drops it.
+    Phase 6's setup boot must show QEMU's screen only while the IDD is missing, and the
+    proof kit should separate the setup disk from QEMU's window. Windows key + P,
+    "Second screen only", fixed it in this run.
+  - Host key combinations do not reach Windows: Omarchy takes Super shortcuts, and its
+    Ctrl+Alt+Del closes all host windows. Anything Lanai or its README asks the user to
+    press with those keys needs another route (QMP send-key, or the client's own key
+    menu).
+  - The Looking Glass window closed on its own several times during the run while QEMU
+    kept running; `proof-vm client` reopened it each time. Watch for this in phase 8.
+  - Proof sessions ran the VM with dockur's 16 GiB and caused host memory pressure on
+    John's 32 GiB machine; John wants 12 GiB on his install (see the project memory).
 
 ## After the proofs
 
