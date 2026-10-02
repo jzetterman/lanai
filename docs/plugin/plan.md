@@ -891,6 +891,55 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   bats tests interrupt the flow after each step and check that `lanai setup` resumes at
   the right step.
 
+### As built (2026-10-01)
+
+Where the code differs from the text above, the code and this list win. The setup
+code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.bats`.
+
+- `lanai setup` options: `--no-snapshot` declines step 3, `--window` and
+  `--no-window` pick step 5's display, and `--share-ok yes|no --scale-ok yes|no`
+  answer step 6's two questions (both are needed in one call). Every reply carries
+  `step` (`"1"` to `"7"`, or `"3a"`). Setup runs the client build, the media build and
+  both boots itself; for packages and the snapshot it names the command to run
+  (`lanai setup-host`, `lanai snapshot`), and an existing snapshot of the location
+  counts as taken. Step 3a writes the name and stops with a note; the next call goes
+  on.
+- `step5` has three values: absent (no setup boot yet, so the next one boots with the
+  guess), `false` (written when a setup boot starts; still `false` once it has
+  ended means it did not finish, and setup asks for `--window` or `--no-window`
+  instead of booting), and `true`. A failed step 6 check removes it, so the retry
+  boots with the guess. Finishing setup removes it too, so a later pin bump starts
+  step 5 afresh while `done` stays true and `lanai start` keeps working.
+- `lanai setup` runs `record_previous_run` and `setup_follow` itself, under the lock
+  and only with the unit stopped, so step 5's verdict is there without a new boot.
+- A setup boot in client mode does not open the client: its reply says "open the
+  Windows window", and the panel calls `lanai open`.
+- Step 6: the pinned client must be the one logging. A client of another build (an
+  Open during step 6) is stopped and the pinned one started; a client that closed
+  before a `match` is reopened. The guest agent is asked only once QMP shows its port
+  open (a sync on a closed port waits 5 s). A part that has not answered 60 s after
+  the client started (`LANAI_SETUP_GRACE`) counts as missing.
+- `lanai setup-guest` refuses until step 3 has a decision for this location. It holds
+  the lock, with the VM stopped, for the whole media build (downloads included), and
+  removes the old media first, so a failed build leaves none. The media use fixed
+  names (`spice-vdagent.msi`, `qemu-ga.msi`, `winfsp.msi`). `bsdtar` also unpacks
+  the IDD zip, so `unzip` is not a dependency (`bsdtar` comes with `libarchive`,
+  which pacman needs).
+- `setup.cmd` additions: it checks every media file before any change; it checks
+  `C:\Lanai` for a link again after the ACL, and refuses a `lanai-scale.ps1` there
+  that is a folder or a link; the sign-in task is registered with PowerShell's
+  `Register-ScheduledTask` as "Lanai display scale" (interactive logon, no stored
+  password). Each MSI passes on exit code 0 or 3010 only.
+- `lanai-vm-exec` unsets `WAYLAND_DISPLAY` for a boot without QEMU's window. Status's
+  `active` is true while the unit is active, activating, deactivating or reloading;
+  `window` is true only while the unit runs.
+- Tests: `isolate_home` unsets `WAYLAND_DISPLAY`. `fake-qga` gains `allowlist` and
+  `open` replies, `fake-qmp` a `FAKE_QMP_VDAGENT` knob. The `lanai-scale.ps1` tests
+  need `pwsh` and skip without it (CI has none).
+- Open for phase 8: whether `msiexec` returns 1638 over dockur's own qemu-ga or SPICE
+  agent; whether `/S /ivshmem` is the IDD installer's exact silent syntax; whether
+  `windows.base` should end in a newline (3a writes one).
+
 ## Phase 7: QML UI and README
 
 - First, two short checks, recorded in `proofs.md`:
