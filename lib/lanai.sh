@@ -1058,9 +1058,9 @@ runtime_refresh() {
   done
 }
 
-# boot_vm <setup true|false> [<window auto|true|false>]: the one path that
-# starts the VM unit (lanai start, lanai setup-guest and setup's step 6
-# boot). Under lanai_flock it runs preflight, turns the focused monitor's
+# boot_vm <setup true|false> [<window auto|true|false>] [<step6 true|false>]:
+# the one path that starts the VM unit (lanai start, lanai setup-guest and
+# setup's step 6 boot). Under lanai_flock it runs preflight, turns the focused monitor's
 # scale into a Windows step (100% without Hyprland), runs lanai-vm-exec's
 # own checks as a dry run (vm_plan), so a refusal is explained here rather
 # than showing as a failed unit, refreshes the runtime copy, leaves the
@@ -1068,16 +1068,16 @@ runtime_refresh() {
 # the unit. A setup boot (plan phase 6) first makes setup state follow the
 # disk (setup_follow), then picks the display: QEMU's window when there is
 # no guest version record (a fresh install has no IDD), else none, and the
-# user then opens the client. <window> true forces the window and removes
-# the record once the unit has started (the user has just shown it is
-# wrong); false forces the client. A window boot needs WAYLAND_DISPLAY,
-# which boot.json carries for lanai-vm-exec. A setup boot opens a setup
+# user then opens the client. <window> true forces the window, keeping the
+# record; false forces the client. <step6> true rechecks that setup state
+# still allows step 6, under the lock after preflight. A window boot needs
+# WAYLAND_DISPLAY, which boot.json carries for lanai-vm-exec. A setup boot opens a setup
 # round ("round" in setup.json) first, and once the unit starts it sets
 # step5 to false (started, not ended). Emits the result, with window, last_run so the
 # panel can show a forced-stop notice once, and network false when the
 # host has no default route.
 boot_vm() {
-  local setup=$1 window=${2:-auto} reason scale step s dir media="" last="" next="wait for Windows to start"
+  local setup=$1 window=${2:-auto} step6=${3:-false} reason scale step s dir media="" last="" next="wait for Windows to start"
   local message="Windows is starting." network=true
   if ! lanai_flock; then
     emit false "" "$LANAI_BUSY." "try again when it finishes"
@@ -1088,6 +1088,11 @@ boot_vm() {
     return 1
   fi
   s=$(state_dir)
+  if [[ $step6 == true ]] && { ! dir=$(storage_dir) ||
+    ! jq -e --arg d "$dir" '.location == $d and .step5 == true' "$s/setup.json" >/dev/null 2>&1; }; then
+    emit false "" "Lanai setup changed while it was starting Windows: run setup again" "run setup again"
+    return 1
+  fi
   if [[ $setup == true ]]; then
     if ! dir=$(storage_dir) || ! setup_follow "$dir"; then
       emit false "" "Lanai cannot record its setup state in $s." ""
@@ -1103,8 +1108,7 @@ boot_vm() {
         "run setup from the Lanai panel, or with --no-window"
       return 1
     fi
-    # Open a setup round before anything can drop the record: until step 7
-    # closes it, a done setup does not read as finished.
+    # Until step 7 closes the round, a done setup does not read as finished.
     if ! setup_set round true; then
       emit false "" "Lanai cannot record its setup state in $s." ""
       return 1
@@ -1140,8 +1144,6 @@ boot_vm() {
   fi
   if [[ $setup == true ]]; then
     setup_set step5 false || echo "lanai: cannot record step 5 in setup.json" >&2
-    # Only now, so a boot that did not start keeps the record.
-    [[ $window != true ]] || rm -f -- "$s/guest-version"
   fi
   [[ ! -f $s/last-run ]] || last=$(<"$s/last-run")
   emit true starting "$message" "$next" \
@@ -1375,7 +1377,7 @@ setup_command() {
         return "$rc"
         ;;
       normal-boot)
-        out=$(boot_vm false) || rc=$?
+        out=$(boot_vm false auto true) || rc=$?
         # Step 6 checks the IDD with the pinned client, not build_select's.
         ((rc != 0)) || client_start "$(pinned_client)" >&2 || true
         setup_with_step 6 "Lanai checks each part once it has booted; run setup again in a moment." <<<"$out" ||

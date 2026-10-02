@@ -796,7 +796,7 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   - A record: `-vga none -display none`, as a normal boot does, then `lanai open`,
     whose `build_select` picks the client build that matches the guest's IDD.
   - The override: `lanai setup --window` (passed on to `setup-guest`) forces QEMU's
-    window and removes the record (the user has just shown it is wrong);
+    window and keeps the guest version record unchanged;
     `--no-window` forces the client. A wrong guess shows nothing useful (an empty
     client window, or a QEMU window that is black or shows a second desktop). During
     the step 5 boot the panel shows Shut down. Status reports `active: true` or
@@ -832,6 +832,11 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
     invocation, it sets `step5` in `setup.json`. Nothing else: a panel Shut down or a
     forced stop never counts, and a Start-menu shutdown or a session-end stop does,
     which step 6 catches.
+  - Step 6's boot rechecks setup state under `boot_vm`'s own lock, after `preflight`:
+    `setup.json` must exist, its `location` must match `storage_dir`, and `step5`
+    must be true. If a restore reset it after setup's resume released the lock,
+    Lanai refuses with "Lanai setup changed while it was starting Windows: run setup
+    again" and starts nothing. `lanai start` keeps its existing path.
   - The pin is recorded from evidence, not from step 5. Step 6 starts the pinned
     client directly, bypassing `build_select`. On `match`, `guest_version_note`
     records the pin from step 6's own log (the client starts after the record, so the
@@ -851,7 +856,7 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   The proof kit keeps `--setup DIR` as it is (disk and window): reproducing the
   two-screen case, as proof 5 did, needs both. Tests: `vm_args` with the disk and no
   window, and with both; a setup boot with no record (window, no client), with a
-  record (client, no window), with `--window` and a record (window, record removed),
+  record (client, no window), with `--window` and a record (window, record unchanged),
   and with `--no-window` and no record (client); a window boot with `WAYLAND_DISPLAY`
   unset refuses, and with it set `boot.json` carries it and `lanai-vm-exec` exports
   it, while a client boot exports nothing; status reports `window` and `active`, and
@@ -861,7 +866,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   nothing; `lanai restore` resets both; a restore or a storage change after a clean
   setup boot leaves `step5` unset and no `guest-version`; `record_previous_run` sets
   `step5` after a clean setup boot, and not after a panel Shut down, a forced stop, or
-  a clean normal boot; step 6 records the pin on `match`, keeps the old record on
+  a clean normal boot; setup state reset between resume and step 6's boot (missing
+  file, wrong location, false or missing `step5`) refuses and starts nothing;
+  step 6 records the pin on `match`, keeps the old record on
   `idd-missing` or `mismatch`, and reopens a closed client; `lanai setup` with `done:
   true` and a guest version behind the pin resumes at step 5. Existing fixtures that
   write `{"done": true}` (`test/lifecycle.bats`) gain `location`. The panel's buttons
@@ -917,17 +924,20 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   `false` belongs to a run that never started (a "running" marker without its "started"
   stamp, or, with no markers, a unit that failed with an exit code), setup says the
   setup boot did not start and points to the logs.
-- `--window` removes the guest version record only once the unit has started, so a
-  boot that did not start keeps it.
-- `setup.json` gains a fifth key, `round`: a setup boot sets it to true before it can
-  drop the guest version record (`--window`), and only step 7 removes it (with
+- `--window` keeps the guest version record unchanged; step 6 records the pin only
+  from its own `match`, so a failed QEMU boot cannot lose the old client selection.
+- `setup.json` gains a fifth key, `round`: a setup boot sets it to true before
+  starting the unit, and only step 7 removes it (with
   `step5`); `setup_reset` removes it with the rest. While a round is open, `lanai
   setup` does not report a `done` setup as finished: a round's step 6 may have
-  recorded the pin before a later check failed, and `--window` removes the record, so
-  "behind the pin" alone could not tell. `setup_done`, and so `lanai start`, ignore
+  recorded the pin before a later check failed, so "behind the pin" alone could not
+  tell. `setup_done`, and so `lanai start`, ignore
   it (spec 8: the window keeps working during a pin bump).
 - `lanai setup` runs `record_previous_run` and `setup_follow` itself, under the lock
   and only with the unit stopped, so step 5's verdict is there without a new boot.
+- Step 6's boot rechecks `setup.json`, its storage location and `step5: true` under
+  `boot_vm`'s lock after `preflight`; a reset between resume and boot refuses without
+  starting the VM or client. `lanai start` keeps its existing path.
 - A setup boot in client mode does not open the client: its reply says "open the
   Windows window", and the panel calls `lanai open`.
 - Step 6: the pinned client must be the one logging. A client of another build (an

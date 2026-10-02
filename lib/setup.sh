@@ -477,8 +477,8 @@ setup_resume() {
   fi
 
   # 7. Done, unless the guest's IDD is behind the pin or a setup round is
-  # still open (its step 6 may have recorded the pin, or --window removed
-  # the record, so "behind" alone cannot tell), or the display was explicit.
+  # still open (its step 6 may have recorded the pin, so "behind" alone
+  # cannot tell), or the display was explicit.
   if [[ $window == auto ]] && setup_done && [[ -z $(guest_version_behind) && $(setup_get round) != true ]]; then
     setup_reply true 7 "Lanai setup is finished." "start Windows"
     return 0

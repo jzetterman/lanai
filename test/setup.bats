@@ -295,7 +295,7 @@ boot() {
   assert_output "$XDG_DATA_HOME/lanai/looking-glass/B7-801-1a2b3c4d/bin/looking-glass-client"
 }
 
-@test "setup boot: --window with a record forces the window and removes the record" {
+@test "setup boot: --window with a record forces the window and leaves the record unchanged" {
   install
   setup_json '{"snapshot": "declined"}'
   echo B7-801-g1a2b3c4d5e >"$S/guest-version"
@@ -303,7 +303,7 @@ boot() {
   boot true true
   assert_success
   assert_equal "$(field window)" true
-  assert [ ! -e "$S/guest-version" ]
+  assert_equal "$(<"$S/guest-version")" B7-801-g1a2b3c4d5e
 }
 
 @test "setup boot: --no-window without a record forces the client" {
@@ -501,7 +501,7 @@ setup_guest_run() {
   setup_guest_run --window
   assert_success
   assert_equal "$(field window)" true
-  assert [ ! -e "$S/guest-version" ]
+  assert_equal "$(<"$S/guest-version")" B7-801-g1a2b3c4d5e
   unit_is lanai-vm.service inactive
   setup_guest_run --no-window
   assert_success
@@ -792,6 +792,37 @@ exec /usr/bin/mv "$@"'
   assert_output "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"
 }
 
+@test "lanai setup step 6: setup changed between resume and boot refuses and starts nothing" {
+  # Simulate restore taking and releasing the lock before boot_vm takes it.
+  eval "$(declare -f boot_vm | sed '1s/boot_vm/boot_after_reset/')"
+  boot_vm() {
+    (
+      lanai_flock || exit 1
+      setup_reset
+      case $changed in
+        location) setup_json '{"location": "/elsewhere", "step5": true}' ;;
+        step5-false) setup_json '{"step5": false}' ;;
+        step5-missing) setup_json '{}' ;;
+      esac
+    ) || return 1
+    boot_after_reset "$@"
+  }
+  local changed
+  for changed in reset location step5-false step5-missing; do
+    through_step4
+    setup_json '{"snapshot": "declined", "step5": true}'
+    unit_is lanai-vm.service inactive
+    : >"$T/systemctl.calls"
+    setup_run
+    assert_failure
+    assert_equal "$(field step)" 6
+    assert_equal "$(field message)" "Lanai setup changed while it was starting Windows: run setup again"
+    ! grep -q -- '--user start' "$T/systemctl.calls" || fail "the unit was started"
+    assert [ ! -e "$S/boot.json" ]
+    assert [ ! -e "$T/systemd-run.args" ]
+  done
+}
+
 @test "lanai setup step 5: a panel Shut down or a forced stop did not finish it; the user picks the display" {
   through_step4
   export WAYLAND_DISPLAY=wayland-3
@@ -872,7 +903,7 @@ exec /usr/bin/mv "$@"'
   done
 }
 
-@test "setup boot: --window removes the record only once the unit has started" {
+@test "setup boot: --window keeps the record when the unit fails to start" {
   install
   setup_json '{"snapshot": "declined"}'
   echo B7-801-g1a2b3c4d5e >"$S/guest-version"
@@ -881,10 +912,7 @@ exec /usr/bin/mv "$@"'
   boot true true
   assert_failure
   assert [ -e "$S/guest-version" ]
-  rm "$T/systemctl-fail"
-  boot true true
-  assert_success
-  assert [ ! -e "$S/guest-version" ]
+  assert_equal "$(<"$S/guest-version")" B7-801-g1a2b3c4d5e
 }
 
 @test "lanai setup-guest: an unreachable user manager is named as such" {
@@ -1223,8 +1251,8 @@ exec /usr/bin/mv "$@"'
   assert_success
   assert_equal "$(field step)" 5
   assert_equal "$(field window)" true
-  # --window removed the record, so nothing reads as behind any more.
-  assert [ ! -e "$S/guest-version" ]
+  # The round stays open while the old record still selects the matching client.
+  assert_equal "$(<"$S/guest-version")" B7-801-g1a2b3c4d5e
   setup_boot_ended panel
   setup_run
   assert_failure
