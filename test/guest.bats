@@ -37,3 +37,46 @@ load helpers
   run grep -ciE 'runas|start-process|-verb' <<<"$code"
   assert_output 0
 }
+
+# --- guest/lanai-scale.ps1 ---
+
+# Print the result of PowerShell <expression> after defining $Steps and the
+# script's StepName function, taken from the script itself (its other parts
+# need Windows). Skips without pwsh.
+step_name() {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  PS1=$REPO/guest/lanai-scale.ps1 EXPR=$1 pwsh -NoProfile -NonInteractive -Command '
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
+    $f = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $n.Name -eq "StepName" }, $true) | Select-Object -First 1
+    if (-not $f) { throw "no StepName function" }
+    $Steps = @(100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500)
+    . ([scriptblock]::Create($f.Extent.Text))
+    Invoke-Expression $env:EXPR'
+}
+
+@test "lanai-scale.ps1: parses without errors" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  PS1=$REPO/guest/lanai-scale.ps1 run pwsh -NoProfile -NonInteractive -Command '
+    $e = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$e) | Out-Null
+    $e.Count'
+  assert_success
+  assert_output 0
+}
+
+@test "lanai-scale.ps1: StepName names a step, and unknown outside the list" {
+  run step_name 'StepName 0; StepName 2; StepName 11; StepName -1; StepName 12; StepName -12'
+  assert_success
+  assert_output $'100%\n150%\n500%\nunknown\nunknown\nunknown'
+}
+
+@test "lanai-scale.ps1: every step lookup goes through StepName, and the raw values are logged" {
+  local f=$REPO/guest/lanai-scale.ps1 body
+  # Only StepName indexes $Steps; PowerShell wraps a negative index silently.
+  body=$(awk '/^function StepName/ { skip = 1 } skip && /^}/ { skip = 0; next } !skip' "$f")
+  run grep -n '\$Steps\[' <<<"$body"
+  assert_failure
+  run grep -E 'minScaleRel.*curScaleRel.*maxScaleRel' "$f"
+  assert_output --partial 'Write-Log'
+}
