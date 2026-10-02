@@ -903,7 +903,14 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   ended means it did not finish, and setup asks for `--window` or `--no-window`
   instead of booting), and `true`. A failed step 6 check removes it, so the retry
   boots with the guess. Finishing setup removes it too, so a later pin bump starts
-  step 5 afresh while `done` stays true and `lanai start` keeps working.
+  step 5 afresh while `done` stays true and `lanai start` keeps working. With the
+  unit stopped, an explicit `--window` or `--no-window` removes it and starts a setup
+  boot whatever it said (the way out of a step 6 that cannot finish). When `false`
+  belongs to a run that never started (a "running" marker without its "started"
+  stamp, or, with no markers, a unit that failed with an exit code), setup says the
+  setup boot did not start and points to the logs.
+- `--window` removes the guest version record only once the unit has started, so a
+  boot that did not start keeps it.
 - `setup.json` gains a fifth key, `round`: a setup boot sets it to true before it can
   drop the guest version record (`--window`), and only step 7 removes it (with
   `step5`); `setup_reset` removes it with the rest. While a round is open, `lanai

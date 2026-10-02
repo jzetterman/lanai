@@ -1066,11 +1066,11 @@ runtime_refresh() {
 # disk (setup_follow), then picks the display: QEMU's window when there is
 # no guest version record (a fresh install has no IDD), else none, and the
 # user then opens the client. <window> true forces the window and removes
-# the record (the user has just shown it is wrong); false forces the
-# client. A window boot needs WAYLAND_DISPLAY, which boot.json carries for
-# lanai-vm-exec. A setup boot opens a setup round ("round" in setup.json)
-# before it can drop the record, and once the unit starts it sets step5 to
-# false (started, not ended). Emits the result, with window, last_run so the
+# the record once the unit has started (the user has just shown it is
+# wrong); false forces the client. A window boot needs WAYLAND_DISPLAY,
+# which boot.json carries for lanai-vm-exec. A setup boot opens a setup
+# round ("round" in setup.json) first, and once the unit starts it sets
+# step5 to false (started, not ended). Emits the result, with window, last_run so the
 # panel can show a forced-stop notice once, and network false when the
 # host has no default route.
 boot_vm() {
@@ -1106,7 +1106,6 @@ boot_vm() {
       emit false "" "Lanai cannot record its setup state in $s." ""
       return 1
     fi
-    [[ $window == false ]] || rm -f -- "$s/guest-version"
     [[ $window == true ]] || next="open the Windows window"
   else
     window=false
@@ -1136,8 +1135,11 @@ boot_vm() {
     emit false failed "Windows did not start." "see the logs with $LANAI_LOGS, $LANAI_FALLBACK"
     return 1
   fi
-  [[ $setup != true ]] || setup_set step5 false ||
-    echo "lanai: cannot record step 5 in setup.json" >&2
+  if [[ $setup == true ]]; then
+    setup_set step5 false || echo "lanai: cannot record step 5 in setup.json" >&2
+    # Only now, so a boot that did not start keeps the record.
+    [[ $window != true ]] || rm -f -- "$s/guest-version"
+  fi
   [[ ! -f $s/last-run ]] || last=$(<"$s/last-run")
   emit true starting "$message" "$next" \
     "$(jq -n -c --argjson scale "$step" --arg last "$last" --argjson network "$network" \

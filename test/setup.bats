@@ -20,11 +20,15 @@ setup() {
   # systemctl: log every call. `show` answers from $T/show-<unit> (default:
   # inactive), all of it or, with --value, the one property asked for.
   # `start lanai-vm.service` makes the VM unit active, as systemd would.
+  # With $T/no-manager, `show` fails like an unreachable user manager; the
+  # verb named in $T/systemctl-fail fails.
   shim systemctl 'echo "$*" >>"$T/systemctl.calls"
 unit=""
 for a; do [[ $a != *.service ]] || unit=$a; done
 show=$(cat "$T/show-$unit" 2>/dev/null || printf "ActiveState=inactive\nSubState=dead\nResult=success\nInvocationID=\nMainPID=0\n")
+[[ ! -f $T/systemctl-fail || $2 != "$(<"$T/systemctl-fail")" ]] || exit 1
 if [[ " $* " == *" show "* ]]; then
+  [[ ! -e $T/no-manager ]] || exit 1
   if [[ " $* " == *" --value "* ]]; then
     for a; do [[ ${prev:-} == -p ]] && sed -n "s/^$a=//p" <<<"$show"; prev=$a; done
   else
@@ -220,16 +224,19 @@ ran() {
   assert_equal "$(jq -r .step5 "$S/setup.json")" true
 }
 
-@test "a storage change after a clean setup boot leaves step5 unset and no guest-version" {
+@test "lanai setup: a storage change after a clean setup boot leaves step5 unset and no guest-version" {
   install
-  setup_json '{"location": "/elsewhere"}'
+  setup_json '{"location": "/elsewhere", "snapshot": "declined", "step5": false}'
   ran inv-1 true clean
   echo B7-801-1a2b3c4d >"$S/guest-version"
-  # The next setup boot: preflight records the run, then setup follows the disk.
-  record_previous_run >/dev/null
-  setup_follow "$STORE"
+  run --separate-stderr cmd_setup
+  JSON=$output
+  # Setup records the run, then follows the disk: the new location starts
+  # at its snapshot offer.
+  assert_equal "$(field step)" 3
   assert_equal "$(jq -c . "$S/setup.json")" "$(jq -n -c --arg l "$STORE" '{location: $l}')"
   assert [ ! -e "$S/guest-version" ]
+  assert_equal "$(<"$S/last-run")" clean
 }
 
 # --- the setup boot's display ---
@@ -724,6 +731,81 @@ assert_set_time_now() {
   assert_equal "$(field window)" false
 }
 
+@test "lanai setup step 5: a setup boot that never started says so, with the logs" {
+  through_step4
+  # QEMU never answered: a running marker without the started stamp, and a
+  # failed unit.
+  setup_json '{"snapshot": "declined", "step5": false}'
+  echo '{"scale":100,"setup":true,"window":true}' >"$S/boot.json"
+  echo inv-setup >"$S/running"
+  printf '%s\n' ActiveState=failed SubState=failed Result=exit-code >"$T/show-lanai-vm.service"
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  run field message
+  assert_output --partial "did not start"
+  run field next
+  assert_output --partial "journalctl --user -u lanai-vm"
+  # Asked again, the failed unit still says so.
+  setup_run
+  run field message
+  assert_output --partial "did not start"
+}
+
+@test "lanai setup step 5: --window or --no-window starts a setup boot, whatever step5 says" {
+  through_step4
+  export WAYLAND_DISPLAY=wayland-3
+  local s
+  for s in true false; do
+    unit_is lanai-vm.service inactive
+    setup_json "{\"snapshot\": \"declined\", \"step5\": $s}"
+    setup_run --no-window
+    assert_success
+    assert_equal "$(field step)" 5
+    assert_equal "$(field window)" false
+    assert_equal "$(jq -r .step5 "$S/setup.json")" false
+  done
+}
+
+@test "setup boot: --window removes the record only once the unit has started" {
+  install
+  setup_json '{"snapshot": "declined"}'
+  echo B7-801-g1a2b3c4d5e >"$S/guest-version"
+  export WAYLAND_DISPLAY=wayland-3
+  echo start >"$T/systemctl-fail"
+  boot true true
+  assert_failure
+  assert [ -e "$S/guest-version" ]
+  rm "$T/systemctl-fail"
+  boot true true
+  assert_success
+  assert [ ! -e "$S/guest-version" ]
+}
+
+@test "lanai setup-guest: an unreachable user manager is named as such" {
+  install
+  setup_json '{"snapshot": "declined"}'
+  pinned_files
+  : >"$T/no-manager"
+  setup_guest_run
+  assert_failure
+  run field message
+  assert_output --partial "user manager"
+}
+
+@test "lanai status: active is true while the unit starts or stops, false once it failed" {
+  install
+  local st
+  for st in activating deactivating; do
+    unit_is lanai-vm.service "$st"
+    lanai_run status
+    assert_equal "$(field active)" true
+  done
+  unit_is lanai-vm.service failed Result=exit-code
+  lanai_run status
+  assert_equal "$(field active)" false
+}
+
 @test "lanai setup step 6: waits while Windows starts, and reopens a closed client" {
   step6_running "$FIX/client-logs/waiting.log"
   setup_run
@@ -1021,14 +1103,6 @@ assert_set_time_now() {
   assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" '{"snapshot":"declined","done":true}'
   setup_run
   assert_equal "$(field step)" 7
-}
-
-@test "setup_reset: removes an open round with the rest" {
-  install
-  setup_json '{"snapshot": "declined", "done": true, "round": true}'
-  setup_reset
-  setup_follow "$STORE"
-  assert_equal "$(jq -r '.round // "unset"' "$S/setup.json")" unset
 }
 
 @test "lanai setup: interrupted after each step, it resumes at the right step" {

@@ -191,7 +191,7 @@ setup_guest() {
   rc=0
   out=$(
     lanai_flock || exit 3
-    st=$(unit_state) || st=unknown
+    st=$(unit_state) || exit 5
     [[ $st == inactive || $st == failed ]] || exit 4
     setup_media_build
   ) || rc=$?
@@ -203,6 +203,10 @@ setup_guest() {
       ;;
     4)
       emit false "" "Windows is running under Lanai." "shut Windows down, then run setup again"
+      return 1
+      ;;
+    5)
+      emit false "" "Lanai cannot reach the systemd user manager." ""
       return 1
       ;;
     *)
@@ -381,7 +385,7 @@ setup_step6() {
 # or with a setup round open, goes back to step 5 (a pin bump; the old
 # client keeps working).
 setup_resume() {
-  local window=$1 nosnap=$2 share=$3 scale=$4 st stopped=false dir problem missing details want s
+  local window=$1 nosnap=$2 share=$3 scale=$4 st stopped=false nostart=false dir problem missing details want s
   local -a list
   if ! lanai_flock; then
     emit false "" "$LANAI_BUSY." "try again when it finishes"
@@ -405,6 +409,15 @@ setup_resume() {
     return 1
   fi
   if $stopped; then
+    # Whether the last run never started, read before record_previous_run
+    # deletes its markers: a "running" marker without the matching "started"
+    # stamp (QEMU never answered), or, with no markers, a unit that failed
+    # with an exit code.
+    if [[ -f $s/running ]]; then
+      [[ $(<"$s/running") == "$(cat -- "$s/started" 2>/dev/null)" ]] || nostart=true
+    elif [[ $st == failed && $(systemctl --user show -p Result --value "$LANAI_UNIT" 2>/dev/null) == exit-code ]]; then
+      nostart=true
+    fi
     record_previous_run >/dev/null
     if ! setup_follow "$dir"; then
       setup_reply false 1 "Lanai cannot record its setup state in $s." ""
@@ -484,16 +497,26 @@ setup_resume() {
     setup_reply false 5 "Windows is running without Lanai's setup drive." "shut Windows down, then run setup again"
     return 1
   fi
+  # An explicit display choice always starts a setup boot: the way out of a
+  # step 6 that cannot finish.
+  if [[ $window != auto ]]; then
+    setup_set step5 null || true
+    echo setup-boot
+    return 0
+  fi
   case $(setup_get step5) in
     true) echo normal-boot ;;
     false)
-      if [[ $window == auto ]]; then
+      if $nostart; then
+        setup_reply false 5 "The setup boot did not start." \
+          "see the logs with $LANAI_LOGS, then start it again with --window or --no-window" \
+          '{"choices": ["--window", "--no-window"]}'
+      else
         setup_reply false 5 "The setup boot did not finish: Windows did not shut down by itself after setup.cmd. A Shut down from the panel or a forced stop does not count." \
           "start it again on QEMU's screen (--window) while Windows has no Lanai display driver yet, or in the Windows window (--no-window) once it has" \
           '{"choices": ["--window", "--no-window"]}'
-        return 1
       fi
-      echo setup-boot
+      return 1
       ;;
     *) echo setup-boot ;;
   esac
