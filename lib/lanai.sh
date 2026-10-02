@@ -20,6 +20,8 @@ source "$LANAI_LIB/vm.sh"
 source "$LANAI_LIB/snapshot.sh"
 # shellcheck source-path=SCRIPTDIR source=client.sh
 source "$LANAI_LIB/client.sh"
+# shellcheck source-path=SCRIPTDIR source=setup.sh
+source "$LANAI_LIB/setup.sh"
 
 # --- output ---
 
@@ -691,10 +693,13 @@ LANAI_FALLBACK="or use omarchy-windows-vm (RDP or its web console) instead"
 LANAI_FORCED_NOTICE="Windows was force-stopped last time. Likely causes: a locked Windows, an open Windows security screen, or a shutdown that did not finish in time."
 LANAI_BUSY="another Lanai start, snapshot or restore is running"
 
-# Return 0 when Lanai's setup has finished: setup.json's "done" is true
-# (phase 6 writes it).
+# Return 0 when Lanai's setup has finished for this disk: setup.json's
+# "done" is true and its "location" is the storage location's real path
+# (lib/setup.sh), so lanai start refuses a disk setup has not seen.
 setup_done() {
-  jq -e '.done == true' "$(state_dir)/setup.json" >/dev/null 2>&1
+  local dir
+  dir=$(storage_dir 2>/dev/null) || return 1
+  jq -e --arg d "$dir" '.done == true and .location == $d' "$(state_dir)/setup.json" >/dev/null 2>&1
 }
 
 # Print the VM unit's ActiveState, or fail when the user manager does not
@@ -1282,7 +1287,9 @@ cmd_snapshots() {
 
 # restore [<name>]: return the storage location to a snapshot (spec 7).
 # Without a name it resumes a restore that did not finish. It can take
-# minutes; the panel runs it detached (plan phases 6-7).
+# minutes; the panel runs it detached (plan phases 6-7). After a restore
+# setup starts again at step 1 (setup_reset): the disk may predate any
+# Lanai boot, and setup is safe to rerun on a later one.
 cmd_restore() {
   local out
   if ! lanai_flock; then
@@ -1293,5 +1300,6 @@ cmd_restore() {
     emit false "" "$out" ""
     return 1
   fi
-  emit true "" "$out" "start Windows"
+  setup_reset
+  emit true "" "$out" "run Lanai setup"
 }

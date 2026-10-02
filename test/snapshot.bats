@@ -680,6 +680,39 @@ damage() {
   done
 }
 
+@test "restore: setup starts again, with no step5 and no guest-version, even after a clean setup boot" {
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
+  take_snapshot
+  # A finished setup, then a clean setup boot whose markers no start has
+  # recorded yet.
+  jq -n -c --arg l "$B/win" '{location: $l, snapshot: "taken", done: true}' >"$S/setup.json"
+  echo B7-826-g236efcb155 >"$S/guest-version"
+  echo inv-1 >"$S/running"
+  echo inv-1 >"$S/started"
+  echo '{"scale": 100, "setup": true}' >"$S/boot.json"
+  echo '{"invocation":"inv-1","guest":true,"reason":"guest-shutdown"}' >"$S/last-shutdown"
+  lanai_run restore "$NAME"
+  assert_success
+  assert_equal "$(field next)" "run Lanai setup"
+  assert [ ! -e "$S/setup.json" ]
+  assert [ ! -e "$S/guest-version" ]
+  assert [ ! -e "$S/running" ]
+  run setup_done
+  assert_failure
+}
+
+@test "restore: a refused restore keeps setup state" {
+  use_install "$T/win"
+  mkdir -p "$S"
+  jq -n -c --arg l "$T/win" '{location: $l, done: true}' >"$S/setup.json"
+  lanai_run restore 20200101T000000Z
+  assert_failure
+  run setup_done
+  assert_success
+}
+
 @test "restore: a snapshot whose data changed is refused before anything is written" {
   btrfs_tmp
   export XDG_DATA_HOME=$B/data

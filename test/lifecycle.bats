@@ -53,12 +53,12 @@ unit_show() {
 }
 
 # A finished install at the default location, VM settings, a share, and
-# finished setup.
+# finished setup for that location.
 ready() {
   make_install "$HOME/.windows"
   mkdir -p "$HOME/Windows" "$S" "$XDG_CONFIG_HOME/lanai"
   echo '{"memory_gib": 8, "cores": 4}' >"$XDG_CONFIG_HOME/lanai/settings.json"
-  echo '{"done": true}' >"$S/setup.json"
+  jq -n -c --arg l "$(realpath "$HOME/.windows")" '{location: $l, done: true}' >"$S/setup.json"
 }
 
 # Assert that the unit was never started.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # Checks on guest/lanai-lock.cmd that can run on Linux: how it is stored and
 # how it exits. Its behavior in Windows is docs/plugin/proofs.md, proof 5.
+# shellcheck disable=SC2016
 
 load helpers
 

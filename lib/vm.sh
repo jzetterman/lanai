@@ -205,11 +205,14 @@ run_dir_check() {
 # last-shutdown records a guest-initiated shutdown of that invocation, and
 # forced otherwise. A run whose QEMU never answered failed to start; that
 # is not a forced stop. Without a verdict, last-run stays as it was (the
-# panel clears it once shown). Always ends with the markers, the stamp,
-# last-shutdown and any stop request deleted. Every path that starts the
-# unit calls it first, through preflight.
+# panel clears it once shown). It also owns step 5's verdict (plan phase
+# 6): after a clean setup boot (boot.json's setup) that no stop request of
+# that run asked for, it sets "step5" in an existing setup.json. Always
+# ends with the markers, the stamp, last-shutdown and any stop request
+# deleted. Every path that starts the unit calls it first, through
+# preflight.
 record_previous_run() {
-  local s verdict="" inv="" started=""
+  local s verdict="" inv="" started="" boot=false rinv=""
   s=$(state_dir)
   mkdir -p -- "$s"
   if [[ -e $s/forced ]]; then
@@ -227,6 +230,13 @@ record_previous_run() {
   fi
   if [[ -n $verdict ]]; then
     printf '%s\n' "$verdict" >"$s/last-run.tmp" && mv -f -- "$s/last-run.tmp" "$s/last-run"
+  fi
+  if [[ $verdict == clean && -f $s/setup.json ]]; then
+    boot=$(jq -r '.setup == true' "$s/boot.json" 2>/dev/null) || boot=false
+    [[ ! -f $s/stop-requested ]] || read -r rinv _ <"$s/stop-requested" || true
+    if [[ $boot == true && $rinv != "$inv" ]]; then
+      setup_set step5 true || echo "lanai: cannot record step 5 in setup.json" >&2
+    fi
   fi
   rm -f -- "$s/running" "$s/started" "$s/forced" "$s/last-shutdown" "$s/stop-requested"
   [[ -z $verdict ]] || printf '%s\n' "$verdict"
