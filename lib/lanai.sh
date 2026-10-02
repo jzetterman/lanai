@@ -1280,6 +1280,82 @@ cmd_setup_host() {
     "enter your password in the terminal, then continue setup" "$details"
 }
 
+# setup [--no-snapshot] [--window|--no-window] [--share-ok yes|no
+# --scale-ok yes|no]: Lanai's one-time setup, resumable (spec 7, 9; plan
+# phase 6). Each call finds the first step not done and answers it, with
+# "step" ("1" to "7", or "3a"): it does what needs no user decision (the
+# client build, the setup boot, step 6's boot and checks), and otherwise
+# says what the user must do. --no-snapshot declines step 3's snapshot;
+# --window and --no-window pick the setup boot's display; --share-ok and
+# --scale-ok answer step 6's two questions. The builds and boots run after
+# the state check has released the lock, since boot_vm takes it itself.
+cmd_setup() {
+  local window=auto nosnap=false share="" scale="" out rc built=false
+  while (($#)); do
+    case $1 in
+      --window) window=true ;;
+      --no-window) window=false ;;
+      --no-snapshot) nosnap=true ;;
+      --share-ok | --scale-ok)
+        if [[ ${2:-} != yes && ${2:-} != no ]]; then
+          emit false "" "unknown option: $1 ${2:-}" "answer $1 yes or $1 no"
+          return 2
+        fi
+        if [[ $1 == --share-ok ]]; then share=$2; else scale=$2; fi
+        shift
+        ;;
+      *)
+        emit false "" "unknown option: $1" "run lanai help"
+        return 2
+        ;;
+    esac
+    shift
+  done
+  while :; do
+    rc=0
+    out=$(setup_resume "$window" "$nosnap" "$share" "$scale") || rc=$?
+    case $out in
+      build)
+        if $built; then
+          emit false "" "The Looking Glass client still does not report $LG_BUILD." "run lanai build-client"
+          return 1
+        fi
+        built=true
+        out=$(
+          mkdir -p -- "$(state_dir)" && exec {LANAI_BUILD_FD}>>"$(state_dir)/build.lock" || exit 1
+          flock -n "$LANAI_BUILD_FD" || {
+            echo "another Looking Glass client build is running"
+            exit 1
+          }
+          build_client
+        ) || {
+          setup_reply false 4 "The Looking Glass client was not built: $out" "fix the cause, then run setup again"
+          return 1
+        }
+        ;;
+      setup-boot)
+        out=$(setup_guest "$window") || rc=$?
+        setup_with_step 5 "In Windows, open Lanai's setup drive and run setup.cmd; Windows shuts down by itself when it finishes." <<<"$out" ||
+          return 1
+        return "$rc"
+        ;;
+      normal-boot)
+        out=$(boot_vm false) || rc=$?
+        # Step 6 checks the IDD with the pinned client, not build_select's.
+        ((rc != 0)) || client_start "$(pinned_client)" >&2 || true
+        setup_with_step 6 "Lanai checks each part once it has booted; run setup again in a moment." <<<"$out" ||
+          return 1
+        return "$rc"
+        ;;
+      *)
+        printf '%s\n' "$out"
+        LANAI_EMITTED=1
+        return "$rc"
+        ;;
+    esac
+  done
+}
+
 # setup-guest [--window|--no-window]: build the verified setup media and
 # start the setup boot (step 5 of lanai setup, which passes its options on).
 # The display is a guess from the guest version record; --window forces

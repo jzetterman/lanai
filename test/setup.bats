@@ -5,7 +5,7 @@
 # pacman are PATH shims: nothing talks to the real user manager, starts a
 # VM, opens a window or downloads anything. QMP and the guest agent are the
 # fake servers in test/fixtures.
-# shellcheck disable=SC2030,SC2031,SC2016,SC2034
+# shellcheck disable=SC2030,SC2031,SC2016,SC2034,SC2329
 
 load helpers
 
@@ -499,4 +499,389 @@ setup_guest_run() {
   setup_guest_run --no-window
   assert_success
   assert_equal "$(field window)" false
+}
+
+# --- lanai setup: the resumable steps ---
+
+# Run cmd_setup in this shell (pins and stubs are overridden here) and keep
+# its JSON for field.
+setup_run() {
+  run --separate-stderr cmd_setup "$@"
+  JSON=$output
+}
+
+# An install that has passed steps 1 to 4: checks, packages, the snapshot
+# offer (declined) and the pinned client. Pinned guest files are served.
+through_step4() {
+  install
+  setup_json '{"snapshot": "declined"}'
+  fake_build "$LG_BUILD"
+  pinned_files
+}
+
+# Print client log <file> as lanai-client-exec leaves it: its start line
+# (<age> seconds ago, default 5), then the client's output.
+started_log() {
+  echo "lanai: client started at $((EPOCHSECONDS - ${2:-5}))"
+  cat "$1"
+}
+
+# The state after a step 5 setup boot ended: the unit is stopped, and the
+# markers say how (clean, panel or forced), as ran does.
+setup_boot_ended() {
+  unit_is lanai-vm.service inactive
+  ran inv-setup true "$1"
+}
+
+# A running step 6 boot: the unit is active with a normal boot, step5 is
+# true, QMP and the guest agent answer (the agent with setup.cmd's
+# allow-list), and the pinned client runs with client log <file> started
+# <age> seconds ago (default 5).
+step6_running() {
+  through_step4
+  setup_json '{"snapshot": "declined", "step5": true}'
+  echo '{"scale":100,"setup":false,"window":false}' >"$S/boot.json"
+  unit_is lanai-vm.service active
+  unit_is lanai-client.service active MainPID=77
+  [[ -d $RUN ]] || mkdir -m 700 "$RUN"
+  started_log "$1" "${2:-5}" >"$RUN/client.log"
+  conf FAKE_QGA_CMD=allowlist
+  serve "$RUN/qmp-cli.sock" "$FIX/fake-qmp"
+  serve "$RUN/qga.sock" "$FIX/fake-qga"
+}
+
+@test "lanai setup step 1: a failed check stops it, naming the problem" {
+  install
+  rm "$HOME/.windows/windows.boot"
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 1
+  run field message
+  assert_output --partial "windows.boot is missing"
+  make_install "$HOME/.windows"
+  rmdir "$HOME/Windows"
+  setup_run
+  assert_equal "$(field step)" 1
+  run field message
+  assert_output --partial "does not exist"
+  mkdir "$HOME/Windows"
+  fake_proc 700 "$DOCKER_SCOPE" /usr/bin/qemu-system-x86_64 -name windows
+  setup_run
+  assert_equal "$(field step)" 1
+  run field message
+  assert_output --partial "omarchy-windows-vm"
+  rm -rf "$T/proc/700"
+  printf '/snap\n%s\n' "$STORE" >"$S/restore-in-progress"
+  setup_run
+  assert_equal "$(field step)" 1
+  run field message
+  assert_output --partial "restore did not finish"
+}
+
+@test "lanai setup step 2: missing host packages are named, with the command" {
+  install
+  shim pacman 'echo qemu-ui-gtk; echo passt; exit 127'
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 2
+  assert_equal "$(jq -c .missing <<<"$JSON")" '["qemu-ui-gtk","passt"]'
+  assert_equal "$(field command)" "sudo pacman -S --needed qemu-ui-gtk passt"
+  run field next
+  assert_output --partial "lanai setup-host"
+  # Setup state now follows this disk.
+  assert_equal "$(jq -r .location "$S/setup.json")" "$STORE"
+}
+
+@test "lanai setup step 3: offers the snapshot before any boot; declining or a snapshot moves on" {
+  install
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 3
+  run field next
+  assert_output --partial "lanai snapshot"
+  assert_output --partial "--no-snapshot"
+  assert_equal "$(jq -r '.snapshot // "unset"' "$S/setup.json")" unset
+  # Declined: recorded, and setup goes on (to step 4: no client yet).
+  build_client() { echo "no network"; return 1; }
+  setup_run --no-snapshot
+  assert_equal "$(jq -r .snapshot "$S/setup.json")" declined
+  assert_equal "$(field step)" 4
+  # A snapshot of this location counts as taken.
+  setup_json '{}'
+  snapshot_list() { echo "$XDG_DATA_HOME/lanai/snapshots/20261001T000000Z"; }
+  setup_run
+  assert_equal "$(jq -r .snapshot "$S/setup.json")" taken
+  assert_equal "$(field step)" 4
+}
+
+@test "lanai setup step 3a: an empty or missing windows.base gets dockur's name, once, and it says so" {
+  install
+  setup_json '{"snapshot": "declined"}'
+  fake_build "$LG_BUILD"
+  : >"$HOME/.windows/windows.base"
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 3a
+  run field message
+  assert_output --partial "win11x64.iso"
+  assert_equal "$(<"$HOME/.windows/windows.base")" win11x64.iso
+  rm "$HOME/.windows/windows.base"
+  setup_run
+  assert_equal "$(field step)" 3a
+  assert_equal "$(<"$HOME/.windows/windows.base")" win11x64.iso
+  # With a name in place, setup goes on.
+  pinned_files
+  setup_run
+  refute [ "$(field step)" = 3a ]
+}
+
+@test "lanai setup step 4: builds the pinned client, then goes on to the setup boot" {
+  install
+  setup_json '{"snapshot": "declined"}'
+  pinned_files
+  export WAYLAND_DISPLAY=wayland-3
+  build_client() { fake_build "$LG_BUILD"; echo "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"; }
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 5
+  assert_equal "$(field window)" true
+  # A failed build stops at step 4 with its reason.
+  rm -rf "$XDG_DATA_HOME/lanai/looking-glass"
+  unit_is lanai-vm.service inactive
+  build_client() { echo "cmake turned USB audio off"; return 1; }
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 4
+  run field message
+  assert_output --partial "USB audio"
+}
+
+@test "lanai setup step 5: starts the setup boot, then reports it while it runs" {
+  through_step4
+  export WAYLAND_DISPLAY=wayland-3
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 5
+  assert_equal "$(field window)" true
+  assert [ -f "$S/setup-media/setup.cmd" ]
+  assert_equal "$(jq -r .step5 "$S/setup.json")" false
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 5
+  assert_equal "$(field active)" true
+  run field message
+  assert_output --partial "setup.cmd"
+}
+
+@test "lanai setup step 5: a clean shutdown of the setup boot goes on to step 6's boot with the pinned client" {
+  through_step4
+  setup_json '{"snapshot": "declined", "step5": false}'
+  setup_boot_ended clean
+  echo B7-801-g1a2b3c4d5e >"$S/guest-version"
+  fake_build B7-801-1a2b3c4d
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert_equal "$(jq -r .step5 "$S/setup.json")" true
+  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":100,"setup":false,"window":false}'
+  # The pinned client, not the build that matches the old record.
+  run tail -n 1 "$T/systemd-run.args"
+  assert_output "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"
+}
+
+@test "lanai setup step 5: a panel Shut down or a forced stop did not finish it; the user picks the display" {
+  through_step4
+  export WAYLAND_DISPLAY=wayland-3
+  local how
+  for how in panel forced; do
+    setup_json '{"snapshot": "declined", "step5": false}'
+    setup_boot_ended "$how"
+    : >"$T/systemctl.calls"
+    setup_run
+    assert_failure
+    assert_equal "$(field step)" 5
+    run field message
+    assert_output --partial "did not finish"
+    assert_equal "$(jq -c .choices <<<"$JSON")" '["--window","--no-window"]'
+    ! grep -q -- '--user start' "$T/systemctl.calls" || fail "it booted without a choice"
+  done
+  setup_run --no-window
+  assert_success
+  assert_equal "$(field step)" 5
+  assert_equal "$(field window)" false
+}
+
+@test "lanai setup step 6: waits while Windows starts, and reopens a closed client" {
+  step6_running "$FIX/client-logs/waiting.log"
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  run field message
+  assert_output --partial "starting"
+  assert [ ! -e "$T/systemd-run.args" ]
+  # The client closed before the guest answered: it is reopened, not counted.
+  unit_is lanai-client.service inactive
+  : >"$RUN/client.log"
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  run tail -n 1 "$T/systemd-run.args"
+  assert_output "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"
+  assert_equal "$(jq -r .step5 "$S/setup.json")" true
+}
+
+@test "lanai setup step 6: a match records the pin, checks the agents, then asks the two questions" {
+  step6_running "$FIX/client-logs/match.log"
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert_equal "$(jq -c .questions <<<"$JSON")" '["share","scale"]'
+  assert_equal "$(<"$S/guest-version")" B7-826-g236efcb155
+  run setup_done
+  assert_failure
+  # Both answered yes: setup is done, and lanai start works.
+  setup_run --share-ok yes --scale-ok yes
+  assert_success
+  assert_equal "$(field step)" 7
+  run setup_done
+  assert_success
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 7
+}
+
+@test "lanai setup step 6: a missing or mismatched IDD sends setup back to step 5 and keeps the record" {
+  local log
+  for log in idd-missing mismatch; do
+    if [[ $log == idd-missing ]]; then
+      step6_running "$FIX/client-logs/waiting.log" 60
+    else
+      step6_running "$FIX/client-logs/other-build.log"
+    fi
+    echo B7-801-g1a2b3c4d5e >"$S/guest-version"
+    touch -d '1 hour ago' "$S/guest-version"
+    setup_run
+    assert_failure
+    assert_equal "$(field step)" 5
+    run field message
+    assert_output --partial "run setup.cmd again"
+    assert_equal "$(jq -r '.step5 // "unset"' "$S/setup.json")" unset
+    assert_equal "$(<"$S/guest-version")" B7-801-g1a2b3c4d5e
+  done
+}
+
+@test "lanai setup step 6: after a partly failed setup.cmd, a missing part sends setup back to step 5" {
+  # Windows shut down after setup.cmd stopped part way: the IDD answers,
+  # but the agent has no allow-list and the SPICE agent never opened its port.
+  step6_running "$FIX/client-logs/match.log" 90
+  conf FAKE_QGA_CMD=open FAKE_QMP_VDAGENT=false
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  run field message
+  assert_output --partial "setup did not finish: run setup.cmd again"
+  assert_output --partial "QEMU guest agent"
+  assert_output --partial "SPICE agent"
+  assert_equal "$(jq -r '.step5 // "unset"' "$S/setup.json")" unset
+  # Shut down, the next setup goes back to the setup boot, as the guess says
+  # (the IDD answered, so the record is the pin: the Windows window).
+  unit_is lanai-vm.service inactive
+  unit_is lanai-client.service inactive
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 5
+  assert_equal "$(field window)" false
+}
+
+@test "lanai setup step 6: a part not answering yet is waited for at first" {
+  step6_running "$FIX/client-logs/match.log" 5
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_VDAGENT=false
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert_equal "$(jq -r .step5 "$S/setup.json")" true
+}
+
+@test "lanai setup step 6: a no to either question sends setup back to step 5" {
+  step6_running "$FIX/client-logs/match.log"
+  setup_run --share-ok no --scale-ok yes
+  assert_failure
+  assert_equal "$(field step)" 5
+  run field message
+  assert_output --partial "Explorer does not show ~/Windows"
+  run setup_done
+  assert_failure
+  setup_run --share-ok maybe
+  assert_failure
+  run field message
+  assert_output --partial "unknown option"
+}
+
+@test "lanai setup step 6: a client of another build is replaced by the pinned one" {
+  step6_running "$FIX/client-logs/match.log"
+  sed -e 's/Looking Glass (B7-826-236efcb1)/Looking Glass (B7-801-1a2b3c4d)/' \
+    -e 's/Version  : B7-826-g236efcb155/Version  : B7-801-g1a2b3c4d5e/' "$FIX/client-logs/match.log" |
+    started_log /dev/stdin >"$RUN/client.log"
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  grep -q -- '--user stop lanai-client.service' "$T/systemctl.calls" || fail "the old client was not stopped"
+  run tail -n 1 "$T/systemd-run.args"
+  assert_output "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"
+}
+
+@test "lanai setup: with done and a guest version behind the pin, it resumes at step 5" {
+  through_step4
+  setup_json '{"snapshot": "declined", "done": true}'
+  echo B7-801-g1a2b3c4d5e >"$S/guest-version"
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 5
+  # The record names the old IDD, so the setup boot uses the Windows window,
+  # and the old client keeps working meanwhile (spec 8).
+  assert_equal "$(field window)" false
+  run setup_done
+  assert_success
+}
+
+@test "lanai setup: interrupted after each step, it resumes at the right step" {
+  install
+  export WAYLAND_DISPLAY=wayland-3
+  pinned_files
+  shim pacman 'echo passt; exit 127'
+  setup_run
+  assert_equal "$(field step)" 2
+  shim pacman 'exit 0'
+  setup_run
+  assert_equal "$(field step)" 3
+  setup_run
+  assert_equal "$(field step)" 3
+  build_client() { echo "interrupted"; return 1; }
+  setup_run --no-snapshot
+  assert_equal "$(field step)" 4
+  fake_build "$LG_BUILD"
+  setup_run
+  assert_equal "$(field step)" 5
+  assert_equal "$(field window)" true
+  # Interrupted mid setup boot: still step 5.
+  setup_run
+  assert_equal "$(field step)" 5
+  # The setup boot ended in setup.cmd's shutdown.
+  setup_boot_ended clean
+  setup_run
+  assert_equal "$(field step)" 6
+  # Interrupted while Windows starts: still step 6.
+  [[ -d $RUN ]] || mkdir -m 700 "$RUN"
+  started_log "$FIX/client-logs/match.log" >"$RUN/client.log"
+  conf FAKE_QGA_CMD=allowlist
+  serve "$RUN/qmp-cli.sock" "$FIX/fake-qmp"
+  serve "$RUN/qga.sock" "$FIX/fake-qga"
+  setup_run
+  assert_equal "$(field step)" 6
+  assert_equal "$(jq -c .questions <<<"$JSON")" '["share","scale"]'
+  setup_run --share-ok yes --scale-ok yes
+  assert_equal "$(field step)" 7
+  # Rerun after done: nothing to do.
+  setup_run
+  assert_equal "$(field step)" 7
 }

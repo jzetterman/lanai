@@ -703,6 +703,26 @@ damage() {
   assert_failure
 }
 
+@test "restore: after setup filled in an empty windows.base, it matches the pre-adoption hashes" {
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
+  mkdir -p "$HOME/Windows"
+  shim pacman 'exit 0'
+  : >"$B/win/windows.base"
+  local before
+  before=$(tree_manifest "$B/win")
+  take_snapshot
+  # Setup's step 3a, after the snapshot it finds.
+  run --separate-stderr cmd_setup
+  JSON=$output
+  assert_equal "$(field step)" 3a
+  assert_equal "$(<"$B/win/windows.base")" win11x64.iso
+  lanai_run restore "$NAME"
+  assert_success
+  assert_equal "$(tree_manifest "$B/win")" "$before"
+}
+
 @test "restore: a refused restore keeps setup state" {
   use_install "$T/win"
   mkdir -p "$S"

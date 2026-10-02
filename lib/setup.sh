@@ -152,8 +152,8 @@ setup_media_build() {
   fi
 }
 
-# Print the window choice from setup's options: auto, or true for --window
-# and false for --no-window. Fails on any other option.
+# Print the window choice from setup-guest's options: auto, or true for
+# --window and false for --no-window. Fails on any other option.
 window_option() {
   local w=auto a
   for a; do
@@ -202,4 +202,273 @@ setup_guest() {
       ;;
   esac
   boot_vm true "$window"
+}
+
+# --- lanai setup: the resumable steps (plan phase 6, the step table) ---
+
+# Seconds after step 6's client starts during which a guest part that does
+# not answer yet counts as still starting, not as missing.
+LANAI_SETUP_GRACE=${LANAI_SETUP_GRACE:-60}
+
+# setup_reply <ok> <step> <message> <next> [details-json]: emit lanai setup's
+# answer, with the step it stands at ("1" to "7", or "3a").
+setup_reply() {
+  local details=${5:-}
+  [[ -n $details ]] || details='{}'
+  emit "$1" "" "$3" "$4" "$(jq -c --arg s "$2" '. + {step: $s}' <<<"$details")"
+}
+
+# Print the pinned client binary, which step 6 runs directly.
+pinned_client() {
+  printf '%s\n' "$(client_builds)/$LG_BUILD/bin/looking-glass-client"
+}
+
+# Print the build client log <log> names ("Looking Glass (<build>)"), or
+# nothing.
+log_client_build() {
+  sed -n 's/^.* | Looking Glass (\([^)]*\))$/\1/p' "$1" 2>/dev/null | head -n 1
+}
+
+# Print when the client of log <log> started (its first line), or 0.
+log_client_start() {
+  local first="" start
+  IFS= read -r first <"$1" 2>/dev/null || true
+  start=${first#"$LANAI_CLIENT_START "}
+  [[ $first == "$LANAI_CLIENT_START "* && $start =~ ^[0-9]+$ ]] || start=0
+  printf '%s\n' "$start"
+}
+
+# setup_back5 <what failed>: a step 6 check failed, so setup goes back to
+# step 5: step5 is forgotten, so the next lanai setup, once Windows is shut
+# down, starts a setup boot with the display the record suggests.
+setup_back5() {
+  setup_set step5 null || true
+  setup_reply false 5 "$1 Lanai setup did not finish: run setup.cmd again." \
+    "shut Windows down, then run Lanai setup again"
+}
+
+# setup_step6 <share yes|no|""> <scale yes|no|"">: check the running step 6
+# boot part by part. The pinned client must be the one logging: any other
+# build's client, or a client that closed before Windows answered, is
+# (re)started with the pinned build and not counted. Then: the client's
+# verdict (version_check) waiting or unknown means wait; idd-missing or
+# mismatch sends setup back to step 5, keeping the guest version record;
+# match records the pin from this log (guest_version_note). Then the SPICE
+# agent's port must be open, and the guest agent must set the clock and
+# refuse an argument-free guest-exec as disabled (the allow-list took
+# effect); a part that does not answer within LANAI_SETUP_GRACE of the
+# client's start sends setup back to step 5. Last, the user's two answers
+# (~/Windows shows in Explorer, the text size is right): both yes finishes
+# setup, a no sends it back to step 5, none asks the questions.
+setup_step6() {
+  local share=$1 scale=$2 run log verdict="" guest="" build out wrong=""
+  local -a missing=()
+  if ! run=$(run_dir); then
+    setup_reply false 6 "XDG_RUNTIME_DIR is not set, so Lanai cannot reach Windows." ""
+    return 1
+  fi
+  log=$run/client.log
+  read -r verdict guest < <(version_check "$log") || verdict=unknown
+  build=$(log_client_build "$log")
+  if [[ -n $build && $build != "$LG_BUILD" ]] || { [[ $verdict != match ]] && ! client_active; }; then
+    ! client_active || systemctl --user stop "$LANAI_CLIENT_UNIT" >&2 || true
+    if ! client_start "$(pinned_client)" >&2; then
+      setup_reply false 6 "Lanai could not open the Windows window to check the display driver." \
+        "see the logs with journalctl --user -u $LANAI_CLIENT_UNIT"
+      return 1
+    fi
+    setup_reply true 6 "Lanai opened the Windows window with its own client to check the display driver." \
+      "wait, then run setup again"
+    return 0
+  fi
+  case $verdict in
+    match) guest_version_note "$log" ;;
+    idd-missing)
+      setup_back5 "The Looking Glass display driver in Windows did not answer."
+      return 1
+      ;;
+    mismatch)
+      setup_back5 "The display driver in Windows${guest:+ ($guest)} is not Lanai's build ($LG_BUILD)."
+      return 1
+      ;;
+    *)
+      setup_reply true 6 "Windows is starting. Lanai checks each part once it has booted." \
+        "wait, then run setup again"
+      return 0
+      ;;
+  esac
+  out=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}') || out=""
+  [[ $(jq -r 'select(.return | type == "array") | .return[] | select(.label == "vdagent") |
+    .["frontend-open"]' <<<"$out" 2>/dev/null) == true ]] || missing+=("the SPICE agent")
+  # The agent's port must be open first: a sync on a closed one waits 5 s.
+  if [[ $(jq -r 'select(.return | type == "array") | .return[] | select(.label == "qga0") |
+    .["frontend-open"]' <<<"$out" 2>/dev/null) != true ]] ||
+    ! qga_reply "$run/qga.sock" command '{"execute":"guest-set-time","arguments":{"time":@NOW_NS@}}' ||
+    ! qga_reply "$run/qga.sock" refusal '{"execute":"guest-exec"}'; then
+    missing+=("the QEMU guest agent with its allow-list")
+  fi
+  if ((${#missing[@]})); then
+    out="${missing[0]}${missing[1]:+ and ${missing[1]}}"
+    if ((EPOCHSECONDS - $(log_client_start "$log") < LANAI_SETUP_GRACE)); then
+      setup_reply true 6 "Windows is still starting: $out did not answer yet." "wait, then run setup again"
+      return 0
+    fi
+    setup_back5 "In Windows, $out did not answer."
+    return 1
+  fi
+  if [[ -z $share || -z $scale ]]; then
+    setup_reply true 6 "Windows is set up. Two last checks, in Windows: does ~/Windows show in Explorer, and does text look the right size?" \
+      "answer with lanai setup --share-ok yes|no --scale-ok yes|no" '{"questions": ["share", "scale"]}'
+    return 0
+  fi
+  [[ $share == yes ]] || wrong="Explorer does not show ~/Windows."
+  [[ $scale == yes ]] || wrong+="${wrong:+ }The text size is wrong (the sign-in scale task)."
+  if [[ -n $wrong ]]; then
+    setup_back5 "$wrong"
+    return 1
+  fi
+  if ! setup_set "done" true || ! setup_set step5 null; then
+    setup_reply false 6 "Lanai cannot record its setup state." "run setup again"
+    return 1
+  fi
+  setup_reply true 7 "Lanai setup is finished." "use Windows from the bar"
+}
+
+# setup_resume <window> <no-snapshot true|false> <share> <scale>: under
+# lanai_flock, find the first step that is not done (the step table) and
+# either answer it (one JSON object) or print the one action cmd_setup runs
+# once the lock is released: "build" (step 4), "setup-boot" (step 5) or
+# "normal-boot" (step 6). Each step is detected, not assumed. With the unit
+# stopped it first records the previous run (step 5's verdict) and makes
+# setup state follow the disk. done with a guest version behind the pin
+# goes back to step 5 (a pin bump; the old client keeps working).
+setup_resume() {
+  local window=$1 nosnap=$2 share=$3 scale=$4 st stopped=false dir problem missing details want s
+  local -a list
+  if ! lanai_flock; then
+    emit false "" "$LANAI_BUSY." "try again when it finishes"
+    return 1
+  fi
+  if ! st=$(unit_state); then
+    emit false "" "Lanai cannot reach the systemd user manager." ""
+    return 1
+  fi
+  [[ $st != inactive && $st != failed ]] || stopped=true
+  s=$(state_dir)
+  if ! dir=$(storage_dir); then
+    setup_reply false 1 "Lanai cannot read its settings file." "fix $(settings_file)"
+    return 1
+  fi
+
+  # 1. Checks.
+  if problem=$(restore_pending) || ! problem=$(layout_check "$dir") || ! problem=$(share_check) ||
+    problem=$(container_blocked); then
+    setup_reply false 1 "${problem//$'\n'/; }" "fix that, then run setup again"
+    return 1
+  fi
+  if $stopped; then
+    record_previous_run >/dev/null
+    if ! setup_follow "$dir"; then
+      setup_reply false 1 "Lanai cannot record its setup state in $s." ""
+      return 1
+    fi
+  elif ! setup_current "$dir"; then
+    setup_reply false 1 "Windows is running under Lanai ($st)." "shut Windows down, then run setup again"
+    return 1
+  fi
+
+  # 2. Host packages.
+  missing=$(host_packages_missing)
+  if [[ -n $missing ]]; then
+    mapfile -t list <<<"$missing"
+    details=$(jq -n -c --arg m "$missing" --arg c "$(host_install_command "${list[@]}")" \
+      '{missing: ($m | split("\n") | map(select(. != ""))), command: $c}')
+    setup_reply false 2 "Lanai needs host packages that are not installed: ${missing//$'\n'/, }." \
+      "install them with lanai setup-host, which opens a terminal" "$details"
+    return 1
+  fi
+
+  # 3. The snapshot offer, before any Lanai boot.
+  if [[ -z $(setup_get snapshot) ]]; then
+    if [[ -n $(snapshot_list "$dir") ]]; then
+      setup_set snapshot '"taken"'
+    elif [[ $nosnap == true ]]; then
+      setup_set snapshot '"declined"'
+    else
+      setup_reply false 3 "Before Windows first boots under Lanai, Lanai can take an instant snapshot of $dir, so a bad first boot can be undone." \
+        "take one with lanai snapshot, or go on without one with lanai setup --no-snapshot"
+      return 1
+    fi
+  fi
+
+  # 3a. An empty or missing windows.base gets the name dockur would write,
+  # after the snapshot, so a restore brings back the original.
+  if $stopped && [[ ! -s $dir/windows.base ]]; then
+    if ! want=$(expected_base) || ! printf '%s\n' "$want" >"$dir/windows.base"; then
+      setup_reply false 3a "Lanai cannot fill in windows.base: $want" "fix that, then run setup again"
+      return 1
+    fi
+    setup_reply true 3a "windows.base was empty, so Lanai wrote $want into it, the name a container start would write, so a later one rewrites nothing." \
+      "run setup again"
+    return 0
+  fi
+
+  # 4. The pinned client.
+  if [[ $(client_version "$(pinned_client)" 2>/dev/null) != "$LG_BUILD" ]]; then
+    echo build
+    return 0
+  fi
+
+  # 7. Done, unless the guest's IDD is behind the pin.
+  if setup_done && [[ -z $(guest_version_behind) ]]; then
+    setup_reply true 7 "Lanai setup is finished." "start Windows"
+    return 0
+  fi
+
+  # 5 and 6, by the VM's state.
+  if ! $stopped; then
+    if jq -e '.setup == true' "$s/boot.json" >/dev/null 2>&1; then
+      setup_reply true 5 "The setup boot is running. In Windows, open Lanai's setup drive and run setup.cmd; Windows shuts down by itself when it finishes." \
+        "once Windows has shut down, run setup again" \
+        "$(jq -n -c --argjson w "$(boot_window && echo true || echo false)" '{active: true, window: $w}')"
+      return 0
+    fi
+    if [[ $(setup_get step5) == true ]]; then
+      if [[ $st != active ]]; then
+        setup_reply true 6 "Windows is starting or shutting down ($st)." "wait, then run setup again"
+        return 0
+      fi
+      setup_step6 "$share" "$scale"
+      return
+    fi
+    setup_reply false 5 "Windows is running without Lanai's setup drive." "shut Windows down, then run setup again"
+    return 1
+  fi
+  case $(setup_get step5) in
+    true) echo normal-boot ;;
+    false)
+      if [[ $window == auto ]]; then
+        setup_reply false 5 "The setup boot did not finish: Windows did not shut down by itself after setup.cmd. A Shut down from the panel or a forced stop does not count." \
+          "start it again on QEMU's screen (--window) while Windows has no Lanai display driver yet, or in the Windows window (--no-window) once it has" \
+          '{"choices": ["--window", "--no-window"]}'
+        return 1
+      fi
+      echo setup-boot
+      ;;
+    *) echo setup-boot ;;
+  esac
+}
+
+# setup_with_step <step> [<message suffix>]: read one JSON reply on stdin
+# and print it with the step added (and, when ok, the suffix after its
+# message), as lanai setup's one object.
+setup_with_step() {
+  local out
+  out=$(jq -c --arg s "$1" --arg add "${2:-}" \
+    '. + {step: $s} + (if .ok and $add != "" then {message: (.message + " " + $add)} else {} end)') ||
+    return 1
+  printf '%s\n' "$out"
+  # lanai_on_exit reads it.
+  # shellcheck disable=SC2034
+  LANAI_EMITTED=1
 }

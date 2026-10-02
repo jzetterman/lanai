@@ -11,6 +11,8 @@
 #                    no status
 #   FAKE_QMP_STATUS  query-status's status (default running)
 #   FAKE_QMP_QGA     query-chardev's frontend-open for qga0 (default true)
+#   FAKE_QMP_VDAGENT query-chardev's frontend-open for the SPICE agent's vdagent
+#                    (default true)
 #   FAKE_QMP_KILL    a pid to kill when system_powerdown arrives; with
 #   FAKE_QMP_KILL_ON=N, only once N have arrived (counted in FAKE_QMP_LOG)
 #   FAKE_QMP_RECORD  a file to write a guest SHUTDOWN record to on powerdown,
@@ -37,7 +39,7 @@ while IFS= read -r line; do
       [[ ${FAKE_QMP_MODE:-} != nostatus ]] || r='{}'
       ;;
     query-chardev)
-      r="[{\"frontend-open\": true, \"filename\": \"spicevmc\", \"label\": \"vdagent\"},
+      r="[{\"frontend-open\": ${FAKE_QMP_VDAGENT:-true}, \"filename\": \"spicevmc\", \"label\": \"vdagent\"},
 {\"frontend-open\": ${FAKE_QMP_QGA:-true}, \"filename\": \"unix:/r/qga.sock,server=on\", \"label\": \"qga0\"}]"
       r=$(jq -c . <<<"$r")
       ;;
