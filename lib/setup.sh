@@ -254,9 +254,13 @@ setup_back5() {
 # boot part by part. The pinned client must be the one logging: any other
 # build's client, or a client that closed before Windows answered, is
 # (re)started with the pinned build and not counted. Then: the client's
-# verdict (version_check) waiting or unknown means wait; idd-missing or
-# mismatch sends setup back to step 5, keeping the guest version record;
-# match records the pin from this log (guest_version_note). Then the SPICE
+# verdict (version_check) waiting or unknown means wait; mismatch sends
+# setup back to step 5, keeping the guest version record; so does
+# idd-missing, but only once the guest agent's port has been open for
+# LANAI_SETUP_GRACE (stamped in $RUN/qga-open-since the first time step 6
+# sees it open), since the client's 30 s count from QEMU's start, firmware
+# time included; before that it means wait. match records the pin from
+# this log (guest_version_note). Then the SPICE
 # agent's port must be open, and the guest agent must set the clock and
 # refuse an argument-free guest-exec as disabled (the allow-list took
 # effect); a part that does not answer within LANAI_SETUP_GRACE of the
@@ -264,7 +268,7 @@ setup_back5() {
 # (~/Windows shows in Explorer, the text size is right): both yes finishes
 # setup, a no sends it back to step 5, none asks the questions.
 setup_step6() {
-  local share=$1 scale=$2 run log verdict="" guest="" build out wrong=""
+  local share=$1 scale=$2 run log verdict="" guest="" build out wrong="" since
   local -a missing=()
   if ! run=$(run_dir); then
     setup_reply false 6 "XDG_RUNTIME_DIR is not set, so Lanai cannot reach Windows." ""
@@ -284,11 +288,27 @@ setup_step6() {
       "wait, then run setup again"
     return 0
   fi
+  out=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}') || out=""
+  # The first time this boot shows the guest agent's port open (lanai-vm-exec
+  # removes the stamp at each start).
+  if [[ $(jq -r 'select(.return | type == "array") | .return[] | select(.label == "qga0") |
+    .["frontend-open"]' <<<"$out" 2>/dev/null) == true && ! -s $run/qga-open-since ]]; then
+    printf '%s\n' "$EPOCHSECONDS" >"$run/qga-open-since" || true
+  fi
+  since=""
+  [[ ! -s $run/qga-open-since ]] || since=$(<"$run/qga-open-since")
   case $verdict in
     match) guest_version_note "$log" ;;
     idd-missing)
-      setup_back5 "The Looking Glass display driver in Windows did not answer."
-      return 1
+      # The client's 30 s count from QEMU's start, firmware time included,
+      # so it counts only once Windows has been up for the grace.
+      if [[ $since =~ ^[0-9]+$ ]] && ((EPOCHSECONDS - since >= LANAI_SETUP_GRACE)); then
+        setup_back5 "The Looking Glass display driver in Windows did not answer."
+        return 1
+      fi
+      setup_reply true 6 "Windows is starting. Lanai checks each part once it has booted." \
+        "wait, then run setup again"
+      return 0
       ;;
     mismatch)
       setup_back5 "The display driver in Windows${guest:+ ($guest)} is not Lanai's build ($LG_BUILD)."
@@ -300,7 +320,6 @@ setup_step6() {
       return 0
       ;;
   esac
-  out=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}') || out=""
   [[ $(jq -r 'select(.return | type == "array") | .return[] | select(.label == "vdagent") |
     .["frontend-open"]' <<<"$out" 2>/dev/null) == true ]] || missing+=("the SPICE agent")
   # The agent's port must be open first: a sync on a closed one waits 5 s.

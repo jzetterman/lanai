@@ -754,7 +754,9 @@ step6_running() {
   local log
   for log in idd-missing mismatch; do
     if [[ $log == idd-missing ]]; then
-      step6_running "$FIX/client-logs/waiting.log" 60
+      step6_running "$FIX/client-logs/waiting.log" 120
+      # The guest agent's port has been open past the grace.
+      echo "$((EPOCHSECONDS - LANAI_SETUP_GRACE - 1))" >"$RUN/qga-open-since"
     else
       step6_running "$FIX/client-logs/other-build.log"
     fi
@@ -768,6 +770,51 @@ step6_running() {
     assert_equal "$(jq -r '.step5 // "unset"' "$S/setup.json")" unset
     assert_equal "$(<"$S/guest-version")" B7-801-g1a2b3c4d5e
   done
+}
+
+@test "lanai setup step 6: a missing IDD waits until the guest agent's port has been open for the grace" {
+  # The client's 30 s run from QEMU's start, firmware time included, so
+  # idd-missing alone says nothing until Windows has booted.
+  step6_running "$FIX/client-logs/waiting.log" 120
+  conf FAKE_QMP_QGA=false
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  run field message
+  assert_output --partial "starting"
+  assert [ ! -e "$RUN/qga-open-since" ]
+  assert_equal "$(jq -r .step5 "$S/setup.json")" true
+  # The port has just opened: still waiting, and the time is stamped once.
+  conf FAKE_QMP_QGA=true
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  local since
+  since=$(<"$RUN/qga-open-since")
+  ((EPOCHSECONDS - since <= 5)) || fail "stamp $since is not now"
+  echo "$((since - 10))" >"$RUN/qga-open-since"
+  setup_run
+  assert_equal "$(field step)" 6
+  assert_equal "$(<"$RUN/qga-open-since")" "$((since - 10))"
+  # Open for longer than the grace: the IDD is missing.
+  echo "$((EPOCHSECONDS - LANAI_SETUP_GRACE - 1))" >"$RUN/qga-open-since"
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  run field message
+  assert_output --partial "display driver"
+}
+
+@test "lanai setup step 6: a match after an early idd-missing finishes normally" {
+  step6_running "$FIX/client-logs/waiting.log" 120
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  # The IDD loaded later in the same client's run.
+  started_log "$FIX/client-logs/match.log" 120 >"$RUN/client.log"
+  setup_run --share-ok yes --scale-ok yes
+  assert_success
+  assert_equal "$(field step)" 7
 }
 
 @test "lanai setup step 6: after a partly failed setup.cmd, a missing part sends setup back to step 5" {

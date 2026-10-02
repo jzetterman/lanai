@@ -924,14 +924,17 @@ start_exec() {
   : >"$RUN/qmp.sock"
   : >"$RUN/ivshmem"
   echo "old client log" >"$RUN/client.log"
+  echo 1700000000 >"$RUN/qga-open-since"
   mkdir -p "$S"
   echo '{"scale": 150, "setup": false}' >"$S/boot.json"
   start_exec
   wait_for_file "$T/qemu.args" "QEMU never started: $(cat "$T/exec.out")"
-  # The stale files are gone and the log is empty.
+  # The stale files are gone and the log is empty. Setup's step 6 times the
+  # guest agent's port from this boot only.
   assert [ ! -e "$RUN/qmp.sock" ]
   assert [ ! -e "$RUN/ivshmem" ]
   assert [ ! -s "$RUN/client.log" ]
+  assert [ ! -e "$RUN/qga-open-since" ]
   assert_equal "$(stat -c %a "$RUN")" 700
   # QEMU runs as the unit's main process, with the arguments vm_args builds.
   assert_equal "$(<"$T/qemu.args")" "$(vm_args "$T/win" 02:4B:81:73:3C:96 8 4 150 192.168.1.1)"

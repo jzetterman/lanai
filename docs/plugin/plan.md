@@ -932,7 +932,12 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   Open during step 6) is stopped and the pinned one started; a client that closed
   before a `match` is reopened. The guest agent is asked only once QMP shows its port
   open (a sync on a closed port waits 5 s). A part that has not answered 60 s after
-  the client started (`LANAI_SETUP_GRACE`) counts as missing.
+  the client started (`LANAI_SETUP_GRACE`) counts as missing. `idd-missing` sends
+  setup back to step 5 only once the guest agent's port has been open for that grace:
+  the client's 30 s count from QEMU's start, firmware time included, and the agent
+  can answer before the IDD loads. Step 6 stamps the first time it sees the port open
+  in `$RUN/qga-open-since`, which `lanai-vm-exec` removes at each start; before then,
+  `idd-missing` means wait. `mismatch` still sends setup back at once.
 - `lanai setup-guest` refuses until step 3 has a decision for this location. It holds
   the lock, with the VM stopped, for the whole media build (downloads included), and
   removes the old media first, so a failed build leaves none. The media use fixed
