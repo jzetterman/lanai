@@ -1280,6 +1280,19 @@ cmd_setup_host() {
     "enter your password in the terminal, then continue setup" "$details"
 }
 
+# setup-guest [--window|--no-window]: build the verified setup media and
+# start the setup boot (step 5 of lanai setup, which passes its options on).
+# The display is a guess from the guest version record; --window forces
+# QEMU's window, --no-window the Looking Glass window (boot_vm).
+cmd_setup_guest() {
+  local window
+  if ! window=$(window_option "$@"); then
+    emit false "" "unknown option: $*" "use --window or --no-window"
+    return 2
+  fi
+  setup_guest "$window"
+}
+
 # force-stop --confirm: kill the VM at once, like pulling the power (spec
 # 16). Writes the "forced" marker first, so the next start reports it.
 cmd_force_stop() {

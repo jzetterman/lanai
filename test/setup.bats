@@ -370,3 +370,133 @@ boot() {
   assert_equal "$(field active)" true
   assert_equal "$(field window)" false
 }
+
+# --- the setup media (lanai setup-guest) ---
+
+# Make stand-ins for the pinned guest files in $T/src, point the pins at
+# them (https://pins.test/<file>) with their real SHA-256, and shim curl to
+# serve them by name. The ISO stand-in is a tar archive (bsdtar reads
+# either) with the viofs driver for several Windows versions.
+pinned_files() {
+  local d=$T/src/tree
+  mkdir -p "$d/idd" "$d/iso/viofs/w11/amd64" "$d/iso/viofs/w10/amd64" "$d/iso/NetKVM/w11/amd64"
+  echo idd-exe >"$d/idd/looking-glass-idd-setup.exe"
+  echo readme >"$d/idd/README.txt"
+  bsdtar -a -cf "$T/src/idd.zip" -C "$d/idd" looking-glass-idd-setup.exe README.txt
+  echo inf >"$d/iso/viofs/w11/amd64/viofs.inf"
+  echo exe >"$d/iso/viofs/w11/amd64/virtiofs.exe"
+  echo old >"$d/iso/viofs/w10/amd64/viofs.inf"
+  echo net >"$d/iso/NetKVM/w11/amd64/netkvm.inf"
+  bsdtar -cf "$T/src/virtio-win.iso" -C "$d/iso" viofs NetKVM
+  echo vdagent >"$T/src/vdagent.msi"
+  echo qga >"$T/src/qemu-ga.msi"
+  echo winfsp >"$T/src/winfsp.msi"
+  sum() { sha256sum "$T/src/$1" | cut -d' ' -f1; }
+  LG_IDD_URL=https://pins.test/idd.zip LG_IDD_SHA=$(sum idd.zip)
+  VDAGENT_URL=https://pins.test/vdagent.msi VDAGENT_SHA=$(sum vdagent.msi)
+  QEMU_GA_URL=https://pins.test/qemu-ga.msi QEMU_GA_SHA=$(sum qemu-ga.msi)
+  WINFSP_URL=https://pins.test/winfsp.msi WINFSP_SHA=$(sum winfsp.msi)
+  VIRTIO_WIN_URL=https://pins.test/virtio-win.iso VIRTIO_WIN_SHA=$(sum virtio-win.iso)
+  shim curl 'url=${!#}
+while (($#)); do [[ $1 != -o ]] || out=$2; shift; done
+echo "$url" >>"$T/curl.calls"
+cp "$T/src/${url##*/}" "$out"'
+}
+
+# Run cmd_setup_guest in this shell (the pins are overridden here) and keep
+# its JSON for field.
+setup_guest_run() {
+  run --separate-stderr cmd_setup_guest "$@"
+  JSON=$output
+}
+
+@test "lanai setup-guest: verified media with only viofs\\w11\\amd64 from the ISO, then the setup boot" {
+  install
+  setup_json '{"snapshot": "declined"}'
+  pinned_files
+  export WAYLAND_DISPLAY=wayland-3
+  setup_guest_run
+  assert_success
+  assert_equal "$(field window)" true
+  local media=$S/setup-media
+  run bash -c 'cd "$1" && find . -mindepth 1 | LC_ALL=C sort' _ "$media"
+  assert_output "$(printf '%s\n' ./lanai-lock.cmd ./lanai-scale.ps1 ./looking-glass-idd-setup.exe \
+    ./qemu-ga.msi ./setup.cmd ./spice-vdagent.msi ./viofs ./viofs/w11 ./viofs/w11/amd64 \
+    ./viofs/w11/amd64/viofs.inf ./viofs/w11/amd64/virtiofs.exe ./winfsp.msi)"
+  cmp "$media/setup.cmd" "$REPO/guest/setup.cmd"
+  cmp "$media/lanai-lock.cmd" "$REPO/guest/lanai-lock.cmd"
+  cmp "$media/spice-vdagent.msi" "$T/src/vdagent.msi"
+  # Every file setup.cmd calls by %~dp0 is on the media.
+  local f
+  while IFS= read -r f; do
+    f=${f#%~dp0}
+    [[ -z $f ]] || [[ -f $media/${f//\\//} ]] || fail "setup.cmd calls $f, which the media lack"
+  done < <(grep -oE '%~dp0[A-Za-z][A-Za-z0-9._\\-]*' "$REPO/guest/setup.cmd" | sort -u)
+  # The downloads stay in the cache, outside the media.
+  assert [ -f "$XDG_CACHE_HOME/lanai/downloads/virtio-win-$VIRTIO_WIN_VERSION.iso" ]
+  assert [ ! -e "$S/setup-media.partial" ]
+  assert_equal "$(jq -r .setup "$S/boot.json")" true
+  grep -q -- '--user start lanai-vm.service' "$T/systemctl.calls" || fail "the unit did not start"
+}
+
+@test "lanai setup-guest: a wrong checksum for any pinned file stops the build, with no unverified file in the media" {
+  install
+  setup_json '{"snapshot": "declined"}'
+  pinned_files
+  export WAYLAND_DISPLAY=wayland-3
+  local pin good
+  for pin in LG_IDD_SHA VDAGENT_SHA QEMU_GA_SHA WINFSP_SHA VIRTIO_WIN_SHA; do
+    rm -rf "$XDG_CACHE_HOME/lanai/downloads" "$S/setup-media"
+    mkdir -p "$S/setup-media"
+    echo stale >"$S/setup-media/qemu-ga.msi"
+    good=${!pin}
+    printf -v "$pin" '%064d' 0
+    setup_guest_run
+    assert_failure
+    run field message
+    assert_output --partial "SHA-256 mismatch"
+    # No media at all, so nothing unverified can reach Windows.
+    assert [ ! -e "$S/setup-media" ]
+    assert [ ! -e "$S/setup-media.partial" ]
+    printf -v "$pin" '%s' "$good"
+  done
+  ! grep -q -- '--user start' "$T/systemctl.calls" 2>/dev/null || fail "the unit was started"
+}
+
+@test "lanai setup-guest: refuses before step 3, and while Windows runs" {
+  install
+  pinned_files
+  export WAYLAND_DISPLAY=wayland-3
+  setup_guest_run
+  assert_failure
+  run field next
+  assert_output --partial "lanai setup"
+  assert [ ! -e "$T/curl.calls" ]
+  setup_json '{"snapshot": "declined"}'
+  unit_is lanai-vm.service active
+  mkdir -p "$S/setup-media"
+  echo in-use >"$S/setup-media/setup.cmd"
+  setup_guest_run
+  assert_failure
+  run field message
+  assert_output --partial "running"
+  assert_equal "$(<"$S/setup-media/setup.cmd")" in-use
+}
+
+@test "lanai setup-guest: --window and --no-window pass on; anything else is refused" {
+  install
+  setup_json '{"snapshot": "declined"}'
+  echo B7-801-g1a2b3c4d5e >"$S/guest-version"
+  pinned_files
+  export WAYLAND_DISPLAY=wayland-3
+  setup_guest_run --bogus
+  assert_failure
+  setup_guest_run --window
+  assert_success
+  assert_equal "$(field window)" true
+  assert [ ! -e "$S/guest-version" ]
+  unit_is lanai-vm.service inactive
+  setup_guest_run --no-window
+  assert_success
+  assert_equal "$(field window)" false
+}

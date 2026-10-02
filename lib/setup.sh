@@ -68,3 +68,138 @@ setup_follow() {
   setup_reset
   setup_set location "$(jq -n -c --arg d "$dir" '$d')"
 }
+
+# --- the setup media (spec 7, 26) ---
+
+# Print the pinned guest files, one per line: "<cache name> <url> <sha256>"
+# (lib/pins.sh, read at call time).
+guest_pins() {
+  printf '%s %s %s\n' \
+    "looking-glass-idd-$LG_BUILD.zip" "$LG_IDD_URL" "$LG_IDD_SHA" \
+    "spice-vdagent-x64-$VDAGENT_VERSION.msi" "$VDAGENT_URL" "$VDAGENT_SHA" \
+    "qemu-ga-x86_64-$QEMU_GA_VERSION.msi" "$QEMU_GA_URL" "$QEMU_GA_SHA" \
+    "winfsp-$WINFSP_VERSION.msi" "$WINFSP_URL" "$WINFSP_SHA" \
+    "virtio-win-$VIRTIO_WIN_VERSION.iso" "$VIRTIO_WIN_URL" "$VIRTIO_WIN_SHA"
+}
+
+# Print the folder pinned downloads are cached in.
+downloads_dir() {
+  printf '%s\n' "${XDG_CACHE_HOME:-$HOME/.cache}/lanai/downloads"
+}
+
+# Download every pinned guest file into downloads_dir and verify its
+# SHA-256 (fetch_verified: a cached file is used only while it matches; a
+# mismatch deletes the file). On failure prints why.
+setup_downloads() {
+  local dl name url sum out
+  dl=$(downloads_dir)
+  mkdir -p -- "$dl" || {
+    echo "cannot create $dl"
+    return 1
+  }
+  while read -r name url sum; do
+    if ! out=$(fetch_verified "$url" "$dl/$name" "$sum" 2>&1); then
+      printf '%s\n' "${out:-could not download $url}"
+      return 1
+    fi
+  done < <(guest_pins)
+}
+
+# Build the setup disk's folder, <state>/setup-media: remove the old media
+# first, so a failure leaves none at all; download and verify the pinned
+# guest files (setup_downloads); then, in setup-media.partial, renamed at
+# the end, put the IDD installer from its zip, the three MSIs under the
+# names setup.cmd uses, the guest scripts, and from the virtio-win ISO (too
+# big for QEMU's FAT disk) only viofs/w11/amd64. The VM must be stopped: a
+# running setup boot reads the folder. On failure prints why.
+setup_media_build() {
+  local dl media part guest=$LANAI_LIB/../guest f
+  dl=$(downloads_dir)
+  media=$(state_dir)/setup-media
+  part=$media.partial
+  chmod -R u+w -- "$media" "$part" 2>/dev/null || true
+  if ! rm -rf -- "$media" "$part"; then
+    echo "cannot remove the old $media"
+    return 1
+  fi
+  setup_downloads || return 1
+  mkdir -p -- "$part" || {
+    echo "cannot create $part"
+    return 1
+  }
+  if ! bsdtar -xf "$dl/looking-glass-idd-$LG_BUILD.zip" -C "$part" looking-glass-idd-setup.exe ||
+    ! bsdtar -xf "$dl/virtio-win-$VIRTIO_WIN_VERSION.iso" -C "$part" viofs/w11/amd64 ||
+    ! chmod -R u+rwX -- "$part"; then
+    echo "cannot unpack the IDD installer or viofs/w11/amd64 from the downloads"
+    rm -rf -- "$part"
+    return 1
+  fi
+  for f in looking-glass-idd-setup.exe viofs/w11/amd64/viofs.inf viofs/w11/amd64/virtiofs.exe; do
+    [[ -f $part/$f && ! -L $part/$f ]] || {
+      echo "the downloads hold no $f"
+      rm -rf -- "$part"
+      return 1
+    }
+  done
+  if ! cp -- "$dl/spice-vdagent-x64-$VDAGENT_VERSION.msi" "$part/spice-vdagent.msi" ||
+    ! cp -- "$dl/qemu-ga-x86_64-$QEMU_GA_VERSION.msi" "$part/qemu-ga.msi" ||
+    ! cp -- "$dl/winfsp-$WINFSP_VERSION.msi" "$part/winfsp.msi" ||
+    ! cp -- "$guest/setup.cmd" "$guest/lanai-lock.cmd" "$guest/lanai-scale.ps1" "$part/" ||
+    ! mv -T -- "$part" "$media"; then
+    echo "cannot assemble $media"
+    rm -rf -- "$part"
+    return 1
+  fi
+}
+
+# Print the window choice from setup's options: auto, or true for --window
+# and false for --no-window. Fails on any other option.
+window_option() {
+  local w=auto a
+  for a; do
+    case $a in
+      --window) w=true ;;
+      --no-window) w=false ;;
+      *) return 1 ;;
+    esac
+  done
+  printf '%s\n' "$w"
+}
+
+# setup_guest <window auto|true|false>: step 5's setup boot (plan phase 6).
+# Refuses before step 3 (no snapshot decision for this location). Builds
+# the setup media under lanai_flock, with the VM stopped (in a subshell,
+# released before boot_vm takes the lock again; the downloads can take
+# minutes), then boots with the setup disk (boot_vm true). Emits one JSON
+# object. Records no guest version: step 6 does, from evidence.
+setup_guest() {
+  local window=$1 dir out rc st
+  if ! dir=$(storage_dir) || ! setup_current "$dir" || [[ -z $(setup_get snapshot) ]]; then
+    emit false setup-needed "Lanai setup has not offered its snapshot for this storage location yet." \
+      "run lanai setup"
+    return 1
+  fi
+  rc=0
+  out=$(
+    lanai_flock || exit 3
+    st=$(unit_state) || st=unknown
+    [[ $st == inactive || $st == failed ]] || exit 4
+    setup_media_build
+  ) || rc=$?
+  case $rc in
+    0) ;;
+    3)
+      emit false "" "$LANAI_BUSY." "try again when it finishes"
+      return 1
+      ;;
+    4)
+      emit false "" "Windows is running under Lanai." "shut Windows down, then run setup again"
+      return 1
+      ;;
+    *)
+      emit false "" "The setup media were not built: $out" "run setup again"
+      return 1
+      ;;
+  esac
+  boot_vm true "$window"
+}

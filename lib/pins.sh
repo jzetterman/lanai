@@ -1,6 +1,8 @@
-# Pinned downloads (spec req 26). Every file Lanai fetches itself is checked
-# against its SHA-256 here before use. Draft from phase 1 (docs/plugin/proofs.md);
-# phase 5 uses the Looking Glass pins, phase 6 the guest pins.
+# Pinned downloads (spec req 26): the one source for every file Lanai
+# fetches itself, each checked against its SHA-256 here before use. Values
+# from phase 1 (docs/plugin/proofs.md, "Pinned downloads"). lanai
+# build-client uses the Looking Glass source; lanai setup-guest the IDD and
+# the guest files (guest_pins in lib/setup.sh); the proof kit all of them.
 # Source this file; it defines variables only.
 # shellcheck shell=bash disable=SC2034
 
