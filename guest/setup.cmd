@@ -1,10 +1,10 @@
 @echo off
 rem setup.cmd: Lanai's setup inside Windows (spec req 7, plan phase 6).
 rem Run it from Lanai's setup drive as the user who uses Windows. It asks for
-rem administrator rights once, then, in order: prepares C:\Lanai for the
-rem sign-in scale task, installs the SPICE guest agent, the QEMU guest agent
-rem with its allow-list, WinFsp, the pinned virtio-fs driver and service, adds
-rem the scale task, turns the Windows lock off (lanai-lock.cmd), and installs
+rem administrator rights once, then, in order: installs the SPICE guest
+rem agent, the QEMU guest agent with its allow-list, WinFsp, the pinned
+rem virtio-fs driver and service, adds the sign-in scale task (its script in
+rem C:\Program Files\Lanai), turns the Windows lock off (lanai-lock.cmd), and installs
 rem the Looking Glass display driver last, since it turns this display black.
 rem Then Windows shuts down, and Lanai setup goes on at the next boot.
 rem Safe to rerun. It parses no localized text.
@@ -25,13 +25,13 @@ echo account you are signed in as.
 rem A declined prompt is a non-terminating error in Windows PowerShell 5.1,
 rem which would leave $p empty and exit 0; Stop makes it 1223 (ERROR_CANCELLED).
 powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; try { $p = Start-Process -FilePath $env:LANAI_SETUP -ArgumentList '/elevated', $env:LANAI_SID -Verb RunAs -Wait -PassThru; exit $p.ExitCode } catch { exit 1223 }"
-rem Exact codes: "if errorlevel N" means N or more. 0 is done; 2 is a failed
-rem display driver, when this display may be black (Lanai's step 6 reports
-rem it); any other failure was shown, with a pause, in the elevated window.
+rem Exact codes: "if errorlevel N" means N or more. 0 is done, and 1223 a
+rem declined prompt. Anything else exits without a pause: the elevated
+rem window already showed it and paused, or, for a failed display driver
+rem (2), the display may be black and Lanai's step 6 reports it.
 set "RC=%errorlevel%"
 if "%RC%"=="0" exit /b 0
 if "%RC%"=="1223" goto :declined
-if "%RC%"=="2" exit /b 1
 exit /b 1
 
 :no_sid
@@ -56,74 +56,20 @@ set "HAVE_SID="
 for /f "tokens=2 delims=," %%s in ('whoami /user /fo csv /nh') do set "HAVE_SID=%%~s"
 if not defined HAVE_SID goto :other_account
 if /i not "%HAVE_SID%"=="%WANT_SID%" goto :other_account
+rem Only from Lanai's read-only setup drive: a copy on the system drive can
+rem be writable by other accounts, and this stage runs it as administrator.
+if /i "%~d0"=="%SystemDrive%" goto :system_drive
 
 rem Every file first, so a broken setup drive changes nothing.
 for %%f in (spice-vdagent.msi qemu-ga.msi winfsp.msi looking-glass-idd-setup.exe lanai-lock.cmd lanai-scale.ps1 viofs\w11\amd64\viofs.inf viofs\w11\amd64\virtiofs.exe) do if not exist "%~dp0%%f" goto :media_broken
 
-echo [1/9] Preparing C:\Lanai
-set "STEP=the folder C:\Lanai"
-rem Never a recursive delete: an elevated one could follow a planted link.
-rem A link in C:\Lanai's place is removed with rd without /s, which unlinks
-rem it and never touches its target.
-fsutil reparsepoint query C:\Lanai >nul 2>&1
-if errorlevel 1 goto :lanai_no_link
-rd C:\Lanai
-set "RC=%errorlevel%"
-if not "%RC%"=="0" goto :failed
-:lanai_no_link
-rem An existing folder is removed and made anew, so the folder and the
-rem script are always Lanai's own: another account that made C:\Lanai first
-rem owns it and may have given itself an explicit ACE, which no ACL change
-rem below would remove. It may hold only lanai-scale.ps1, as a plain file.
-rem Judge dir's output, not its exit code (1 on an empty folder).
-if not exist C:\Lanai\ goto :lanai_create
-set "LANAI_EXTRA="
-for /f "eol=: delims=" %%f in ('dir /b /a C:\Lanai 2^>nul') do if /i not "%%f"=="lanai-scale.ps1" set "LANAI_EXTRA=1"
-if defined LANAI_EXTRA goto :lanai_planted
-if not exist C:\Lanai\lanai-scale.ps1 goto :lanai_remove
-if exist C:\Lanai\lanai-scale.ps1\ goto :lanai_planted
-fsutil reparsepoint query C:\Lanai\lanai-scale.ps1 >nul 2>&1
-if not errorlevel 1 goto :lanai_planted
-del /f /q C:\Lanai\lanai-scale.ps1
-set "RC=%errorlevel%"
-if not "%RC%"=="0" goto :failed
-:lanai_remove
-rem del can exit 0 without deleting; rd then fails on the folder left full.
-rd C:\Lanai
-set "RC=%errorlevel%"
-if not "%RC%"=="0" goto :failed
-:lanai_create
-rem Fails when C:\Lanai exists again, say another account made it meanwhile.
-mkdir C:\Lanai
-set "RC=%errorlevel%"
-if not "%RC%"=="0" goto :failed
-rem Owner and access by well-known SID, since group names are localized: a
-rem new folder under C:\ would inherit Modify for Authenticated Users.
-icacls C:\Lanai /setowner *S-1-5-32-544 >nul
-set "RC=%errorlevel%"
-if not "%RC%"=="0" goto :failed
-icacls C:\Lanai /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" >nul
-set "RC=%errorlevel%"
-if not "%RC%"=="0" goto :failed
-rem A link swapped in meanwhile would have taken the ACL instead.
-fsutil reparsepoint query C:\Lanai >nul 2>&1
-if not errorlevel 1 goto :lanai_planted
-rem The new folder must be empty: anything in it was planted between mkdir
-rem and the ACL.
-set "LANAI_EXTRA="
-for /f "eol=: delims=" %%f in ('dir /b /a C:\Lanai 2^>nul') do set "LANAI_EXTRA=1"
-if defined LANAI_EXTRA goto :lanai_planted
-copy /y "%~dp0lanai-scale.ps1" C:\Lanai\lanai-scale.ps1 >nul
-set "RC=%errorlevel%"
-if not "%RC%"=="0" goto :failed
-
-echo [2/9] Installing the SPICE guest agent
+echo [1/8] Installing the SPICE guest agent
 set "STEP=the SPICE guest agent"
 msiexec /i "%~dp0spice-vdagent.msi" /qn /norestart
 set "RC=%errorlevel%"
 if not "%RC%"=="0" if not "%RC%"=="3010" goto :failed
 
-echo [3/9] Installing the QEMU guest agent
+echo [2/8] Installing the QEMU guest agent
 set "STEP=the QEMU guest agent"
 msiexec /i "%~dp0qemu-ga.msi" /qn /norestart
 set "RC=%errorlevel%"
@@ -135,13 +81,13 @@ sc.exe config QEMU-GA binPath= "\"C:\Program Files\Qemu-ga\qemu-ga.exe\" -d --re
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 
-echo [4/9] Installing WinFsp
+echo [3/8] Installing WinFsp
 set "STEP=WinFsp"
 msiexec /i "%~dp0winfsp.msi" /qn /norestart
 set "RC=%errorlevel%"
 if not "%RC%"=="0" if not "%RC%"=="3010" goto :failed
 
-echo [5/9] Installing the virtio-fs driver
+echo [4/8] Installing the virtio-fs driver
 set "STEP=the virtio-fs driver"
 rem Always, not only when missing: dockur's older driver fails with the
 rem pinned virtiofs.exe (proof 2). 259 means it is already current.
@@ -149,7 +95,7 @@ pnputil /add-driver "%~dp0viofs\w11\amd64\viofs.inf" /install
 set "RC=%errorlevel%"
 if not "%RC%"=="0" if not "%RC%"=="3010" if not "%RC%"=="259" goto :failed
 
-echo [6/9] Setting up the file-sharing service
+echo [5/8] Setting up the file-sharing service
 set "STEP=the file-sharing service"
 set "VFS_NEW="
 sc.exe query VirtioFsSvc >nul 2>&1
@@ -166,27 +112,35 @@ if not "%RC%"=="0" goto :failed
 copy /y "%~dp0viofs\w11\amd64\virtiofs.exe" "C:\Program Files\Lanai\virtiofs.exe"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
-rem dockur may already have made the service: update it, or create it.
+rem dockur may already have made the service: update it, or create it. The
+rem path is quoted inside, as for QEMU-GA: a LocalSystem service with an
+rem unquoted path that holds a space could run C:\Program.exe (CWE-428).
 if defined VFS_NEW goto :vfs_create
-sc.exe config VirtioFsSvc binPath= "C:\Program Files\Lanai\virtiofs.exe" start= auto depend= "WinFsp.Launcher/VirtioFsDrv" >nul
+sc.exe config VirtioFsSvc binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" start= auto depend= "WinFsp.Launcher/VirtioFsDrv" >nul
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 goto :vfs_done
 :vfs_create
-sc.exe create VirtioFsSvc binPath= "C:\Program Files\Lanai\virtiofs.exe" start= auto depend= "WinFsp.Launcher/VirtioFsDrv" >nul
+sc.exe create VirtioFsSvc binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" start= auto depend= "WinFsp.Launcher/VirtioFsDrv" >nul
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 :vfs_done
 
-echo [7/9] Adding the sign-in task for the display scale
+echo [6/8] Adding the sign-in task for the display scale
 set "STEP=the sign-in task for the display scale"
+rem The script goes beside virtiofs.exe: standard users cannot write under
+rem C:\Program Files, so no other account can swap the file the task runs.
+copy /y "%~dp0lanai-scale.ps1" "C:\Program Files\Lanai\lanai-scale.ps1" >nul
+set "RC=%errorlevel%"
+if not "%RC%"=="0" goto :failed
 rem An interactive task for this user (the SID check above), which stores no
-rem password. -Force replaces it on a rerun.
-powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $u = $env:USERDOMAIN + '\' + $env:USERNAME; $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\Lanai\lanai-scale.ps1'; $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive; Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Force | Out-Null"
+rem password. -Force replaces it on a rerun. [char]34 quotes the path, which
+rem holds a space, without nested quotes for cmd.
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $u = $env:USERDOMAIN + '\' + $env:USERNAME; $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + [char]34 + 'C:\Program Files\Lanai\lanai-scale.ps1' + [char]34); $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive; Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Force | Out-Null"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 
-echo [8/9] Turning the Windows lock off
+echo [7/8] Turning the Windows lock off
 set "STEP=the lock settings"
 rem call, or control never comes back here. lanai-lock.cmd never relaunches
 rem itself, so this prompt stays the only one.
@@ -194,7 +148,7 @@ call "%~dp0lanai-lock.cmd"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 
-echo [9/9] Installing the Looking Glass display driver
+echo [8/8] Installing the Looking Glass display driver
 echo This screen turns black now. Windows shuts down by itself in a moment.
 set "STEP=the Looking Glass display driver"
 rem Last: nothing after it may need the user's eyes or a key press.
@@ -226,11 +180,9 @@ echo Run Lanai setup again to rebuild the setup drive.
 pause
 exit /b 1
 
-:lanai_planted
-echo Lanai setup: C:\Lanai holds something Lanai did not put there:
-dir /b /a C:\Lanai
-echo Another account may have planted it. Check it, move it away, then run
-echo setup.cmd again.
+:system_drive
+echo Lanai setup: run setup.cmd from Lanai's setup drive, not from a copy on
+echo %SystemDrive%. Nothing was changed.
 pause
 exit /b 1
 

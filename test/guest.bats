@@ -45,6 +45,9 @@ load helpers
 
 SETUP_CMD=$BATS_TEST_DIRNAME/../guest/setup.cmd
 
+# The command lines that change Windows (ERE on a line's text).
+CHANGE_RE='^(msiexec |sc\.exe (config|create) |icacls |copy |mkdir |rd |del |pnputil |call |"%~dp0looking-glass-idd-setup\.exe"|powershell .*Register-ScheduledTask)'
+
 # Print setup.cmd's command lines (no rem or blank lines), CR removed, each
 # as "<line number>:<line>".
 setup_code() {
@@ -62,33 +65,72 @@ line_is() {
     END { exit !found }'
 }
 
-@test "setup.cmd: every line ends in CRLF" {
-  run grep -c $'[^\r]$\\|^$' "$SETUP_CMD"
-  assert_output 0
-}
-
-@test "setup.cmd: the elevated stage checks its SID before it changes anything" {
-  # The SID comes from whoami's CSV, in stage 1 and again elevated.
-  run grep -cF "for /f \"tokens=2 delims=,\" %%s in ('whoami /user /fo csv /nh')" "$SETUP_CMD"
-  assert_output 2
-  local elevated sid first
-  elevated=$(line_is ':elevated')
-  sid=$(line_is 'if /i not "%HAVE_SID%"=="%WANT_SID%" goto :other_account')
-  # The first command after :elevated that can change Windows.
-  first=$(setup_code | awk -F: -v e="$elevated" '$1 > e' |
-    grep -E -m1 '^[0-9]+:(icacls|msiexec|pnputil|sc\.exe (config|create)|mkdir|rd |copy|call|reg|net stop|powershell)' |
-    cut -d: -f1)
-  [[ -n $sid && -n $first ]] || fail "no SID check or no change"
-  ((elevated < sid && sid < first)) || fail ":elevated $elevated, SID check $sid, first change $first"
-  # It self-elevates exactly once.
-  run grep -c -- '-Verb RunAs' "$SETUP_CMD"
-  assert_output 1
+# Print the number of the first command line that changes Windows.
+first_change() {
+  setup_code | RE=$CHANGE_RE awk '{ i = index($0, ":") } substr($0, i + 1) ~ ENVIRON["RE"] { print substr($0, 1, i - 1); exit }'
 }
 
 # Print stage 1's command lines (before the :elevated label) as setup_code
 # does.
 stage1_code() {
   setup_code | awk '{ i = index($0, ":") } substr($0, i + 1) == ":elevated" { exit } { print }'
+}
+
+@test "setup.cmd: every line ends in CRLF" {
+  run grep -c $'[^\r]$\\|^$' "$SETUP_CMD"
+  assert_output 0
+}
+
+@test "setup.cmd: the elevated stage checks its SID, then its drive, then the media, before any change" {
+  # The SID comes from whoami's CSV, in stage 1 and again elevated.
+  run grep -cF "for /f \"tokens=2 delims=,\" %%s in ('whoami /user /fo csv /nh')" "$SETUP_CMD"
+  assert_output 2
+  local elevated none sid drive media first
+  elevated=$(line_is ':elevated')
+  none=$(line_is 'if not defined HAVE_SID goto :other_account')
+  sid=$(line_is 'if /i not "%HAVE_SID%"=="%WANT_SID%" goto :other_account')
+  # A copy of the setup drive on the system drive is writable by other accounts.
+  drive=$(line_is 'if /i "%~d0"=="%SystemDrive%" goto :system_drive')
+  media=$(line_of 'for %%f in (')
+  first=$(first_change)
+  [[ -n $none && -n $sid && -n $drive && -n $media && -n $first ]] || fail "a check or the first change is missing"
+  ((elevated < none && none < sid && sid < drive && drive < media && media < first)) ||
+    fail ":elevated $elevated, no SID $none, SID $sid, drive $drive, media $media, first change $first"
+  run bash -c 'cut -d: -f2- | sed -n "/^:system_drive\$/,/^exit/p"' < <(setup_code)
+  assert_line 'exit /b 1'
+  # It self-elevates exactly once.
+  run grep -c -- '-Verb RunAs' "$SETUP_CMD"
+  assert_output 1
+}
+
+@test "setup.cmd: the up-front media check lists exactly the files the script calls by %~dp0" {
+  local listed used
+  listed=$(setup_code | grep -F 'for %%f in (' | sed 's/.*for %%f in (\(.*\)) do .*/\1/' | tr ' ' '\n' | sort)
+  used=$(setup_code | grep -vF 'for %%f in (' | grep -oE '%~dp0[A-Za-z][A-Za-z0-9._\\-]*' |
+    sed 's/^%~dp0//' | sort -u)
+  [[ -n $used ]] || fail "no %~dp0 file found"
+  assert_equal "$listed" "$used"
+  run bash -c 'grep -F "for %%f in (" | grep -F "goto :media_broken"' < <(setup_code)
+  assert_success
+}
+
+@test "setup.cmd: every change is followed by its exit code and a stop on failure" {
+  # Each line that changes Windows: set "RC=%errorlevel%" next, then a line
+  # that goes to :failed (:idd_failed for the IDD); each msiexec passes on
+  # 0 or 3010 only.
+  run bash -c 'cut -d: -f2- | RE=$1 awk '"'"'
+    { l[NR] = $0 }
+    END {
+      for (i = 1; i <= NR; i++) {
+        if (l[i] !~ ENVIRON["RE"]) continue
+        n++
+        want = (l[i] ~ /looking-glass-idd-setup/) ? " goto :idd_failed$" : " goto :failed$"
+        if (l[i + 1] != "set \"RC=%errorlevel%\"" || l[i + 2] !~ ("^if .*" want)) print "unchecked: " l[i]
+        if (l[i] ~ /^msiexec / && l[i + 2] != "if not \"%RC%\"==\"0\" if not \"%RC%\"==\"3010\" goto :failed") print "msiexec codes: " l[i]
+      }
+      print n " changes"
+    }'"'"'' _ "$CHANGE_RE" < <(setup_code)
+  assert_output "13 changes"
 }
 
 @test "setup.cmd: stage 1 tells a declined prompt (1223) from the elevated stage's own failures" {
@@ -98,10 +140,10 @@ stage1_code() {
   assert_output --partial "powershell -NoProfile -NonInteractive -Command \"\$ErrorActionPreference = 'Stop'; try { \$p = Start-Process -FilePath \$env:LANAI_SETUP -ArgumentList '/elevated', \$env:LANAI_SID -Verb RunAs -Wait -PassThru; exit \$p.ExitCode } catch { exit 1223 }\""
   # Exact codes only: if errorlevel N means N or more.
   refute_output --regexp '^[0-9]+:if (not )?errorlevel'
-  # The five command lines right after it.
-  run bash -c 'cut -d: -f2- | grep -F -A5 "Start-Process -FilePath" | tail -n 5' < <(stage1_code)
+  # The four command lines right after it.
+  run bash -c 'cut -d: -f2- | grep -F -A4 "Start-Process -FilePath" | tail -n 4' < <(stage1_code)
   assert_output "$(printf '%s\n' 'set "RC=%errorlevel%"' 'if "%RC%"=="0" exit /b 0' \
-    'if "%RC%"=="1223" goto :declined' 'if "%RC%"=="2" exit /b 1' 'exit /b 1')"
+    'if "%RC%"=="1223" goto :declined' 'exit /b 1')"
   # Its only pauses are on the no-SID and decline paths: after a failure the
   # elevated window already paused, and after the IDD the display may be black.
   run bash -c 'awk -F: "{ l = substr(\$0, index(\$0, \":\") + 1) } l ~ /^:/ { label = l } tolower(l) == \"pause\" { print label }"' _ < <(stage1_code)
@@ -114,49 +156,21 @@ stage1_code() {
   refute_output --regexp '(^|[^a-z])pause'
 }
 
-# Print the numbers of every command line that is exactly <text>.
-lines_are() {
-  setup_code | TEXT=$1 awk '{ i = index($0, ":") } substr($0, i + 1) == ENVIRON["TEXT"] { print substr($0, 1, i - 1) }'
-}
-
-@test "setup.cmd: C:\\Lanai is always made anew, without recursive deletes, its ACL set by SID, then found empty" {
-  # No rd, rmdir, del or erase with /s, anywhere.
+@test "setup.cmd: the scale script lives in C:\\Program Files\\Lanai, and nothing in C:\\Lanai" {
+  run grep -ci 'C:\\Lanai' "$SETUP_CMD"
+  assert_output 0
+  # No recursive delete anywhere.
   run bash -c 'tr -d "\r" <"$1" | awk "tolower(\$1) ~ /^(rd|rmdir|del|erase)\$/ && tolower(\$0) ~ / \\/s/"' _ "$SETUP_CMD"
   assert_output ""
-  local -a links rds lists
-  local old folder link del mkdir owner acl empty copy
-  mapfile -t links < <(lines_are 'fsutil reparsepoint query C:\Lanai >nul 2>&1')
-  mapfile -t rds < <(lines_are 'rd C:\Lanai')
-  mapfile -t lists < <(setup_code | grep -F "('dir /b /a C:\\Lanai 2^>nul') do" | cut -d: -f1)
-  ((${#links[@]} == 2 && ${#rds[@]} == 2 && ${#lists[@]} == 2)) ||
-    fail "want 2 link checks, 2 rd and 2 listings: ${links[*]} / ${rds[*]} / ${lists[*]}"
-  # An existing folder may hold only lanai-scale.ps1 as a plain file, which
-  # is deleted before the folder goes.
-  old=$(line_of "do if /i not \"%%f\"==\"lanai-scale.ps1\" set \"LANAI_EXTRA=1\"")
-  folder=$(line_is 'if exist C:\Lanai\lanai-scale.ps1\ goto :lanai_planted')
-  link=$(line_is 'fsutil reparsepoint query C:\Lanai\lanai-scale.ps1 >nul 2>&1')
-  del=$(line_is 'del /f /q C:\Lanai\lanai-scale.ps1')
-  mkdir=$(line_is 'mkdir C:\Lanai')
-  owner=$(line_is 'icacls C:\Lanai /setowner *S-1-5-32-544 >nul')
-  acl=$(line_of 'icacls C:\Lanai /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"')
-  # After the ACL the folder must be empty: anything at all was planted.
-  empty=$(line_is "for /f \"eol=: delims=\" %%f in ('dir /b /a C:\\Lanai 2^>nul') do set \"LANAI_EXTRA=1\"")
-  copy=$(line_of 'copy /y "%~dp0lanai-scale.ps1" C:\Lanai\lanai-scale.ps1')
-  local -a order=("${links[0]}" "${rds[0]}" "$old" "$folder" "$link" "$del" "${rds[1]}" "$mkdir"
-    "$owner" "$acl" "${links[1]}" "$empty" "$copy")
-  local i
-  for ((i = 1; i < ${#order[@]}; i++)); do
-    [[ -n ${order[i]} ]] && ((order[i - 1] < order[i])) || fail "out of order: ${order[*]}"
-  done
-  # mkdir always runs, and each rd, del and mkdir stops setup on failure.
+  local mkdir copy task
+  mkdir=$(line_is 'mkdir "C:\Program Files\Lanai"')
+  copy=$(line_is 'copy /y "%~dp0lanai-scale.ps1" "C:\Program Files\Lanai\lanai-scale.ps1" >nul')
+  task=$(line_of 'Register-ScheduledTask')
+  ((mkdir < copy && copy < task)) || fail "mkdir $mkdir, copy $copy, task $task"
+  # The path holds a space: the task quotes it, without nested cmd quotes.
   run setup_code
-  refute_output --partial 'if exist C:\Lanai\ goto :lanai_acl'
-  for i in "${rds[1]}" "$del" "$mkdir"; do
-    assert_line "$((i + 1)):set \"RC=%errorlevel%\""
-    assert_line "$((i + 2)):if not \"%RC%\"==\"0\" goto :failed"
-  done
+  assert_output --partial "-Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + [char]34 + 'C:\Program Files\Lanai\lanai-scale.ps1' + [char]34)"
 }
-
 
 @test "setup.cmd: the qemu-ga allow-list is proof 3's literal command" {
   line_of 'sc.exe config QEMU-GA binPath= "\"C:\Program Files\Qemu-ga\qemu-ga.exe\" -d --retry-path --allow-rpcs=guest-sync,guest-sync-delimited,guest-set-time"'
@@ -170,26 +184,28 @@ lines_are() {
   assert_line "$((n + 2)):if not \"%RC%\"==\"0\" if not \"%RC%\"==\"3010\" if not \"%RC%\"==\"259\" goto :failed"
 }
 
-@test "setup.cmd: VirtioFsSvc is stopped, then the exe copied, then the service created or updated" {
+@test "setup.cmd: VirtioFsSvc is stopped, the exe copied, then the service set with a quoted path" {
   local query stop copy create config
   query=$(line_is 'if "%errorlevel%"=="1060" set "VFS_NEW=1"')
   stop=$(line_is 'if not defined VFS_NEW net stop VirtioFsSvc >nul 2>&1')
   copy=$(line_is 'copy /y "%~dp0viofs\w11\amd64\virtiofs.exe" "C:\Program Files\Lanai\virtiofs.exe"')
-  config=$(line_of 'sc.exe config VirtioFsSvc binPath= "C:\Program Files\Lanai\virtiofs.exe" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"')
-  create=$(line_of 'sc.exe create VirtioFsSvc binPath= "C:\Program Files\Lanai\virtiofs.exe" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"')
+  # Quoted inside, as the QEMU-GA line: an unquoted path with a space is
+  # CWE-428 for a LocalSystem service.
+  config=$(line_of 'sc.exe config VirtioFsSvc binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"')
+  create=$(line_of 'sc.exe create VirtioFsSvc binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"')
   ((query < stop && stop < copy && copy < config && copy < create)) ||
     fail "query $query, stop $stop, copy $copy, config $config, create $create"
 }
 
 @test "setup.cmd: the steps run in the planned order, the IDD last, then a full shutdown" {
   local -a order=(
-    'icacls C:\Lanai /setowner'
     'msiexec /i "%~dp0spice-vdagent.msi" /qn /norestart'
     'msiexec /i "%~dp0qemu-ga.msi" /qn /norestart'
     'sc.exe config QEMU-GA'
     'msiexec /i "%~dp0winfsp.msi" /qn /norestart'
     'pnputil /add-driver'
     'sc.exe query VirtioFsSvc'
+    'copy /y "%~dp0lanai-scale.ps1"'
     'Register-ScheduledTask'
     'call "%~dp0lanai-lock.cmd"'
     '"%~dp0looking-glass-idd-setup.exe" /S /ivshmem'
@@ -201,11 +217,6 @@ lines_are() {
     ((n > prev)) || fail "$p (line $n) comes before line $prev"
     prev=$n
   done
-  # lanai-lock.cmd's result stops setup.
-  n=$(line_is 'call "%~dp0lanai-lock.cmd"')
-  run setup_code
-  assert_line "$((n + 1)):set \"RC=%errorlevel%\""
-  assert_line "$((n + 2)):if not \"%RC%\"==\"0\" goto :failed"
   # From the IDD on, nothing waits for a key, even on failure.
   local idd
   idd=$(line_of '"%~dp0looking-glass-idd-setup.exe"')
@@ -222,12 +233,12 @@ lines_are() {
   run bash -c 'tr -d "\r" <"$1" | grep -viE "^[[:space:]]*(rem|powershell|echo)( |\$)" | grep -iE "(^|[^a-z])exit( |\$)"' _ "$SETUP_CMD"
   refute_line --regexp '(^|[^a-zA-Z])[eE][xX][iI][tT]($| [^/])'
   local f
-  for f in spice-vdagent.msi qemu-ga.msi winfsp.msi looking-glass-idd-setup.exe lanai-lock.cmd \
-    'viofs\w11\amd64\viofs.inf' 'viofs\w11\amd64\virtiofs.exe'; do
-    # Outside the up-front check of every file, each use is "%~dp0<file>".
-    run bash -c 'grep -vF "for %%f in (" | grep -F -- "$1" | grep -vF -- "%~dp0$1"' _ "$f" < <(setup_code)
+  for f in $(setup_code | grep -F 'for %%f in (' | sed 's/.*for %%f in (\(.*\)) do .*/\1/'); do
+    # Outside the up-front check of every file, each use is "%~dp0<file>",
+    # or the installed copy in C:\Program Files\Lanai.
+    run bash -c 'grep -vF "for %%f in (" | grep -F -- "$1" | grep -vF -- "%~dp0$1" |
+      grep -vF -- "Program Files\\Lanai\\$1"' _ "$f" < <(setup_code)
     assert_output ""
-    line_of "%~dp0$f" >/dev/null || fail "setup.cmd never uses $f"
   done
 }
 

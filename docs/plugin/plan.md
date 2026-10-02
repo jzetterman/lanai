@@ -617,27 +617,10 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   passes it to the elevated stage, which refuses, with a clear message, if its own SID
   differs (a standard user who typed an administrator's credentials: `HKCU` would then
   be the administrator's hive). The elevated stage runs from System32, so it calls
-  every file by `%~dp0`. Then, in order:
-  - prepares `C:\Lanai` without deleting anything recursively, since elevated recursive
-    deletes can follow a planted link. If `C:\Lanai` is a reparse point (`fsutil
-    reparsepoint query C:\Lanai` succeeds), it removes that link with `rd` and no `/s`,
-    which unlinks it without touching the target. The folder is then always made anew,
-    so the folder and the script are Lanai's own: another account that made `C:\Lanai`
-    first owns it and may have given itself an explicit ACE, which no ACL change below
-    would remove. If `C:\Lanai` exists, it lists it with `dir /b /a C:\Lanai` and judges
-    the output, not the exit code (`dir` returns 1 on an empty folder): anything other
-    than nothing or `lanai-scale.ps1` stops setup with the list. A `lanai-scale.ps1`
-    that is a folder or a link stops setup too; a plain one is removed with `del /f /q
-    C:\Lanai\lanai-scale.ps1`. Then `rd C:\Lanai`, and a failure stops setup. Then
-    `mkdir C:\Lanai`, and a failure (another account made it again meanwhile) stops
-    setup. It sets the owner and ACL by well-known SID, since group names are localized
-    and a new folder under `C:\` inherits Modify for Authenticated Users: `icacls
-    C:\Lanai /setowner *S-1-5-32-544`, then `icacls C:\Lanai /inheritance:r /grant
-    "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"` (quoted,
-    since the parentheses would end a cmd `if` block). With the ACL set, it checks again
-    that `C:\Lanai` is no link, and its listing must be empty: anything at all was
-    planted between `mkdir` and the ACL, and stops setup. No step uses `/s`. Only then
-    does it copy the logon task's script in;
+  every file by `%~dp0`. It also refuses, before any change, when it runs from the
+  system drive (`%~d0` is `%SystemDrive%`): a copy of the setup drive there can be
+  writable by other accounts. Then it checks that every media file is there, and, in
+  order:
   - installs the SPICE vdagent MSI;
   - installs the qemu-ga MSI, then sets the allow-list with the literal command from
     proof 3, which is fixed by the pinned MSI and safe to rerun:
@@ -660,9 +643,13 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
     is still held) stops setup and shows the error. Then it runs `sc.exe create
     VirtioFsSvc` if the service was missing, or `sc.exe config VirtioFsSvc` when dockur
     already made it, both with
-    `binPath= "C:\Program Files\Lanai\virtiofs.exe" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"`
-    (proof 2's values);
-  - adds the logon task running `C:\Lanai\lanai-scale.ps1`;
+    `binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"`
+    (proof 2's values, with the path quoted inside as for QEMU-GA: a LocalSystem
+    service with an unquoted path that holds a space is CWE-428);
+  - copies `lanai-scale.ps1` into `C:\Program Files\Lanai\` (standard users cannot
+    write there, so no other account can swap the script; a folder under `C:\` would
+    need an ACL race), then adds the logon task running it, its path quoted in the
+    task's argument;
   - runs `call "%~dp0lanai-lock.cmd"` (spec req 7; without `call`, control never returns
     to `setup.cmd`). `lanai-lock.cmd` never relaunches itself, so the one administrator
     prompt stays the only one (spec req 7) and every write finishes in the caller's
@@ -944,16 +931,17 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   names (`spice-vdagent.msi`, `qemu-ga.msi`, `winfsp.msi`). `bsdtar` also unpacks
   the IDD zip, so `unzip` is not a dependency (`bsdtar` comes with `libarchive`,
   which pacman needs).
-- `setup.cmd` additions: it checks every media file before any change; `C:\Lanai` is
-  always removed (without `/s`) and made anew, then checked for a link again and found
-  empty after the ACL, since a folder another account made first could keep that
-  account's explicit ACE (found in the first build's review; the text above now says
-  so); stage 1 reads the elevated stage's exit code exactly: a declined prompt
-  is 1223 (the PowerShell call catches the cancel, which Windows PowerShell 5.1
-  raises as a non-terminating error), and only it and a missing SID pause; an IDD
-  failure exits 2 and nothing pauses on a display that may be black; the sign-in task is registered with PowerShell's
-  `Register-ScheduledTask` as "Lanai display scale" (interactive logon, no stored
-  password). Each MSI passes on exit code 0 or 3010 only.
+- `setup.cmd`, from the first build's reviews (the text above says the same): the
+  scale script lives in `C:\Program Files\Lanai\` beside `virtiofs.exe`, and there is
+  no `C:\Lanai` at all (a folder under `C:\` raced its ACL against other accounts);
+  `VirtioFsSvc`'s path is quoted inside; it refuses to run from the system drive; it
+  checks every media file before any change. Stage 1 reads the elevated stage's exit
+  code exactly: a declined prompt is 1223 (the PowerShell call catches the cancel,
+  which Windows PowerShell 5.1 raises as a non-terminating error), and only it and a
+  missing SID pause; an IDD failure exits 2 and nothing pauses on a display that may
+  be black. The sign-in task is registered with PowerShell's `Register-ScheduledTask`
+  as "Lanai display scale" (interactive logon, no stored password). Each MSI passes
+  on exit code 0 or 3010 only.
 - `lanai-vm-exec` unsets `WAYLAND_DISPLAY` for a boot without QEMU's window. Status's
   `active` is true while the unit is active, activating, deactivating or reloading;
   `window` is true only while the unit runs.
@@ -1014,8 +1002,9 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   ScreenSaverIsSecure /f` (`InactivityTimeoutSecs` is absent by default, so nothing is
   written back; the same three commands are how to turn the lock back on), then undo
   each other change setup made, or say why it can stay: the SPICE vdagent, qemu-ga with
-  its allow-list, WinFsp, the newer `viofs` driver, `virtiofs.exe` and the `VirtioFsSvc`
-  settings, the Looking Glass IDD, the logon task and `C:\Lanai`. Then shut Windows down
+  its allow-list, WinFsp, the newer `viofs` driver, the `VirtioFsSvc` settings, the
+  Looking Glass IDD, the logon task ("Lanai display scale") and `C:\Program Files\Lanai`
+  (`virtiofs.exe` and `lanai-scale.ps1`). Then shut Windows down
   from its Start menu, since a restored lock can drop the stop request (the container
   does not restart by itself: `omarchy-windows-vm` sets `restart: "no"`). Then, if
   Lanai's VM still runs, `systemctl --user stop lanai-vm.service`, which works without
