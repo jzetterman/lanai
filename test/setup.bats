@@ -545,9 +545,22 @@ step6_running() {
   unit_is lanai-client.service active MainPID=77
   [[ -d $RUN ]] || mkdir -m 700 "$RUN"
   started_log "$1" "${2:-5}" >"$RUN/client.log"
+  rm -f "$RUN/qga-open-since" "$T/qga.log"
+  # With <stamp-age>, the guest agent's port has been open that long.
+  [[ -z ${3:-} ]] || echo "$((EPOCHSECONDS - $3))" >"$RUN/qga-open-since"
   conf FAKE_QGA_CMD=allowlist
+  export FAKE_QGA_LOG=$T/qga.log
   serve "$RUN/qmp-cli.sock" "$FIX/fake-qmp"
   serve "$RUN/qga.sock" "$FIX/fake-qga"
+}
+
+# Assert that the guest agent got a guest-set-time with the host's time in
+# nanoseconds, within 5 s of now.
+assert_set_time_now() {
+  local ns
+  ns=$(sed -n 's/^cmd .*"guest-set-time".*"time":\([0-9]*\).*/\1/p' "$T/qga.log" | tail -n 1)
+  [[ $ns =~ ^[0-9]{19}$ ]] || fail "no guest-set-time with a nanosecond time: $(cat "$T/qga.log")"
+  ((${ns:0:10} - EPOCHSECONDS <= 5 && EPOCHSECONDS - ${ns:0:10} <= 5)) || fail "guest-set-time $ns is not now"
 }
 
 @test "lanai setup step 1: a failed check stops it, naming the problem" {
@@ -737,6 +750,7 @@ step6_running() {
   assert_equal "$(field step)" 6
   assert_equal "$(jq -c .questions <<<"$JSON")" '["share","scale"]'
   assert_equal "$(<"$S/guest-version")" B7-826-g236efcb155
+  assert_set_time_now
   run setup_done
   assert_failure
   # Both answered yes: setup is done, and lanai start works.
@@ -773,8 +787,8 @@ step6_running() {
 }
 
 @test "lanai setup step 6: a missing IDD waits until the guest agent's port has been open for the grace" {
-  # The client's 30 s run from QEMU's start, firmware time included, so
-  # idd-missing alone says nothing until Windows has booted.
+  # The client starts its 30 s count when QEMU starts, so firmware and boot
+  # time use it up: idd-missing alone says nothing until Windows has booted.
   step6_running "$FIX/client-logs/waiting.log" 120
   conf FAKE_QMP_QGA=false
   setup_run
@@ -796,6 +810,12 @@ step6_running() {
   setup_run
   assert_equal "$(field step)" 6
   assert_equal "$(<"$RUN/qga-open-since")" "$((since - 10))"
+  # Windows restarted (the port closed): the grace starts again.
+  conf FAKE_QMP_QGA=false
+  setup_run
+  assert_equal "$(field step)" 6
+  assert [ ! -e "$RUN/qga-open-since" ]
+  conf FAKE_QMP_QGA=true
   # Open for longer than the grace: the IDD is missing.
   echo "$((EPOCHSECONDS - LANAI_SETUP_GRACE - 1))" >"$RUN/qga-open-since"
   setup_run
@@ -820,7 +840,7 @@ step6_running() {
 @test "lanai setup step 6: after a partly failed setup.cmd, a missing part sends setup back to step 5" {
   # Windows shut down after setup.cmd stopped part way: the IDD answers,
   # but the agent has no allow-list and the SPICE agent never opened its port.
-  step6_running "$FIX/client-logs/match.log" 90
+  step6_running "$FIX/client-logs/match.log" 90 90
   conf FAKE_QGA_CMD=open FAKE_QMP_VDAGENT=false
   setup_run
   assert_failure
@@ -838,6 +858,63 @@ step6_running() {
   assert_success
   assert_equal "$(field step)" 5
   assert_equal "$(field window)" false
+}
+
+@test "lanai setup step 6: an agent that refuses to set the clock sends setup back to step 5" {
+  step6_running "$FIX/client-logs/match.log" 90 90
+  conf FAKE_QGA_CMD=notime
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  run field message
+  assert_output --partial "QEMU guest agent"
+  refute_output --partial "SPICE agent"
+}
+
+@test "lanai setup step 6: a port that never opens is given up after the boot limit, without asking the agent" {
+  step6_running "$FIX/client-logs/match.log" "$((LANAI_SETUP_BOOT_LIMIT - 10))"
+  conf FAKE_QMP_QGA=false
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  started_log "$FIX/client-logs/match.log" "$((LANAI_SETUP_BOOT_LIMIT + 1))" >"$RUN/client.log"
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  run field message
+  assert_output --partial "Windows did not finish starting, or its guest agent is missing"
+  # A sync on a closed port would wait 5 s: the agent was never asked.
+  assert [ ! -s "$T/qga.log" ]
+}
+
+@test "lanai setup step 6: QMP not answering means try again, not a missing part" {
+  step6_running "$FIX/client-logs/match.log" 90 90
+  rm "$RUN/qmp-cli.sock"
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  run field message
+  assert_output --partial "asks again"
+  assert_equal "$(jq -r .step5 "$S/setup.json")" true
+}
+
+@test "lanai setup step 6: a closed client with a decisive verdict is not reopened" {
+  step6_running "$FIX/client-logs/match.log"
+  unit_is lanai-client.service inactive
+  setup_run
+  assert_success
+  assert_equal "$(jq -c .questions <<<"$JSON")" '["share","scale"]'
+  assert [ ! -e "$T/systemd-run.args" ]
+}
+
+@test "lanai setup step 6: a lone no is acted on" {
+  local opt
+  for opt in --share-ok --scale-ok; do
+    step6_running "$FIX/client-logs/match.log"
+    setup_run "$opt" no
+    assert_failure
+    assert_equal "$(field step)" 5
+  done
 }
 
 @test "lanai setup step 6: a part not answering yet is waited for at first" {
@@ -896,7 +973,7 @@ step6_running() {
 @test "lanai setup: with done, a step 6 failure after the pin was recorded resumes at step 5, not 7" {
   # A pin bump: the setup boot ran, then step 6 saw a match (recording the
   # pin, so nothing is behind any more) but the guest agent failed.
-  step6_running "$FIX/client-logs/match.log" 90
+  step6_running "$FIX/client-logs/match.log" 90 90
   setup_json '{"snapshot": "declined", "step5": true, "done": true, "round": true}'
   conf FAKE_QGA_CMD=open
   setup_run

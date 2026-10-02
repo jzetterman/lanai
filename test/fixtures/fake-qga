@@ -20,7 +20,8 @@
 #   generic a GenericError; disabled the CommandNotFound "has been disabled"
 #   error proof 3 recorded; notfound a CommandNotFound "has not been found";
 #   allowlist and open answer by the command, as an agent with and without
-#   setup.cmd's allow-list does (guest-set-time works in both)
+#   setup.cmd's allow-list does (guest-set-time works in both); notime
+#   refuses guest-set-time too, as an allow-list without it would
 set -uo pipefail
 # Knobs come from the environment, or from FAKE_CONF, which a test may
 # rewrite between connections.
@@ -65,13 +66,13 @@ case ${FAKE_QGA_CMD:-empty} in
   generic) printf '{"error": {"class": "GenericError", "desc": "failed"}}\n' ;;
   disabled) printf '{"error": {"class": "CommandNotFound", "desc": "Command guest-exec has been disabled: the command is not allowed"}}\n' ;;
   notfound) printf '{"error": {"class": "CommandNotFound", "desc": "The command guest-foo has not been found"}}\n' ;;
-  # By the command: guest-set-time succeeds, and anything else is refused
-  # as by setup.cmd's allow-list (allowlist) or, with no allow-list (open),
+  # By the command: guest-set-time succeeds (but for notime), and anything
+  # else is refused as by an allow-list, or, with none (open),
   # fails for want of arguments.
-  allowlist | open)
-    if [[ $cmd == *'"guest-set-time"'* ]]; then
+  allowlist | open | notime)
+    if [[ $cmd == *'"guest-set-time"'* && $FAKE_QGA_CMD != notime ]]; then
       printf '{"return": {}}\n'
-    elif [[ $FAKE_QGA_CMD == allowlist ]]; then
+    elif [[ $FAKE_QGA_CMD != open ]]; then
       printf '{"error": {"class": "CommandNotFound", "desc": "Command guest-exec has been disabled: the command is not allowed"}}\n'
     else
       printf '{"error": {"class": "GenericError", "desc": "Parameter '"'"'path'"'"' is missing"}}\n'

@@ -805,8 +805,7 @@ status_facts() {
   if [[ $active == active || $active == reloading ]] && run=$(run_dir); then
     if out=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-status"}' '{"execute":"query-chardev"}'); then
       echo "LanaiQmp=$(jq -r 'select(.return.status? | type == "string") | .return.status' <<<"$out" | head -n1)"
-      if [[ $(jq -r 'select(.return | type == "array") | .return[] | select(.label == "qga0") |
-        .["frontend-open"]' <<<"$out") == true ]]; then
+      if chardev_open qga0 <<<"$out"; then
         echo LanaiQga=open
       else
         echo LanaiQga=closed

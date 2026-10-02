@@ -148,17 +148,26 @@ guest_version_get() {
   [[ ! -r $f ]] || printf '%s\n' "$(<"$f")"
 }
 
+# Print when the client of log <log> started (lanai-client-exec's first
+# line), or 0 when the log has no such line.
+log_client_start() {
+  local first="" start
+  IFS= read -r first <"$1" 2>/dev/null || true
+  start=${first#"$LANAI_CLIENT_START "}
+  [[ $first == "$LANAI_CLIENT_START "* && $start =~ ^[0-9]+$ ]] || start=0
+  printf '%s\n' "$start"
+}
+
 # Record the guest version that client log <log> names, if any, but only
 # when the log's client started after the record was written: a record from
 # lanai setup-guest (phase 6) is newer than what this run's client saw
 # before the update. A log without Lanai's start line records nothing.
 guest_version_note() {
-  local log=$1 guest="" first="" start f
+  local log=$1 guest="" start f
   read -r _ guest < <(version_check "$log") || return 0
   [[ -n $guest ]] || return 0
-  IFS= read -r first <"$log" || return 0
-  start=${first#"$LANAI_CLIENT_START "}
-  [[ $first == "$LANAI_CLIENT_START "* && $start =~ ^[0-9]+$ ]] || return 0
+  start=$(log_client_start "$log")
+  ((start > 0)) || return 0
   f=$(state_dir)/guest-version
   if [[ -f $f ]] && ((start < $(stat -c %Y -- "$f"))); then return 0; fi
   guest_version_set "$guest" || true

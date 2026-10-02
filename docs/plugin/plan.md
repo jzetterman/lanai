@@ -917,14 +917,19 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   Windows window", and the panel calls `lanai open`.
 - Step 6: the pinned client must be the one logging. A client of another build (an
   Open during step 6) is stopped and the pinned one started; a client that closed
-  before a `match` is reopened. The guest agent is asked only once QMP shows its port
-  open (a sync on a closed port waits 5 s). A part that has not answered 60 s after
-  the client started (`LANAI_SETUP_GRACE`) counts as missing. `idd-missing` sends
-  setup back to step 5 only once the guest agent's port has been open for that grace:
-  the client's 30 s count from QEMU's start, firmware time included, and the agent
-  can answer before the IDD loads. Step 6 stamps the first time it sees the port open
-  in `$RUN/qga-open-since`, which `lanai-vm-exec` removes at each start; before then,
-  `idd-missing` means wait. `mismatch` still sends setup back at once.
+  while its verdict is still `unknown` or `waiting` is reopened (a decisive verdict
+  stands). A failed QMP call means try again, never a missing part. Step 6 stamps the
+  first time it sees the guest agent's port open in `$RUN/qga-open-since`, and
+  removes the stamp whenever the port is closed (a Windows restart keeps the same
+  QEMU); `lanai-vm-exec` removes it at each start. Every grace counts from that
+  stamp (`LANAI_SETUP_GRACE`, 60 s): a part that has not answered by then is missing.
+  The client starts its 30 s count when QEMU starts, so firmware and boot time use
+  it up; `idd-missing` counts only once the guest agent's port has been open for the
+  grace, and means wait before that. `mismatch` sends setup back at once. With no
+  stamp `LANAI_SETUP_BOOT_LIMIT` (300 s) after the client started, setup goes back to
+  step 5: "Windows did not finish starting, or its guest agent is missing". The guest
+  agent is asked only while its port is open (a sync on a closed port waits 5 s).
+  A lone `--share-ok no` or `--scale-ok no` sends setup back too.
 - `lanai setup-guest` refuses until step 3 has a decision for this location. It holds
   the lock, with the VM stopped, for the whole media build (downloads included), and
   removes the old media first, so a failed build leaves none. The media use fixed
@@ -945,8 +950,8 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
 - `lanai-vm-exec` unsets `WAYLAND_DISPLAY` for a boot without QEMU's window. Status's
   `active` is true while the unit is active, activating, deactivating or reloading;
   `window` is true only while the unit runs.
-- Tests: `isolate_home` unsets `WAYLAND_DISPLAY`. `fake-qga` gains `allowlist` and
-  `open` replies, `fake-qmp` a `FAKE_QMP_VDAGENT` knob. The `lanai-scale.ps1` tests
+- Tests: `isolate_home` unsets `WAYLAND_DISPLAY`. `fake-qga` gains `allowlist`, `open` and
+  `notime` replies, `fake-qmp` a `FAKE_QMP_VDAGENT` knob. The `lanai-scale.ps1` tests
   need `pwsh` and skip without it (CI has none).
 - Open for phase 8: whether `msiexec` returns 1638 over dockur's own qemu-ga or SPICE
   agent; whether `/S /ivshmem` is the IDD installer's exact silent syntax; whether

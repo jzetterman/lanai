@@ -29,18 +29,24 @@ setup_get() {
     "$(setup_file)" 2>/dev/null || true
 }
 
-# setup_set <key> <json>: set setup.json's <key> to <json>, or remove it for
-# null, keeping the other keys. Replaces the file by rename. Callers hold
-# lanai_flock (record_previous_run's callers do too).
-setup_set() {
+# setup_patch <json-object>: set each key of <json-object> in setup.json,
+# or remove it for null, keeping the other keys, in one write (replaced by
+# rename). Callers hold lanai_flock (record_previous_run's callers do too).
+setup_patch() {
   local f cur
   f=$(setup_file)
   cur=$(jq -c 'if type == "object" then . else {} end' "$f" 2>/dev/null) || cur=""
   [[ -n $cur ]] || cur='{}'
   mkdir -p -- "${f%/*}" &&
-    jq -c --arg k "$1" --argjson v "$2" 'if $v == null then del(.[$k]) else .[$k] = $v end' \
+    jq -c --argjson p "$1" 'reduce ($p | to_entries[]) as $e (.;
+      if $e.value == null then del(.[$e.key]) else .[$e.key] = $e.value end)' \
       <<<"$cur" >"$f.tmp" &&
     mv -f -- "$f.tmp" "$f"
+}
+
+# setup_set <key> <json>: setup_patch for one key.
+setup_set() {
+  setup_patch "$(jq -n -c --arg k "$1" --argjson v "$2" '{($k): $v}')"
 }
 
 # Return 0 when setup.json belongs to storage location <dir>.
@@ -209,9 +215,12 @@ setup_guest() {
 
 # --- lanai setup: the resumable steps (plan phase 6, the step table) ---
 
-# Seconds after step 6's client starts during which a guest part that does
-# not answer yet counts as still starting, not as missing.
+# Step 6's timing, in seconds. A guest part that has not answered counts as
+# missing only once the guest agent's port has been open this long (Windows
+# has booted); and a boot whose agent port never opened is given up this
+# long after the client started.
 LANAI_SETUP_GRACE=${LANAI_SETUP_GRACE:-60}
+LANAI_SETUP_BOOT_LIMIT=${LANAI_SETUP_BOOT_LIMIT:-300}
 
 # setup_reply <ok> <step> <message> <next> [details-json]: emit lanai setup's
 # answer, with the step it stands at ("1" to "7", or "3a").
@@ -232,14 +241,6 @@ log_client_build() {
   sed -n 's/^.* | Looking Glass (\([^)]*\))$/\1/p' "$1" 2>/dev/null | head -n 1
 }
 
-# Print when the client of log <log> started (its first line), or 0.
-log_client_start() {
-  local first="" start
-  IFS= read -r first <"$1" 2>/dev/null || true
-  start=${first#"$LANAI_CLIENT_START "}
-  [[ $first == "$LANAI_CLIENT_START "* && $start =~ ^[0-9]+$ ]] || start=0
-  printf '%s\n' "$start"
-}
 
 # setup_back5 <what failed>: a step 6 check failed, so setup goes back to
 # step 5: step5 is forgotten, so the next lanai setup, once Windows is shut
@@ -250,64 +251,81 @@ setup_back5() {
     "shut Windows down, then run Lanai setup again"
 }
 
+# setup_wait <message>: answer that step 6 is still waiting.
+setup_wait() {
+  setup_reply true 6 "$1" "wait, then run setup again"
+}
+
 # setup_step6 <share yes|no|""> <scale yes|no|"">: check the running step 6
-# boot part by part. The pinned client must be the one logging: any other
-# build's client, or a client that closed before Windows answered, is
-# (re)started with the pinned build and not counted. Then: the client's
-# verdict (version_check) waiting or unknown means wait; mismatch sends
-# setup back to step 5, keeping the guest version record; so does
-# idd-missing, but only once the guest agent's port has been open for
-# LANAI_SETUP_GRACE (stamped in $RUN/qga-open-since the first time step 6
-# sees it open), since the client's 30 s count from QEMU's start, firmware
-# time included; before that it means wait. match records the pin from
-# this log (guest_version_note). Then the SPICE
-# agent's port must be open, and the guest agent must set the clock and
-# refuse an argument-free guest-exec as disabled (the allow-list took
-# effect); a part that does not answer within LANAI_SETUP_GRACE of the
-# client's start sends setup back to step 5. Last, the user's two answers
-# (~/Windows shows in Explorer, the text size is right): both yes finishes
-# setup, a no sends it back to step 5, none asks the questions.
+# boot part by part.
+# - The pinned client must be the one logging: a client of another build is
+#   replaced; one that closed while its verdict (version_check) is still
+#   unknown or waiting is reopened, not counted.
+# - QMP's query-chardev must answer, else it tries again. The first time it
+#   shows the guest agent's port open, $RUN/qga-open-since is stamped (it is
+#   removed whenever the port is closed, since a Windows restart keeps the
+#   same QEMU, and lanai-vm-exec removes it at each start). Every grace below
+#   counts from that stamp: Windows has booted. With no stamp
+#   LANAI_SETUP_BOOT_LIMIT after the client started, Windows did not finish
+#   starting, and setup goes back to step 5.
+# - The verdict: unknown or waiting means wait; mismatch sends setup back to
+#   step 5 at once, keeping the guest version record. The client starts its
+#   30 s count when QEMU starts, so firmware and boot time use it up;
+#   idd-missing counts only once the guest agent's port has been open for
+#   LANAI_SETUP_GRACE, and means wait before that. match records the pin
+#   from this log (guest_version_note).
+# - Then the SPICE agent's port must be open, and the guest agent must set
+#   the clock and refuse an argument-free guest-exec as disabled (the
+#   allow-list took effect); a part still not answering once the grace has
+#   passed sends setup back to step 5.
+# - Last, the user's two answers (~/Windows shows in Explorer, the text
+#   size is right): a no sends setup back to step 5, two yeses finish it,
+#   and otherwise it asks the questions.
 setup_step6() {
-  local share=$1 scale=$2 run log verdict="" guest="" build out wrong="" since
+  local share=$1 scale=$2 run log stamp verdict="" guest="" build out wrong="" since="" age=-1
   local -a missing=()
   if ! run=$(run_dir); then
     setup_reply false 6 "XDG_RUNTIME_DIR is not set, so Lanai cannot reach Windows." ""
     return 1
   fi
   log=$run/client.log
+  stamp=$run/qga-open-since
   read -r verdict guest < <(version_check "$log") || verdict=unknown
   build=$(log_client_build "$log")
-  if [[ -n $build && $build != "$LG_BUILD" ]] || { [[ $verdict != match ]] && ! client_active; }; then
+  if [[ -n $build && $build != "$LG_BUILD" ]] ||
+    { [[ $verdict == unknown || $verdict == waiting ]] && ! client_active; }; then
     ! client_active || systemctl --user stop "$LANAI_CLIENT_UNIT" >&2 || true
     if ! client_start "$(pinned_client)" >&2; then
       setup_reply false 6 "Lanai could not open the Windows window to check the display driver." \
         "see the logs with journalctl --user -u $LANAI_CLIENT_UNIT"
       return 1
     fi
-    setup_reply true 6 "Lanai opened the Windows window with its own client to check the display driver." \
-      "wait, then run setup again"
+    setup_wait "Lanai opened the Windows window with its own client to check the display driver."
     return 0
   fi
-  out=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}') || out=""
-  # The first time this boot shows the guest agent's port open (lanai-vm-exec
-  # removes the stamp at each start).
-  if [[ $(jq -r 'select(.return | type == "array") | .return[] | select(.label == "qga0") |
-    .["frontend-open"]' <<<"$out" 2>/dev/null) == true && ! -s $run/qga-open-since ]]; then
-    printf '%s\n' "$EPOCHSECONDS" >"$run/qga-open-since" || true
+  if ! out=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}'); then
+    setup_wait "QEMU did not answer Lanai's question about Windows' agents; it asks again next time."
+    return 0
   fi
-  since=""
-  [[ ! -s $run/qga-open-since ]] || since=$(<"$run/qga-open-since")
+  if chardev_open qga0 <<<"$out"; then
+    [[ -s $stamp ]] || printf '%s\n' "$EPOCHSECONDS" >"$stamp" || true
+    [[ ! -s $stamp ]] || since=$(<"$stamp")
+    [[ $since =~ ^[0-9]+$ ]] && age=$((EPOCHSECONDS - since))
+  else
+    rm -f -- "$stamp"
+    if ((EPOCHSECONDS - $(log_client_start "$log") >= LANAI_SETUP_BOOT_LIMIT)); then
+      setup_back5 "Windows did not finish starting, or its guest agent is missing."
+      return 1
+    fi
+  fi
   case $verdict in
     match) guest_version_note "$log" ;;
     idd-missing)
-      # The client's 30 s count from QEMU's start, firmware time included,
-      # so it counts only once Windows has been up for the grace.
-      if [[ $since =~ ^[0-9]+$ ]] && ((EPOCHSECONDS - since >= LANAI_SETUP_GRACE)); then
+      if ((age >= LANAI_SETUP_GRACE)); then
         setup_back5 "The Looking Glass display driver in Windows did not answer."
         return 1
       fi
-      setup_reply true 6 "Windows is starting. Lanai checks each part once it has booted." \
-        "wait, then run setup again"
+      setup_wait "Windows is starting. Lanai checks each part once it has booted."
       return 0
       ;;
     mismatch)
@@ -315,41 +333,38 @@ setup_step6() {
       return 1
       ;;
     *)
-      setup_reply true 6 "Windows is starting. Lanai checks each part once it has booted." \
-        "wait, then run setup again"
+      setup_wait "Windows is starting. Lanai checks each part once it has booted."
       return 0
       ;;
   esac
-  [[ $(jq -r 'select(.return | type == "array") | .return[] | select(.label == "vdagent") |
-    .["frontend-open"]' <<<"$out" 2>/dev/null) == true ]] || missing+=("the SPICE agent")
-  # The agent's port must be open first: a sync on a closed one waits 5 s.
-  if [[ $(jq -r 'select(.return | type == "array") | .return[] | select(.label == "qga0") |
-    .["frontend-open"]' <<<"$out" 2>/dev/null) != true ]] ||
+  chardev_open vdagent <<<"$out" || missing+=("the SPICE agent")
+  # Only an open port is asked: a sync on a closed one waits 5 s.
+  if ((age < 0)) ||
     ! qga_reply "$run/qga.sock" command '{"execute":"guest-set-time","arguments":{"time":@NOW_NS@}}' ||
     ! qga_reply "$run/qga.sock" refusal '{"execute":"guest-exec"}'; then
     missing+=("the QEMU guest agent with its allow-list")
   fi
   if ((${#missing[@]})); then
     out="${missing[0]}${missing[1]:+ and ${missing[1]}}"
-    if ((EPOCHSECONDS - $(log_client_start "$log") < LANAI_SETUP_GRACE)); then
-      setup_reply true 6 "Windows is still starting: $out did not answer yet." "wait, then run setup again"
+    if ((age < LANAI_SETUP_GRACE)); then
+      setup_wait "Windows is still starting: $out did not answer yet."
       return 0
     fi
     setup_back5 "In Windows, $out did not answer."
     return 1
   fi
-  if [[ -z $share || -z $scale ]]; then
-    setup_reply true 6 "Windows is set up. Two last checks, in Windows: does ~/Windows show in Explorer, and does text look the right size?" \
-      "answer with lanai setup --share-ok yes|no --scale-ok yes|no" '{"questions": ["share", "scale"]}'
-    return 0
-  fi
-  [[ $share == yes ]] || wrong="Explorer does not show ~/Windows."
-  [[ $scale == yes ]] || wrong+="${wrong:+ }The text size is wrong (the sign-in scale task)."
+  [[ $share != no ]] || wrong="Explorer does not show ~/Windows."
+  [[ $scale != no ]] || wrong+="${wrong:+ }The text size is wrong (the sign-in scale task)."
   if [[ -n $wrong ]]; then
     setup_back5 "$wrong"
     return 1
   fi
-  if ! setup_set "done" true || ! setup_set step5 null || ! setup_set round null; then
+  if [[ $share != yes || $scale != yes ]]; then
+    setup_reply true 6 "Windows is set up. Two last checks, in Windows: does ~/Windows show in Explorer, and does text look the right size?" \
+      "answer with lanai setup --share-ok yes|no --scale-ok yes|no" '{"questions": ["share", "scale"]}'
+    return 0
+  fi
+  if ! setup_patch '{"done": true, "step5": null, "round": null}'; then
     setup_reply false 6 "Lanai cannot record its setup state." "run setup again"
     return 1
   fi

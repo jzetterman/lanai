@@ -356,6 +356,14 @@ qmp_send() {
   printf '%s\n' "$reply"
 }
 
+# chardev_open <label>: read qmp_call's replies on stdin and return 0 when
+# query-chardev's reply shows chardev <label> with "frontend-open": true
+# (the guest opened its port).
+chardev_open() {
+  jq -e --arg l "$1" 'select(.return | type == "array") | .return[] | select(.label == $l) |
+    .["frontend-open"] == true' >/dev/null 2>&1
+}
+
 # qga_reply <socket> sync|command|refusal [<command-json>]: talk to the QEMU
 # guest agent (plan phase 4). Every mode first syncs: it sends a 0xFF byte
 # (to flush a half-read request), then guest-sync-delimited with a fresh
