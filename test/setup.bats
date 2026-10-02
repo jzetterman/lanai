@@ -543,7 +543,8 @@ setup_boot_ended() {
 # A running step 6 boot: the unit is active with a normal boot, step5 is
 # true, QMP and the guest agent answer (the agent with setup.cmd's
 # allow-list), and the pinned client runs with client log <file> started
-# <age> seconds ago (default 5).
+# <age> seconds ago (default 5). A fourth argument of no-servers lets a
+# test supply direct responses instead of starting the socket servers.
 step6_running() {
   through_step4
   setup_json '{"snapshot": "declined", "step5": true}'
@@ -552,13 +553,21 @@ step6_running() {
   unit_is lanai-client.service active MainPID=77
   [[ -d $RUN ]] || mkdir -m 700 "$RUN"
   started_log "$1" "${2:-5}" >"$RUN/client.log"
-  rm -f "$RUN/qga-open-since" "$T/qga.log"
+  rm -f "$RUN/qga-open-since" "$RUN/qga-closed-since" "$T/qga.log"
   # With <stamp-age>, the guest agent's port has been open that long.
   [[ -z ${3:-} ]] || echo "$((EPOCHSECONDS - $3))" >"$RUN/qga-open-since"
   conf FAKE_QGA_CMD=allowlist
   export FAKE_QGA_LOG=$T/qga.log
+  [[ ${4:-} != no-servers ]] || return 0
   serve "$RUN/qmp-cli.sock" "$FIX/fake-qmp"
   serve "$RUN/qga.sock" "$FIX/fake-qga"
+}
+
+# A closed-port step 6 poll needs only QMP's chardev response, no sockets.
+step6_closed() {
+  step6_running "$1" "${2:-5}" "${3:-}" no-servers
+  qmp_call() { echo '{"return":[{"label":"qga0","frontend-open":false}]}'; }
+  qga_reply() { echo asked >>"$T/qga.log"; return 1; }
 }
 
 # Assert that the guest agent got a guest-set-time with the host's time in
@@ -580,6 +589,57 @@ assert_set_time_now() {
   # An option error is a reply too.
   lanai_run setup --bogus
   assert_equal "$(<"$S/setup-reply.json")" "$JSON"
+}
+
+@test "lanai setup: concurrent reply writes each publish JSON and leave no temporary file" {
+  install
+  # Hold both writers immediately before rename to force the collision.
+  shim mv 'if [[ ${*: -1} == */setup-reply.json ]]; then
+  echo "${*: -2:1}" >"$T/reply-source-$PPID"
+  for ((i = 0; i < 100; i++)); do
+    sources=("$T"/reply-source-*)
+    ((${#sources[@]} == 2)) && break
+    sleep 0.05
+  done
+  ((${#sources[@]} == 2)) || exit 1
+fi
+exec /usr/bin/mv "$@"'
+  local first second
+  cmd_setup --bogus >"$T/reply-first.json" 2>"$T/reply-first.err" &
+  first=$!
+  BG_PIDS+=("$first")
+  cmd_setup --another >"$T/reply-second.json" 2>"$T/reply-second.err" &
+  second=$!
+  BG_PIDS+=("$second")
+  local first_rc=0 second_rc=0
+  wait "$first" || first_rc=$?
+  wait "$second" || second_rc=$?
+  assert_equal "$first_rc" 2
+  assert_equal "$second_rc" 2
+  assert [ ! -s "$T/reply-first.err" ]
+  assert [ ! -s "$T/reply-second.err" ]
+  run jq -e -s 'length == 1 and .[0].ok == false' "$S/setup-reply.json"
+  assert_success
+  local reply
+  reply=$(<"$S/setup-reply.json")
+  [[ $reply == "$(<"$T/reply-first.json")" || $reply == "$(<"$T/reply-second.json")" ]] ||
+    fail "published reply is not either call's JSON"
+  local -a temps
+  shopt -s nullglob
+  temps=("$S"/setup-reply.json.*)
+  assert_equal "${#temps[@]}" 0
+}
+
+@test "lanai setup: a failed reply rename removes its temporary file" {
+  install
+  shim mv 'exit 1'
+  setup_run --bogus
+  assert_equal "$status" 2
+  assert [ ! -e "$S/setup-reply.json" ]
+  local -a temps
+  shopt -s nullglob
+  temps=("$S"/setup-reply.json.*)
+  assert_equal "${#temps[@]}" 0
 }
 
 @test "lanai setup: a step that answers nothing still gives one JSON reply" {
@@ -790,6 +850,28 @@ assert_set_time_now() {
   done
 }
 
+@test "lanai setup step 5: a finished install restarts setup with either explicit display choice" {
+  through_step4
+  export WAYLAND_DISPLAY=wayland-3
+  local option expected
+  for option in --window --no-window; do
+    unit_is lanai-vm.service inactive
+    setup_json '{"snapshot": "declined", "done": true}'
+    echo "$LG_BUILD" >"$S/guest-version"
+    : >"$T/systemctl.calls"
+    setup_run "$option"
+    assert_success
+    assert_equal "$(field step)" 5
+    expected=false
+    [[ $option != --window ]] || expected=true
+    assert_equal "$(field window)" "$expected"
+    assert_equal "$(jq -r .setup "$S/boot.json")" true
+    assert_equal "$(jq -r .round "$S/setup.json")" true
+    run cat "$T/systemctl.calls"
+    assert_output --partial '--user start lanai-vm.service'
+  done
+}
+
 @test "setup boot: --window removes the record only once the unit has started" {
   install
   setup_json '{"snapshot": "declined"}'
@@ -908,6 +990,7 @@ assert_set_time_now() {
   setup_run
   assert_success
   assert_equal "$(field step)" 6
+  assert [ ! -e "$RUN/qga-closed-since" ]
   local since
   since=$(<"$RUN/qga-open-since")
   ((EPOCHSECONDS - since <= 5)) || fail "stamp $since is not now"
@@ -976,13 +1059,38 @@ assert_set_time_now() {
   refute_output --partial "SPICE agent"
 }
 
-@test "lanai setup step 6: a port that never opens is given up after the boot limit, without asking the agent" {
-  step6_running "$FIX/client-logs/match.log" "$((LANAI_SETUP_BOOT_LIMIT - 10))"
-  conf FAKE_QMP_QGA=false
+@test "lanai setup step 6: a closed port with no client start line waits and stamps the boot" {
+  step6_closed "$FIX/client-logs/waiting.log"
+  : >"$RUN/client.log"
   setup_run
   assert_success
   assert_equal "$(field step)" 6
-  started_log "$FIX/client-logs/match.log" "$((LANAI_SETUP_BOOT_LIMIT + 1))" >"$RUN/client.log"
+  assert_equal "$(jq -r .step5 "$S/setup.json")" true
+  local since
+  since=$(<"$RUN/qga-closed-since")
+  ((EPOCHSECONDS - since <= 5)) || fail "stamp $since is not now"
+}
+
+@test "lanai setup step 6: a restart after the client's boot limit gets a fresh closed-port stamp" {
+  step6_closed "$FIX/client-logs/match.log" "$((LANAI_SETUP_BOOT_LIMIT + 60))" 60
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert [ ! -e "$RUN/qga-open-since" ]
+  local since
+  since=$(<"$RUN/qga-closed-since")
+  ((EPOCHSECONDS - since <= 5)) || fail "stamp $since is not now"
+}
+
+@test "lanai setup step 6: a closed port is given up after its boot limit, without asking the agent" {
+  step6_closed "$FIX/client-logs/match.log" "$((LANAI_SETUP_BOOT_LIMIT + 60))"
+  local since=$((EPOCHSECONDS - LANAI_SETUP_BOOT_LIMIT + 10))
+  echo "$since" >"$RUN/qga-closed-since"
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert_equal "$(<"$RUN/qga-closed-since")" "$since"
+  echo "$((EPOCHSECONDS - LANAI_SETUP_BOOT_LIMIT - 1))" >"$RUN/qga-closed-since"
   setup_run
   assert_failure
   assert_equal "$(field step)" 5
@@ -990,6 +1098,17 @@ assert_set_time_now() {
   assert_output --partial "Windows did not finish starting, or its guest agent is missing"
   # A sync on a closed port would wait 5 s: the agent was never asked.
   assert [ ! -s "$T/qga.log" ]
+}
+
+@test "lanai setup step 6: an open port removes the closed-port stamp" {
+  step6_closed "$FIX/client-logs/waiting.log"
+  echo "$((EPOCHSECONDS - LANAI_SETUP_BOOT_LIMIT - 1))" >"$RUN/qga-closed-since"
+  qmp_call() { echo '{"return":[{"label":"qga0","frontend-open":true}]}'; }
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert [ ! -e "$RUN/qga-closed-since" ]
+  assert [ -s "$RUN/qga-open-since" ]
 }
 
 @test "lanai setup step 6: QMP not answering means try again, not a missing part" {

@@ -738,8 +738,8 @@ vm_exec() {
   for name in "${!LANAI_HELPERS[@]}"; do
     rm -f -- "$run/$name.pid"
   done
-  # qga-open-since: setup's step 6 times the guest agent's port per boot.
-  rm -f -- "$run/ivshmem" "$run/qga-open-since"
+  # Setup's step 6 times the guest agent's open and closed port per boot.
+  rm -f -- "$run/ivshmem" "$run/qga-open-since" "$run/qga-closed-since"
   : >"$run/client.log"
 
   run_once virtiofsd "$LANAI_VIRTIOFSD" --sandbox namespace --shared-dir "$HOME/Windows" \

@@ -129,8 +129,8 @@ use.
   it exists and is a symlink, is not a directory, is not owned by the user, or has any
   mode other than 0700 (checked before any runtime file is created). It holds
   `qmp.sock`, `qmp-events.sock`, `qmp-cli.sock`, `spice.sock`, `qga.sock`, `virtiofs.sock`, `ivshmem`,
-  passt's pid file, `client.log`, `qga-open-since` (setup's step 6, phase 6), and a
-  pid file per helper (`virtiofsd.pid`,
+  passt's pid file, `client.log`, `qga-open-since`, `qga-closed-since` (setup's step 6,
+  phase 6), and a pid file per helper (`virtiofsd.pid`,
   `shutdown-watch.pid`, `sleep-watch.pid`, `event-log.pid`). Not `RuntimeDirectory=`,
   which would delete the
   client log at stop.
@@ -912,8 +912,9 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   boots with the guess. Finishing setup removes it too, so a later pin bump starts
   step 5 afresh while `done` stays true and `lanai start` keeps working. With the
   unit stopped, an explicit `--window` or `--no-window` removes it and starts a setup
-  boot whatever it said (the way out of a step 6 that cannot finish). When `false`
-  belongs to a run that never started (a "running" marker without its "started"
+  boot whatever it said, even on a finished install (the way out of a step 6 that
+  cannot finish). The explicit choice bypasses step 7's finished shortcut. When
+  `false` belongs to a run that never started (a "running" marker without its "started"
   stamp, or, with no markers, a unit that failed with an exit code), setup says the
   setup boot did not start and points to the logs.
 - `--window` removes the guest version record only once the unit has started, so a
@@ -935,13 +936,17 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   stands). A failed QMP call means try again, never a missing part. Step 6 stamps the
   first time it sees the guest agent's port open in `$RUN/qga-open-since`, and
   removes the stamp whenever the port is closed (a Windows restart keeps the same
-  QEMU); `lanai-vm-exec` removes it at each start. Every grace counts from that
-  stamp (`LANAI_SETUP_GRACE`, 60 s): a part that has not answered by then is missing.
+  QEMU); `lanai-vm-exec` removes both agent stamps at each start. Every grace counts
+  from the open stamp (`LANAI_SETUP_GRACE`, 60 s): a part that has not answered by
+  then is missing.
   The client starts its 30 s count when QEMU starts, so firmware and boot time use
   it up; `idd-missing` counts only once the guest agent's port has been open for the
-  grace, and means wait before that. `mismatch` sends setup back at once. With no
-  stamp `LANAI_SETUP_BOOT_LIMIT` (300 s) after the client started, setup goes back to
-  step 5: "Windows did not finish starting, or its guest agent is missing". The guest
+  grace, and means wait before that. `mismatch` sends setup back at once. The first
+  poll that sees the port closed stamps `$RUN/qga-closed-since`; seeing it open
+  removes that stamp. A port still closed after `LANAI_SETUP_BOOT_LIMIT` (300 s)
+  from that stamp sends setup back to step 5: "Windows did not finish starting,
+  or its guest agent is missing". A Windows restart gets a fresh boot limit,
+  regardless of the client's start time or whether its start line exists. The guest
   agent is asked only while its port is open (a sync on a closed port waits 5 s).
   A lone `--share-ok no` or `--scale-ok no` sends setup back too.
 - `lanai setup-guest` refuses until step 3 has a decision for this location. It holds
@@ -971,8 +976,10 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   build, the downloads, a boot), and a step 6 call can pass 10 s (QMP and two guest
   agent exchanges, each with a 5 s limit). The panel runs both detached, past QML's
   10 s deadline, and reads `lanai setup`'s reply from
-  `$XDG_STATE_HOME/lanai/setup-reply.json`, which it writes atomically. The panel
-  calls `lanai setup` only on a click, never as a poll: each call can act (boot,
+  `$XDG_STATE_HOME/lanai/setup-reply.json`, which it writes atomically using a
+  unique temporary file in the same directory for each call, removed on failure.
+  Concurrent calls can publish either complete reply without sharing a temp file.
+  The panel calls `lanai setup` only on a click, never as a poll: each call can act (boot,
   build, record a verdict).
 - Open for phase 8: whether `msiexec` returns 1638 over dockur's own qemu-ga or SPICE
   agent; whether `/S /ivshmem` is the IDD installer's exact silent syntax; whether

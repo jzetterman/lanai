@@ -1302,9 +1302,10 @@ cmd_setup_host() {
 # the state check has released the lock, since boot_vm takes it itself. It
 # can run for minutes (the client build, the downloads, a boot), so the
 # panel runs it detached and reads the reply, which also goes, atomically,
-# to <state>/setup-reply.json. Every call can act, so it is no poll.
+# to <state>/setup-reply.json using a unique temporary file per call.
+# Every call can act, so it is no poll.
 cmd_setup() {
-  local out rc=0 s
+  local out rc=0 s tmp=""
   out=$(setup_command "$@") || rc=$?
   if [[ -z $out ]]; then
     ((rc != 0)) || rc=1
@@ -1314,8 +1315,9 @@ cmd_setup() {
   printf '%s\n' "$out"
   LANAI_EMITTED=1
   s=$(state_dir)
-  if ! mkdir -p -- "$s" || ! printf '%s\n' "$out" >"$s/setup-reply.json.tmp" ||
-    ! mv -f -- "$s/setup-reply.json.tmp" "$s/setup-reply.json"; then
+  if ! mkdir -p -- "$s" || ! tmp=$(mktemp "$s/setup-reply.json.XXXXXX") ||
+    ! printf '%s\n' "$out" >"$tmp" || ! mv -f -- "$tmp" "$s/setup-reply.json"; then
+    [[ -z $tmp ]] || rm -f -- "$tmp" || true
     echo "lanai: cannot write $s/setup-reply.json" >&2
   fi
   return "$rc"

@@ -918,6 +918,18 @@ start_exec() {
   BG_PIDS+=("$EXEC_PID")
 }
 
+@test "lanai-vm-exec: removes a stale closed-port stamp before starting helpers" {
+  exec_shims
+  # Record helper startup without creating a socket or reaching QEMU.
+  shim virtiofsd 'echo started >"$T/virtiofsd.started"; exec sleep 30'
+  mkdir -m 700 "$RUN"
+  echo 1700000000 >"$RUN/qga-closed-since"
+  start_exec
+  wait_for_file "$T/virtiofsd.started" "virtiofsd never started: $(cat "$T/exec.out")"
+  assert [ ! -e "$RUN/qga-closed-since" ]
+  assert [ ! -e "$T/qemu.args" ]
+}
+
 @test "lanai-vm-exec: prepares \$RUN, starts the helpers, writes the marker, then becomes QEMU" {
   exec_shims
   mkdir -m 700 "$RUN"
@@ -925,6 +937,7 @@ start_exec() {
   : >"$RUN/ivshmem"
   echo "old client log" >"$RUN/client.log"
   echo 1700000000 >"$RUN/qga-open-since"
+  echo 1700000000 >"$RUN/qga-closed-since"
   mkdir -p "$S"
   echo '{"scale": 150, "setup": false}' >"$S/boot.json"
   start_exec
@@ -935,6 +948,7 @@ start_exec() {
   assert [ ! -e "$RUN/ivshmem" ]
   assert [ ! -s "$RUN/client.log" ]
   assert [ ! -e "$RUN/qga-open-since" ]
+  assert [ ! -e "$RUN/qga-closed-since" ]
   assert_equal "$(stat -c %a "$RUN")" 700
   # QEMU runs as the unit's main process, with the arguments vm_args builds.
   assert_equal "$(<"$T/qemu.args")" "$(vm_args "$T/win" 02:4B:81:73:3C:96 8 4 150 192.168.1.1)"

@@ -221,8 +221,8 @@ setup_guest() {
 
 # Step 6's timing, in seconds. A guest part that has not answered counts as
 # missing only once the guest agent's port has been open this long (Windows
-# has booted); and a boot whose agent port never opened is given up this
-# long after the client started.
+# has booted); and a closed agent port is given up this long after step 6
+# first sees it closed, including after a Windows restart.
 LANAI_SETUP_GRACE=${LANAI_SETUP_GRACE:-60}
 LANAI_SETUP_BOOT_LIMIT=${LANAI_SETUP_BOOT_LIMIT:-300}
 
@@ -268,10 +268,10 @@ setup_wait() {
 # - QMP's query-chardev must answer, else it tries again. The first time it
 #   shows the guest agent's port open, $RUN/qga-open-since is stamped (it is
 #   removed whenever the port is closed, since a Windows restart keeps the
-#   same QEMU, and lanai-vm-exec removes it at each start). Every grace below
-#   counts from that stamp: Windows has booted. With no stamp
-#   LANAI_SETUP_BOOT_LIMIT after the client started, Windows did not finish
-#   starting, and setup goes back to step 5.
+#   same QEMU). Every grace below counts from that stamp: Windows has booted.
+#   The first closed-port poll stamps $RUN/qga-closed-since; an open port
+#   removes it. After LANAI_SETUP_BOOT_LIMIT with the port closed, setup goes
+#   back to step 5. lanai-vm-exec removes both stamps at each start.
 # - The verdict: unknown or waiting means wait; mismatch sends setup back to
 #   step 5 at once, keeping the guest version record. The client starts its
 #   30 s count when QEMU starts, so firmware and boot time use it up;
@@ -286,7 +286,7 @@ setup_wait() {
 #   size is right): a no sends setup back to step 5, two yeses finish it,
 #   and otherwise it asks the questions.
 setup_step6() {
-  local share=$1 scale=$2 run log stamp verdict="" guest="" build out wrong="" since="" age=-1
+  local share=$1 scale=$2 run log stamp closed_stamp verdict="" guest="" build out wrong="" since="" age=-1
   local -a missing=()
   if ! run=$(run_dir); then
     setup_reply false 6 "XDG_RUNTIME_DIR is not set, so Lanai cannot reach Windows." ""
@@ -294,6 +294,7 @@ setup_step6() {
   fi
   log=$run/client.log
   stamp=$run/qga-open-since
+  closed_stamp=$run/qga-closed-since
   read -r verdict guest < <(version_check "$log") || verdict=unknown
   build=$(log_client_build "$log")
   if [[ -n $build && $build != "$LG_BUILD" ]] ||
@@ -312,12 +313,15 @@ setup_step6() {
     return 0
   fi
   if chardev_open qga0 <<<"$out"; then
+    rm -f -- "$closed_stamp"
     [[ -s $stamp ]] || printf '%s\n' "$EPOCHSECONDS" >"$stamp" || true
     [[ ! -s $stamp ]] || since=$(<"$stamp")
     [[ $since =~ ^[0-9]+$ ]] && age=$((EPOCHSECONDS - since))
   else
     rm -f -- "$stamp"
-    if ((EPOCHSECONDS - $(log_client_start "$log") >= LANAI_SETUP_BOOT_LIMIT)); then
+    [[ -s $closed_stamp ]] || printf '%s\n' "$EPOCHSECONDS" >"$closed_stamp" || true
+    [[ ! -s $closed_stamp ]] || since=$(<"$closed_stamp")
+    if [[ $since =~ ^[0-9]+$ ]] && ((EPOCHSECONDS - since >= LANAI_SETUP_BOOT_LIMIT)); then
       setup_back5 "Windows did not finish starting, or its guest agent is missing."
       return 1
     fi
@@ -383,7 +387,8 @@ setup_step6() {
 # stopped it first records the previous run (step 5's verdict) and makes
 # setup state follow the disk. done with a guest version behind the pin,
 # or with a setup round open, goes back to step 5 (a pin bump; the old
-# client keeps working). Call it inside $(...): the lock it takes lasts
+# client keeps working). An explicit display choice also bypasses step 7.
+# Call it inside $(...): the lock it takes lasts
 # until that subshell exits, so it is free again for boot_vm.
 setup_resume() {
   local window=$1 nosnap=$2 share=$3 scale=$4 st stopped=false nostart=false dir problem missing details want s
@@ -473,8 +478,8 @@ setup_resume() {
 
   # 7. Done, unless the guest's IDD is behind the pin or a setup round is
   # still open (its step 6 may have recorded the pin, or --window removed
-  # the record, so "behind" alone cannot tell).
-  if setup_done && [[ -z $(guest_version_behind) && $(setup_get round) != true ]]; then
+  # the record, so "behind" alone cannot tell), or the display was explicit.
+  if [[ $window == auto ]] && setup_done && [[ -z $(guest_version_behind) && $(setup_get round) != true ]]; then
     setup_reply true 7 "Lanai setup is finished." "start Windows"
     return 0
   fi
