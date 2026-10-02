@@ -429,7 +429,7 @@ assert_both_refuse() {
     flock -n "$S/lock" true || break
     sleep 0.05
   done
-  assert_both_refuse "another Lanai start, snapshot or restore is running"
+  assert_both_refuse "another Lanai start, setup, snapshot or restore is running"
 }
 
 # --- lanai start ---

@@ -377,13 +377,14 @@ setup_step6() {
 
 # setup_resume <window> <no-snapshot true|false> <share> <scale>: under
 # lanai_flock, find the first step that is not done (the step table) and
-# either answer it (one JSON object) or print the one action cmd_setup runs
-# once the lock is released: "build" (step 4), "setup-boot" (step 5) or
+# either answer it (one JSON object) or print the one action setup_command
+# runs once the lock is released: "build" (step 4), "setup-boot" (step 5) or
 # "normal-boot" (step 6). Each step is detected, not assumed. With the unit
 # stopped it first records the previous run (step 5's verdict) and makes
 # setup state follow the disk. done with a guest version behind the pin,
 # or with a setup round open, goes back to step 5 (a pin bump; the old
-# client keeps working).
+# client keeps working). Call it inside $(...): the lock it takes lasts
+# until that subshell exits, so it is free again for boot_vm.
 setup_resume() {
   local window=$1 nosnap=$2 share=$3 scale=$4 st stopped=false nostart=false dir problem missing details want s
   local -a list

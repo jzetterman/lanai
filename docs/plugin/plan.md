@@ -117,17 +117,20 @@ use.
   a second client.
 - **Paths.** Settings: `$XDG_CONFIG_HOME/lanai/settings.json`. Setup state and markers:
   `$XDG_STATE_HOME/lanai/` (`setup.json`, whose `"done": true` marks finished setup
-  for the storage location it records (phase 6);
+  for the storage location it records (phase 6); `setup-reply.json`, `lanai setup`'s
+  last reply; `setup-media/`, the setup disk's folder; `guest-version`;
   `boot.json`; `running`, `started`, `forced`, `last-shutdown`, `last-run`,
-  `stop-requested`, `restore-in-progress`, and `lock`, which `lanai start`, `snapshot`
-  and `restore` hold with `flock` so they never overlap). Settings keys: `storage`,
+  `stop-requested`, `restore-in-progress`, and `lock`, which `lanai start`, `setup`,
+  `setup-guest`, `snapshot` and `restore` hold with `flock` so they never overlap).
+  Settings keys: `storage`,
   `memory_gib`, `cores`. Builds and runtime copies: `$XDG_DATA_HOME/lanai/`. Runtime:
   `$RUN=$XDG_RUNTIME_DIR/lanai/`, created by `lanai-vm-exec` (or `boot_vm`'s dry run)
   with mode 0700; refuse if
   it exists and is a symlink, is not a directory, is not owned by the user, or has any
   mode other than 0700 (checked before any runtime file is created). It holds
   `qmp.sock`, `qmp-events.sock`, `qmp-cli.sock`, `spice.sock`, `qga.sock`, `virtiofs.sock`, `ivshmem`,
-  passt's pid file, `client.log`, and a pid file per helper (`virtiofsd.pid`,
+  passt's pid file, `client.log`, `qga-open-since` (setup's step 6, phase 6), and a
+  pid file per helper (`virtiofsd.pid`,
   `shutdown-watch.pid`, `sleep-watch.pid`, `event-log.pid`). Not `RuntimeDirectory=`,
   which would delete the
   client log at stop.
@@ -892,12 +895,16 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
 
 - `lanai setup` options: `--no-snapshot` declines step 3, `--window` and
   `--no-window` pick step 5's display, and `--share-ok yes|no --scale-ok yes|no`
-  answer step 6's two questions (both are needed in one call). Every reply carries
-  `step` (`"1"` to `"7"`, or `"3a"`). Setup runs the client build, the media build and
+  answer step 6's two questions (two yeses finish setup; a lone no sends it back).
+  Every reply past option parsing and the lock carries `step` (`"1"` to `"7"`, or
+  `"3a"`); an option error, a busy lock or an unreachable user manager comes before
+  any step and has none. Setup runs the client build, the media build and
   both boots itself; for packages and the snapshot it names the command to run
   (`lanai setup-host`, `lanai snapshot`), and an existing snapshot of the location
   counts as taken. Step 3a writes the name and stops with a note; the next call goes
   on.
+- Step 1 also refuses an unfinished restore (`restore_pending`) and a container VM
+  that is only preparing (`container_blocked`, which covers `container_running`).
 - `step5` has three values: absent (no setup boot yet, so the next one boots with the
   guess), `false` (written when a setup boot starts; still `false` once it has
   ended means it did not finish, and setup asks for `--window` or `--no-window`
@@ -960,6 +967,13 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
 - Tests: `isolate_home` unsets `WAYLAND_DISPLAY`. `fake-qga` gains `allowlist`, `open` and
   `notime` replies, `fake-qmp` a `FAKE_QMP_VDAGENT` knob. The `lanai-scale.ps1` tests
   need `pwsh` and skip without it (CI has none).
+- For phase 7: `lanai setup` and `lanai setup-guest` can run for minutes (the client
+  build, the downloads, a boot), and a step 6 call can pass 10 s (QMP and two guest
+  agent exchanges, each with a 5 s limit). The panel runs both detached, past QML's
+  10 s deadline, and reads `lanai setup`'s reply from
+  `$XDG_STATE_HOME/lanai/setup-reply.json`, which it writes atomically. The panel
+  calls `lanai setup` only on a click, never as a poll: each call can act (boot,
+  build, record a verdict).
 - Open for phase 8: whether `msiexec` returns 1638 over dockur's own qemu-ga or SPICE
   agent; whether `/S /ivshmem` is the IDD installer's exact silent syntax; whether
   `windows.base` should end in a newline (3a writes one).
@@ -993,7 +1007,10 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   pending shutdown, with a second confirming click; setup steps with progress (step 5
   shows Shut down, then the two display buttons when `lanai setup` asks for them, and
   Open is hidden while status reports `window: true`; see phase 6's setup boot
-  display); settings
+  display; step 6 asks its two questions, sent as `--share-ok` and `--scale-ok`.
+  `lanai setup` and `lanai setup-guest` run detached, and the panel reads the reply
+  from `setup-reply.json` and calls `lanai setup` only on a click, never as a poll;
+  see phase 6's "As built"); settings
   (memory, cores); the error view with cause, next step, log path and the
   `omarchy-windows-vm` fallback.
 - Guest-controlled text (from phase 5 review): show `client.log`, the guest's driver

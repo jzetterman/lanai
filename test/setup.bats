@@ -570,6 +570,29 @@ assert_set_time_now() {
   ((${ns:0:10} - EPOCHSECONDS <= 5 && EPOCHSECONDS - ${ns:0:10} <= 5)) || fail "guest-set-time $ns is not now"
 }
 
+@test "lanai setup: writes its reply to setup-reply.json too, for the panel's detached runs" {
+  install
+  lanai_run setup
+  assert_failure
+  assert_equal "$(field step)" 3
+  assert_equal "$(<"$S/setup-reply.json")" "$JSON"
+  assert [ ! -e "$S/setup-reply.json.tmp" ]
+  # An option error is a reply too.
+  lanai_run setup --bogus
+  assert_equal "$(<"$S/setup-reply.json")" "$JSON"
+}
+
+@test "lanai setup: a step that answers nothing still gives one JSON reply" {
+  install
+  setup_resume() { :; }
+  setup_run
+  assert_failure
+  assert_equal "$(field ok)" false
+  run field message
+  assert_output --partial "no answer"
+  assert_equal "$(<"$S/setup-reply.json")" "$JSON"
+}
+
 @test "lanai setup step 1: a failed check stops it, naming the problem" {
   install
   rm "$HOME/.windows/windows.boot"

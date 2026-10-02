@@ -691,7 +691,7 @@ dockur_version() {
 LANAI_LOGS="journalctl --user -u lanai-vm"
 LANAI_FALLBACK="or use omarchy-windows-vm (RDP or its web console) instead"
 LANAI_FORCED_NOTICE="Windows was force-stopped last time. Likely causes: a locked Windows, an open Windows security screen, or a shutdown that did not finish in time."
-LANAI_BUSY="another Lanai start, snapshot or restore is running"
+LANAI_BUSY="another Lanai start, setup, snapshot or restore is running"
 
 # Return 0 when Lanai's setup has finished for this disk: setup.json's
 # "done" is true and its "location" is the storage location's real path
@@ -711,10 +711,13 @@ unit_state() {
   printf '%s\n' "$st"
 }
 
-# Hold Lanai's operation lock (<state>/lock) until this process exits, so
-# two starts, snapshots or restores never overlap (a double click). Call it
-# in the command's own shell, not in $(...). Fails at once when another
-# process holds it.
+# Hold Lanai's operation lock (<state>/lock) until this shell exits, so two
+# starts, setups, snapshots or restores never overlap (a double click).
+# Called in the command's own shell it lasts the whole command; called
+# inside $(...) or ( ), it lasts until that subshell exits, which lanai
+# setup and setup-guest rely on to release it before boot_vm takes it
+# again (a second lanai_flock in one process fails). Fails at once when
+# another process holds it.
 lanai_flock() {
   local s
   s=$(state_dir)
@@ -1296,8 +1299,30 @@ cmd_setup_host() {
 # says what the user must do. --no-snapshot declines step 3's snapshot;
 # --window and --no-window pick the setup boot's display; --share-ok and
 # --scale-ok answer step 6's two questions. The builds and boots run after
-# the state check has released the lock, since boot_vm takes it itself.
+# the state check has released the lock, since boot_vm takes it itself. It
+# can run for minutes (the client build, the downloads, a boot), so the
+# panel runs it detached and reads the reply, which also goes, atomically,
+# to <state>/setup-reply.json. Every call can act, so it is no poll.
 cmd_setup() {
+  local out rc=0 s
+  out=$(setup_command "$@") || rc=$?
+  if [[ -z $out ]]; then
+    ((rc != 0)) || rc=1
+    out=$(emit false "" "lanai setup gave no answer (exit $rc); see the error output" "run setup again") ||
+      return 1
+  fi
+  printf '%s\n' "$out"
+  LANAI_EMITTED=1
+  s=$(state_dir)
+  if ! mkdir -p -- "$s" || ! printf '%s\n' "$out" >"$s/setup-reply.json.tmp" ||
+    ! mv -f -- "$s/setup-reply.json.tmp" "$s/setup-reply.json"; then
+    echo "lanai: cannot write $s/setup-reply.json" >&2
+  fi
+  return "$rc"
+}
+
+# The body of lanai setup: prints its one JSON reply (see cmd_setup).
+setup_command() {
   local window=auto nosnap=false share="" scale="" out rc built=false
   while (($#)); do
     case $1 in

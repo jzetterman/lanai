@@ -186,7 +186,7 @@ take_snapshot() {
   lanai_run snapshot
   assert_failure
   run field message
-  assert_output --partial "another Lanai start, snapshot or restore is running"
+  assert_output --partial "another Lanai start, setup, snapshot or restore is running"
   lanai_run restore 20260928T120000Z
   assert_failure
   run field message
