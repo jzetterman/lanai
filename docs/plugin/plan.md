@@ -621,15 +621,22 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   - prepares `C:\Lanai` without deleting anything recursively, since elevated recursive
     deletes can follow a planted link. If `C:\Lanai` is a reparse point (`fsutil
     reparsepoint query C:\Lanai` succeeds), it removes that link with `rd` and no `/s`,
-    which unlinks it without touching the target. Then it creates the folder if missing
-    and sets the owner and ACL by well-known SID, since group names are localized and a
-    new folder under `C:\` inherits Modify for Authenticated Users: `icacls C:\Lanai
-    /setowner *S-1-5-32-544`, then `icacls C:\Lanai /inheritance:r /grant
+    which unlinks it without touching the target. The folder is then always made anew,
+    so the folder and the script are Lanai's own: another account that made `C:\Lanai`
+    first owns it and may have given itself an explicit ACE, which no ACL change below
+    would remove. If `C:\Lanai` exists, it lists it with `dir /b /a C:\Lanai` and judges
+    the output, not the exit code (`dir` returns 1 on an empty folder): anything other
+    than nothing or `lanai-scale.ps1` stops setup with the list. A `lanai-scale.ps1`
+    that is a folder or a link stops setup too; a plain one is removed with `del /f /q
+    C:\Lanai\lanai-scale.ps1`. Then `rd C:\Lanai`, and a failure stops setup. Then
+    `mkdir C:\Lanai`, and a failure (another account made it again meanwhile) stops
+    setup. It sets the owner and ACL by well-known SID, since group names are localized
+    and a new folder under `C:\` inherits Modify for Authenticated Users: `icacls
+    C:\Lanai /setowner *S-1-5-32-544`, then `icacls C:\Lanai /inheritance:r /grant
     "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"` (quoted,
-    since the parentheses would end a cmd `if` block). With the ACL set, it lists the
-    folder with `dir /b /a C:\Lanai` and judges the output, not the exit code (`dir`
-    returns 1 on an empty folder): anything other than nothing or `lanai-scale.ps1`
-    stops setup with the list, since another account could have planted it. Only then
+    since the parentheses would end a cmd `if` block). With the ACL set, it checks again
+    that `C:\Lanai` is no link, and its listing must be empty: anything at all was
+    planted between `mkdir` and the ACL, and stops setup. No step uses `/s`. Only then
     does it copy the logon task's script in;
   - installs the SPICE vdagent MSI;
   - installs the qemu-ga MSI, then sets the allow-list with the literal command from
@@ -925,9 +932,11 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   names (`spice-vdagent.msi`, `qemu-ga.msi`, `winfsp.msi`). `bsdtar` also unpacks
   the IDD zip, so `unzip` is not a dependency (`bsdtar` comes with `libarchive`,
   which pacman needs).
-- `setup.cmd` additions: it checks every media file before any change; it checks
-  `C:\Lanai` for a link again after the ACL, and refuses a `lanai-scale.ps1` there
-  that is a folder or a link; the sign-in task is registered with PowerShell's
+- `setup.cmd` additions: it checks every media file before any change; `C:\Lanai` is
+  always removed (without `/s`) and made anew, then checked for a link again and found
+  empty after the ACL, since a folder another account made first could keep that
+  account's explicit ACE (found in the first build's review; the text above now says
+  so); the sign-in task is registered with PowerShell's
   `Register-ScheduledTask` as "Lanai display scale" (interactive logon, no stored
   password). Each MSI passes on exit code 0 or 3010 only.
 - `lanai-vm-exec` unsets `WAYLAND_DISPLAY` for a boot without QEMU's window. Status's

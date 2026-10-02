@@ -63,11 +63,32 @@ rd C:\Lanai
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 :lanai_no_link
-if exist C:\Lanai\ goto :lanai_acl
+rem An existing folder is removed and made anew, so the folder and the
+rem script are always Lanai's own: another account that made C:\Lanai first
+rem owns it and may have given itself an explicit ACE, which no ACL change
+rem below would remove. It may hold only lanai-scale.ps1, as a plain file.
+rem Judge dir's output, not its exit code (1 on an empty folder).
+if not exist C:\Lanai\ goto :lanai_create
+set "LANAI_EXTRA="
+for /f "eol=: delims=" %%f in ('dir /b /a C:\Lanai 2^>nul') do if /i not "%%f"=="lanai-scale.ps1" set "LANAI_EXTRA=1"
+if defined LANAI_EXTRA goto :lanai_planted
+if not exist C:\Lanai\lanai-scale.ps1 goto :lanai_remove
+if exist C:\Lanai\lanai-scale.ps1\ goto :lanai_planted
+fsutil reparsepoint query C:\Lanai\lanai-scale.ps1 >nul 2>&1
+if not errorlevel 1 goto :lanai_planted
+del /f /q C:\Lanai\lanai-scale.ps1
+set "RC=%errorlevel%"
+if not "%RC%"=="0" goto :failed
+:lanai_remove
+rem del can exit 0 without deleting; rd then fails on the folder left full.
+rd C:\Lanai
+set "RC=%errorlevel%"
+if not "%RC%"=="0" goto :failed
+:lanai_create
+rem Fails when C:\Lanai exists again, say another account made it meanwhile.
 mkdir C:\Lanai
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
-:lanai_acl
 rem Owner and access by well-known SID, since group names are localized: a
 rem new folder under C:\ would inherit Modify for Authenticated Users.
 icacls C:\Lanai /setowner *S-1-5-32-544 >nul
@@ -79,14 +100,11 @@ if not "%RC%"=="0" goto :failed
 rem A link swapped in meanwhile would have taken the ACL instead.
 fsutil reparsepoint query C:\Lanai >nul 2>&1
 if not errorlevel 1 goto :lanai_planted
-rem Judge dir's output, not its exit code (1 on an empty folder): anything
-rem but lanai-scale.ps1 as a plain file may come from another account.
+rem The new folder must be empty: anything in it was planted between mkdir
+rem and the ACL.
 set "LANAI_EXTRA="
-for /f "eol=: delims=" %%f in ('dir /b /a C:\Lanai 2^>nul') do if /i not "%%f"=="lanai-scale.ps1" set "LANAI_EXTRA=1"
+for /f "eol=: delims=" %%f in ('dir /b /a C:\Lanai 2^>nul') do set "LANAI_EXTRA=1"
 if defined LANAI_EXTRA goto :lanai_planted
-if exist C:\Lanai\lanai-scale.ps1\ goto :lanai_planted
-fsutil reparsepoint query C:\Lanai\lanai-scale.ps1 >nul 2>&1
-if not errorlevel 1 goto :lanai_planted
 copy /y "%~dp0lanai-scale.ps1" C:\Lanai\lanai-scale.ps1 >nul
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed

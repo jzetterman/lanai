@@ -85,21 +85,49 @@ line_is() {
   assert_output 1
 }
 
-@test "setup.cmd: prepares C:\\Lanai without recursive deletes, sets its ACL by SID, and checks its listing" {
+# Print the numbers of every command line that is exactly <text>.
+lines_are() {
+  setup_code | TEXT=$1 awk '{ i = index($0, ":") } substr($0, i + 1) == ENVIRON["TEXT"] { print substr($0, 1, i - 1) }'
+}
+
+@test "setup.cmd: C:\\Lanai is always made anew, without recursive deletes, its ACL set by SID, then found empty" {
   # No rd, rmdir, del or erase with /s, anywhere.
   run bash -c 'tr -d "\r" <"$1" | awk "tolower(\$1) ~ /^(rd|rmdir|del|erase)\$/ && tolower(\$0) ~ / \\/s/"' _ "$SETUP_CMD"
   assert_output ""
-  local link rd mkdir owner acl list copy
-  link=$(line_is 'fsutil reparsepoint query C:\Lanai >nul 2>&1')
-  rd=$(line_is 'rd C:\Lanai')
+  local -a links rds lists
+  local old folder link del mkdir owner acl empty copy
+  mapfile -t links < <(lines_are 'fsutil reparsepoint query C:\Lanai >nul 2>&1')
+  mapfile -t rds < <(lines_are 'rd C:\Lanai')
+  mapfile -t lists < <(setup_code | grep -F "('dir /b /a C:\\Lanai 2^>nul') do" | cut -d: -f1)
+  ((${#links[@]} == 2 && ${#rds[@]} == 2 && ${#lists[@]} == 2)) ||
+    fail "want 2 link checks, 2 rd and 2 listings: ${links[*]} / ${rds[*]} / ${lists[*]}"
+  # An existing folder may hold only lanai-scale.ps1 as a plain file, which
+  # is deleted before the folder goes.
+  old=$(line_of "do if /i not \"%%f\"==\"lanai-scale.ps1\" set \"LANAI_EXTRA=1\"")
+  folder=$(line_is 'if exist C:\Lanai\lanai-scale.ps1\ goto :lanai_planted')
+  link=$(line_is 'fsutil reparsepoint query C:\Lanai\lanai-scale.ps1 >nul 2>&1')
+  del=$(line_is 'del /f /q C:\Lanai\lanai-scale.ps1')
   mkdir=$(line_is 'mkdir C:\Lanai')
   owner=$(line_is 'icacls C:\Lanai /setowner *S-1-5-32-544 >nul')
   acl=$(line_of 'icacls C:\Lanai /inheritance:r /grant "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"')
-  list=$(line_of "('dir /b /a C:\\Lanai 2^>nul') do if /i not \"%%f\"==\"lanai-scale.ps1\" set \"LANAI_EXTRA=1\"")
+  # After the ACL the folder must be empty: anything at all was planted.
+  empty=$(line_is "for /f \"eol=: delims=\" %%f in ('dir /b /a C:\\Lanai 2^>nul') do set \"LANAI_EXTRA=1\"")
   copy=$(line_of 'copy /y "%~dp0lanai-scale.ps1" C:\Lanai\lanai-scale.ps1')
-  ((link < rd && rd < mkdir && mkdir < owner && owner < acl && acl < list && list < copy)) ||
-    fail "link $link, rd $rd, mkdir $mkdir, owner $owner, ACL $acl, listing $list, copy $copy"
+  local -a order=("${links[0]}" "${rds[0]}" "$old" "$folder" "$link" "$del" "${rds[1]}" "$mkdir"
+    "$owner" "$acl" "${links[1]}" "$empty" "$copy")
+  local i
+  for ((i = 1; i < ${#order[@]}; i++)); do
+    [[ -n ${order[i]} ]] && ((order[i - 1] < order[i])) || fail "out of order: ${order[*]}"
+  done
+  # mkdir always runs, and each rd, del and mkdir stops setup on failure.
+  run setup_code
+  refute_output --partial 'if exist C:\Lanai\ goto :lanai_acl'
+  for i in "${rds[1]}" "$del" "$mkdir"; do
+    assert_line "$((i + 1)):set \"RC=%errorlevel%\""
+    assert_line "$((i + 2)):if not \"%RC%\"==\"0\" goto :failed"
+  done
 }
+
 
 @test "setup.cmd: the qemu-ga allow-list is proof 3's literal command" {
   line_of 'sc.exe config QEMU-GA binPath= "\"C:\Program Files\Qemu-ga\qemu-ga.exe\" -d --retry-path --allow-rpcs=guest-sync,guest-sync-delimited,guest-set-time"'
