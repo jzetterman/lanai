@@ -486,7 +486,8 @@ Where the code differs from the text above, the code and this list win:
   last client log (`$XDG_STATE_HOME/lanai/guest-version`), else the pinned build. A pin
   change updates the guest by rerunning `lanai setup-guest` with the new media; until
   then the old build keeps the window working. When `setup-guest` succeeds it writes
-  the installed pin to `guest-version`, so the next `lanai open` picks the new build.
+  the installed pin to `guest-version`, so the next `lanai open` picks the new build
+  (phase 6 defines success: `record_previous_run`'s step 5 verdict).
   `build_select` gets bats tests (match, no record, no matching build, and the record
   written by `setup-guest`).
 - `lanai open`: start or focus the `lanai-client` unit and return at once (the QML
@@ -605,8 +606,8 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   waits up to 3 s for the unit to leave active, activating or deactivating, so a
   quick Start then Open starts a client for the new VM; a client that ignores SIGTERM
   costs at most those 3 s before ExecStop goes on (systemd kills it later).
-- For phase 6: `lanai setup-guest` calls `guest_version_set "$LG_BUILD"` when it
-  succeeds; step 2 uses `host_packages_missing`, step 4 `client_version`, and step 6
+- For phase 6: `guest_version_set "$LG_BUILD"` runs when `setup-guest` succeeds
+  (`record_previous_run`'s step 5 verdict, phase 6); step 2 uses `host_packages_missing`, step 4 `client_version`, and step 6
   `version_check`.
 
 ## Phase 6: Guest setup media and the setup flow
@@ -792,38 +793,47 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
     (the user manager may lack it; the proofs ran the window only from a terminal).
     `boot_vm` writes the caller's value into `boot.json` beside the window flag, and
     `lanai-vm-exec` exports it only for a window boot, before it execs QEMU; `boot_vm`
-    refuses a window boot with a message when it is unset. The bar's Open is hidden
-    while `boot.json` asks for the window, since a client would show nothing.
+    refuses a window boot with a message when it is unset. While the unit is active,
+    `lanai status` reports `window: true` from `boot.json`, and `lanai open` refuses
+    with a message, since a client would show nothing; the bar and panel hide Open.
   - A record: `-vga none -display none`, as a normal boot does, then `lanai open`,
     whose `build_select` picks the client build that matches the guest's IDD.
   - The override: `lanai setup-guest --window` forces QEMU's window and removes the
     record (the user has just shown it is wrong); `--no-window` forces the client. A
     wrong guess shows nothing useful (an empty client window, or a QEMU window that is
-    black or shows a second desktop), so during the step 5 boot the panel shows the
-    Shut down button and, once status reads stopped, two buttons: "Start setup on
-    QEMU's screen" (`--window`) and "Start setup in the Windows window"
-    (`--no-window`), each with one line saying when to use it. There is no automatic
-    watch, which would need its own timing, lock and stop handling.
+    black or shows a second desktop), so during the step 5 boot the panel shows Shut
+    down and, once the unit is inactive (status has left starting, running and
+    stopping; it reads `setup-needed`, never `stopped`, until setup is done), two
+    buttons: "Start setup on QEMU's screen" (`--window`) and "Start setup in the
+    Windows window" (`--no-window`), each with one line saying when to use it. There
+    is no automatic watch, which would need its own timing, lock and stop handling.
   - Setup state follows the disk. `setup.json` records `storage_dir`'s output (the
     real path, so a symlinked `~/.windows` matches), and `setup_done` (phase 4) also
     requires it to match, so `lanai start` refuses a disk that setup has not seen. One
-    function, `setup_reset`, removes `setup.json` and `guest-version`. `lanai setup` and
-    `lanai setup-guest` call it when the recorded location differs, and `lanai restore`
-    calls it after every restore (setup's own snapshot predates any Lanai boot, so the
-    restored disk has no IDD). Setup then starts again at step 1: phase 8's rehearsal on
-    a copy never marks the live install as set up or skips its snapshot offer, and step
-    3 finds the existing snapshot, so the offer is not repeated.
-  - Step 5 counts as done only when this setup boot's `last-shutdown` has `guest:
-    true` and no `stop-requested` or `forced` marker exists for its invocation, read
-    before the next boot's `record_previous_run` removes them. So a Shut down from the
-    panel does not count as `setup.cmd`'s shutdown. That is also the moment `lanai
-    setup` calls `guest_version_set "$LG_BUILD"` (the phase 5 hook), never earlier.
-  - Two screens remain possible when the guess is wrong the other way (no record, but
-    an IDD in Windows: a disk set up earlier, then restored or switched back to). The
-    `--no-window` button is the way out. Phase 6 also checks on the proof copy, which is
-    this case, whether QMP `send-key` Windows key + P, then "PC screen only", gives the
-    user back QEMU's screen (proof 5 fixed it with "Second screen only" from the
-    Looking Glass side), and names it in the window boot's message only if it works.
+    function, `setup_reset`, removes `setup.json` and `guest-version`, under the lock
+    with the unit stopped (status can rewrite the record while a VM runs). `lanai
+    setup` and `lanai setup-guest` call it when `setup.json` is missing, records no
+    location, or records another one, but only after `layout_check` passes on the
+    current location (an unmounted drive behind a symlink must not wipe setup state).
+    `lanai restore` calls it after every restore, and its next step becomes "run Lanai
+    setup": a snapshot from step 3 predates any Lanai boot, and setup is idempotent for
+    a later one. Setup then starts again at step 1: phase 8's rehearsal on a copy never
+    marks the live install as set up or skips its snapshot offer, and step 3 finds the
+    existing snapshot, so the offer is not repeated.
+  - Step 5's verdict has the same owner as the rest of the run bookkeeping:
+    `record_previous_run`, which already reads these markers. When `boot.json` says
+    `setup: true` and the verdict is clean, with no `forced` marker and no
+    `stop-requested` for that invocation, it writes step 5 done to `setup.json`,
+    keeping there the record it replaces (or that there was none), and
+    calls `guest_version_set "$LG_BUILD"`. This is what "when `setup-guest`
+    succeeds" means in phase 5, including a standalone `setup-guest` for a pin bump:
+    the next start's `preflight` records the pin before any client starts. `lanai
+    setup` calls `record_previous_run` itself when it resumes (under the lock, the unit
+    inactive). A panel Shut down or a forced stop never counts. A Start-menu shutdown
+    or a session-end stop does count, so when step 6 sends setup back over an IDD
+    verdict (anything but `match`), it puts the kept record back: a fresh install then
+    boots QEMU's window again, and a pin bump keeps the client that matches its old
+    IDD.
 
   The proof kit keeps `--setup DIR` as it is (disk and window): reproducing the
   two-screen case, as proof 5 did, needs both. Tests: `vm_args` with the disk and no
@@ -831,12 +841,15 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   record (client, no window), with `--window` and a record (window, record removed),
   and with `--no-window` and no record (client); a window boot with `WAYLAND_DISPLAY`
   unset refuses, and with it set `boot.json` carries it and `lanai-vm-exec` exports
-  it, while a client boot exports nothing; a `setup.json` for another location fails
-  `setup_done`, and `lanai setup` and `lanai setup-guest` both reset it and remove
-  `guest-version`; `lanai restore` resets both; step 5 done after `setup.cmd`'s
-  shutdown records the pin, and after a panel Shut down or a forced stop does
-  neither. Existing fixtures that write `{"done": true}` (`test/lifecycle.bats`) gain
-  the location.
+  it, while a client boot exports nothing; status reports `window: true` and `lanai
+  open` refuses during a window boot; a `setup.json` for another location, or with
+  none, fails `setup_done`, and `lanai setup` and `lanai setup-guest` both reset it
+  and remove `guest-version`; a symlinked storage path matches its recorded real path;
+  a dangling one resets nothing; `lanai restore` resets both; `record_previous_run`
+  marks step 5 done and records the pin after a clean setup boot, and not after a
+  panel Shut down, a forced stop, or a clean normal boot; step 6's IDD failure puts
+  the kept record back, or removes it when none was kept. Existing fixtures that
+  write `{"done": true}` (`test/lifecycle.bats`) gain the location.
 - Host keys never reach Windows (proof 5): Hyprland takes Super shortcuts, and
   Omarchy's Ctrl+Alt+Del closes every host window. Setup and the README never ask the
   user to press either. Where Windows needs one, they give a click path inside Windows
@@ -885,7 +898,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   its window if running (reqs 11, 17); secondary click opens the panel. Keyboard
   reachable where the shell allows.
 - Panel: Start, Open window, Shut down; the forced stop only after 2 minutes of a
-  pending shutdown, with a second confirming click; setup steps with progress; settings
+  pending shutdown, with a second confirming click; setup steps with progress (step 5
+  shows Shut down and the two display buttons, and Open is hidden while status reports
+  `window: true`; see phase 6's setup boot display); settings
   (memory, cores); the error view with cause, next step, log path and the
   `omarchy-windows-vm` fallback.
 - Guest-controlled text (from phase 5 review): show `client.log`, the guest's driver
@@ -893,6 +908,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   QML's default `AutoText`, which would render markup the guest wrote.
 - Polling: `lanai status` every 2 s while the panel is open or the VM is starting or
   stopping, every 15 s otherwise; 10 s deadline per call; QML calls never block on stop.
+- README rules from phase 6: no step asks the user to press Super shortcuts or
+  Ctrl+Alt+Del (the host keys bullet), and it says that a restore means running setup
+  again.
 - README: install; removal (first, inside Windows, under Lanai or over RDP under
   `omarchy-windows-vm`, in an administrator Command Prompt as the same Windows user
   (some settings are in `HKCU`): restore Windows' default lock settings with `reg delete
@@ -928,14 +946,15 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 
 ## Phase 8: Acceptance
 
+- Memory: before the rehearsal, the first Lanai boot on John's machine, set memory to
+  12 GiB in Lanai's settings (shared by the rehearsal and the live install): the proof
+  sessions ran dockur's 16 GiB and caused memory pressure on his 32 GiB machine (proof
+  5). Whether that changes the default is John's call.
 - **Rehearsal on a copy** (agent or John): point Lanai's storage at a fresh
   `lanai-copy` and run every spec acceptance row that does not start the container.
 - **Test install** (rows 3, 4, 30-32): a separate machine or VM running Omarchy with
   `omarchy-windows-vm` and a copy of a Windows install. John picks the machine.
-- **Live install** (John only, after the rehearsal passes). Before its first boot,
-  set memory to 12 GiB in Lanai's settings: the proof sessions ran dockur's 16 GiB and
-  caused memory pressure on John's 32 GiB machine (proof 5). This is John's setting,
-  not a new default.
+- **Live install** (John only, after the rehearsal passes).
 - Client timing check (phase 5 review): open the client right at `lanai start` and
   note whether the guest agent's port opens before the IDD first reports. If it does,
   status shows a brief false "IDD missing" (failed) until the IDD answers; record how
@@ -1012,3 +1031,4 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 | plan amendment (proof 5) | a Grok (substitute) (grok-4.6) | 3 (full, cap) | 2 P2, 1 P3; all confirmed and integrated (the absent-IDD test matches `version_check`'s 30 s `waiting` phase; the fallback stop writes `stop-requested`, so the panel's forced stop is offered; test knobs for the new waits). Stage closed at the cap |
 | plan amendment (proof 5) | b single (opus-5.5) | 1 (full) | 6 should-fix, 6 nits; all confirmed. Seven (the self-lock on a second `boot_vm`, a closed client read as a missing IDD, outcomes with no screen, "one fallback", how a long watch runs, the stop wait, a redundant check) came from the automatic fallback, so Claude replaced it with a manual override: `setup-guest --window` behind a panel prompt. Also integrated: setup state follows the disk (`setup_done` checks the storage location; restore clears `done`); `WAYLAND_DISPLAY` for the window boot; the kit keeps `--setup`; the two-screen fix is verified on the proof copy; row 7b records `EnableLUA` |
 | plan amendment (proof 5) | b single (opus-5.5) | 2 (full) | 5 should-fix, 8 nits; all confirmed. Integrated: one `setup_reset` for a storage change and every restore; the override works both ways (`--window` removes the record, `--no-window`), as two panel buttons after Shut down; step 5 ignores a panel Shut down or forced stop, and records the pin only then; `WAYLAND_DISPLAY` travels in `boot.json`; row 7b turns UAC on for the test if it is off; Open hidden during a window boot; definitions and fixtures follow the storage location; a `tsdiscon` check in phase 8. Not taken: showing the buttons only on a detected wrong guess (simpler to always show them). Taken to John: spec row 7's "one administrator prompt" when UAC is off, and whether 16 GiB stays the default on a 32 GiB host |
+| plan amendment (proof 5) | b single (opus-5.5) | 3 (full, cap) | 4 should-fix, 6 nits; all confirmed and integrated by Claude, not re-reviewed: at the cap. The display buttons wait for an inactive unit (status reads `setup-needed`, never `stopped`, during setup); step 5's verdict and the pin record move into `record_previous_run`, which phase 5's "when `setup-guest` succeeds" now means; step 5 keeps the record it replaces, and step 6 puts it back on an IDD failure; status reports `window: true` and `lanai open` refuses during a window boot, with phase 7's panel and README pointing here; `setup_reset` runs after `layout_check`, under the lock, and on a missing location; restore's next step is setup; the Win+P check dropped; 12 GiB before the rehearsal |
