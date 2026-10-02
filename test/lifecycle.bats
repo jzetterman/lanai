@@ -53,12 +53,12 @@ unit_show() {
 }
 
 # A finished install at the default location, VM settings, a share, and
-# finished setup for that location.
+# finished setup and a snapshot decision for that location.
 ready() {
   make_install "$HOME/.windows"
   mkdir -p "$HOME/Windows" "$S" "$XDG_CONFIG_HOME/lanai"
   echo '{"memory_gib": 8, "cores": 4}' >"$XDG_CONFIG_HOME/lanai/settings.json"
-  jq -n -c --arg l "$(realpath "$HOME/.windows")" '{location: $l, done: true}' >"$S/setup.json"
+  jq -n -c --arg l "$(realpath "$HOME/.windows")" '{location: $l, snapshot: "declined", done: true}' >"$S/setup.json"
 }
 
 # Assert that the unit was never started.
@@ -563,12 +563,16 @@ assert_both_refuse() {
   assert_equal "$(jq -r .scale "$S/boot.json")" 100
 }
 
-@test "boot_vm true: the setup boot records setup mode, without the setup check" {
+@test "boot_vm true: a snapshot decision allows setup mode before setup is done" {
   ready
-  rm "$S/setup.json"
-  WAYLAND_DISPLAY=wayland-0 run boot_vm true
-  assert_success
-  assert_equal "$(jq -r .setup "$S/boot.json")" true
+  setup_patch '{"done": null}'
+  local snapshot
+  for snapshot in taken declined; do
+    setup_set snapshot "\"$snapshot\""
+    WAYLAND_DISPLAY=wayland-0 run boot_vm true
+    assert_success
+    assert_equal "$(jq -r .setup "$S/boot.json")" true
+  done
 }
 
 # --- lanai stop and force-stop ---

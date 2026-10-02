@@ -935,6 +935,7 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   it (spec 8: the window keeps working during a pin bump).
 - `lanai setup` runs `record_previous_run` and `setup_follow` itself, under the lock
   and only with the unit stopped, so step 5's verdict is there without a new boot.
+- Setup boots recheck the current location's snapshot decision after `setup_follow`, before starting any unit.
 - Step 6's boot rechecks `setup.json`, its storage location and `step5: true` under
   `boot_vm`'s lock after `preflight`; a reset between resume and boot refuses without
   starting the VM or client. `lanai start` keeps its existing path.

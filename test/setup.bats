@@ -332,16 +332,38 @@ boot() {
   assert_failure
 }
 
-@test "setup boot: follows the disk first, so a setup.json for another location is reset" {
+@test "setup boot: a changed location resets setup state, refuses and starts nothing" {
   install
   setup_json '{"location": "/elsewhere", "snapshot": "declined", "step5": true}'
   echo B7-801-g1a2b3c4d5e >"$S/guest-version"
   export WAYLAND_DISPLAY=wayland-3
   boot true auto
-  assert_success
-  # The record went with the old state, so the guess is QEMU's window.
-  assert_equal "$(field window)" true
-  assert_equal "$(jq -c . "$S/setup.json")" "$(jq -n -c --arg l "$STORE" '{location: $l, round: true, step5: false}')"
+  assert_failure
+  assert_equal "$(field ok)" false
+  assert_equal "$(field message)" "Lanai setup changed while it was preparing Windows: run setup again"
+  assert_equal "$(field next)" "run setup again"
+  assert_equal "$(jq -c . "$S/setup.json")" "$(jq -n -c --arg l "$STORE" '{location: $l}')"
+  assert [ ! -e "$S/guest-version" ]
+  assert [ ! -e "$S/boot.json" ]
+  ! grep -q -- '--user start' "$T/systemctl.calls" || fail "a unit was started"
+  assert [ ! -e "$T/systemd-run.args" ]
+}
+
+@test "setup boot: no valid snapshot decision refuses and starts nothing" {
+  install
+  export WAYLAND_DISPLAY=wayland-3
+  local json
+  for json in '{}' '{"snapshot": null}' '{"snapshot": "pending"}'; do
+    setup_json "$json"
+    boot true auto
+    assert_failure
+    assert_equal "$(field ok)" false
+    assert_equal "$(field message)" "Lanai setup changed while it was preparing Windows: run setup again"
+    assert_equal "$(field next)" "run setup again"
+    assert [ ! -e "$S/boot.json" ]
+    ! grep -q -- '--user start' "$T/systemctl.calls" || fail "a unit was started"
+    assert [ ! -e "$T/systemd-run.args" ]
+  done
 }
 
 @test "a normal boot never shows QEMU's window" {

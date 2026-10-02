@@ -1076,6 +1076,7 @@ runtime_refresh() {
 # step5 to false (started, not ended). Emits the result, with window, last_run so the
 # panel can show a forced-stop notice once, and network false when the
 # host has no default route.
+# Setup boots require the current disk's snapshot decision after setup_follow.
 boot_vm() {
   local setup=$1 window=${2:-auto} step6=${3:-false} reason scale step s dir media="" last="" next="wait for Windows to start"
   local message="Windows is starting." network=true
@@ -1096,6 +1097,11 @@ boot_vm() {
   if [[ $setup == true ]]; then
     if ! dir=$(storage_dir) || ! setup_follow "$dir"; then
       emit false "" "Lanai cannot record its setup state in $s." ""
+      return 1
+    fi
+    if ! jq -e --arg d "$dir" '.location == $d and (.snapshot == "taken" or .snapshot == "declined")' \
+      "$s/setup.json" >/dev/null 2>&1; then
+      emit false "" "Lanai setup changed while it was preparing Windows: run setup again" "run setup again"
       return 1
     fi
     media=$s/setup-media
