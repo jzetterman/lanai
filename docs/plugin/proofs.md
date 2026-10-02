@@ -579,7 +579,8 @@ reg query HKLM\SOFTWARE\Microsoft\Enrollments /s /v UPN
 `EnableLUA` is `0x0` when dockur's unattended install turned UAC off: every Command
 Prompt of the signed-in administrator then runs with full rights, and "Run as
 administrator" changes nothing. Do not count on it: John's install shows `0x1` (UAC on;
-see the result below), so spec requirement 7's one administrator prompt stands. The `Enrollments` queries show the real data for the
+see the result below), so spec requirement 7's one administrator prompt stands for
+installs with UAC on; the UAC-off case is with John. The `Enrollments` queries show the real data for the
 MDM check. Stock Windows 11 has built-in subkeys with a `ProviderID`, so the script
 counts an enrollment only by a non-empty `DiscoveryServiceFullURL` or `UPN`. Expect
 none of those on this copy.
