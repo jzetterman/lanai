@@ -206,9 +206,9 @@ lines_are() {
 
 # Print the result of PowerShell <expression> after defining $Steps and the
 # script's StepName function, taken from the script itself (its other parts
-# need Windows). Skips without pwsh.
+# need Windows). Callers skip without pwsh before they call it: a skip
+# inside `run` only ends run's subshell.
 step_name() {
-  command -v pwsh >/dev/null || skip "pwsh is not installed"
   PS1=$REPO/guest/lanai-scale.ps1 EXPR=$1 pwsh -NoProfile -NonInteractive -Command '
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
     $f = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -230,6 +230,7 @@ step_name() {
 }
 
 @test "lanai-scale.ps1: StepName names a step, and unknown outside the list" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
   run step_name 'StepName 0; StepName 2; StepName 11; StepName -1; StepName 12; StepName -12'
   assert_success
   assert_output $'100%\n150%\n500%\nunknown\nunknown\nunknown'
