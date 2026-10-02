@@ -334,7 +334,7 @@ boot() {
   assert_success
   # The record went with the old state, so the guess is QEMU's window.
   assert_equal "$(field window)" true
-  assert_equal "$(jq -c . "$S/setup.json")" "$(jq -n -c --arg l "$STORE" '{location: $l, step5: false}')"
+  assert_equal "$(jq -c . "$S/setup.json")" "$(jq -n -c --arg l "$STORE" '{location: $l, round: true, step5: false}')"
 }
 
 @test "a normal boot never shows QEMU's window" {
@@ -842,6 +842,69 @@ step6_running() {
   assert_equal "$(field window)" false
   run setup_done
   assert_success
+  # The setup boot opened a round, which only step 7 closes.
+  assert_equal "$(jq -r .round "$S/setup.json")" true
+}
+
+@test "lanai setup: with done, a step 6 failure after the pin was recorded resumes at step 5, not 7" {
+  # A pin bump: the setup boot ran, then step 6 saw a match (recording the
+  # pin, so nothing is behind any more) but the guest agent failed.
+  step6_running "$FIX/client-logs/match.log" 90
+  setup_json '{"snapshot": "declined", "step5": true, "done": true, "round": true}'
+  conf FAKE_QGA_CMD=open
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  assert_equal "$(<"$S/guest-version")" B7-826-g236efcb155
+  # Shut down: the next setup goes back to the setup boot.
+  unit_is lanai-vm.service inactive
+  unit_is lanai-client.service inactive
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 5
+  run setup_done
+  assert_success
+}
+
+@test "lanai setup: with done, --window then a panel Shut down asks for the display; a clean one goes to step 6" {
+  through_step4
+  setup_json '{"snapshot": "declined", "done": true}'
+  echo B7-801-g1a2b3c4d5e >"$S/guest-version"
+  export WAYLAND_DISPLAY=wayland-3
+  setup_run --window
+  assert_success
+  assert_equal "$(field step)" 5
+  assert_equal "$(field window)" true
+  # --window removed the record, so nothing reads as behind any more.
+  assert [ ! -e "$S/guest-version" ]
+  setup_boot_ended panel
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  assert_equal "$(jq -c .choices <<<"$JSON")" '["--window","--no-window"]'
+  setup_boot_ended clean
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+}
+
+@test "lanai setup: a finished round reports step 7 and closes the round" {
+  step6_running "$FIX/client-logs/match.log"
+  setup_json '{"snapshot": "declined", "step5": true, "done": true, "round": true}'
+  setup_run --share-ok yes --scale-ok yes
+  assert_success
+  assert_equal "$(field step)" 7
+  assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" '{"snapshot":"declined","done":true}'
+  setup_run
+  assert_equal "$(field step)" 7
+}
+
+@test "setup_reset: removes an open round with the rest" {
+  install
+  setup_json '{"snapshot": "declined", "done": true, "round": true}'
+  setup_reset
+  setup_follow "$STORE"
+  assert_equal "$(jq -r '.round // "unset"' "$S/setup.json")" unset
 }
 
 @test "lanai setup: interrupted after each step, it resumes at the right step" {

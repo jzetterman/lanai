@@ -9,6 +9,9 @@
 #             ended cleanly; true once record_previous_run saw it end with a
 #             clean guest shutdown that the panel did not ask for
 #   done      true once step 6 passed
+#   round     true from a setup boot's start until step 7; while it is
+#             open, a done setup (a pin bump, or a rerun) does not read as
+#             finished, though lanai start still works (spec 8)
 # State for another location, or none, counts as no state at all.
 # shellcheck shell=bash
 
@@ -327,7 +330,7 @@ setup_step6() {
     setup_back5 "$wrong"
     return 1
   fi
-  if ! setup_set "done" true || ! setup_set step5 null; then
+  if ! setup_set "done" true || ! setup_set step5 null || ! setup_set round null; then
     setup_reply false 6 "Lanai cannot record its setup state." "run setup again"
     return 1
   fi
@@ -340,8 +343,9 @@ setup_step6() {
 # once the lock is released: "build" (step 4), "setup-boot" (step 5) or
 # "normal-boot" (step 6). Each step is detected, not assumed. With the unit
 # stopped it first records the previous run (step 5's verdict) and makes
-# setup state follow the disk. done with a guest version behind the pin
-# goes back to step 5 (a pin bump; the old client keeps working).
+# setup state follow the disk. done with a guest version behind the pin,
+# or with a setup round open, goes back to step 5 (a pin bump; the old
+# client keeps working).
 setup_resume() {
   local window=$1 nosnap=$2 share=$3 scale=$4 st stopped=false dir problem missing details want s
   local -a list
@@ -419,8 +423,10 @@ setup_resume() {
     return 0
   fi
 
-  # 7. Done, unless the guest's IDD is behind the pin.
-  if setup_done && [[ -z $(guest_version_behind) ]]; then
+  # 7. Done, unless the guest's IDD is behind the pin or a setup round is
+  # still open (its step 6 may have recorded the pin, or --window removed
+  # the record, so "behind" alone cannot tell).
+  if setup_done && [[ -z $(guest_version_behind) && $(setup_get round) != true ]]; then
     setup_reply true 7 "Lanai setup is finished." "start Windows"
     return 0
   fi

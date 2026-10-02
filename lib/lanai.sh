@@ -1069,8 +1069,9 @@ runtime_refresh() {
 # user then opens the client. <window> true forces the window and removes
 # the record (the user has just shown it is wrong); false forces the
 # client. A window boot needs WAYLAND_DISPLAY, which boot.json carries for
-# lanai-vm-exec. Once the unit starts, a setup boot sets step5 to false
-# (started, not ended). Emits the result, with window, last_run so the
+# lanai-vm-exec. A setup boot opens a setup round ("round" in setup.json)
+# before it can drop the record, and once the unit starts it sets step5 to
+# false (started, not ended). Emits the result, with window, last_run so the
 # panel can show a forced-stop notice once, and network false when the
 # host has no default route.
 boot_vm() {
@@ -1098,6 +1099,12 @@ boot_vm() {
     if [[ $window == true && -z ${WAYLAND_DISPLAY:-} ]]; then
       emit false "" "QEMU's window needs WAYLAND_DISPLAY, which is not set here." \
         "run setup from the Lanai panel, or with --no-window"
+      return 1
+    fi
+    # Open a setup round before anything can drop the record: until step 7
+    # closes it, a done setup does not read as finished.
+    if ! setup_set round true; then
+      emit false "" "Lanai cannot record its setup state in $s." ""
       return 1
     fi
     [[ $window == false ]] || rm -f -- "$s/guest-version"

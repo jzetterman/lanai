@@ -917,6 +917,13 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   instead of booting), and `true`. A failed step 6 check removes it, so the retry
   boots with the guess. Finishing setup removes it too, so a later pin bump starts
   step 5 afresh while `done` stays true and `lanai start` keeps working.
+- `setup.json` gains a fifth key, `round`: a setup boot sets it to true before it can
+  drop the guest version record (`--window`), and only step 7 removes it (with
+  `step5`); `setup_reset` removes it with the rest. While a round is open, `lanai
+  setup` does not report a `done` setup as finished: a round's step 6 may have
+  recorded the pin before a later check failed, and `--window` removes the record, so
+  "behind the pin" alone could not tell. `setup_done`, and so `lanai start`, ignore
+  it (spec 8: the window keeps working during a pin bump).
 - `lanai setup` runs `record_previous_run` and `setup_follow` itself, under the lock
   and only with the unit stopped, so step 5's verdict is there without a new boot.
 - A setup boot in client mode does not open the client: its reply says "open the
