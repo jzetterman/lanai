@@ -86,6 +86,9 @@ stop_bg() {
 isolate_home() {
   local v
   for v in $(compgen -e XDG_); do unset "$v"; done
+  # The desktop session's display, which a setup boot reads; tests that
+  # need one set their own.
+  unset WAYLAND_DISPLAY
   export HOME=$BATS_TEST_TMPDIR/home
   export XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share
   export XDG_STATE_HOME=$HOME/.local/state XDG_CACHE_HOME=$HOME/.cache

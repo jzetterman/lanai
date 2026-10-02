@@ -759,10 +759,17 @@ helper_alive() {
   grep -qE "/${LANAI_UNIT//./\\.}\$" "$proc/cgroup" 2>/dev/null
 }
 
+# Return 0 when the last boot asked for QEMU's window (boot.json): a setup
+# boot on a guest without the IDD. Meaningful only while the unit runs.
+boot_window() {
+  jq -e '.window == true' "$(state_dir)/boot.json" >/dev/null 2>&1
+}
+
 # Print the facts lanai status maps to a state, as Key=Value lines: the
 # unit's `systemctl --user show` output, then Lanai's own (LanaiInstall,
 # LanaiSetup, LanaiContainer, LanaiForced, LanaiLastRun, and for an active
-# unit LanaiQmp, LanaiQga, LanaiHelpersMissing, LanaiStopAge and
+# unit LanaiWindow=true when it shows QEMU's window, LanaiQmp, LanaiQga,
+# LanaiHelpersMissing, LanaiStopAge and
 # LanaiClient=timeout when the client gave up waiting for QEMU),
 # LanaiVersion (version_check's verdict on client.log for an active unit,
 # else "unknown"; idd-missing only while the client runs), and
@@ -792,6 +799,9 @@ status_facts() {
   fi
   [[ ! -e $s/forced ]] || echo LanaiForced=yes
   [[ ! -f $s/last-run ]] || echo "LanaiLastRun=$(<"$s/last-run")"
+  if [[ $active == active || $active == reloading ]] && boot_window; then
+    echo LanaiWindow=true
+  fi
   if [[ $active == active || $active == reloading ]] && run=$(run_dir); then
     if out=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-status"}' '{"execute":"query-chardev"}'); then
       echo "LanaiQmp=$(jq -r 'select(.return.status? | type == "string") | .return.status' <<<"$out" | head -n1)"
@@ -838,12 +848,15 @@ status_facts() {
 # its stop timed out, and the next start will report it), warning (helpers
 # that stopped, a client that gave up waiting for QEMU, or a guest driver
 # that is not the pinned build), force_stop (true once a shutdown from the
-# bar has run 2 minutes, spec 16) and, for failed, logs. The client log's
+# bar has run 2 minutes, spec 16), active (the unit runs, starts or stops:
+# an active VM before setup is done also reads setup-needed, so the panel
+# needs it during the setup boot), window (the running VM shows QEMU's
+# window, so Open is hidden) and, for failed, logs. The client log's
 # verdict (LanaiVersion) makes a mismatch version-mismatch, and a missing
 # IDD on a booted VM failed, with the client log as its logs (spec 8); a
 # stop in progress and a QEMU error come first.
 status_map() {
-  local line state message next notice="" warning="" force=false name logs=""
+  local line state message next notice="" warning="" force=false name logs="" up=false
   local -A f=()
   local -a lost=()
   while IFS= read -r line; do
@@ -924,11 +937,14 @@ status_map() {
     warning+="${warning:+ }The Windows display driver (${f[LanaiDriverOld]}) is not Lanai's pinned build ($LG_BUILD); run Lanai setup again to update it."
   fi
   [[ $state != failed || -n $logs ]] || logs=$LANAI_LOGS
+  case $active in active | activating | deactivating | reloading) up=true ;; esac
   emit true "$state" "$message" "$next" "$(jq -n -c --arg notice "$notice" --arg warning "$warning" \
     --argjson force "$force" --arg logs "$logs" --argjson pending "$([[ $forced == yes ]] && echo true || echo false)" \
+    --argjson active "$up" --argjson window "$([[ ${f[LanaiWindow]:-} == true ]] && echo true || echo false)" \
     '{notice: (if $notice == "" then null else $notice end),
       warning: (if $warning == "" then null else $warning end),
-      force_stop: $force, forced_pending: $pending} + (if $logs == "" then {} else {logs: $logs} end)')"
+      force_stop: $force, forced_pending: $pending, active: $active, window: $window} +
+      (if $logs == "" then {} else {logs: $logs} end)')"
 }
 
 # Check everything that must hold before the VM unit starts, and print the
@@ -1040,17 +1056,26 @@ runtime_refresh() {
   done
 }
 
-# boot_vm <setup true|false>: the one path that starts the VM unit (lanai
-# start; lanai setup-guest and setup's step 6 boot in phase 6). Under
-# lanai_flock it runs preflight, turns the focused monitor's scale into a
-# Windows step (100% without Hyprland), runs lanai-vm-exec's own checks as a
-# dry run (vm_plan), so a refusal is explained here rather than showing as
-# a failed unit, refreshes the runtime copy, leaves the scale and boot mode
-# in <state>/boot.json for lanai-vm-exec, and starts the unit. Emits the
-# result, with last_run so the panel can show a forced-stop notice once,
-# and network false when the host has no default route.
+# boot_vm <setup true|false> [<window auto|true|false>]: the one path that
+# starts the VM unit (lanai start, lanai setup-guest and setup's step 6
+# boot). Under lanai_flock it runs preflight, turns the focused monitor's
+# scale into a Windows step (100% without Hyprland), runs lanai-vm-exec's
+# own checks as a dry run (vm_plan), so a refusal is explained here rather
+# than showing as a failed unit, refreshes the runtime copy, leaves the
+# scale and boot mode in <state>/boot.json for lanai-vm-exec, and starts
+# the unit. A setup boot (plan phase 6) first makes setup state follow the
+# disk (setup_follow), then picks the display: QEMU's window when there is
+# no guest version record (a fresh install has no IDD), else none, and the
+# user then opens the client. <window> true forces the window and removes
+# the record (the user has just shown it is wrong); false forces the
+# client. A window boot needs WAYLAND_DISPLAY, which boot.json carries for
+# lanai-vm-exec. Once the unit starts, a setup boot sets step5 to false
+# (started, not ended). Emits the result, with window, last_run so the
+# panel can show a forced-stop notice once, and network false when the
+# host has no default route.
 boot_vm() {
-  local setup=$1 reason scale step s media="" last="" message="Windows is starting." network=true
+  local setup=$1 window=${2:-auto} reason scale step s dir media="" last="" next="wait for Windows to start"
+  local message="Windows is starting." network=true
   if ! lanai_flock; then
     emit false "" "$LANAI_BUSY." "try again when it finishes"
     return 1
@@ -1059,11 +1084,30 @@ boot_vm() {
     emit false "" "$reason" ""
     return 1
   fi
+  s=$(state_dir)
+  if [[ $setup == true ]]; then
+    if ! dir=$(storage_dir) || ! setup_follow "$dir"; then
+      emit false "" "Lanai cannot record its setup state in $s." ""
+      return 1
+    fi
+    media=$s/setup-media
+    if [[ $window == auto ]]; then
+      window=true
+      [[ -z $(guest_version_get) ]] || window=false
+    fi
+    if [[ $window == true && -z ${WAYLAND_DISPLAY:-} ]]; then
+      emit false "" "QEMU's window needs WAYLAND_DISPLAY, which is not set here." \
+        "run setup from the Lanai panel, or with --no-window"
+      return 1
+    fi
+    [[ $window == false ]] || rm -f -- "$s/guest-version"
+    [[ $window == true ]] || next="open the Windows window"
+  else
+    window=false
+  fi
   scale=$(host_scale) || scale=100
   step=$(scale_step "$scale") || step=100
-  s=$(state_dir)
-  [[ $setup != true ]] || media=$s/setup-media
-  if ! reason=$(vm_plan "$step" "$media"); then
+  if ! reason=$(vm_plan "$step" "$media" "$window"); then
     emit false "" "$reason" ""
     return 1
   fi
@@ -1076,7 +1120,9 @@ boot_vm() {
     return 1
   fi
   if ! mkdir -p -- "$s" || ! jq -n -c --argjson scale "$step" --argjson setup "$setup" \
-    '{scale: $scale, setup: $setup}' >"$s/boot.json"; then
+    --argjson window "$window" --arg wayland "${WAYLAND_DISPLAY:-}" \
+    '{scale: $scale, setup: $setup, window: $window} +
+      (if $window then {wayland_display: $wayland} else {} end)' >"$s/boot.json"; then
     emit false "" "Lanai cannot write $s/boot.json." ""
     return 1
   fi
@@ -1084,10 +1130,14 @@ boot_vm() {
     emit false failed "Windows did not start." "see the logs with $LANAI_LOGS, $LANAI_FALLBACK"
     return 1
   fi
+  [[ $setup != true ]] || setup_set step5 false ||
+    echo "lanai: cannot record step 5 in setup.json" >&2
   [[ ! -f $s/last-run ]] || last=$(<"$s/last-run")
-  emit true starting "$message" "wait for Windows to start" \
+  emit true starting "$message" "$next" \
     "$(jq -n -c --argjson scale "$step" --arg last "$last" --argjson network "$network" \
-      '{scale: $scale, network: $network, last_run: (if $last == "" then null else $last end)}')"
+      --argjson window "$window" \
+      '{scale: $scale, network: $network, window: $window,
+        last_run: (if $last == "" then null else $last end)}')"
 }
 
 # status: print the VM's state for the bar (spec 10).
@@ -1135,12 +1185,18 @@ cmd_stop() {
 # when lanai-client.service already runs, so there is never a second
 # client; else records the guest version the last client log names, picks
 # the client build (build_select) and starts the unit, which waits for QEMU
-# itself. Returns at once.
+# itself. Returns at once. Refuses while a setup boot shows QEMU's window:
+# the guest has no IDD yet, so a client would show nothing.
 cmd_open() {
   local st pid client out
   st=$(unit_state) || st=""
   if [[ $st != active ]]; then
     emit false "" "Windows is not running." "start Windows"
+    return 1
+  fi
+  if boot_window; then
+    emit false "" "Windows shows in QEMU's window during this setup boot, so the Looking Glass window would stay empty." \
+      "use QEMU's window"
     return 1
   fi
   if ! client_active; then

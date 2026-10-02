@@ -310,7 +310,7 @@ map() {
 # --- preflight and boot_vm's dry run, through every path that starts the unit ---
 
 # Run each entry point that boots the VM: lanai start, and boot_vm true
-# (the setup boots of lanai setup-guest and setup's step 6, phase 6). Each
+# (the setup boot of lanai setup-guest and lanai setup, phase 6). Each
 # must refuse with a message containing <text> and must not start the unit.
 assert_both_refuse() {
   lanai_run start
@@ -318,7 +318,7 @@ assert_both_refuse() {
   assert_equal "$(field ok)" false
   run field message
   assert_output --partial "$1"
-  run --separate-stderr boot_vm true
+  WAYLAND_DISPLAY=wayland-0 run --separate-stderr boot_vm true
   assert_failure
   JSON=$output
   assert_equal "$(field ok)" false
@@ -467,7 +467,7 @@ assert_both_refuse() {
   assert_line "TimeoutStopSec=2min"
   refute_output --partial "[Install]"
   # The focused monitor is at 150%.
-  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":150,"setup":false}'
+  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":150,"setup":false,"window":false}'
   run cat "$T/systemctl.calls"
   assert_line "--user daemon-reload"
   assert_line "--user start lanai-vm.service"
@@ -566,7 +566,7 @@ assert_both_refuse() {
 @test "boot_vm true: the setup boot records setup mode, without the setup check" {
   ready
   rm "$S/setup.json"
-  run boot_vm true
+  WAYLAND_DISPLAY=wayland-0 run boot_vm true
   assert_success
   assert_equal "$(jq -r .setup "$S/boot.json")" true
 }

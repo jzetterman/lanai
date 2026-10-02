@@ -142,20 +142,35 @@ EOF
   refute_line -monitor
 }
 
-@test "vm_args: the setup boot adds the GTK display and the read-only setup disk" {
-  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 192.168.1.1 /media/dir
-  assert_success
-  local want
-  want=$(
+@test "vm_args: the setup disk and QEMU's window are separate choices" {
+  local base want
+  base=$(
     grep -v -e '^#' -e '^$' "$REPO/lib/dockur-6.05.args" |
       sed -e 's|@STORAGE@|/vm/store|g' -e 's|@MAC@|02:4B:81:73:3C:96|' \
         -e 's|@MEMORY@|8|' -e 's|@CORES@|4|g'
     additions "$RUN" 150
-    printf '%s\n' -vga virtio -display gtk,window-close=off \
-      -drive if=none,id=setup,file=fat:/media/dir,format=raw,readonly=on \
-      -device usb-storage,drive=setup
   )
+  local disk=(-drive "if=none,id=setup,file=fat:/media/dir,format=raw,readonly=on" -device "usb-storage,drive=setup")
+  # The disk and no window: a setup boot on a guest that has the IDD.
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 192.168.1.1 /media/dir false
+  assert_success
+  want=$(printf '%s\n' "$base" "${disk[@]}" -vga none -display none)
   assert_output "$want"
+  # Both: a setup boot on a fresh install.
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 192.168.1.1 /media/dir true
+  assert_success
+  want=$(printf '%s\n' "$base" "${disk[@]}" -vga virtio -display gtk,window-close=off)
+  assert_output "$want"
+  # Neither: a normal boot.
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 192.168.1.1
+  want=$(printf '%s\n' "$base" -vga none -display none)
+  assert_output "$want"
+}
+
+@test "vm_args: refuses a window choice that is not true or false" {
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 192.168.1.1 /media/dir yes
+  assert_failure
+  assert_output --partial "window"
 }
 
 @test "vm_args: refuses a storage path with a comma, a newline, or no leading slash" {
@@ -938,15 +953,33 @@ start_exec() {
   assert_line shutdown-watch
 }
 
-@test "lanai-vm-exec: the setup boot attaches the setup media" {
+@test "lanai-vm-exec: a window setup boot attaches the media and exports WAYLAND_DISPLAY" {
   exec_shims
+  shim qemu-system-x86_64 'printf "%s\n" "$@" >"$T/qemu.args.tmp"; echo "${WAYLAND_DISPLAY-unset}" >"$T/qemu.wayland"
+mv "$T/qemu.args.tmp" "$T/qemu.args"; exec sleep 30'
   mkdir -p "$S/setup-media"
-  echo '{"scale": 100, "setup": true}' >"$S/boot.json"
-  start_exec
+  echo '{"scale": 100, "setup": true, "window": true, "wayland_display": "wayland-9"}' >"$S/boot.json"
+  WAYLAND_DISPLAY=wayland-1 start_exec
   wait_for_file "$T/qemu.args" "QEMU never started"
   run cat "$T/qemu.args"
   assert_line "if=none,id=setup,file=fat:$S/setup-media,format=raw,readonly=on"
   assert_line "gtk,window-close=off"
+  assert_equal "$(<"$T/qemu.wayland")" wayland-9
+}
+
+@test "lanai-vm-exec: a client setup boot attaches the media, shows no window and exports no display" {
+  exec_shims
+  shim qemu-system-x86_64 'printf "%s\n" "$@" >"$T/qemu.args.tmp"; echo "${WAYLAND_DISPLAY-unset}" >"$T/qemu.wayland"
+mv "$T/qemu.args.tmp" "$T/qemu.args"; exec sleep 30'
+  mkdir -p "$S/setup-media"
+  echo '{"scale": 100, "setup": true, "window": false, "wayland_display": "wayland-9"}' >"$S/boot.json"
+  WAYLAND_DISPLAY=wayland-1 start_exec
+  wait_for_file "$T/qemu.args" "QEMU never started"
+  run cat "$T/qemu.args"
+  assert_line "if=none,id=setup,file=fat:$S/setup-media,format=raw,readonly=on"
+  refute_line "gtk,window-close=off"
+  assert_line none
+  assert_equal "$(<"$T/qemu.wayland")" unset
 }
 
 @test "lanai-vm-exec: a bad runtime folder stops it before anything starts" {

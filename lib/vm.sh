@@ -58,14 +58,15 @@ run_dir() {
 # --- QEMU arguments ---
 
 # Print the VM's QEMU arguments (after argv[0]), one per line: the template
-# filled with the settings, then Lanai's devices (plan: VM hardware). With
-# <setup-media>, the setup boot's GTK display and read-only setup disk
-# replace the headless display. Every input is checked before use, and the
-# result is scanned for listeners and container paths, failing closed.
-#   vm_args <storage> <mac> <memory-gib> <cores> <scale> <gateway or ""> [<setup-media>]
+# filled with the settings, then Lanai's devices (plan: VM hardware). Two
+# separate setup-boot choices (plan phase 6): <setup-media> adds the
+# read-only setup disk, and <window> true shows QEMU's own GTK window
+# instead of the headless display. Every input is checked before use, and
+# the result is scanned for listeners and container paths, failing closed.
+#   vm_args <storage> <mac> <memory-gib> <cores> <scale> <gateway or ""> [<setup-media or ""> [<window true|false>]]
 # An empty gateway (no default route) boots without passt's DNS forward.
 vm_args() {
-  local storage=$1 mac=$2 mem=$3 cores=$4 scale=$5 gw=$6 media=${7:-} run arg
+  local storage=$1 mac=$2 mem=$3 cores=$4 scale=$5 gw=$6 media=${7:-} window=${8:-false} run arg
   local -a out=()
   run=$(run_dir) || return 1
   if [[ $storage != /* || $storage == *[,$'\n']* ]]; then
@@ -94,6 +95,10 @@ vm_args() {
   fi
   if [[ -n $media && ($media != /* || $media == *[,$'\n']*) ]]; then
     echo "the setup media path must be absolute, without a comma or a newline: ${media@Q}"
+    return 1
+  fi
+  if [[ $window != true && $window != false ]]; then
+    echo "the window choice must be true or false: ${window@Q}"
     return 1
   fi
   if [[ $run == *[,$'\n']* ]]; then
@@ -137,10 +142,12 @@ vm_args() {
     -smbios "type=11,value=lanai-scale=$scale"
   )
   if [[ -n $media ]]; then
-    # window-close=off: closing the setup window must not power off the VM.
-    out+=(-vga virtio -display "gtk,window-close=off"
-      -drive "if=none,id=setup,file=fat:$media,format=raw,readonly=on"
+    out+=(-drive "if=none,id=setup,file=fat:$media,format=raw,readonly=on"
       -device "usb-storage,drive=setup")
+  fi
+  if [[ $window == true ]]; then
+    # window-close=off: closing the setup window must not power off the VM.
+    out+=(-vga virtio -display "gtk,window-close=off")
   else
     out+=(-vga none -display none)
   fi
@@ -639,11 +646,12 @@ default_gateway() {
     jq -r '[.[] | .gateway // empty][0] // empty' 2>/dev/null || true
 }
 
-# vm_plan <scale> <setup-media or "">: check what lanai-vm-exec needs and
-# print QEMU's arguments: the runtime folder (created 0700 when missing),
-# the settings, windows.mac, the gateway and vm_args. On a problem, prints
-# why and fails. boot_vm runs it as a dry run before it starts the unit, so
-# the user sees why; lanai-vm-exec runs it again as the backstop.
+# vm_plan <scale> <setup-media or ""> [<window true|false>]: check what
+# lanai-vm-exec needs and print QEMU's arguments: the runtime folder
+# (created 0700 when missing), the settings, windows.mac, the gateway and
+# vm_args. On a problem, prints why and fails. boot_vm runs it as a dry run
+# before it starts the unit, so the user sees why; lanai-vm-exec runs it
+# again as the backstop.
 vm_plan() {
   local problem storage mem="" cores="" mac=""
   # Repeated from preflight: a direct `systemctl --user start lanai-vm`
@@ -674,7 +682,7 @@ vm_plan() {
     echo "Lanai cannot read $storage/windows.mac."
     return 1
   }
-  vm_args "$storage" "${mac//[[:space:]]/}" "$mem" "$cores" "$1" "$(default_gateway)" "$2"
+  vm_args "$storage" "${mac//[[:space:]]/}" "$mem" "$cores" "$1" "$(default_gateway)" "$2" "${3:-false}"
 }
 
 # lanai-vm-exec, the unit's ExecStart (plan: Architecture). It reads the
@@ -683,10 +691,12 @@ vm_plan() {
 # client.log, starts the helpers in the background (in the unit's cgroup;
 # systemd stops them after ExecStop): virtiofsd once, the others under
 # supervise. It waits for virtiofsd's fresh socket, writes the "running"
-# marker with $INVOCATION_ID, and execs QEMU. Prints why and fails on any
-# problem, before QEMU starts.
+# marker with $INVOCATION_ID, and execs QEMU. Only for a boot that shows
+# QEMU's window does QEMU get WAYLAND_DISPLAY, from boot.json (the user
+# manager may lack it). Prints why and fails on any problem, before QEMU
+# starts.
 vm_exec() {
-  local run s scale=100 setup=false media="" out i name
+  local run s scale=100 setup=false window=false wayland="" media="" out i name
   local -a args
   : "${INVOCATION_ID:?lanai-vm-exec runs only as lanai-vm.service}"
   run=$(run_dir) || return 1
@@ -694,9 +704,20 @@ vm_exec() {
   if [[ -f $s/boot.json ]]; then
     scale=$(jq -r '.scale // 100' "$s/boot.json") || return 1
     setup=$(jq -r '.setup // false' "$s/boot.json") || return 1
+    window=$(jq -r '.window // false' "$s/boot.json") || return 1
+    wayland=$(jq -r '.wayland_display // ""' "$s/boot.json") || return 1
   fi
   [[ $setup != true ]] || media=$s/setup-media
-  out=$(vm_plan "$scale" "$media") || {
+  if [[ $window == true ]]; then
+    [[ -n $wayland ]] || {
+      echo "lanai: boot.json asks for QEMU's window but names no WAYLAND_DISPLAY" >&2
+      return 1
+    }
+    export WAYLAND_DISPLAY=$wayland
+  else
+    unset WAYLAND_DISPLAY
+  fi
+  out=$(vm_plan "$scale" "$media" "$window") || {
     echo "lanai: $out" >&2
     return 1
   }
