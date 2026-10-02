@@ -85,6 +85,35 @@ line_is() {
   assert_output 1
 }
 
+# Print stage 1's command lines (before the :elevated label) as setup_code
+# does.
+stage1_code() {
+  setup_code | awk '{ i = index($0, ":") } substr($0, i + 1) == ":elevated" { exit } { print }'
+}
+
+@test "setup.cmd: stage 1 tells a declined prompt (1223) from the elevated stage's own failures" {
+  # A canceled RunAs is a non-terminating error in Windows PowerShell 5.1,
+  # so $p stays null and exit $p.ExitCode would exit 0.
+  run stage1_code
+  assert_output --partial "powershell -NoProfile -NonInteractive -Command \"\$ErrorActionPreference = 'Stop'; try { \$p = Start-Process -FilePath \$env:LANAI_SETUP -ArgumentList '/elevated', \$env:LANAI_SID -Verb RunAs -Wait -PassThru; exit \$p.ExitCode } catch { exit 1223 }\""
+  # Exact codes only: if errorlevel N means N or more.
+  refute_output --regexp '^[0-9]+:if (not )?errorlevel'
+  # The five command lines right after it.
+  run bash -c 'cut -d: -f2- | grep -F -A5 "Start-Process -FilePath" | tail -n 5' < <(stage1_code)
+  assert_output "$(printf '%s\n' 'set "RC=%errorlevel%"' 'if "%RC%"=="0" exit /b 0' \
+    'if "%RC%"=="1223" goto :declined' 'if "%RC%"=="2" exit /b 1' 'exit /b 1')"
+  # Its only pauses are on the no-SID and decline paths: after a failure the
+  # elevated window already paused, and after the IDD the display may be black.
+  run bash -c 'awk -F: "{ l = substr(\$0, index(\$0, \":\") + 1) } l ~ /^:/ { label = l } tolower(l) == \"pause\" { print label }"' _ < <(stage1_code)
+  assert_output $':no_sid\n:declined'
+}
+
+@test "setup.cmd: an IDD failure exits with its own code, 2, and no pause" {
+  run bash -c 'cut -d: -f2- | sed -n "/^:idd_failed\$/,/^exit/p"' < <(setup_code)
+  assert_line 'exit /b 2'
+  refute_output --regexp '(^|[^a-z])pause'
+}
+
 # Print the numbers of every command line that is exactly <text>.
 lines_are() {
   setup_code | TEXT=$1 awk '{ i = index($0, ":") } substr($0, i + 1) == ENVIRON["TEXT"] { print substr($0, 1, i - 1) }'

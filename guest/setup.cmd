@@ -22,17 +22,25 @@ if not defined LANAI_SID goto :no_sid
 set "LANAI_SETUP=%~f0"
 echo Lanai setup needs administrator rights once. Approve the prompt with the
 echo account you are signed in as.
-powershell -NoProfile -NonInteractive -Command "$p = Start-Process -FilePath $env:LANAI_SETUP -ArgumentList '/elevated', $env:LANAI_SID -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
-if errorlevel 1 goto :not_finished
-exit /b 0
+rem A declined prompt is a non-terminating error in Windows PowerShell 5.1,
+rem which would leave $p empty and exit 0; Stop makes it 1223 (ERROR_CANCELLED).
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; try { $p = Start-Process -FilePath $env:LANAI_SETUP -ArgumentList '/elevated', $env:LANAI_SID -Verb RunAs -Wait -PassThru; exit $p.ExitCode } catch { exit 1223 }"
+rem Exact codes: "if errorlevel N" means N or more. 0 is done; 2 is a failed
+rem display driver, when this display may be black (Lanai's step 6 reports
+rem it); any other failure was shown, with a pause, in the elevated window.
+set "RC=%errorlevel%"
+if "%RC%"=="0" exit /b 0
+if "%RC%"=="1223" goto :declined
+if "%RC%"=="2" exit /b 1
+exit /b 1
 
 :no_sid
 echo Lanai setup: cannot read your account's SID with whoami.
 pause
 exit /b 1
 
-:not_finished
-echo Lanai setup did not finish. If you declined the administrator prompt, run
+:declined
+echo Lanai setup did not start: the administrator prompt was declined. Run
 echo setup.cmd again and approve it.
 pause
 exit /b 1
@@ -234,7 +242,8 @@ pause
 exit /b 1
 
 :idd_failed
-rem No pause: the display may already be black.
+rem No pause: the display may already be black. Its own exit code, 2, tells
+rem stage 1 not to pause either.
 echo Lanai setup stopped at %STEP% (exit code %RC%). Shut Windows down, then
 echo run Lanai setup again.
-exit /b 1
+exit /b 2

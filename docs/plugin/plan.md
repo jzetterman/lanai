@@ -936,7 +936,10 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   always removed (without `/s`) and made anew, then checked for a link again and found
   empty after the ACL, since a folder another account made first could keep that
   account's explicit ACE (found in the first build's review; the text above now says
-  so); the sign-in task is registered with PowerShell's
+  so); stage 1 reads the elevated stage's exit code exactly: a declined prompt
+  is 1223 (the PowerShell call catches the cancel, which Windows PowerShell 5.1
+  raises as a non-terminating error), and only it and a missing SID pause; an IDD
+  failure exits 2 and nothing pauses on a display that may be black; the sign-in task is registered with PowerShell's
   `Register-ScheduledTask` as "Lanai display scale" (interactive logon, no stored
   password). Each MSI passes on exit code 0 or 3010 only.
 - `lanai-vm-exec` unsets `WAYLAND_DISPLAY` for a boot without QEMU's window. Status's
