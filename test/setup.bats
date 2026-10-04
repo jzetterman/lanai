@@ -438,18 +438,29 @@ boot() {
 # Make stand-ins for the pinned guest files in $T/src, point the pins at
 # them (https://pins.test/<file>) with their real SHA-256, and shim curl to
 # serve them by name. The ISO stand-in is a tar archive (bsdtar reads
-# either) with the viofs driver for several Windows versions.
+# either) with the viofs driver for several Windows versions. As in the
+# real virtio-win 0.1.302 ISO, the w11 files are hard links to the 2k25
+# ones, so unpacking w11 alone fails; other viofs folders link into fwcfg,
+# so unpacking all of viofs fails too; and the folders are read-only.
 pinned_files() {
-  local d=$T/src/tree
-  mkdir -p "$d/idd" "$d/iso/viofs/w11/amd64" "$d/iso/viofs/w10/amd64" "$d/iso/NetKVM/w11/amd64"
+  local d=$T/src/tree f
+  mkdir -p "$d/idd" "$d/iso/viofs/w11/amd64" "$d/iso/viofs/2k25/amd64" "$d/iso/viofs/w10/amd64" \
+    "$d/iso/viofs/w8/amd64" "$d/iso/fwcfg/2k12/amd64" "$d/iso/NetKVM/w11/amd64"
+  echo dll >"$d/iso/fwcfg/2k12/amd64/WdfCoInstaller01011.dll"
+  ln -f "$d/iso/fwcfg/2k12/amd64/WdfCoInstaller01011.dll" "$d/iso/viofs/w8/amd64/WdfCoInstaller01011.dll"
   echo idd-exe >"$d/idd/looking-glass-idd-setup.exe"
   echo readme >"$d/idd/README.txt"
   bsdtar -a -cf "$T/src/idd.zip" -C "$d/idd" looking-glass-idd-setup.exe README.txt
-  echo inf >"$d/iso/viofs/w11/amd64/viofs.inf"
-  echo exe >"$d/iso/viofs/w11/amd64/virtiofs.exe"
+  echo inf >"$d/iso/viofs/2k25/amd64/viofs.inf"
+  echo exe >"$d/iso/viofs/2k25/amd64/virtiofs.exe"
+  for f in viofs.inf virtiofs.exe; do
+    ln -f "$d/iso/viofs/2k25/amd64/$f" "$d/iso/viofs/w11/amd64/$f"
+  done
   echo old >"$d/iso/viofs/w10/amd64/viofs.inf"
   echo net >"$d/iso/NetKVM/w11/amd64/netkvm.inf"
-  bsdtar -cf "$T/src/virtio-win.iso" -C "$d/iso" viofs NetKVM
+  chmod -R a-w "$d/iso"
+  bsdtar -cf "$T/src/virtio-win.iso" -C "$d/iso" fwcfg viofs/2k25 viofs/w11 viofs/w10 viofs/w8 NetKVM
+  chmod -R u+w "$d/iso"
   echo vdagent >"$T/src/vdagent.msi"
   echo qga >"$T/src/qemu-ga.msi"
   echo winfsp >"$T/src/winfsp.msi"
@@ -1588,11 +1599,30 @@ exec /usr/bin/mv "$@"'
   assert [ ! -e "$T/systemd-run.args" ]
 }
 
+@test "setup media: an ISO whose w11 files link outside the unpacked folders fails and leaves nothing" {
+  install
+  pinned_files
+  local d=$T/src/tree/iso2
+  mkdir -p "$d/fwcfg/w11/amd64" "$d/viofs/w11/amd64"
+  echo inf >"$d/fwcfg/w11/amd64/viofs.inf"
+  echo exe >"$d/fwcfg/w11/amd64/virtiofs.exe"
+  ln "$d/fwcfg/w11/amd64/viofs.inf" "$d/viofs/w11/amd64/viofs.inf"
+  ln "$d/fwcfg/w11/amd64/virtiofs.exe" "$d/viofs/w11/amd64/virtiofs.exe"
+  chmod -R a-w "$d"
+  bsdtar -cf "$T/src/virtio-win.iso" -C "$d" fwcfg viofs
+  chmod -R u+w "$d"
+  VIRTIO_WIN_SHA=$(sha256sum "$T/src/virtio-win.iso" | cut -d' ' -f1)
+  run setup_media_build
+  assert_failure
+  assert [ ! -e "$S/setup-media" ]
+  assert [ ! -e "$S/setup-media.partial" ]
+}
+
 @test "setup media: refuses a symlink anywhere in the assembled media" {
   install
   pinned_files
   ln -s viofs.inf "$T/src/tree/iso/viofs/w11/amd64/extra.dll"
-  bsdtar -cf "$T/src/virtio-win.iso" -C "$T/src/tree/iso" viofs NetKVM
+  bsdtar -cf "$T/src/virtio-win.iso" -C "$T/src/tree/iso" fwcfg viofs/2k25 viofs/w11 viofs/w10 viofs/w8 NetKVM
   VIRTIO_WIN_SHA=$(sha256sum "$T/src/virtio-win.iso" | cut -d' ' -f1)
   run setup_media_build
   assert_failure

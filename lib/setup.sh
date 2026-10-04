@@ -136,10 +136,18 @@ setup_media_build() {
     echo "cannot create $part"
     return 1
   }
+  # In the pinned ISO, viofs/w11/amd64's files are hard links to
+  # viofs/2k25/amd64's (other folders link elsewhere, so not all of viofs
+  # unpacks alone). Both unpack aside, and only w11/amd64 is kept. The ISO's
+  # folders are read-only, so each path makes them writable before removal.
   if ! bsdtar -xf "$dl/looking-glass-idd-$LG_BUILD.zip" -C "$part" looking-glass-idd-setup.exe ||
-    ! bsdtar -xf "$dl/virtio-win-$VIRTIO_WIN_VERSION.iso" -C "$part" viofs/w11/amd64 ||
-    ! chmod -R u+rwX -- "$part"; then
+    ! mkdir -p -- "$part/.iso" "$part/viofs/w11" ||
+    ! bsdtar -xf "$dl/virtio-win-$VIRTIO_WIN_VERSION.iso" -C "$part/.iso" viofs/2k25/amd64 viofs/w11/amd64 ||
+    ! chmod -R u+rwX -- "$part" ||
+    ! mv -- "$part/.iso/viofs/w11/amd64" "$part/viofs/w11/amd64" ||
+    ! rm -rf -- "$part/.iso"; then
     echo "cannot unpack the IDD installer or viofs/w11/amd64 from the downloads"
+    chmod -R u+rwX -- "$part" 2>/dev/null || true
     rm -rf -- "$part"
     return 1
   fi

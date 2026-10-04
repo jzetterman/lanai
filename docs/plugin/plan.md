@@ -779,8 +779,12 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 - `lanai setup-guest` builds the setup media: download each pinned guest file into
   `$XDG_CACHE_HOME/lanai/downloads/`, verify its SHA-256 (a mismatch deletes the file
   and stops), unpack where needed (the IDD zip; and from the verified virtio-win ISO,
-  which is too big for QEMU's FAT disk, only `viofs\w11\amd64\`, with `bsdtar -xf
-  <iso> -C <media dir> viofs/w11/amd64`), then copy only verified files plus
+  which is too big for QEMU's FAT disk, only `viofs\w11\amd64\`: the ISO's w11 files are hard links to the 2k25
+  copies, and other viofs folders link into `fwcfg` (found in the hands-on run,
+  2026-10-04), so `bsdtar` unpacks `viofs/2k25/amd64` and `viofs/w11/amd64` beside
+  the media, keeps `viofs/w11/amd64` and removes the rest; the ISO's folders are
+  read-only, so cleanup makes them writable first),
+  then copy only verified files plus
   `guest/setup.cmd`, `guest/lanai-lock.cmd` and `guest/lanai-scale.ps1` into
   `$XDG_STATE_HOME/lanai/setup-media/`, which the setup boot exposes as the read-only
   vvfat USB disk. Then `preflight` and the `--setup` boot. Tests: a wrong checksum for
