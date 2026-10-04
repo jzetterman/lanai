@@ -786,6 +786,42 @@ warning. Step 5.1 printed `QEMU exited` within 120 s of `sent system_powerdown`.
   - Proof sessions ran the VM with dockur's 16 GiB and caused host memory pressure on
     John's 32 GiB machine; John wants 12 GiB on his install (see the project memory).
 
+## Phase 6 hands-on setup run (2026-10-04)
+
+The first end-to-end `lanai setup` on a copy of John's install, with John at
+the keyboard. The copy: `lanai-copy ~/.windows ~/lanai-proofs/lanai-setup-test`
+(verified, 7 entries; 4 min 37 s). Lanai's settings pointed at the copy, with 12 GiB
+and 8 cores. Run from the phase 6 worktree.
+
+- Steps 1 and 2 passed. Step 3: `lanai snapshot` took the snapshot (4 min 39 s,
+  mostly hashing), then setup went on.
+- Step 5's first media build failed: in the pinned virtio-win ISO, the
+  `viofs/w11/amd64` files are hard links to `viofs/2k25/amd64`, and other viofs
+  folders link into `fwcfg`, so `bsdtar` could not unpack `viofs/w11/amd64` alone,
+  nor all of `viofs`. The ISO's folders are also read-only, which broke the
+  cleanup. Fixed: `bsdtar` unpacks `viofs/2k25/amd64` and `viofs/w11/amd64` aside
+  and keeps only w11, and cleanup makes folders writable first. The test stand-in
+  ISO now has the real layout.
+- The setup boot showed QEMU's window (no guest version record). John ran
+  `setup.cmd` from the setup drive and approved the one administrator prompt.
+- Finding: at step 8, Windows asked "Would you like to install this device
+  software? Looking Glass Display adapters, HostFission" despite the IDD
+  installer's `/S`, because HostFission's certificate is not a trusted publisher.
+  John clicked Install with "Always trust" ticked. No other driver prompted. This
+  breaks spec req 7's one prompt and the rule that nothing after the IDD needs a
+  click.
+- Windows shut down by itself. `lanai setup` recorded step 5 (`last_run`
+  clean), booted normally and opened the pinned client. Step 6's automatic
+  checks all passed on the first poll: the IDD matches `B7-826-g236efcb155`, the
+  SPICE agent's port is open, and the guest agent set the clock and refused
+  `guest-exec` (the allow-list is in force).
+- John's answers: `~/Windows` shows as the Z: drive; text scale looks right.
+  `lanai setup --share-ok yes --scale-ok yes` replied step 7, "Lanai setup is
+  finished". Status: running.
+- Next (John, 2026-10-04): make setup silent from Linux, driving the guest side
+  through dockur's own guest agent (no allow-list before Lanai's setup, runs as
+  LocalSystem) instead of a user running `setup.cmd`. This needs a spec change.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with
