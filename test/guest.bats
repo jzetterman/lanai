@@ -68,8 +68,8 @@ line_is() {
 # The read-only probe and its cleanup touch only Lanai's temporary test file.
 setup_changes() {
   setup_code | awk -F: '{ l = substr($0, index($0, ":") + 1) }
-    l != "copy /y nul \"%~dp0.lanai-wtest\" >nul 2>&1" &&
-    l != "del \"%~dp0.lanai-wtest\" >nul 2>&1"'
+    l != "copy /y nul \"%~dp0%WTEST%\" >nul 2>&1" &&
+    l != "del \"%~dp0%WTEST%\" >nul 2>&1"'
 }
 
 # Print the number of the first command line that changes Windows.
@@ -92,7 +92,7 @@ stage1_code() {
   # The SID comes from whoami's CSV, in stage 1 and again elevated.
   run grep -cF "for /f \"tokens=2 delims=,\" %%s in ('whoami /user /fo csv /nh')" "$SETUP_CMD"
   assert_output 2
-  local elevated admin none sid drive media first
+  local elevated admin none sid probe drive media first
   line_is 'if /i "%~1"=="/elevated" goto :elevated'
   run grep -ciE '^set +"?WANT_SID=' "$SETUP_CMD"
   assert_output 1
@@ -101,17 +101,18 @@ stage1_code() {
   admin=$(line_is 'fltmc >nul 2>&1')
   none=$(line_is 'if not defined HAVE_SID goto :other_account')
   sid=$(line_is 'if /i not "%HAVE_SID%"=="%WANT_SID%" goto :other_account')
-  drive=$(line_is 'copy /y nul "%~dp0.lanai-wtest" >nul 2>&1')
+  probe=$(line_is 'set "WTEST=.lanai-wtest-%RANDOM%%RANDOM%%RANDOM%"')
+  drive=$(line_is 'copy /y nul "%~dp0%WTEST%" >nul 2>&1')
   line_is 'if not errorlevel 1 goto :writable_copy'
   run setup_code
   assert_line "$((drive + 1)):if not errorlevel 1 goto :writable_copy"
   media=$(line_is 'for %%f in (spice-vdagent.msi qemu-ga.msi winfsp.msi looking-glass-idd-setup.exe lanai-lock.cmd lanai-scale.ps1 viofs\w11\amd64\viofs.inf viofs\w11\amd64\virtiofs.exe) do if not exist "%~dp0%%f" goto :media_broken')
   first=$(first_change)
   [[ -n $none && -n $sid && -n $drive && -n $media && -n $first ]] || fail "a check or the first change is missing"
-  ((elevated < admin && admin < none && none < sid && sid < drive && drive < media && media < first)) ||
+  ((elevated < admin && admin < none && none < sid && sid < probe && probe < drive && drive < media && media < first)) ||
     fail ":elevated $elevated, no SID $none, SID $sid, drive $drive, media $media, first change $first"
   run bash -c 'cut -d: -f2- | sed -n "/^:writable_copy\$/,/^exit/p"' < <(setup_code)
-  assert_line 'del "%~dp0.lanai-wtest" >nul 2>&1'
+  assert_line 'del "%~dp0%WTEST%" >nul 2>&1'
   assert_line "echo Lanai setup: run setup.cmd from Lanai's read-only setup drive, not from a copy."
   assert_line 'exit /b 1'
   line_is "echo Windows' Administrator protection, when on, also causes this."

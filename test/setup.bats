@@ -20,6 +20,7 @@ setup() {
   # systemctl: log every call. `show` answers from $T/show-<unit> (default:
   # inactive), all of it or, with --value, the one property asked for.
   # `start lanai-vm.service` makes the VM unit active, as systemd would.
+  # `reset-failed` clears its failed state and result.
   # With $T/no-manager, `show` fails like an unreachable user manager; the
   # verb named in $T/systemctl-fail fails.
   shim systemctl 'echo "$*" >>"$T/systemctl.calls"
@@ -37,6 +38,9 @@ if [[ " $* " == *" show "* ]]; then
 fi
 if [[ $2 == start && $unit == lanai-vm.service && ! -e $T/start-keeps-state ]]; then
   printf "ActiveState=active\nSubState=running\nResult=success\nInvocationID=inv-new\nMainPID=4000\n" >"$T/show-lanai-vm.service"
+fi
+if [[ $2 == reset-failed && $unit == lanai-vm.service ]]; then
+  printf "ActiveState=inactive\nSubState=dead\nResult=success\n" >"$T/show-lanai-vm.service"
 fi
 exit 0'
   shim systemd-run 'printf "%s\n" "$@" >"$T/systemd-run.args"
@@ -129,6 +133,29 @@ ran() {
   lanai_run start
   assert_failure
   assert_equal "$(field state)" setup-needed
+}
+
+@test "lanai start: setup reset between its check and the lock refuses and starts nothing" {
+  install
+  setup_json '{"done": true}'
+  eval "$(declare -f lanai_flock | sed '1s/lanai_flock/lock_after_reset/')"
+  lanai_flock() {
+    # A restore finishes after cmd_start's check, before boot_vm's lock.
+    (
+      lock_after_reset || exit 1
+      setup_reset
+    ) || return 1
+    lock_after_reset
+  }
+  run --separate-stderr cmd_start
+  JSON=$output
+  assert_failure
+  assert_equal "$(field state)" setup-needed
+  assert_equal "$(field message)" "Lanai setup has not finished."
+  assert_equal "$(field next)" "open the Lanai panel and run setup"
+  ! grep -q -- '--user start' "$T/systemctl.calls" || fail "the unit was started"
+  assert [ ! -e "$S/boot.json" ]
+  assert [ ! -e "$T/systemd-run.args" ]
 }
 
 @test "setup_follow: resets setup state for another location, or none, and removes guest-version" {
@@ -1402,6 +1429,27 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field step)" 6
   run cat "$T/systemctl.calls"
   assert_output --partial '--user start lanai-vm.service'
+}
+
+@test "lanai setup step 6: a unit that stays failed reports its logs once, then retries" {
+  through_step4
+  setup_json '{"snapshot": "declined", "step5": true}'
+  printf '%s\n' ActiveState=failed SubState=failed Result=exit-code >"$T/show-lanai-vm.service"
+  setup_run
+  assert_failure
+  assert_equal "$(field ok)" false
+  assert_equal "$(field step)" 6
+  assert_equal "$(field message)" "Windows did not start."
+  run field next
+  assert_output --partial "$LANAI_LOGS"
+  ! grep -q -- '--user start' "$T/systemctl.calls" || fail "the unit was started"
+  run grep -Fx -- '--user reset-failed lanai-vm.service' "$T/systemctl.calls"
+  assert_success
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  run grep -Fx -- '--user start lanai-vm.service' "$T/systemctl.calls"
+  assert_success
 }
 
 @test "lanai setup step 5: failed explicit display boots keep false and offer both choices next time" {

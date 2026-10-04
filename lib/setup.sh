@@ -520,6 +520,8 @@ setup_resume() {
     true)
       if $nostart; then
         setup_reply false 6 "Windows did not start." "see the logs with $LANAI_LOGS, then run setup again"
+        # Consume systemd's sticky failure too, so the next call retries.
+        systemctl --user reset-failed "$LANAI_UNIT" >/dev/null 2>&1 || true
         return 1
       fi
       echo normal-boot

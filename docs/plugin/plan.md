@@ -621,8 +621,12 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   differs (a standard user who typed an administrator's credentials: `HKCU` would then
   be the administrator's hive). The elevated stage runs from System32, so it calls
   every file by `%~dp0`. After the SID check and before the media check, it tries
-  `copy /y nul "%~dp0.lanai-wtest" >nul 2>&1`. If that succeeds, it deletes the test
-  file and stops: "Lanai setup: run setup.cmd from Lanai's read-only setup drive,
+  `set "WTEST=.lanai-wtest-%RANDOM%%RANDOM%%RANDOM%"`, then
+  `copy /y nul "%~dp0%WTEST%" >nul 2>&1`. Each run uses an unpredictable name so
+  another account cannot defeat the probe by pre-planting a read-only file at its
+  old fixed name. If the copy succeeds,
+  it deletes the same test file with `del "%~dp0%WTEST%" >nul 2>&1`
+  and stops: "Lanai setup: run setup.cmd from Lanai's read-only setup drive,
   not from a copy." The real drive is a read-only vvfat disk; a writable NTFS volume,
   virtio-fs share or UNC copy can let other accounts swap an installer or plant a
   DLL. No localized text is parsed. The different-account refusal also explains
@@ -839,7 +843,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
     `setup.json` must exist, its `location` must match `storage_dir`, and `step5`
     must be true. If a restore reset it after setup's resume released the lock,
     Lanai refuses with "Lanai setup changed while it was starting Windows." and
-    the next step "run setup again", and starts nothing. `lanai start` keeps its existing path.
+    the next step "run setup again", and starts nothing. Ordinary `lanai start`
+    also rechecks `setup_done` under that lock after `preflight`; a restore reset
+    after its first check refuses with "Lanai setup has not finished." and starts nothing.
   - The pin is recorded from evidence, not from step 5. Step 6 starts the pinned
     client directly, bypassing `build_select`. On `match`, `guest_version_note`
     records the pin from step 6's own log (the client starts after the record, so the
@@ -872,6 +878,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   `step5` after a clean setup boot, and not after a panel Shut down, a forced stop,
   a crash/systemd kill without shutdown or forced markers, or a clean normal boot; setup state reset between resume and step 6's boot (missing
   file, wrong location, false or missing `step5`) refuses and starts nothing;
+  setup reset between `lanai start`'s check and its lock refuses and starts nothing;
+  a step 6 boot that never started reports its logs once, clears the unit's failed
+  state and retries on the next call;
   step 6 records the pin on `match`, keeps the old record on
   `idd-missing` or `mismatch`, and reopens a closed client; `lanai setup` with `done:
   true` and a guest version behind the pin resumes at step 5. Existing fixtures that
@@ -896,6 +905,10 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 | 6. Normal boot | each guest component is checked, not assumed: the pinned client, started directly, logs `match` (`version_check`, phase 5), and that log records the pin; the guest agent answers a sync and a `guest-set-time` to the current host time (the channel's allowed use, which also proves the clock path), and refuses an argument-free `guest-exec` with `CommandNotFound ... has been disabled`, the reply proof 3 recorded (the allow-list took effect; spec req 27; without arguments the command could not run anything even if the allow-list had failed); QMP `query-chardev` shows `frontend-open: true` for the SPICE agent's port (`vdagent`), as it does for the guest agent; the panel asks the user two one-click questions: does `~/Windows` show in Explorer, and does Windows' text look the right size (the scale task). Any missing component sends setup back to step 5 with "setup did not finish: run setup.cmd again"; `setup.cmd` is idempotent (each installer skips what is already installed at the pinned version). Tests cover a shutdown after a partly failed `setup.cmd` |
 | 7. Done | all of the above |
 
+  A step 6 start failure reports "Windows did not start." and points to the logs.
+  After reporting it, setup runs `systemctl --user reset-failed lanai-vm.service`
+  (ignoring its result), so systemd's failed state does not block the next boot retry.
+
   bats tests interrupt the flow after each step and check that `lanai setup` resumes at
   the right step.
 
@@ -904,6 +917,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 Where the code differs from the text above, the code and this list win. The setup
 code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.bats`.
 
+- The guest writable-copy probe uses `.lanai-wtest-%RANDOM%%RANDOM%%RANDOM%` in
+  `WTEST`; both the copy and cleanup use that variable. A successful probe still
+  means writable and refuses setup. `setup.cmd` retains CRLF endings.
 - `lanai setup` options: `--no-snapshot` declines step 3, `--window` and
   `--no-window` pick step 5's display, and `--share-ok yes|no --scale-ok yes|no`
   answer step 6's two questions (two yeses finish setup; a lone no sends it back).
@@ -930,7 +946,9 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   marker without its matching "started" stamp, clears the markers and leaves
   `last-run` unchanged. Resume consumes that verdict; its only fallback is a failed
   unit's `Result=exit-code`. With `step5: true`, `nostart` gives an `ok: false`
-  step 6 reply pointing to `$LANAI_LOGS` once; the next call retries the boot.
+  step 6 reply pointing to `$LANAI_LOGS` once, then clears the unit's sticky failure
+  with `systemctl --user reset-failed lanai-vm.service` (ignoring its result);
+  the next call retries the boot.
   An explicit display choice that fails before starting (downloads or a missing
   `WAYLAND_DISPLAY`) keeps `step5: false`, so the next call offers both choices,
   even on an already finished install: the finished shortcut respects `step5: false`.
@@ -951,7 +969,9 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   only through setup resume's `setup_follow` and after restore, under the lock.
 - Step 6's boot rechecks `setup.json`, its storage location and `step5: true` under
   `boot_vm`'s lock after `preflight`; a reset between resume and boot refuses without
-  starting the VM or client. `lanai start` keeps its existing path.
+  starting the VM or client. Ordinary `lanai start` also rechecks `setup_done`
+  under that lock after `preflight`, using its existing setup-needed reply when a
+  restore reset setup after the initial check.
 - A setup boot in client mode does not open the client: its reply says "open the
   Windows window", and the panel calls `lanai open`.
 - Step 6: the pinned client must be the one logging. A client of another build (an

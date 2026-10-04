@@ -58,7 +58,8 @@ if not defined HAVE_SID goto :other_account
 if /i not "%HAVE_SID%"=="%WANT_SID%" goto :other_account
 rem Only from Lanai's read-only setup drive: a writable copy can let other
 rem accounts swap an installer or plant a DLL before this stage runs it.
-copy /y nul "%~dp0.lanai-wtest" >nul 2>&1
+set "WTEST=.lanai-wtest-%RANDOM%%RANDOM%%RANDOM%"
+copy /y nul "%~dp0%WTEST%" >nul 2>&1
 if not errorlevel 1 goto :writable_copy
 
 rem Every file first, so a broken setup drive changes nothing.
@@ -183,7 +184,7 @@ pause
 exit /b 1
 
 :writable_copy
-del "%~dp0.lanai-wtest" >nul 2>&1
+del "%~dp0%WTEST%" >nul 2>&1
 echo Lanai setup: run setup.cmd from Lanai's read-only setup drive, not from a copy.
 pause
 exit /b 1

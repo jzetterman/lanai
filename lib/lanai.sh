@@ -1065,7 +1065,8 @@ runtime_refresh() {
 # Windows step (100% without Hyprland), checks vm_plan, refreshes the
 # runtime copy, writes the scale and boot mode to boot.json, and starts
 # the unit. Setup boots require this disk's snapshot decision; step 6
-# requires this disk's step5 to be true. A setup boot guesses QEMU's window
+# requires this disk's step5 to be true; ordinary starts require setup_done
+# under the same lock. A setup boot guesses QEMU's window
 # when no guest version is recorded, else the client; <window> overrides
 # that guess. A window boot needs WAYLAND_DISPLAY, carried in boot.json.
 # Setup boots open a round before starting and set step5 false once the
@@ -1080,6 +1081,10 @@ boot_vm() {
   fi
   if ! reason=$(preflight); then
     emit false "" "$reason" ""
+    return 1
+  fi
+  if [[ $setup == false && $step6 == false ]] && ! setup_done; then
+    emit false setup-needed "Lanai setup has not finished." "open the Lanai panel and run setup"
     return 1
   fi
   s=$(state_dir)
