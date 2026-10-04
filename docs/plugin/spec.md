@@ -102,7 +102,8 @@ Neither needs GPU acceleration.
    - installs the host packages Lanai needs, in a terminal that shows the exact command
      before it runs, with the system's normal password prompt;
    - installs one pinned Looking Glass client build, verified by checksum;
-   - installs inside Windows, with one administrator prompt: the matching Looking Glass
+   - installs inside Windows, with at most one administrator prompt (none when UAC is
+     off): the matching Looking Glass
      IDD, the SPICE guest agent, the QEMU guest agent (clock sync, requirement 21), the
      file-sharing client (requirement 15), and the sign-in task that applies the display
      scale (requirement 12). The same prompt also turns off locking inside Windows for
@@ -272,7 +273,7 @@ stopped; Windows then resumes, boots after a restart, and `chkdsk` reports no er
 | 5a | A fixture for each failing check (missing or empty firmware, variables or MAC file; disk below its configured size; zeroed first 100 KB; both `data.img` and `data.qcow2` present; missing `windows.boot`; a `windows.base` that does not match the configured version and language; a `custom.iso` or `boot.iso` present) makes Lanai refuse to start and say why; the README states the remaining risks |
 | 6 | Settings seed from `omarchy-windows-vm` when readable, and otherwise from the stated host-relative defaults, with no prompt; with a sentinel password set on the test install, the sentinel never appears in Lanai's files, logs, setup terminal output, or any child process's arguments or environment; changed settings take effect at the next start |
 | 6a | Lanai pointed at a reflink copy boots the copy and never opens the live `~/.windows` |
-| 7 | On a machine with a working `omarchy-windows-vm` install, a user who follows the README reaches a working Windows window from the bar; setup shows one package-manager password prompt and one Windows administrator prompt, and asks for one Windows restart; where the storage location's filesystem can make an instant copy, setup offers the snapshot, and restoring it returns the storage location to its pre-adoption hashes; where it cannot, setup says so and suggests a backup; snapshot and restore are each refused while either VM runs; a container start attempted during a snapshot or restore does not boot a VM, and the snapshot still matches its source |
+| 7 | On a machine with a working `omarchy-windows-vm` install, a user who follows the README reaches a working Windows window from the bar; setup shows one package-manager password prompt and at most one Windows administrator prompt (none when UAC is off), and no other Windows prompt (the driver-publisher prompt may appear only when Windows refuses to record the publisher's trust, which setup says on screen), and asks for one Windows restart; where the storage location's filesystem can make an instant copy, setup offers the snapshot, and restoring it returns the storage location to its pre-adoption hashes; where it cannot, setup says so and suggests a backup; snapshot and restore are each refused while either VM runs; a container start attempted during a snapshot or restore does not boot a VM, and the snapshot still matches its source |
 | 7b | Before setup, each lock path locks Windows or leaves it at the sign-in screen: Lock in the Start menu and in Ctrl+Alt+Del, Switch user, Windows key + L sent with QMP `send-key`, and each automatic lock the VM can trigger, turned on at a 1-minute timeout (secure screen saver, machine inactivity limit). After setup, with the screen-saver timeout still at 1 minute (setup leaves it set but not secure) and the inactivity limit as setup left it, none of them does; Windows is still unlocked after idling past every timeout; Windows reports no sleep state it could wake from, and row 27 shows no Bluetooth device. A shutdown with the Ctrl+Alt+Del screen left open is recorded (clean, or the README names it). Setup's domain or MDM warning appears when its membership check reports membership (simulated). Approving the prompt with a different administrator account makes setup refuse; afterwards nothing differs from the before-setup inventory (dockur already installs some pieces, such as its own file-sharing service and guest agent): the lock controls still lock, the Looking Glass IDD and the scale sign-in task are absent, the guest agent's allow-list is not applied, and Lanai has not added or replaced any file-sharing piece. The README states the lock note from requirement 7 |
 | 8 | A deliberate client/IDD mismatch is detected and named; a simulated pin change keeps or restores a working window |
 | 9 | Interrupting setup at each step, then rerunning it, ends in a working install |
@@ -296,7 +297,14 @@ the repository public, tagging a release, or submitting to the marketplace.
 
 ## Out of scope for v1
 
-- Installing Windows without `omarchy-windows-vm` (planned for v2).
+- Installing Windows without `omarchy-windows-vm` (planned for v2). v2 adds a second
+  setup path, a no-touch fresh install: Lanai installs Windows itself with its own
+  unattended setup, which installs everything requirement 7 lists, so the user does
+  nothing inside Windows. v1's path, adopting an existing install, needs the user to
+  start setup inside Windows (and approve its administrator prompt when UAC is on):
+  an adopted Windows has no channel Lanai can use instead
+  (dockur installs no guest agent and enables neither SSH nor WinRM; RDP needs the
+  Windows password and an inbound connection). John, 2026-10-04.
 - GPU passthrough, SR-IOV, and a dedicated partition or NVMe for Windows.
 - USB device passthrough, including smart cards and security keys. A likely v2 need for
   sysadmins.
@@ -329,3 +337,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | b Grok (substitute) | 2026-09-28 | Round 2 (full): 2 P2, 2 P3; all confirmed and integrated (row 4 checks the lock stays off under `omarchy-windows-vm`; row 7b's refusal checks every guest change; forced-stop causes include a slow shutdown; row 30-32 checks Switch user) |
 | spec | b Grok (substitute) | 2026-09-28 | Round 3 (full, cap): 2 P2, 1 P3; all confirmed and integrated (row 19 splits the clean reboot from the forced-stop fixture; row 7b's refusal compares against the before-setup inventory, since dockur already installs its own file-sharing service and guest agent; row 4 parenthetical dropped). Stage closed at the cap |
 | spec | amendment | 2026-09-28 | From the phase 4 review: req 23 lets Windows start with no host network (passt's local mode; checked by two reviewers), and row 23-24 tests it (John's decision) |
+| spec | amendment | 2026-10-04 | From the phase 6 hands-on runs (John's decisions): req 7 and row 7 allow at most one administrator prompt (none when UAC is off) and no other Windows prompt; the v2 no-touch install is described under Out of scope |

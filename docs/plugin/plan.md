@@ -1085,6 +1085,10 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
 
 ## Phase 7: QML UI and README
 
+Implementer (John, 2026-10-04): gpt-6.1-sol, by John's choice, although the global
+routing asks for taste 7 or more for user-facing work and sol scores 6. Claude's
+reviews look hard at the panel's wording, layout and states.
+
 - First, two short checks, recorded in `proofs.md`:
   - Resize (proof 1 finding): resizing the Looking Glass window with a Hyprland mouse
     drag grows it faster than the mouse moves. On the phase 6 test copy, run `lanai
@@ -1175,7 +1179,7 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
 - Memory: before the rehearsal, the first Lanai boot on John's machine, set memory to
   12 GiB in Lanai's settings (shared by the rehearsal and the live install): the proof
   sessions ran dockur's 16 GiB and caused memory pressure on his 32 GiB machine (proof
-  5). Whether that changes the default is John's call.
+  5). John kept the default as it is (2026-10-04): 12 GiB is his setting.
 - **Rehearsal on a copy** (agent or John): point Lanai's storage at a fresh
   `lanai-copy` and run every spec acceptance row that does not start the container.
 - **Test install** (rows 3, 4, 30-32): a separate machine or VM running Omarchy with
