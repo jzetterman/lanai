@@ -65,9 +65,16 @@ line_is() {
     END { exit !found }'
 }
 
+# The read-only probe and its cleanup touch only Lanai's temporary test file.
+setup_changes() {
+  setup_code | awk -F: '{ l = substr($0, index($0, ":") + 1) }
+    l != "copy /y nul \"%~dp0.lanai-wtest\" >nul 2>&1" &&
+    l != "del \"%~dp0.lanai-wtest\" >nul 2>&1"'
+}
+
 # Print the number of the first command line that changes Windows.
 first_change() {
-  setup_code | RE=$CHANGE_RE awk '{ i = index($0, ":") } substr($0, i + 1) ~ ENVIRON["RE"] { print substr($0, 1, i - 1); exit }'
+  setup_changes | RE=$CHANGE_RE awk '{ i = index($0, ":") } substr($0, i + 1) ~ ENVIRON["RE"] { print substr($0, 1, i - 1); exit }'
 }
 
 # Print stage 1's command lines (before the :elevated label) as setup_code
@@ -81,23 +88,33 @@ stage1_code() {
   assert_output 0
 }
 
-@test "setup.cmd: the elevated stage checks its SID, then its drive, then the media, before any change" {
+@test "setup.cmd: the elevated stage checks its SID, then tests writability, then the media, before any change" {
   # The SID comes from whoami's CSV, in stage 1 and again elevated.
   run grep -cF "for /f \"tokens=2 delims=,\" %%s in ('whoami /user /fo csv /nh')" "$SETUP_CMD"
   assert_output 2
-  local elevated none sid drive media first
+  local elevated admin none sid drive media first
+  line_is 'if /i "%~1"=="/elevated" goto :elevated'
+  run grep -ciE '^set +"?WANT_SID=' "$SETUP_CMD"
+  assert_output 1
+  line_is 'set "WANT_SID=%~2"'
   elevated=$(line_is ':elevated')
+  admin=$(line_is 'fltmc >nul 2>&1')
   none=$(line_is 'if not defined HAVE_SID goto :other_account')
   sid=$(line_is 'if /i not "%HAVE_SID%"=="%WANT_SID%" goto :other_account')
-  # A copy of the setup drive on the system drive is writable by other accounts.
-  drive=$(line_is 'if /i "%~d0"=="%SystemDrive%" goto :system_drive')
-  media=$(line_of 'for %%f in (')
+  drive=$(line_is 'copy /y nul "%~dp0.lanai-wtest" >nul 2>&1')
+  line_is 'if not errorlevel 1 goto :writable_copy'
+  run setup_code
+  assert_line "$((drive + 1)):if not errorlevel 1 goto :writable_copy"
+  media=$(line_is 'for %%f in (spice-vdagent.msi qemu-ga.msi winfsp.msi looking-glass-idd-setup.exe lanai-lock.cmd lanai-scale.ps1 viofs\w11\amd64\viofs.inf viofs\w11\amd64\virtiofs.exe) do if not exist "%~dp0%%f" goto :media_broken')
   first=$(first_change)
   [[ -n $none && -n $sid && -n $drive && -n $media && -n $first ]] || fail "a check or the first change is missing"
-  ((elevated < none && none < sid && sid < drive && drive < media && media < first)) ||
+  ((elevated < admin && admin < none && none < sid && sid < drive && drive < media && media < first)) ||
     fail ":elevated $elevated, no SID $none, SID $sid, drive $drive, media $media, first change $first"
-  run bash -c 'cut -d: -f2- | sed -n "/^:system_drive\$/,/^exit/p"' < <(setup_code)
+  run bash -c 'cut -d: -f2- | sed -n "/^:writable_copy\$/,/^exit/p"' < <(setup_code)
+  assert_line 'del "%~dp0.lanai-wtest" >nul 2>&1'
+  assert_line "echo Lanai setup: run setup.cmd from Lanai's read-only setup drive, not from a copy."
   assert_line 'exit /b 1'
+  line_is "echo Windows' Administrator protection, when on, also causes this."
   # It self-elevates exactly once.
   run grep -c -- '-Verb RunAs' "$SETUP_CMD"
   assert_output 1
@@ -129,7 +146,7 @@ stage1_code() {
         if (l[i] ~ /^msiexec / && l[i + 2] != "if not \"%RC%\"==\"0\" if not \"%RC%\"==\"3010\" goto :failed") print "msiexec codes: " l[i]
       }
       print n " changes"
-    }'"'"'' _ "$CHANGE_RE" < <(setup_code)
+    }'"'"'' _ "$CHANGE_RE" < <(setup_changes)
   assert_output "13 changes"
 }
 
@@ -148,6 +165,11 @@ stage1_code() {
   # elevated window already paused, and after the IDD the display may be black.
   run bash -c 'awk -F: "{ l = substr(\$0, index(\$0, \":\") + 1) } l ~ /^:/ { label = l } tolower(l) == \"pause\" { print label }"' _ < <(stage1_code)
   assert_output $':no_sid\n:declined'
+}
+
+@test "setup.cmd: :failed ends with exit /b 1" {
+  run bash -c 'cut -d: -f2- | sed -n "/^:failed\$/,/^:idd_failed\$/p" | head -n -1 | tail -n 1' < <(setup_code)
+  assert_output 'exit /b 1'
 }
 
 @test "setup.cmd: an IDD failure exits with its own code, 2, and no pause" {
@@ -185,15 +207,18 @@ stage1_code() {
 }
 
 @test "setup.cmd: VirtioFsSvc is stopped, the exe copied, then the service set with a quoted path" {
-  local query stop copy create config
+  local query stop copy create config dispatch
   query=$(line_is 'if "%errorlevel%"=="1060" set "VFS_NEW=1"')
+  run setup_code
+  assert_line "$((query - 1)):sc.exe query VirtioFsSvc >nul 2>&1"
+  dispatch=$(line_is 'if defined VFS_NEW goto :vfs_create')
   stop=$(line_is 'if not defined VFS_NEW net stop VirtioFsSvc >nul 2>&1')
   copy=$(line_is 'copy /y "%~dp0viofs\w11\amd64\virtiofs.exe" "C:\Program Files\Lanai\virtiofs.exe"')
   # Quoted inside, as the QEMU-GA line: an unquoted path with a space is
   # CWE-428 for a LocalSystem service.
   config=$(line_of 'sc.exe config VirtioFsSvc binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"')
   create=$(line_of 'sc.exe create VirtioFsSvc binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"')
-  ((query < stop && stop < copy && copy < config && copy < create)) ||
+  ((query < stop && stop < copy && copy < dispatch && dispatch < config && config < create)) ||
     fail "query $query, stop $stop, copy $copy, config $config, create $create"
 }
 

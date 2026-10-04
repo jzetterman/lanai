@@ -1060,23 +1060,17 @@ runtime_refresh() {
 
 # boot_vm <setup true|false> [<window auto|true|false>] [<step6 true|false>]:
 # the one path that starts the VM unit (lanai start, lanai setup-guest and
-# setup's step 6 boot). Under lanai_flock it runs preflight, turns the focused monitor's
-# scale into a Windows step (100% without Hyprland), runs lanai-vm-exec's
-# own checks as a dry run (vm_plan), so a refusal is explained here rather
-# than showing as a failed unit, refreshes the runtime copy, leaves the
-# scale and boot mode in <state>/boot.json for lanai-vm-exec, and starts
-# the unit. A setup boot (plan phase 6) first makes setup state follow the
-# disk (setup_follow), then picks the display: QEMU's window when there is
-# no guest version record (a fresh install has no IDD), else none, and the
-# user then opens the client. <window> true forces the window, keeping the
-# record; false forces the client. <step6> true rechecks that setup state
-# still allows step 6, under the lock after preflight. A window boot needs
-# WAYLAND_DISPLAY, which boot.json carries for lanai-vm-exec. A setup boot opens a setup
-# round ("round" in setup.json) first, and once the unit starts it sets
-# step5 to false (started, not ended). Emits the result, with window, last_run so the
-# panel can show a forced-stop notice once, and network false when the
-# host has no default route.
-# Setup boots require the current disk's snapshot decision after setup_follow.
+# setup's step 6 boot). Under lanai_flock it runs preflight, rechecks setup
+# state without changing it, turns the focused monitor's scale into a
+# Windows step (100% without Hyprland), checks vm_plan, refreshes the
+# runtime copy, writes the scale and boot mode to boot.json, and starts
+# the unit. Setup boots require this disk's snapshot decision; step 6
+# requires this disk's step5 to be true. A setup boot guesses QEMU's window
+# when no guest version is recorded, else the client; <window> overrides
+# that guess. A window boot needs WAYLAND_DISPLAY, carried in boot.json.
+# Setup boots open a round before starting and set step5 false once the
+# unit starts. The reply includes window, last_run for the panel's forced
+# stop notice, and network false when the host has no default route.
 boot_vm() {
   local setup=$1 window=${2:-auto} step6=${3:-false} reason scale step s dir media="" last="" next="wait for Windows to start"
   local message="Windows is starting." network=true
@@ -1090,18 +1084,14 @@ boot_vm() {
   fi
   s=$(state_dir)
   if [[ $step6 == true ]] && { ! dir=$(storage_dir) ||
-    ! jq -e --arg d "$dir" '.location == $d and .step5 == true' "$s/setup.json" >/dev/null 2>&1; }; then
-    emit false "" "Lanai setup changed while it was starting Windows: run setup again" "run setup again"
+    ! setup_current "$dir" || [[ $(setup_get step5) != true ]]; }; then
+    emit false "" "Lanai setup changed while it was starting Windows." "run setup again"
     return 1
   fi
   if [[ $setup == true ]]; then
-    if ! dir=$(storage_dir) || ! setup_follow "$dir"; then
-      emit false "" "Lanai cannot record its setup state in $s." ""
-      return 1
-    fi
-    if ! jq -e --arg d "$dir" '.location == $d and (.snapshot == "taken" or .snapshot == "declined")' \
-      "$s/setup.json" >/dev/null 2>&1; then
-      emit false "" "Lanai setup changed while it was preparing Windows: run setup again" "run setup again"
+    if ! dir=$(storage_dir) || ! setup_current "$dir" ||
+      [[ $(setup_get snapshot) != taken && $(setup_get snapshot) != declined ]]; then
+      emit false "" "Lanai setup changed while it was preparing Windows." "run setup again"
       return 1
     fi
     media=$s/setup-media
@@ -1244,19 +1234,27 @@ cmd_open() {
   fi
 }
 
+# Build the pinned client under build.lock; release the lock on return.
+build_client_locked() (
+  local s
+  s=$(state_dir)
+  mkdir -p -- "$s" && exec {LANAI_BUILD_FD}>>"$s/build.lock" || return 1
+  flock -n "$LANAI_BUILD_FD" || {
+    echo "another Looking Glass client build is running"
+    return 3
+  }
+  build_client
+)
+
 # build-client: build and install the pinned Looking Glass client (spec 7,
 # 26). It takes about a minute; the panel runs it detached (phases 6-7).
-# Holds <state>/build.lock, so two builds never share the work folder.
 cmd_build_client() {
-  local out s
-  s=$(state_dir)
-  mkdir -p -- "$s"
-  exec {LANAI_BUILD_FD}>>"$s/build.lock"
-  if ! flock -n "$LANAI_BUILD_FD"; then
+  local out rc=0
+  out=$(build_client_locked) || rc=$?
+  if ((rc == 3)); then
     emit false "" "Another Looking Glass client build is running." "wait for it to finish"
     return 1
-  fi
-  if ! out=$(build_client); then
+  elif ((rc != 0)); then
     emit false "" "The Looking Glass client was not built: $out" "fix the cause, then run setup again"
     return 1
   fi
@@ -1311,7 +1309,7 @@ cmd_setup_host() {
 # can run for minutes (the client build, the downloads, a boot), so the
 # panel runs it detached and reads the reply, which also goes, atomically,
 # to <state>/setup-reply.json using a unique temporary file per call.
-# Every call can act, so it is no poll.
+# Calls can act; the panel serializes clicks and setup progress checks.
 cmd_setup() {
   local out rc=0 s tmp=""
   out=$(setup_command "$@") || rc=$?
@@ -1360,18 +1358,11 @@ setup_command() {
     case $out in
       build)
         if $built; then
-          emit false "" "The Looking Glass client still does not report $LG_BUILD." "run lanai build-client"
+          setup_reply false 4 "The Looking Glass client still does not report $LG_BUILD." "run lanai build-client"
           return 1
         fi
         built=true
-        out=$(
-          mkdir -p -- "$(state_dir)" && exec {LANAI_BUILD_FD}>>"$(state_dir)/build.lock" || exit 1
-          flock -n "$LANAI_BUILD_FD" || {
-            echo "another Looking Glass client build is running"
-            exit 1
-          }
-          build_client
-        ) || {
+        out=$(build_client_locked) || {
           setup_reply false 4 "The Looking Glass client was not built: $out" "fix the cause, then run setup again"
           return 1
         }
@@ -1392,7 +1383,6 @@ setup_command() {
         ;;
       *)
         printf '%s\n' "$out"
-        LANAI_EMITTED=1
         return "$rc"
         ;;
     esac

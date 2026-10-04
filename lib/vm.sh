@@ -93,8 +93,8 @@ vm_args() {
     echo "the gateway must be an IPv4 address: ${gw@Q}"
     return 1
   fi
-  if [[ -n $media && ($media != /* || $media == *[,$'\n']*) ]]; then
-    echo "the setup media path must be absolute, without a comma or a newline: ${media@Q}"
+  if [[ -n $media && ($media != /* || $media == *[:,$'\n']*) ]]; then
+    echo "the setup media path must be absolute, without a colon, comma or newline: ${media@Q}"
     return 1
   fi
   if [[ $window != true && $window != false ]]; then
@@ -211,10 +211,10 @@ run_dir_check() {
 # which the event logger writes once QEMU answers QMP), clean when
 # last-shutdown records a guest-initiated shutdown of that invocation, and
 # forced otherwise. A run whose QEMU never answered failed to start; that
-# is not a forced stop. Without a verdict, last-run stays as it was (the
-# panel clears it once shown). It also owns step 5's verdict (plan phase
-# 6): after a clean setup boot (boot.json's setup) that no stop request of
-# that run asked for, it sets "step5" in an existing setup.json. Always
+# prints nostart without writing last-run. Without a verdict, last-run
+# stays as it was (the panel clears it once shown). It also owns step 5's
+# verdict (plan phase 6): after a clean setup boot (boot.json's setup)
+# that no stop request of that run asked for, it sets "step5" in an existing setup.json. Always
 # ends with the markers, the stamp, last-shutdown and any stop request
 # deleted. Every path that starts the unit calls it first, through
 # preflight.
@@ -233,9 +233,11 @@ record_previous_run() {
         "$s/last-shutdown" >/dev/null 2>&1; then
         verdict=clean
       fi
+    else
+      verdict=nostart
     fi
   fi
-  if [[ -n $verdict ]]; then
+  if [[ -n $verdict && $verdict != nostart ]]; then
     printf '%s\n' "$verdict" >"$s/last-run.tmp" && mv -f -- "$s/last-run.tmp" "$s/last-run"
   fi
   if [[ $verdict == clean && -f $s/setup.json ]]; then

@@ -129,8 +129,8 @@ version_check() {
 
 # Record <version> as the guest's IDD version in <state>/guest-version, so
 # lanai open picks the matching client build (plan phase 5). lanai status
-# and lanai open record it from the client log; lanai setup-guest records
-# the pin when it succeeds (phase 6). Refuses anything lg_version_key cannot
+# and lanai open record it from the client log; setup step 6 records the
+# pin from its own matching client log. Refuses anything lg_version_key cannot
 # read, such as "unknown". It always rewrites the file: its time is when the
 # record was made, which guest_version_note compares with a client's start.
 guest_version_set() {
@@ -160,7 +160,7 @@ log_client_start() {
 
 # Record the guest version that client log <log> names, if any, but only
 # when the log's client started after the record was written: a record from
-# lanai setup-guest (phase 6) is newer than what this run's client saw
+# setup step 6 (phase 6) is newer than what this run's client saw
 # before the update. A log without Lanai's start line records nothing.
 guest_version_note() {
   local log=$1 guest="" start f

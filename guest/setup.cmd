@@ -56,9 +56,10 @@ set "HAVE_SID="
 for /f "tokens=2 delims=," %%s in ('whoami /user /fo csv /nh') do set "HAVE_SID=%%~s"
 if not defined HAVE_SID goto :other_account
 if /i not "%HAVE_SID%"=="%WANT_SID%" goto :other_account
-rem Only from Lanai's read-only setup drive: a copy on the system drive can
-rem be writable by other accounts, and this stage runs it as administrator.
-if /i "%~d0"=="%SystemDrive%" goto :system_drive
+rem Only from Lanai's read-only setup drive: a writable copy can let other
+rem accounts swap an installer or plant a DLL before this stage runs it.
+copy /y nul "%~dp0.lanai-wtest" >nul 2>&1
+if not errorlevel 1 goto :writable_copy
 
 rem Every file first, so a broken setup drive changes nothing.
 for %%f in (spice-vdagent.msi qemu-ga.msi winfsp.msi looking-glass-idd-setup.exe lanai-lock.cmd lanai-scale.ps1 viofs\w11\amd64\viofs.inf viofs\w11\amd64\virtiofs.exe) do if not exist "%~dp0%%f" goto :media_broken
@@ -168,6 +169,7 @@ exit /b 1
 
 :other_account
 echo Lanai setup: the administrator prompt was approved with another account.
+echo Windows' Administrator protection, when on, also causes this.
 echo Setup changes the signed-in user's settings, so it stopped and changed
 echo nothing. Run setup.cmd as an administrator account, or make your account
 echo an administrator first.
@@ -180,9 +182,9 @@ echo Run Lanai setup again to rebuild the setup drive.
 pause
 exit /b 1
 
-:system_drive
-echo Lanai setup: run setup.cmd from Lanai's setup drive, not from a copy on
-echo %SystemDrive%. Nothing was changed.
+:writable_copy
+del "%~dp0.lanai-wtest" >nul 2>&1
+echo Lanai setup: run setup.cmd from Lanai's read-only setup drive, not from a copy.
 pause
 exit /b 1
 

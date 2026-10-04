@@ -5,7 +5,7 @@
 # Setup state lives in <state>/setup.json:
 #   location  the storage location it belongs to (storage_dir's real path)
 #   snapshot  "taken" or "declined" (step 3)
-#   step5     absent until a setup boot starts; false while one has not
+#   step5     absent until a setup boot is chosen; false while one has not
 #             ended cleanly; true once record_previous_run saw it end with a
 #             clean guest shutdown that the panel did not ask for
 #   done      true once step 6 passed
@@ -56,13 +56,13 @@ setup_current() {
 
 # Forget all setup state: run record_previous_run first, so markers from an
 # earlier boot cannot mark step 5 done on the new state, then remove
-# setup.json and guest-version. Needs lanai_flock and a stopped unit: boot_vm
-# (setup boots), lanai setup's resume and lanai restore call it.
+# setup.json, setup-reply.json and guest-version. Needs lanai_flock and a
+# stopped unit: lanai setup's resume and lanai restore call it.
 setup_reset() {
   local s
   record_previous_run >/dev/null
   s=$(state_dir)
-  rm -f -- "$s/setup.json" "$s/guest-version"
+  rm -f -- "$s/setup.json" "$s/setup-reply.json" "$s/guest-version"
 }
 
 # setup_follow <dir>: make setup state follow the disk. When setup.json is
@@ -144,7 +144,7 @@ setup_media_build() {
     return 1
   fi
   for f in looking-glass-idd-setup.exe viofs/w11/amd64/viofs.inf viofs/w11/amd64/virtiofs.exe; do
-    [[ -f $part/$f && ! -L $part/$f ]] || {
+    [[ -f $part/$f ]] || {
       echo "the downloads hold no $f"
       rm -rf -- "$part"
       return 1
@@ -153,8 +153,17 @@ setup_media_build() {
   if ! cp -- "$dl/spice-vdagent-x64-$VDAGENT_VERSION.msi" "$part/spice-vdagent.msi" ||
     ! cp -- "$dl/qemu-ga-x86_64-$QEMU_GA_VERSION.msi" "$part/qemu-ga.msi" ||
     ! cp -- "$dl/winfsp-$WINFSP_VERSION.msi" "$part/winfsp.msi" ||
-    ! cp -- "$guest/setup.cmd" "$guest/lanai-lock.cmd" "$guest/lanai-scale.ps1" "$part/" ||
-    ! mv -T -- "$part" "$media"; then
+    ! cp -- "$guest/setup.cmd" "$guest/lanai-lock.cmd" "$guest/lanai-scale.ps1" "$part/"; then
+    echo "cannot assemble $media"
+    rm -rf -- "$part"
+    return 1
+  fi
+  if [[ -n $(find "$part" -type l -print -quit) ]]; then
+    echo "the setup media contain a symlink"
+    rm -rf -- "$part"
+    return 1
+  fi
+  if ! mv -T -- "$part" "$media"; then
     echo "cannot assemble $media"
     rm -rf -- "$part"
     return 1
@@ -183,7 +192,8 @@ window_option() {
 # object. Records no guest version: step 6 does, from evidence.
 setup_guest() {
   local window=$1 dir out rc st
-  if ! dir=$(storage_dir) || ! setup_current "$dir" || [[ -z $(setup_get snapshot) ]]; then
+  if ! dir=$(storage_dir) || ! setup_current "$dir" ||
+    [[ $(setup_get snapshot) != taken && $(setup_get snapshot) != declined ]]; then
     emit false setup-needed "Lanai setup has not offered its snapshot for this storage location yet." \
       "run lanai setup"
     return 1
@@ -245,7 +255,6 @@ log_client_build() {
   sed -n 's/^.* | Looking Glass (\([^)]*\))$/\1/p' "$1" 2>/dev/null | head -n 1
 }
 
-
 # setup_back5 <what failed>: a step 6 check failed, so setup goes back to
 # step 5: step5 is forgotten, so the next lanai setup, once Windows is shut
 # down, starts a setup boot with the display the record suggests.
@@ -264,7 +273,7 @@ setup_wait() {
 # boot part by part.
 # - The pinned client must be the one logging: a client of another build is
 #   replaced; one that closed while its verdict (version_check) is still
-#   unknown or waiting is reopened, not counted.
+#   unknown, waiting or idd-missing is reopened for a fresh 30 s, not counted.
 # - QMP's query-chardev must answer, else it tries again. The first time it
 #   shows the guest agent's port open, $RUN/qga-open-since is stamped (it is
 #   removed whenever the port is closed, since a Windows restart keeps the
@@ -298,7 +307,7 @@ setup_step6() {
   read -r verdict guest < <(version_check "$log") || verdict=unknown
   build=$(log_client_build "$log")
   if [[ -n $build && $build != "$LG_BUILD" ]] ||
-    { [[ $verdict == unknown || $verdict == waiting ]] && ! client_active; }; then
+    { [[ $verdict == unknown || $verdict == waiting || $verdict == idd-missing ]] && ! client_active; }; then
     ! client_active || systemctl --user stop "$LANAI_CLIENT_UNIT" >&2 || true
     if ! client_start "$(pinned_client)" >&2; then
       setup_reply false 6 "Lanai could not open the Windows window to check the display driver." \
@@ -391,7 +400,7 @@ setup_step6() {
 # Call it inside $(...): the lock it takes lasts
 # until that subshell exits, so it is free again for boot_vm.
 setup_resume() {
-  local window=$1 nosnap=$2 share=$3 scale=$4 st stopped=false nostart=false dir problem missing details want s
+  local window=$1 nosnap=$2 share=$3 scale=$4 st stopped=false nostart=false dir problem missing details want s verdict
   local -a list
   if ! lanai_flock; then
     emit false "" "$LANAI_BUSY." "try again when it finishes"
@@ -415,16 +424,12 @@ setup_resume() {
     return 1
   fi
   if $stopped; then
-    # Whether the last run never started, read before record_previous_run
-    # deletes its markers: a "running" marker without the matching "started"
-    # stamp (QEMU never answered), or, with no markers, a unit that failed
-    # with an exit code.
-    if [[ -f $s/running ]]; then
-      [[ $(<"$s/running") == "$(cat -- "$s/started" 2>/dev/null)" ]] || nostart=true
-    elif [[ $st == failed && $(systemctl --user show -p Result --value "$LANAI_UNIT" 2>/dev/null) == exit-code ]]; then
+    verdict=$(record_previous_run)
+    if [[ $verdict == nostart ]] ||
+      { [[ -z $verdict && $st == failed ]] &&
+        [[ $(systemctl --user show -p Result --value "$LANAI_UNIT" 2>/dev/null) == exit-code ]]; }; then
       nostart=true
     fi
-    record_previous_run >/dev/null
     if ! setup_follow "$dir"; then
       setup_reply false 1 "Lanai cannot record its setup state in $s." ""
       return 1
@@ -479,7 +484,8 @@ setup_resume() {
   # 7. Done, unless the guest's IDD is behind the pin or a setup round is
   # still open (its step 6 may have recorded the pin, so "behind" alone
   # cannot tell), or the display was explicit.
-  if [[ $window == auto ]] && setup_done && [[ -z $(guest_version_behind) && $(setup_get round) != true ]]; then
+  if [[ $window == auto ]] && setup_done &&
+    [[ -z $(guest_version_behind) && $(setup_get round) != true && $(setup_get step5) != false ]]; then
     setup_reply true 7 "Lanai setup is finished." "start Windows"
     return 0
   fi
@@ -506,15 +512,21 @@ setup_resume() {
   # An explicit display choice always starts a setup boot: the way out of a
   # step 6 that cannot finish.
   if [[ $window != auto ]]; then
-    setup_set step5 null || true
+    setup_set step5 false || true
     echo setup-boot
     return 0
   fi
   case $(setup_get step5) in
-    true) echo normal-boot ;;
+    true)
+      if $nostart; then
+        setup_reply false 6 "Windows did not start." "see the logs with $LANAI_LOGS, then run setup again"
+        return 1
+      fi
+      echo normal-boot
+      ;;
     false)
       if $nostart; then
-        setup_reply false 5 "The setup boot did not start." \
+        setup_reply false 5 "Windows did not start." \
           "see the logs with $LANAI_LOGS, then start it again with --window or --no-window" \
           '{"choices": ["--window", "--no-window"]}'
       else
@@ -537,7 +549,4 @@ setup_with_step() {
     '. + {step: $s} + (if .ok and $add != "" then {message: (.message + " " + $add)} else {} end)') ||
     return 1
   printf '%s\n' "$out"
-  # lanai_on_exit reads it.
-  # shellcheck disable=SC2034
-  LANAI_EMITTED=1
 }

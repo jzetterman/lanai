@@ -249,10 +249,13 @@ EOF
   assert_output ""
 }
 
-@test "vm_args: refuses a setup media path or runtime folder with a comma" {
-  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 192.168.1.1 /media/a,b
-  assert_failure
-  assert_output --partial "setup media"
+@test "vm_args: refuses a setup media path with a colon, comma, newline or no slash, and a runtime comma" {
+  local media
+  for media in /media/a,b /media/a:b $'/media/a\nb' relative; do
+    run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 192.168.1.1 "$media"
+    assert_failure
+    assert_output --partial "setup media"
+  done
   XDG_RUNTIME_DIR=/run/a,b run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 192.168.1.1
   assert_failure
   assert_output --partial "runtime"
@@ -370,19 +373,21 @@ assert_markers_gone() {
   assert_markers_gone
 }
 
-@test "record_previous_run: a run whose QEMU never answered failed to start; nothing to report" {
+@test "record_previous_run: a run whose QEMU never answered prints nostart without a last-run verdict" {
   mkdir -p "$S"
   echo aaaa1111 >"$S/running"
   run record_previous_run
   assert_success
-  assert_output ""
+  assert_output nostart
   assert [ ! -e "$S/last-run" ]
   assert_markers_gone
+  echo clean >"$S/last-run"
   # A stamp from another run does not count either.
   echo bbbb2222 >"$S/running"
   echo aaaa1111 >"$S/started"
   run record_previous_run
-  assert_output ""
+  assert_output nostart
+  assert_equal "$(<"$S/last-run")" clean
   assert_markers_gone
 }
 

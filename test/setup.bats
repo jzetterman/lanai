@@ -77,8 +77,9 @@ setup_json() {
 }
 
 # Leave the markers of a run that started and ended: ran <invocation>
-# <setup true|false> <clean|forced|panel>. panel is a clean guest shutdown
-# that the panel's Shut down asked for.
+# <setup true|false> <clean|forced|panel|crash>. crash leaves no shutdown
+# record or forced marker; panel is a clean guest shutdown that the
+# panel's Shut down asked for.
 ran() {
   mkdir -p "$S"
   echo "$1" >"$S/running"
@@ -87,6 +88,7 @@ ran() {
   case $3 in
     clean | panel) printf '{"invocation":"%s","guest":true,"reason":"guest-shutdown"}\n' "$1" >"$S/last-shutdown" ;;
     forced) : >"$S/forced" ;;
+    crash) rm -f -- "$S/last-shutdown" "$S/forced" ;;
   esac
   [[ $3 != panel ]] || echo "$1 $EPOCHSECONDS" >"$S/stop-requested"
 }
@@ -180,8 +182,10 @@ ran() {
   setup_json '{}'
   ran inv-1 true clean
   echo B7-801-1a2b3c4d >"$S/guest-version"
+  echo '{"step":"6"}' >"$S/setup-reply.json"
   run setup_reset
   assert_success
+  assert [ ! -e "$S/setup-reply.json" ]
   assert [ ! -e "$S/setup.json" ]
   assert [ ! -e "$S/guest-version" ]
   assert [ ! -e "$S/running" ]
@@ -206,7 +210,7 @@ ran() {
 @test "record_previous_run: no step5 after a panel Shut down, a forced stop, or a clean normal boot" {
   install
   local how
-  for how in "true panel" "true forced" "false clean"; do
+  for how in "true panel" "true forced" "true crash" "false clean"; do
     setup_json '{"snapshot": "declined"}'
     # shellcheck disable=SC2086
     ran inv-1 $how
@@ -332,18 +336,20 @@ boot() {
   assert_failure
 }
 
-@test "setup boot: a changed location resets setup state, refuses and starts nothing" {
+@test "setup boot: a changed location preserves setup state, refuses and starts nothing" {
   install
   setup_json '{"location": "/elsewhere", "snapshot": "declined", "step5": true}'
   echo B7-801-g1a2b3c4d5e >"$S/guest-version"
+  local before
+  before=$(<"$S/setup.json")
   export WAYLAND_DISPLAY=wayland-3
   boot true auto
   assert_failure
   assert_equal "$(field ok)" false
-  assert_equal "$(field message)" "Lanai setup changed while it was preparing Windows: run setup again"
+  assert_equal "$(field message)" "Lanai setup changed while it was preparing Windows."
   assert_equal "$(field next)" "run setup again"
-  assert_equal "$(jq -c . "$S/setup.json")" "$(jq -n -c --arg l "$STORE" '{location: $l}')"
-  assert [ ! -e "$S/guest-version" ]
+  assert_equal "$(<"$S/setup.json")" "$before"
+  assert_equal "$(<"$S/guest-version")" B7-801-g1a2b3c4d5e
   assert [ ! -e "$S/boot.json" ]
   ! grep -q -- '--user start' "$T/systemctl.calls" || fail "a unit was started"
   assert [ ! -e "$T/systemd-run.args" ]
@@ -358,7 +364,7 @@ boot() {
     boot true auto
     assert_failure
     assert_equal "$(field ok)" false
-    assert_equal "$(field message)" "Lanai setup changed while it was preparing Windows: run setup again"
+    assert_equal "$(field message)" "Lanai setup changed while it was preparing Windows."
     assert_equal "$(field next)" "run setup again"
     assert [ ! -e "$S/boot.json" ]
     ! grep -q -- '--user start' "$T/systemctl.calls" || fail "a unit was started"
@@ -500,6 +506,15 @@ setup_guest_run() {
   assert_failure
   run field next
   assert_output --partial "lanai setup"
+  assert [ ! -e "$T/curl.calls" ]
+  echo '{}' >"$S/setup.json"
+  setup_guest_run
+  assert_failure
+  assert [ ! -e "$T/curl.calls" ]
+  # Also refuse a matching location without a snapshot decision.
+  setup_json '{}'
+  setup_guest_run
+  assert_failure
   assert [ ! -e "$T/curl.calls" ]
   setup_json '{"snapshot": "declined"}'
   unit_is lanai-vm.service active
@@ -838,7 +853,7 @@ exec /usr/bin/mv "$@"'
     setup_run
     assert_failure
     assert_equal "$(field step)" 6
-    assert_equal "$(field message)" "Lanai setup changed while it was starting Windows: run setup again"
+    assert_equal "$(field message)" "Lanai setup changed while it was starting Windows."
     ! grep -q -- '--user start' "$T/systemctl.calls" || fail "the unit was started"
     assert [ ! -e "$S/boot.json" ]
     assert [ ! -e "$T/systemd-run.args" ]
@@ -849,7 +864,7 @@ exec /usr/bin/mv "$@"'
   through_step4
   export WAYLAND_DISPLAY=wayland-3
   local how
-  for how in panel forced; do
+  for how in panel forced crash; do
     setup_json '{"snapshot": "declined", "step5": false}'
     setup_boot_ended "$how"
     : >"$T/systemctl.calls"
@@ -879,7 +894,7 @@ exec /usr/bin/mv "$@"'
   assert_failure
   assert_equal "$(field step)" 5
   run field message
-  assert_output --partial "did not start"
+  assert_output "Windows did not start."
   run field next
   assert_output --partial "journalctl --user -u lanai-vm"
   # Asked again, the failed unit still says so.
@@ -1337,4 +1352,146 @@ exec /usr/bin/mv "$@"'
   # Rerun after done: nothing to do.
   setup_run
   assert_equal "$(field step)" 7
+}
+
+@test "lanai setup step 4: a successful build with the wrong version stops once at step 4" {
+  install
+  setup_json '{"snapshot": "declined"}'
+  build_client() {
+    echo built >>"$T/build.calls"
+    fake_build "$LG_BUILD" B7-wrong
+  }
+  setup_run
+  assert_failure
+  assert_equal "$(field ok)" false
+  assert_equal "$(field step)" 4
+  assert_equal "$(wc -l <"$T/build.calls")" 1
+  ! grep -q -- '--user start' "$T/systemctl.calls" || fail "the unit was started"
+}
+
+@test "lanai setup: a running VM at another storage location refuses without altering state" {
+  through_step4
+  setup_json '{"location": "/elsewhere", "snapshot": "declined", "step5": true}'
+  local before
+  before=$(<"$S/setup.json")
+  unit_is lanai-vm.service active
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 1
+  assert_equal "$(<"$S/setup.json")" "$before"
+  run field next
+  assert_output --partial "shut Windows down"
+  ! grep -q -- '--user start' "$T/systemctl.calls" || fail "the unit was started"
+}
+
+@test "lanai setup step 6: an inactive boot that never started reports its logs once, then retries" {
+  through_step4
+  setup_json '{"snapshot": "declined", "step5": true}'
+  echo inv-normal >"$S/running"
+  setup_run
+  assert_failure
+  assert_equal "$(field ok)" false
+  assert_equal "$(field step)" 6
+  assert_equal "$(field message)" "Windows did not start."
+  run field next
+  assert_output --partial "$LANAI_LOGS"
+  assert [ ! -e "$S/last-run" ]
+  ! grep -q -- '--user start' "$T/systemctl.calls" || fail "the unit was started"
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  run cat "$T/systemctl.calls"
+  assert_output --partial '--user start lanai-vm.service'
+}
+
+@test "lanai setup step 5: failed explicit display boots keep false and offer both choices next time" {
+  local failure option
+  for failure in download display; do
+    for option in --window --no-window; do
+      through_step4
+      unit_is lanai-vm.service inactive
+      setup_json '{"snapshot": "declined", "step5": true}'
+      if [[ $failure == download ]]; then
+        shim curl 'exit 1'
+        rm -rf "$XDG_CACHE_HOME/lanai/downloads"
+      else
+        unset WAYLAND_DISPLAY
+        # Both options are tested for downloads; only --window needs a display.
+        [[ $option != --no-window ]] || continue
+      fi
+      setup_run "$option"
+      assert_failure
+      assert_equal "$(field step)" 5
+      assert_equal "$(jq -r .step5 "$S/setup.json")" false
+      setup_run
+      assert_failure
+      assert_equal "$(field step)" 5
+      assert_equal "$(jq -c .choices <<<"$JSON")" '["--window","--no-window"]'
+    done
+  done
+}
+
+@test "lanai setup step 6: a closed client's stale idd-missing reopens; mismatch stays decisive" {
+  step6_running "$FIX/client-logs/waiting.log" 120 120 no-servers
+  unit_is lanai-client.service inactive
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert_equal "$(jq -r .step5 "$S/setup.json")" true
+  run tail -n 1 "$T/systemd-run.args"
+  assert_output "$(pinned_client)"
+  rm "$T/systemd-run.args"
+  started_log "$FIX/client-logs/other-build.log" >"$RUN/client.log"
+  unit_is lanai-client.service inactive
+  qmp_call() { echo '{"return":[{"label":"qga0","frontend-open":true}]}'; }
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  assert [ ! -e "$T/systemd-run.args" ]
+}
+
+@test "setup media: refuses a symlink anywhere in the assembled media" {
+  install
+  pinned_files
+  ln -s viofs.inf "$T/src/tree/iso/viofs/w11/amd64/extra.dll"
+  bsdtar -cf "$T/src/virtio-win.iso" -C "$T/src/tree/iso" viofs NetKVM
+  VIRTIO_WIN_SHA=$(sha256sum "$T/src/virtio-win.iso" | cut -d' ' -f1)
+  run setup_media_build
+  assert_failure
+  assert_output --partial symlink
+  assert [ ! -e "$S/setup-media" ]
+  assert [ ! -e "$S/setup-media.partial" ]
+}
+
+@test "lanai setup step 5: a failed explicit retry of a finished install still offers display choices" {
+  through_step4
+  setup_json '{"snapshot": "declined", "done": true}'
+  echo "$LG_BUILD" >"$S/guest-version"
+  shim curl 'exit 1'
+  setup_run --no-window
+  assert_failure
+  assert_equal "$(jq -r .step5 "$S/setup.json")" false
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  assert_equal "$(jq -c .choices <<<"$JSON")" '["--window","--no-window"]'
+}
+
+@test "client builds: both commands refuse the shared build lock before building" {
+  install
+  setup_json '{"snapshot": "declined"}'
+  local fd
+  exec {fd}>>"$S/build.lock"
+  flock -n "$fd"
+  build_client() { echo called >>"$T/build.calls"; return 1; }
+  run --separate-stderr cmd_build_client
+  assert_failure
+  assert_output --partial 'Another Looking Glass client build is running'
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 4
+  run field message
+  assert_output --partial 'another Looking Glass client build is running'
+  assert [ ! -e "$T/build.calls" ]
+  exec {fd}>&-
 }

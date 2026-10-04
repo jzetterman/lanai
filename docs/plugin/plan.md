@@ -487,12 +487,12 @@ Where the code differs from the text above, the code and this list win:
   fail if USB audio is disabled. Keep older builds until the guest IDD matches (req 8):
   `lanai open` picks the build whose version matches the guest version recorded from the
   last client log (`$XDG_STATE_HOME/lanai/guest-version`), else the pinned build. A pin
-  change updates the guest by rerunning `lanai setup-guest` with the new media; until
+  change updates the guest by rerunning `lanai setup` with the new media; until
   then the old build keeps the window working. Once the guest has the new IDD,
   `guest-version` holds the new pin, so the next `lanai open` picks the new build
   (phase 6 records it from step 6's pinned client log).
   `build_select` gets bats tests (match, no record, no matching build, and the record
-  written by `setup-guest`).
+  written by setup step 6).
 - `lanai open`: start or focus the `lanai-client` unit and return at once (the QML
   deadline is 10 s, and a first boot can take longer). The unit's `ExecStart` is a small
   wrapper, `lanai-client-exec`, that retries on `qmp-cli.sock` until QEMU answers a
@@ -596,7 +596,7 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 - `lanai status` and `lanai open` record the guest version a client log names only
   when that client started (the log's first line) no earlier than the record was
   written (`guest-version`'s mtime), and never from a log without that line. So the
-  pin `lanai setup-guest` records (phase 6) is not undone by this run's older client
+  pin setup step 6 records (phase 6) is not undone by this run's older client
   log, which would bring back the old build and the "run setup again" warning.
   `guest_version_set` always rewrites the file, so its mtime is the record's time.
 - A pin bump the guest has not caught up with (req 8): when the recorded guest version
@@ -620,10 +620,14 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   passes it to the elevated stage, which refuses, with a clear message, if its own SID
   differs (a standard user who typed an administrator's credentials: `HKCU` would then
   be the administrator's hive). The elevated stage runs from System32, so it calls
-  every file by `%~dp0`. It also refuses, before any change, when it runs from the
-  system drive (`%~d0` is `%SystemDrive%`): a copy of the setup drive there can be
-  writable by other accounts. Then it checks that every media file is there, and, in
-  order:
+  every file by `%~dp0`. After the SID check and before the media check, it tries
+  `copy /y nul "%~dp0.lanai-wtest" >nul 2>&1`. If that succeeds, it deletes the test
+  file and stops: "Lanai setup: run setup.cmd from Lanai's read-only setup drive,
+  not from a copy." The real drive is a read-only vvfat disk; a writable NTFS volume,
+  virtio-fs share or UNC copy can let other accounts swap an installer or plant a
+  DLL. No localized text is parsed. The different-account refusal also explains
+  that Windows' Administrator protection, when on, causes this. Then it checks
+  that every media file is there, and, in order:
   - installs the SPICE vdagent MSI;
   - installs the qemu-ga MSI, then sets the allow-list with the literal command from
     proof 3, which is fixed by the pinned MSI and safe to rerun:
@@ -805,20 +809,19 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
     `lanai setup`, whose resume either goes on to step 6 or replies that step 5 did
     not finish, with two buttons: "Start setup on QEMU's screen" (`--window`) and
     "Start setup in the Windows window" (`--no-window`), each with one line saying
-    when to use it. There is no automatic watch, which would need its own timing, lock
-    and stop handling.
+    when to use it. The panel advances setup automatically at step 5's end and
+    during step 6, following the serialized calls in "For phase 7" below.
   - Setup state follows the disk. `setup.json` holds `location` (`storage_dir`'s
     output, the real path, so a symlinked `~/.windows` matches), `snapshot` (`taken`
     or `declined`, step 3), `step5` (true once its boot ended as below) and `done`.
     `setup_done` (phase 4) also requires `location` to match, so `lanai start` refuses
     a disk that setup has not seen. One function, `setup_reset`, first runs
     `record_previous_run` (so markers from an earlier boot cannot mark step 5 done on
-    the new state), then removes `setup.json` and `guest-version`. It needs the lock
-    and a stopped unit, so it runs only where the lock is already held: in `boot_vm`
-    for a setup boot, right after `preflight` (the unit is stopped and `layout_check`
-    has passed there); in `lanai setup`'s resume, which takes the lock in a subshell
-    that exits before it calls `boot_vm` (a second `lanai_flock` in one process
-    fails); and in `lanai restore`. Setup and setup boots call it when `setup.json` is
+    the new state), then removes `setup.json`, `setup-reply.json` and
+    `guest-version`. It needs the lock and a stopped unit, so it runs only where
+    the lock is already held: in `lanai setup`'s resume, which takes the lock in a
+    subshell that exits before it calls `boot_vm` (a second `lanai_flock` in one process
+    fails); and in `lanai restore`. Setup resume calls it when `setup.json` is
     missing, has no `location`, or names another one, and only after `layout_check`
     passes on the current location (an unmounted drive behind a symlink must not wipe
     setup state). `lanai restore` calls it after every restore, and its next step
@@ -835,8 +838,8 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   - Step 6's boot rechecks setup state under `boot_vm`'s own lock, after `preflight`:
     `setup.json` must exist, its `location` must match `storage_dir`, and `step5`
     must be true. If a restore reset it after setup's resume released the lock,
-    Lanai refuses with "Lanai setup changed while it was starting Windows: run setup
-    again" and starts nothing. `lanai start` keeps its existing path.
+    Lanai refuses with "Lanai setup changed while it was starting Windows." and
+    the next step "run setup again", and starts nothing. `lanai start` keeps its existing path.
   - The pin is recorded from evidence, not from step 5. Step 6 starts the pinned
     client directly, bypassing `build_select`. On `match`, `guest_version_note`
     records the pin from step 6's own log (the client starts after the record, so the
@@ -844,7 +847,8 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
     setup back to step 5, leaving the record as it was, so the retry's guess stays
     right: no record on a fresh install (QEMU's window), the old version on a pin bump
     (the old client still matches the old IDD). A client that closes during step 6
-    (`unknown`) is reopened, not counted.
+    (`unknown`, `waiting` or `idd-missing`) is reopened for a fresh 30 s, not counted;
+    `mismatch` stays decisive.
   - Pin bumps go through `lanai setup` (spec req 8: the window keeps working
     throughout). `lanai setup` reopens at step 5 whenever `guest_version_behind` prints
     a version, even with `done: true`; status already says "run Lanai setup again".
@@ -865,8 +869,8 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   symlinked storage path matches its recorded real path; a dangling one resets
   nothing; `lanai restore` resets both; a restore or a storage change after a clean
   setup boot leaves `step5` unset and no `guest-version`; `record_previous_run` sets
-  `step5` after a clean setup boot, and not after a panel Shut down, a forced stop, or
-  a clean normal boot; setup state reset between resume and step 6's boot (missing
+  `step5` after a clean setup boot, and not after a panel Shut down, a forced stop,
+  a crash/systemd kill without shutdown or forced markers, or a clean normal boot; setup state reset between resume and step 6's boot (missing
   file, wrong location, false or missing `step5`) refuses and starts nothing;
   step 6 records the pin on `match`, keeps the old record on
   `idd-missing` or `mismatch`, and reopens a closed client; `lanai setup` with `done:
@@ -913,17 +917,23 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
 - Step 1 also refuses an unfinished restore (`restore_pending`) and a container VM
   that is only preparing (`container_blocked`, which covers `container_running`).
 - `step5` has three values: absent (no setup boot yet, so the next one boots with the
-  guess), `false` (written when a setup boot starts; still `false` once it has
-  ended means it did not finish, and setup asks for `--window` or `--no-window`
+  guess), `false` (written when a setup boot starts or an explicit display choice
+  is made; still `false` once it has ended means it did not finish, and setup asks for `--window` or `--no-window`
   instead of booting), and `true`. A failed step 6 check removes it, so the retry
   boots with the guess. Finishing setup removes it too, so a later pin bump starts
   step 5 afresh while `done` stays true and `lanai start` keeps working. With the
-  unit stopped, an explicit `--window` or `--no-window` removes it and starts a setup
-  boot whatever it said, even on a finished install (the way out of a step 6 that
-  cannot finish). The explicit choice bypasses step 7's finished shortcut. When
-  `false` belongs to a run that never started (a "running" marker without its "started"
-  stamp, or, with no markers, a unit that failed with an exit code), setup says the
-  setup boot did not start and points to the logs.
+  unit stopped, an explicit `--window` or `--no-window` sets it to `false` and starts
+  a setup boot whatever it said, even on a finished install (the way out of a
+  step 6 that cannot finish). The explicit choice bypasses step 7's finished shortcut. When
+  `false` belongs to a run that never started, setup says "Windows did not start."
+  and points to the logs. `record_previous_run` prints `nostart` for a "running"
+  marker without its matching "started" stamp, clears the markers and leaves
+  `last-run` unchanged. Resume consumes that verdict; its only fallback is a failed
+  unit's `Result=exit-code`. With `step5: true`, `nostart` gives an `ok: false`
+  step 6 reply pointing to `$LANAI_LOGS` once; the next call retries the boot.
+  An explicit display choice that fails before starting (downloads or a missing
+  `WAYLAND_DISPLAY`) keeps `step5: false`, so the next call offers both choices,
+  even on an already finished install: the finished shortcut respects `step5: false`.
 - `--window` keeps the guest version record unchanged; step 6 records the pin only
   from its own `match`, so a failed QEMU boot cannot lose the old client selection.
 - `setup.json` gains a fifth key, `round`: a setup boot sets it to true before
@@ -935,7 +945,10 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   it (spec 8: the window keeps working during a pin bump).
 - `lanai setup` runs `record_previous_run` and `setup_follow` itself, under the lock
   and only with the unit stopped, so step 5's verdict is there without a new boot.
-- Setup boots recheck the current location's snapshot decision after `setup_follow`, before starting any unit.
+- Setup boots recheck `setup_current` for `storage_dir` and a snapshot decision of
+  `taken` or `declined`, without resetting or changing state. Step 6 uses the same
+  read-only helpers for the location and `step5: true`. `setup_reset` is called
+  only through setup resume's `setup_follow` and after restore, under the lock.
 - Step 6's boot rechecks `setup.json`, its storage location and `step5: true` under
   `boot_vm`'s lock after `preflight`; a reset between resume and boot refuses without
   starting the VM or client. `lanai start` keeps its existing path.
@@ -943,9 +956,9 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   Windows window", and the panel calls `lanai open`.
 - Step 6: the pinned client must be the one logging. A client of another build (an
   Open during step 6) is stopped and the pinned one started; a client that closed
-  while its verdict is still `unknown` or `waiting` is reopened (a decisive verdict
-  stands). A failed QMP call means try again, never a missing part. Step 6 stamps the
-  first time it sees the guest agent's port open in `$RUN/qga-open-since`, and
+  while its verdict is `unknown`, `waiting` or `idd-missing` is reopened for a
+  fresh 30 s (`match` and `mismatch` stand). A failed QMP call means try again,
+  never a missing part. Step 6 stamps the first time it sees the guest agent's port open in `$RUN/qga-open-since`, and
   removes the stamp whenever the port is closed (a Windows restart keeps the same
   QEMU); `lanai-vm-exec` removes both agent stamps at each start. Every grace counts
   from the open stamp (`LANAI_SETUP_GRACE`, 60 s): a part that has not answered by
@@ -965,13 +978,15 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   removes the old media first, so a failed build leaves none. The media use fixed
   names (`spice-vdagent.msi`, `qemu-ga.msi`, `winfsp.msi`). `bsdtar` also unpacks
   the IDD zip, so `unzip` is not a dependency (`bsdtar` comes with `libarchive`,
-  which pacman needs).
+  which pacman needs). Every symlink anywhere in the assembled media is refused;
+  the setup-media path also refuses `:` because QEMU's `fat:` parser treats it
+  specially.
 - `setup.cmd`, from the first build's reviews (the text above says the same): the
   scale script lives in `C:\Program Files\Lanai\` beside `virtiofs.exe`, and there is
   no `C:\Lanai` at all (a folder under `C:\` raced its ACL against other accounts);
-  `VirtioFsSvc`'s path is quoted inside; it refuses to run from the system drive; it
-  checks every media file before any change. Stage 1 reads the elevated stage's exit
-  code exactly: a declined prompt is 1223 (the PowerShell call catches the cancel,
+  `VirtioFsSvc`'s path is quoted inside; after the SID check it refuses any writable
+  setup folder with the write probe above, then checks every media file before
+  changing Windows. Stage 1 reads the elevated stage's exit code exactly: a declined prompt is 1223 (the PowerShell call catches the cancel,
   which Windows PowerShell 5.1 raises as a non-terminating error), and only it and a
   missing SID pause; an IDD failure exits 2 and nothing pauses on a display that may
   be black. The sign-in task is registered with PowerShell's `Register-ScheduledTask`
@@ -983,15 +998,24 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
 - Tests: `isolate_home` unsets `WAYLAND_DISPLAY`. `fake-qga` gains `allowlist`, `open` and
   `notime` replies, `fake-qmp` a `FAKE_QMP_VDAGENT` knob. The `lanai-scale.ps1` tests
   need `pwsh` and skip without it (CI has none).
-- For phase 7: `lanai setup` and `lanai setup-guest` can run for minutes (the client
-  build, the downloads, a boot), and a step 6 call can pass 10 s (QMP and two guest
-  agent exchanges, each with a 5 s limit). The panel runs both detached, past QML's
-  10 s deadline, and reads `lanai setup`'s reply from
-  `$XDG_STATE_HOME/lanai/setup-reply.json`, which it writes atomically using a
-  unique temporary file in the same directory for each call, removed on failure.
-  Concurrent calls can publish either complete reply without sharing a temp file.
-  The panel calls `lanai setup` only on a click, never as a poll: each call can act (boot,
-  build, record a verdict).
+- For phase 7: the panel calls only `lanai setup`; `lanai setup-guest` remains a
+  CLI command. The display buttons call `lanai setup --window` or
+  `lanai setup --no-window`. Setup can run for minutes (the client build, downloads
+  or a boot), and a step 6 call can pass 10 s (QMP and two guest agent exchanges,
+  each with a 5 s limit). Run setup detached, past QML's 10 s deadline, and read
+  its reply from `$XDG_STATE_HOME/lanai/setup-reply.json`, written atomically using
+  a unique temporary file per call and removed on failure. Concurrent CLI calls
+  can publish either complete reply without sharing a temp file; the panel never
+  runs two setup calls at a time. It calls on a click and automatically whenever
+  the last reply's `step` is 5 or 6 and status shows the unit inactive or step 6
+  waiting, at most once every 10 s. These calls advance step 6's timers without
+  clicks. Status wins over a stale `setup-reply.json`.
+  The panel reads reply detail keys `choices` (step 5), `questions` (step 6),
+  `missing`/`command` (step 2), `active`/`window` (step 5 while running), and
+  `window` (boot replies), alongside `ok`, `step`, `message` and `next`.
+- Both client build callers use `build_client_locked` for `build.lock` and `flock`.
+  A build still reporting the wrong version stops with an `ok: false` step 4 reply
+  instead of looping. Only `cmd_setup` marks its emitted reply in the parent shell.
 - Open for phase 8: whether `msiexec` returns 1638 over dockur's own qemu-ga or SPICE
   agent; whether `/S /ivshmem` is the IDD installer's exact silent syntax; whether
   `windows.base` should end in a newline (3a writes one).
@@ -1026,9 +1050,14 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   shows Shut down, then the two display buttons when `lanai setup` asks for them, and
   Open is hidden while status reports `window: true`; see phase 6's setup boot
   display; step 6 asks its two questions, sent as `--share-ok` and `--scale-ok`.
-  `lanai setup` and `lanai setup-guest` run detached, and the panel reads the reply
-  from `setup-reply.json` and calls `lanai setup` only on a click, never as a poll;
-  see phase 6's "As built"); settings
+  The panel calls only `lanai setup`, detached, on clicks and automatically at
+  step 5's end or while step 6 waits: whenever the last reply's step is 5 or 6 and
+  status shows the unit inactive or step 6 waiting, at most every 10 s and never
+  two at a time. Display buttons use `lanai setup --window|--no-window`;
+  `lanai setup-guest` is a CLI command. It reads `setup-reply.json`, with status
+  winning over a stale reply, and the detail keys `choices`, `questions`,
+  `missing`/`command`, `active`/`window` and boot `window` as listed in phase 6's
+  "For phase 7" contract); settings
   (memory, cores); the error view with cause, next step, log path and the
   `omarchy-windows-vm` fallback.
 - Guest-controlled text (from phase 5 review): show `client.log`, the guest's driver
