@@ -214,10 +214,10 @@ run_dir_check() {
 # prints nostart without writing last-run. Without a verdict, last-run
 # stays as it was (the panel clears it once shown). It also owns step 5's
 # verdict (plan phase 6): after a clean setup boot (boot.json's setup)
-# that no stop request of that run asked for, it sets "step5" in an existing setup.json. Always
-# ends with the markers, the stamp, last-shutdown and any stop request
-# deleted. Every path that starts the unit calls it first, through
-# preflight.
+# that no stop request of that run asked for, it sets "step5" in an existing
+# setup.json. Always ends with the markers, the stamp, last-shutdown and any
+# stop request deleted. Every path that starts the unit calls it first,
+# through preflight.
 record_previous_run() {
   local s verdict="" inv="" started="" boot=false rinv=""
   s=$(state_dir)

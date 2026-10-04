@@ -781,6 +781,26 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field step)" 4
 }
 
+@test "lanai setup step 3: a snapshot decision that cannot be recorded stops setup" {
+  install
+  setup_set() { return 1; }
+  build_client() { touch "$T/build-called"; return 1; }
+  local decision
+  for decision in taken declined; do
+    setup_json '{}'
+    snapshot_list() { [[ $decision != taken ]] || echo snapshot; }
+    setup_run --no-snapshot
+    assert_failure
+    assert_equal "$(field ok)" false
+    assert_equal "$(field step)" 3
+    assert_equal "$(field message)" "Lanai cannot record its setup state."
+    assert_equal "$(field next)" "run setup again"
+    assert_equal "$(jq -r '.snapshot // "unset"' "$S/setup.json")" unset
+    assert [ ! -e "$T/build-called" ]
+    assert [ ! -e "$T/systemd-run.args" ]
+  done
+}
+
 @test "lanai setup step 3a: an empty or missing windows.base gets dockur's name, once, and it says so" {
   install
   setup_json '{"snapshot": "declined"}'
@@ -1151,6 +1171,76 @@ exec /usr/bin/mv "$@"'
   refute_output --partial "SPICE agent"
 }
 
+@test "lanai setup step 6: a client that keeps closing cannot bypass the closed-port boot limit" {
+  step6_closed "$FIX/client-logs/waiting.log"
+  : >"$RUN/client.log"
+  unit_is lanai-client.service inactive
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert [ -s "$RUN/qga-closed-since" ]
+  assert [ -e "$T/systemd-run.args" ]
+  rm "$T/systemd-run.args"
+  unit_is lanai-client.service inactive
+  echo "$((EPOCHSECONDS - LANAI_SETUP_BOOT_LIMIT - 1))" >"$RUN/qga-closed-since"
+  setup_run
+  assert_failure
+  assert_equal "$(field ok)" false
+  assert_equal "$(field step)" 5
+  run field message
+  assert_output --partial "Windows did not finish starting, or its guest agent is missing"
+  assert_equal "$(jq -r '.step5 // "unset"' "$S/setup.json")" unset
+  assert [ ! -e "$T/systemd-run.args" ]
+  assert [ ! -s "$T/qga.log" ]
+}
+
+@test "lanai setup step 6: a closed client with unknown or waiting past the open-port grace fails without reopening it" {
+  local verdict
+  for verdict in unknown waiting; do
+    step6_closed "$FIX/client-logs/waiting.log"
+    if [[ $verdict == unknown ]]; then
+      : >"$RUN/client.log"
+    fi
+    unit_is lanai-client.service inactive
+    qmp_call() { echo '{"return":[{"label":"qga0","frontend-open":true}]}'; }
+    setup_run
+    assert_success
+    assert_equal "$(field step)" 6
+    assert [ -s "$RUN/qga-open-since" ]
+    rm -f "$T/systemd-run.args"
+    unit_is lanai-client.service inactive
+    echo "$((EPOCHSECONDS - LANAI_SETUP_GRACE - 1))" >"$RUN/qga-open-since"
+    setup_run
+    assert_failure
+    assert_equal "$(field ok)" false
+    assert_equal "$(field step)" 6
+    assert_equal "$(field message)" "The Windows window did not stay open long enough to check the display driver."
+    assert_equal "$(field next)" "see the logs with journalctl --user -u lanai-client, then run setup again"
+    assert_equal "$(jq -r .step5 "$S/setup.json")" true
+    assert [ ! -e "$T/systemd-run.args" ]
+    assert [ ! -s "$T/qga.log" ]
+  done
+}
+
+@test "lanai setup step 6: a running client still in its own wait past the open-port grace is waited for" {
+  local verdict
+  for verdict in unknown waiting; do
+    step6_closed "$FIX/client-logs/waiting.log"
+    if [[ $verdict == unknown ]]; then
+      : >"$RUN/client.log"
+    fi
+    unit_is lanai-client.service active
+    qmp_call() { echo '{"return":[{"label":"qga0","frontend-open":true}]}'; }
+    echo "$((EPOCHSECONDS - LANAI_SETUP_GRACE - 1))" >"$RUN/qga-open-since"
+    setup_run
+    assert_success
+    assert_equal "$(field ok)" true
+    assert_equal "$(field step)" 6
+    assert_equal "$(jq -r .step5 "$S/setup.json")" true
+    assert [ ! -e "$T/systemd-run.args" ]
+  done
+}
+
 @test "lanai setup step 6: a closed port with no client start line waits and stamps the boot" {
   step6_closed "$FIX/client-logs/waiting.log"
   : >"$RUN/client.log"
@@ -1481,6 +1571,7 @@ exec /usr/bin/mv "$@"'
 
 @test "lanai setup step 6: a closed client's stale idd-missing reopens; mismatch stays decisive" {
   step6_running "$FIX/client-logs/waiting.log" 120 120 no-servers
+  qmp_call() { echo '{"return":[{"label":"qga0","frontend-open":true}]}'; }
   unit_is lanai-client.service inactive
   setup_run
   assert_success
@@ -1491,7 +1582,6 @@ exec /usr/bin/mv "$@"'
   rm "$T/systemd-run.args"
   started_log "$FIX/client-logs/other-build.log" >"$RUN/client.log"
   unit_is lanai-client.service inactive
-  qmp_call() { echo '{"return":[{"label":"qga0","frontend-open":true}]}'; }
   setup_run
   assert_failure
   assert_equal "$(field step)" 5

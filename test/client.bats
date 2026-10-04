@@ -75,6 +75,27 @@ started_log() {
 
 # --- version normalization ---
 
+@test "client build readers: the binary and log report the same first build, or none" {
+  fake_build "$LG_BUILD"
+  local bin=$LGDIR/$LG_BUILD/bin/looking-glass-client
+  "$bin" --help >"$T/client.log" 2>&1
+  started_log "$LOGS/other-build.log" >>"$T/client.log"
+  run client_version "$bin"
+  assert_success
+  assert_output "$LG_BUILD"
+  run log_client_build "$T/client.log"
+  assert_success
+  assert_output "$LG_BUILD"
+  printf '#!/usr/bin/env bash\necho no-build\n' >"$bin"
+  run client_version "$bin"
+  assert_failure
+  assert_output ""
+  echo no-build >"$T/client.log"
+  run log_client_build "$T/client.log"
+  assert_success
+  assert_output ""
+}
+
 @test "lg_version_key: splits a build into tag, count and hash, with or without git's g" {
   run lg_version_key B7-826-236efcb1
   assert_output "B7 826 236efcb1"

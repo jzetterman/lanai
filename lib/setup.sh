@@ -249,12 +249,6 @@ pinned_client() {
   printf '%s\n' "$(client_builds)/$LG_BUILD/bin/looking-glass-client"
 }
 
-# Print the build client log <log> names ("Looking Glass (<build>)"), or
-# nothing.
-log_client_build() {
-  sed -n 's/^.* | Looking Glass (\([^)]*\))$/\1/p' "$1" 2>/dev/null | head -n 1
-}
-
 # setup_back5 <what failed>: a step 6 check failed, so setup goes back to
 # step 5: step5 is forgotten, so the next lanai setup, once Windows is shut
 # down, starts a setup boot with the display the record suggests.
@@ -271,9 +265,6 @@ setup_wait() {
 
 # setup_step6 <share yes|no|""> <scale yes|no|"">: check the running step 6
 # boot part by part.
-# - The pinned client must be the one logging: a client of another build is
-#   replaced; one that closed while its verdict (version_check) is still
-#   unknown, waiting or idd-missing is reopened for a fresh 30 s, not counted.
 # - QMP's query-chardev must answer, else it tries again. The first time it
 #   shows the guest agent's port open, $RUN/qga-open-since is stamped (it is
 #   removed whenever the port is closed, since a Windows restart keeps the
@@ -281,9 +272,16 @@ setup_wait() {
 #   The first closed-port poll stamps $RUN/qga-closed-since; an open port
 #   removes it. After LANAI_SETUP_BOOT_LIMIT with the port closed, setup goes
 #   back to step 5. lanai-vm-exec removes both stamps at each start.
-# - The verdict: unknown or waiting means wait; mismatch sends setup back to
-#   step 5 at once, keeping the guest version record. The client starts its
-#   30 s count when QEMU starts, so firmware and boot time use it up;
+# - After the port timers, a client that is not running with unknown or
+#   waiting past the open-port grace is a host client failure at step 6,
+#   without reopening or going back to step 5. A running client still in its
+#   own 30 s (as after a reopen) is waited for.
+#   The pinned client must be the one logging: a client of another build is
+#   replaced; one that closed with unknown, waiting or idd-missing is reopened
+#   for a fresh 30 s, within those bounds (match and mismatch stand).
+# - The verdict: unknown or waiting before the grace means wait; mismatch
+#   sends setup back to step 5, keeping the guest version record. The client
+#   starts its 30 s count when QEMU starts, so firmware and boot time use it up;
 #   idd-missing counts only once the guest agent's port has been open for
 #   LANAI_SETUP_GRACE, and means wait before that. match records the pin
 #   from this log (guest_version_note).
@@ -306,17 +304,6 @@ setup_step6() {
   closed_stamp=$run/qga-closed-since
   read -r verdict guest < <(version_check "$log") || verdict=unknown
   build=$(log_client_build "$log")
-  if [[ -n $build && $build != "$LG_BUILD" ]] ||
-    { [[ $verdict == unknown || $verdict == waiting || $verdict == idd-missing ]] && ! client_active; }; then
-    ! client_active || systemctl --user stop "$LANAI_CLIENT_UNIT" >&2 || true
-    if ! client_start "$(pinned_client)" >&2; then
-      setup_reply false 6 "Lanai could not open the Windows window to check the display driver." \
-        "see the logs with journalctl --user -u $LANAI_CLIENT_UNIT"
-      return 1
-    fi
-    setup_wait "Lanai opened the Windows window with its own client to check the display driver."
-    return 0
-  fi
   if ! out=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}'); then
     setup_wait "QEMU did not answer Lanai's question about Windows' agents; it asks again next time."
     return 0
@@ -334,6 +321,22 @@ setup_step6() {
       setup_back5 "Windows did not finish starting, or its guest agent is missing."
       return 1
     fi
+  fi
+  if [[ $verdict == unknown || $verdict == waiting ]] && ((age >= LANAI_SETUP_GRACE)) && ! client_active; then
+    setup_reply false 6 "The Windows window did not stay open long enough to check the display driver." \
+      "see the logs with journalctl --user -u ${LANAI_CLIENT_UNIT%.service}, then run setup again"
+    return 1
+  fi
+  if [[ -n $build && $build != "$LG_BUILD" ]] ||
+    { [[ $verdict == unknown || $verdict == waiting || $verdict == idd-missing ]] && ! client_active; }; then
+    ! client_active || systemctl --user stop "$LANAI_CLIENT_UNIT" >&2 || true
+    if ! client_start "$(pinned_client)" >&2; then
+      setup_reply false 6 "Lanai could not open the Windows window to check the display driver." \
+        "see the logs with journalctl --user -u $LANAI_CLIENT_UNIT"
+      return 1
+    fi
+    setup_wait "Lanai opened the Windows window with its own client to check the display driver."
+    return 0
   fi
   case $verdict in
     match) guest_version_note "$log" ;;
@@ -395,8 +398,8 @@ setup_step6() {
 # "normal-boot" (step 6). Each step is detected, not assumed. With the unit
 # stopped it first records the previous run (step 5's verdict) and makes
 # setup state follow the disk. done with a guest version behind the pin,
-# or with a setup round open, goes back to step 5 (a pin bump; the old
-# client keeps working). An explicit display choice also bypasses step 7.
+# or with a setup round open, is not reported finished (the old client
+# keeps working). An explicit display choice also bypasses step 7.
 # Call it inside $(...): the lock it takes lasts
 # until that subshell exits, so it is free again for boot_vm.
 setup_resume() {
@@ -453,12 +456,16 @@ setup_resume() {
   # 3. The snapshot offer, before any Lanai boot.
   if [[ -z $(setup_get snapshot) ]]; then
     if [[ -n $(snapshot_list "$dir") ]]; then
-      setup_set snapshot '"taken"'
+      want=taken
     elif [[ $nosnap == true ]]; then
-      setup_set snapshot '"declined"'
+      want=declined
     else
       setup_reply false 3 "Before Windows first boots under Lanai, Lanai can take an instant snapshot of $dir, so a bad first boot can be undone." \
         "take one with lanai snapshot, or go on without one with lanai setup --no-snapshot"
+      return 1
+    fi
+    if ! setup_set snapshot "\"$want\""; then
+      setup_reply false 3 "Lanai cannot record its setup state." "run setup again"
       return 1
     fi
   fi

@@ -908,6 +908,14 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   A step 6 start failure reports "Windows did not start." and points to the logs.
   After reporting it, setup runs `systemctl --user reset-failed lanai-vm.service`
   (ignoring its result), so systemd's failed state does not block the next boot retry.
+  Before reopening a closed client, step 6 queries QMP and checks the guest
+  agent's port timers. A port still closed past `LANAI_SETUP_BOOT_LIMIT` sends
+  setup back to step 5 even if the client keeps closing. Once the port has been
+  open for `LANAI_SETUP_GRACE`, a client verdict still `unknown` or `waiting`
+  is a host client failure: step 6 replies `ok: false`, "The Windows window did
+  not stay open long enough to check the display driver.", with next step
+  "see the logs with journalctl --user -u lanai-client, then run setup again".
+  That call stays at step 6 and does not reopen the client.
 
   bats tests interrupt the flow after each step and check that `lanai setup` resumes at
   the right step.
@@ -923,20 +931,24 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
 - `lanai setup` options: `--no-snapshot` declines step 3, `--window` and
   `--no-window` pick step 5's display, and `--share-ok yes|no --scale-ok yes|no`
   answer step 6's two questions (two yeses finish setup; a lone no sends it back).
-  Every reply past option parsing and the lock carries `step` (`"1"` to `"7"`, or
-  `"3a"`); an option error, a busy lock or an unreachable user manager comes before
-  any step and has none. Setup runs the client build, the media build and
+  Replies carry `step` (`"1"` to `"7"`, or `"3a"`) except option errors and
+  setup resume's own lock or user-manager refusals, which precede step detection.
+  Refusals from `setup_guest` or `boot_vm` on the setup-boot path go through
+  `setup_with_step` and carry a step, including lock and user-manager failures.
+  Setup runs the client build, the media build and
   both boots itself; for packages and the snapshot it names the command to run
   (`lanai setup-host`, `lanai snapshot`), and an existing snapshot of the location
-  counts as taken. Step 3a writes the name and stops with a note; the next call goes
-  on.
+  counts as taken. If recording either snapshot decision fails, step 3 replies
+  `ok: false`, "Lanai cannot record its setup state.", and stops. Step 3a writes
+  the name and stops with a note; the next call goes on.
 - Step 1 also refuses an unfinished restore (`restore_pending`) and a container VM
   that is only preparing (`container_blocked`, which covers `container_running`).
 - `step5` has three values: absent (no setup boot yet, so the next one boots with the
   guess), `false` (written when a setup boot starts or an explicit display choice
   is made; still `false` once it has ended means it did not finish, and setup asks for `--window` or `--no-window`
-  instead of booting), and `true`. A failed step 6 check removes it, so the retry
-  boots with the guess. Finishing setup removes it too, so a later pin bump starts
+  instead of booting), and `true`. A failed guest check in step 6 removes it, so
+  the retry boots with the guess; the host client failure below keeps it true.
+  Finishing setup removes it too, so a later pin bump starts
   step 5 afresh while `done` stays true and `lanai start` keeps working. With the
   unit stopped, an explicit `--window` or `--no-window` sets it to `false` and starts
   a setup boot whatever it said, even on a finished install (the way out of a
@@ -974,15 +986,23 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   restore reset setup after the initial check.
 - A setup boot in client mode does not open the client: its reply says "open the
   Windows window", and the panel calls `lanai open`.
-- Step 6: the pinned client must be the one logging. A client of another build (an
-  Open during step 6) is stopped and the pinned one started; a client that closed
-  while its verdict is `unknown`, `waiting` or `idd-missing` is reopened for a
-  fresh 30 s (`match` and `mismatch` stand). A failed QMP call means try again,
-  never a missing part. Step 6 stamps the first time it sees the guest agent's port open in `$RUN/qga-open-since`, and
+- Step 6 queries QMP and checks the port timers before reopening the client.
+  The pinned client must be the one logging. A client of another build (an
+  Open during step 6) is stopped and the pinned one started; within the timer
+  bounds below, a client that closed while its verdict is `unknown`, `waiting`
+  or `idd-missing` is reopened for a fresh 30 s (`match` and `mismatch` stand).
+  A failed QMP call means try again, never a missing part. Step 6 stamps the
+  first time it sees the guest agent's port open in `$RUN/qga-open-since`, and
   removes the stamp whenever the port is closed (a Windows restart keeps the same
   QEMU); `lanai-vm-exec` removes both agent stamps at each start. Every grace counts
-  from the open stamp (`LANAI_SETUP_GRACE`, 60 s): a part that has not answered by
-  then is missing.
+  from the open stamp (`LANAI_SETUP_GRACE`, 60 s): a guest part that has not
+  answered by then is missing. A client that is not running, with its verdict
+  still `unknown` or `waiting` after that grace, is a host client failure (a
+  running client still in its own 30 s, as after a reopen, is waited for): an
+  `ok: false` step 6 reply says
+  "The Windows window did not stay open long enough to check the display driver."
+  and "see the logs with journalctl --user -u lanai-client, then run setup again".
+  That call neither goes back to step 5 nor reopens the client.
   The client starts its 30 s count when QEMU starts, so firmware and boot time use
   it up; `idd-missing` counts only once the guest agent's port has been open for the
   grace, and means wait before that. `mismatch` sends setup back at once. The first
@@ -990,8 +1010,9 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   removes that stamp. A port still closed after `LANAI_SETUP_BOOT_LIMIT` (300 s)
   from that stamp sends setup back to step 5: "Windows did not finish starting,
   or its guest agent is missing". A Windows restart gets a fresh boot limit,
-  regardless of the client's start time or whether its start line exists. The guest
-  agent is asked only while its port is open (a sync on a closed port waits 5 s).
+  regardless of the client's start time, whether its start line exists, or whether
+  it keeps closing. The guest agent is asked only while its port is open (a sync
+  on a closed port waits 5 s).
   A lone `--share-ok no` or `--scale-ok no` sends setup back too.
 - `lanai setup-guest` refuses until step 3 has a decision for this location. It holds
   the lock, with the VM stopped, for the whole media build (downloads included), and
@@ -1026,10 +1047,14 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   its reply from `$XDG_STATE_HOME/lanai/setup-reply.json`, written atomically using
   a unique temporary file per call and removed on failure. Concurrent CLI calls
   can publish either complete reply without sharing a temp file; the panel never
-  runs two setup calls at a time. It calls on a click and automatically whenever
-  the last reply's `step` is 5 or 6 and status shows the unit inactive or step 6
-  waiting, at most once every 10 s. These calls advance step 6's timers without
-  clicks. Status wins over a stale `setup-reply.json`.
+  runs two setup calls at a time. It calls on a click; automatic calls require
+  the last reply to be `ok: true` and say to wait. For step 5, the panel watches
+  the setup boot until status shows the unit inactive, then calls setup; for
+  step 6, it calls while the reply says to wait. "Step 6 waiting" means the
+  setup reply, not status. Automatic calls happen at most once every 10 s.
+  After any `ok: false` reply, and after step 5's display choices, the panel
+  waits for a click. These calls advance step 6's timers without clicks.
+  Status wins over a stale `setup-reply.json`.
   The panel reads reply detail keys `choices` (step 5), `questions` (step 6),
   `missing`/`command` (step 2), `active`/`window` (step 5 while running), and
   `window` (boot replies), alongside `ok`, `step`, `message` and `next`.
@@ -1070,10 +1095,12 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   shows Shut down, then the two display buttons when `lanai setup` asks for them, and
   Open is hidden while status reports `window: true`; see phase 6's setup boot
   display; step 6 asks its two questions, sent as `--share-ok` and `--scale-ok`.
-  The panel calls only `lanai setup`, detached, on clicks and automatically at
-  step 5's end or while step 6 waits: whenever the last reply's step is 5 or 6 and
-  status shows the unit inactive or step 6 waiting, at most every 10 s and never
-  two at a time. Display buttons use `lanai setup --window|--no-window`;
+  The panel calls only `lanai setup`, detached, on clicks. Automatic calls require
+  an `ok: true` reply that says to wait: at step 5, watch the setup boot until
+  status shows the unit inactive, then call setup; at step 6, call while the
+  setup reply says to wait (not status). Call at most every 10 s and never two
+  at a time. After any `ok: false` reply, and after step 5's display choices,
+  wait for a click. Display buttons use `lanai setup --window|--no-window`;
   `lanai setup-guest` is a CLI command. It reads `setup-reply.json`, with status
   winning over a stale reply, and the detail keys `choices`, `questions`,
   `missing`/`command`, `active`/`window` and boot `window` as listed in phase 6's

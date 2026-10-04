@@ -215,13 +215,18 @@ build_select() {
   printf '%s\n' "$root/$LG_BUILD/bin/looking-glass-client"
 }
 
+# Print the first "Looking Glass (<build>)" build from a log (- for stdin),
+# or nothing when it has no build line.
+log_client_build() {
+  sed -n 's/^.* | Looking Glass (\([^)]*\))$/\1/p' "$1" 2>/dev/null | head -n 1
+}
+
 # Print the build a client binary reports: the "Looking Glass (<build>)"
 # line it logs first, also for --help. Fails when it prints none.
 client_version() {
   local v
   [[ -x $1 ]] || return 1
-  v=$(timeout 10 "$1" --help </dev/null 2>&1 |
-    sed -n 's/^.* | Looking Glass (\([^)]*\))$/\1/p' | head -n 1) || true
+  v=$(timeout 10 "$1" --help </dev/null 2>&1 | log_client_build -) || true
   [[ -n $v ]] || return 1
   printf '%s\n' "$v"
 }
