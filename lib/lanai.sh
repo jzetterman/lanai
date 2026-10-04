@@ -882,7 +882,7 @@ status_map() {
       elif [[ $qmp == internal-error || $qmp == guest-panicked || $qmp == io-error ]]; then
         state=failed message="QEMU reports $qmp." next=$failed_next
       elif [[ $qmp == running && $setup != "done" ]]; then
-        # dockur installs its own guest agent, so the port says nothing yet.
+        # A guest agent may predate setup, so the port says nothing yet.
         state="setup-needed" message="Windows is running, but Lanai setup has not finished."
         next="finish setup in the Lanai panel"
       elif [[ ${f[LanaiVersion]:-} == mismatch ]]; then

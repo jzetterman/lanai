@@ -818,9 +818,16 @@ and 8 cores. Run from the phase 6 worktree.
 - John's answers: `~/Windows` shows as the Z: drive; text scale looks right.
   `lanai setup --share-ok yes --scale-ok yes` replied step 7, "Lanai setup is
   finished". Status: running.
-- Next (John, 2026-10-04): make setup silent from Linux, driving the guest side
-  through dockur's own guest agent (no allow-list before Lanai's setup, runs as
-  LocalSystem) instead of a user running `setup.cmd`. This needs a spec change.
+- Silent setup from Linux (John, 2026-10-04): checked and not possible on an
+  adopted install. dockur 6.05 installs no QEMU guest agent (its first-logon
+  script installs the balloon service and the display driver), and a setup boot
+  of the restored pre-setup snapshot kept the agent port closed for over 5
+  minutes while Windows ran (it then shut down cleanly on `lanai stop`). dockur
+  enables neither SSH nor WinRM; RDP is on, but it needs the Windows password,
+  an inbound connection Lanai's VM does not allow, and still meets UAC. So the
+  one administrator prompt stays; setup.cmd now pre-trusts HostFission's
+  certificate, which removes the driver prompt. A no-touch install is a v2 idea:
+  Lanai installing Windows itself with its own unattended setup.
 
 ## After the proofs
 

@@ -409,7 +409,8 @@ Where the code differs from the text above, the code and this list win:
   the supervisor's (or virtiofsd's runner's) pid; status counts a helper alive only
   when that pid is in `lanai-vm.service`'s cgroup and is not a zombie.
 - Status: before setup is done, a booted VM is "setup needed" even with an agent port
-  open (dockur installs its own guest agent). A unit that failed with
+  open (a guest agent from an earlier setup run, or one the user installed). A unit
+  that failed with
   `Result=timeout` (a stop that ran out of time, as at logout with lingering) is
   "stopped", not "failed". The forced-stop `notice` comes only from `last-run` (the
   next start's verdict), so the panel can show it once and clear it; a forced stop
@@ -771,8 +772,8 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   programs and scheduled tasks. Then create a standard local account, sign out, sign
   in as it, run `setup.cmd` from the setup disk, and approve the prompt with the
   administrator account. Setup must refuse before changing anything: the same
-  inventory matches (dockur's own guest agent and file-sharing service stay as they
-  were), and the Looking Glass IDD and the scale task are absent.
+  inventory matches (any guest agent or file-sharing service already there stays as
+  it was; dockur 6.05 installs no guest agent, hands-on run 2026-10-04), and the Looking Glass IDD and the scale task are absent.
 - `guest/lanai-scale.ps1` fix (proof 1): it sometimes logs the current scale as blank
   (at 100%, and once at 125%), because `curScaleRel` can point outside the step list.
   Log the raw `minScaleRel`, `curScaleRel` and `maxScaleRel`, and route all four
