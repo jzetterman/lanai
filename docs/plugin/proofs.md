@@ -829,6 +829,16 @@ and 8 cores. Run from the phase 6 worktree.
   certificate, which removes the driver prompt. A no-touch install is a v2 idea:
   Lanai installing Windows itself with its own unattended setup.
 
+### Second run (2026-10-04, after the trust fix)
+
+The test copy restored from the step 3 snapshot (`lanai restore`, 4 min 37 s;
+setup state reset, next step "run Lanai setup"), then `lanai setup --window`.
+Codex had confirmed the installer and the IDD catalogs share HostFission's signer.
+John ran `setup.cmd` and approved the administrator prompt: no driver prompt and
+no other prompt. Windows shut down by itself; step 6's automatic checks passed
+on the first poll; John answered yes to both questions, and setup reported step
+7. Pass: one prompt in total, as spec req 7 requires.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with
