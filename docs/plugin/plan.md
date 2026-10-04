@@ -690,6 +690,14 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
     `Enrollments` subkeys that hold one. `LANAI_FAKE_MANAGED=1` makes that check
     report membership, for row 7b; self-elevation drops the caller's environment, so it
     must be set in an elevated prompt that runs `lanai-lock.cmd` directly;
+  - immediately before the IDD install, sets `LANAI_IDD` to
+    `%~dp0looking-glass-idd-setup.exe` and uses PowerShell to read its Authenticode
+    signature from that environment variable. Only a `Valid` signature with a signer
+    certificate is added to `LocalMachine\TrustedPublisher`, the same as choosing
+    "Always trust software from HostFission", to avoid a second publisher prompt.
+    This is best effort: on failure, print that Windows may ask to trust the Looking
+    Glass driver's publisher and to choose Install, then continue (the host already
+    checks the installer's pinned SHA-256);
   - installs the Looking Glass IDD last (`/S /ivshmem`, exit code checked), because it
     turns the setup display black (Step 1 of `proofs.md` ordered it last for the same
     reason), so nothing after it may need the user's eyes or a key press;
@@ -1036,7 +1044,12 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   missing SID pause; an IDD failure exits 2 and nothing pauses on a display that may
   be black. The sign-in task is registered with PowerShell's `Register-ScheduledTask`
   as "Lanai display scale" (interactive logon, no stored password). Each MSI passes
-  on exit code 0 or 3010 only.
+  on exit code 0 or 3010 only. Immediately before the IDD install, PowerShell adds
+  the installer's signer certificate to `LocalMachine\TrustedPublisher` only when
+  its Authenticode signature is `Valid`. The path comes from `LANAI_IDD`, set from
+  `%~dp0looking-glass-idd-setup.exe`, rather than being inserted into PowerShell code.
+  This avoids the HostFission publisher prompt; if it fails, setup prints a note to
+  choose Install if Windows asks and continues to the pinned installer.
 - `lanai-vm-exec` unsets `WAYLAND_DISPLAY` for a boot without QEMU's window. Status's
   `active` is true while the unit is active, activating, deactivating or reloading;
   `window` is true only while the unit runs.
@@ -1131,14 +1144,17 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   each other change setup made, or say why it can stay: the SPICE vdagent, qemu-ga with
   its allow-list, WinFsp, the newer `viofs` driver, the `VirtioFsSvc` settings, the
   Looking Glass IDD, the logon task ("Lanai display scale") and `C:\Program Files\Lanai`
-  (`virtiofs.exe` and `lanai-scale.ps1`). Then shut Windows down
+  (`virtiofs.exe` and `lanai-scale.ps1`); remove HostFission's certificate from
+  Trusted Publishers (`certlm.msc`, Trusted Publishers). Then shut Windows down
   from its Start menu, since a restored lock can drop the stop request (the container
   does not restart by itself: `omarchy-windows-vm` sets `restart: "no"`). Then, if
   Lanai's VM still runs, `systemctl --user stop lanai-vm.service`, which works without
   the plugin); verified Omarchy and dockur versions; the remaining risks from req 5a
   (including the disk-size check skipped when the compose is unreadable); the clipboard
-  exposure (req 29); the DNS-client note (req 24); the measured reboot shutdown time
-  (req 19: phase 8 measures it; proof 4's reboots took 7 s and its logouts 11 to 13 s
+  exposure (req 29); the publisher trust exposure: setup adds HostFission's signing
+  certificate to the machine's Trusted Publishers, so Windows then accepts any
+  driver HostFission signs without asking; the DNS-client note (req 24); the measured
+  reboot shutdown time (req 19: phase 8 measures it; proof 4's reboots took 7 s and its logouts 11 to 13 s
   for an idle Windows); the coexistence note (req 30); the Windows lock (req 7): it is
   off for the Windows user who ran setup, and two of the settings (Switch user, the
   inactivity limit) apply to every account on that Windows; why; what that exposes:

@@ -154,6 +154,10 @@ echo [8/8] Installing the Looking Glass display driver
 echo This screen turns black now. Windows shuts down by itself in a moment.
 set "STEP=the Looking Glass display driver"
 rem Last: nothing after it may need the user's eyes or a key press.
+rem Trust the valid IDD signer to avoid Windows' extra publisher prompt.
+set "LANAI_IDD=%~dp0looking-glass-idd-setup.exe"
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $s = Get-AuthenticodeSignature -LiteralPath $env:LANAI_IDD; if ($s.Status -ne 'Valid' -or -not $s.SignerCertificate) { exit 2 }; $st = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher','LocalMachine'); $st.Open('ReadWrite'); $st.Add($s.SignerCertificate); $st.Close()"
+if errorlevel 1 echo Windows may ask to trust the Looking Glass driver's publisher; choose Install.
 "%~dp0looking-glass-idd-setup.exe" /S /ivshmem
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :idd_failed

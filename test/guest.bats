@@ -46,7 +46,7 @@ load helpers
 SETUP_CMD=$BATS_TEST_DIRNAME/../guest/setup.cmd
 
 # The command lines that change Windows (ERE on a line's text).
-CHANGE_RE='^(msiexec |sc\.exe (config|create) |icacls |copy |mkdir |rd |del |pnputil |call |"%~dp0looking-glass-idd-setup\.exe"|powershell .*Register-ScheduledTask)'
+CHANGE_RE='^(msiexec |sc\.exe (config|create) |icacls |copy |mkdir |rd |del |pnputil |call |"%~dp0looking-glass-idd-setup\.exe"|powershell .*(Register-ScheduledTask|X509Store))'
 
 # Print setup.cmd's command lines (no rem or blank lines), CR removed, each
 # as "<line number>:<line>".
@@ -136,11 +136,14 @@ stage1_code() {
   # Each line that changes Windows: set "RC=%errorlevel%" next, then a line
   # that goes to :failed (:idd_failed for the IDD); each msiexec passes on
   # 0 or 3010 only.
+  # Publisher trust is best effort: Windows can ask the user instead. Exempt
+  # it from the fatal-change check; its warning and continuation are tested below.
   run bash -c 'cut -d: -f2- | RE=$1 awk '"'"'
     { l[NR] = $0 }
     END {
       for (i = 1; i <= NR; i++) {
         if (l[i] !~ ENVIRON["RE"]) continue
+        if (l[i] ~ /^powershell .*X509Store/) continue
         n++
         want = (l[i] ~ /looking-glass-idd-setup/) ? " goto :idd_failed$" : " goto :failed$"
         if (l[i + 1] != "set \"RC=%errorlevel%\"" || l[i + 2] !~ ("^if .*" want)) print "unchecked: " l[i]
@@ -234,6 +237,7 @@ stage1_code() {
     'copy /y "%~dp0lanai-scale.ps1"'
     'Register-ScheduledTask'
     'call "%~dp0lanai-lock.cmd"'
+    'Get-AuthenticodeSignature'
     '"%~dp0looking-glass-idd-setup.exe" /S /ivshmem'
     'shutdown /s /t 10'
   )
@@ -252,6 +256,38 @@ stage1_code() {
   refute_output --regexp '(^|[^a-z])pause'
   run grep -ciE "/hybrid" < <(setup_code)
   assert_output 0
+}
+
+@test "setup.cmd: trusts the IDD publisher in the elevated stage immediately before the install" {
+  local elevated lock path trust idd
+  elevated=$(line_is ':elevated')
+  lock=$(line_is 'call "%~dp0lanai-lock.cmd"')
+  path=$(line_is 'set "LANAI_IDD=%~dp0looking-glass-idd-setup.exe"')
+  trust=$(line_of 'Get-AuthenticodeSignature')
+  idd=$(line_is '"%~dp0looking-glass-idd-setup.exe" /S /ivshmem')
+  ((elevated < lock && lock < path && path + 1 == trust && trust + 2 == idd)) ||
+    fail "elevated $elevated, lock $lock, path $path, trust $trust, IDD $idd"
+}
+
+@test "setup.cmd: trusts only a Valid IDD signer in LocalMachine TrustedPublisher" {
+  run bash -c 'cut -d: -f2- | grep -F "Get-AuthenticodeSignature"' < <(setup_code)
+  assert_success
+  assert_output --partial "powershell -NoProfile -NonInteractive -Command \"\$ErrorActionPreference = 'Stop';"
+  assert_output --partial 'Get-AuthenticodeSignature -LiteralPath $env:LANAI_IDD'
+  refute_output --partial '%~dp0'
+  assert_output --partial "if (\$s.Status -ne 'Valid' -or -not \$s.SignerCertificate) { exit 2 }"
+  assert_output --partial "New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher','LocalMachine')"
+  assert_output --partial "\$st.Open('ReadWrite'); \$st.Add(\$s.SignerCertificate); \$st.Close()"
+}
+
+@test "setup.cmd: a publisher trust failure prints a note and continues to the IDD install" {
+  run bash -c 'cut -d: -f2- | sed -n "/Get-AuthenticodeSignature/,+2p" | tail -n 2' < <(setup_code)
+  assert_success
+  assert_output "$(printf '%s\n' \
+    "if errorlevel 1 echo Windows may ask to trust the Looking Glass driver's publisher; choose Install." \
+    '"%~dp0looking-glass-idd-setup.exe" /S /ivshmem')"
+  refute_output --partial 'goto :failed'
+  refute_output --regexp '(^|[^a-z])exit'
 }
 
 @test "setup.cmd: only exit /b, and media files only by %~dp0" {

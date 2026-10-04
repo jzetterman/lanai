@@ -47,6 +47,11 @@ These sections are filled in phase 7:
 - Shutdown time at reboot
 - Other Windows plugins
 
+Guest setup adds HostFission's signing certificate to the machine's Trusted
+Publishers to avoid the Looking Glass driver's publisher prompt. Windows then
+accepts any driver HostFission signs without asking. During removal, remove
+HostFission's certificate using `certlm.msc`, under Trusted Publishers.
+
 ## Tests
 
 Run `bats test spike/test`. Tests that need btrfs read `LANAI_TEST_BTRFS_DIR` (for
