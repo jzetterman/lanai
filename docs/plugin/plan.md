@@ -1210,8 +1210,8 @@ pins that the view ignores it. The view holds:
   comes with every view, so there is no list control;
 - `setup`: whether the section shows, `finished`, the current step, its lines, the
   step 6 questions and the step 5 display choices when they apply;
-- `result`: per control group, that group's last outcome in panel words, shown
-  beside its controls, while it is still current (below);
+- `result`: per control group, an outcome that the state cannot say by itself,
+  shown beside its controls (below);
 - `settings` (memory, cores, or the read error), `snapshots` (names, or the read
   error), `logs` (the VM and client log paths status names, and the panel's job and
   command logs).
@@ -1240,9 +1240,11 @@ checks or its questions, done). `setup_resume` becomes: lock, `record_previous_r
 `setup_follow`, the shared facts, `setup_plan`, then act. Because the panel calls
 `setup_plan` without the first two, `setup_plan` applies their pending effects to
 what it reads, without writing:
-- the ended run: `record_previous_run`'s rule moves into a pure `run_verdict` over
-  the run markers (`running`, `started`, `last-shutdown`, `forced`,
-  `stop-requested`, `boot.json`), which both call. It returns the verdict (clean,
+- the ended run (only while the unit is inactive or failed, as in `setup_resume`):
+  `record_previous_run`'s rule moves into a pure `run_verdict` over the run markers
+  (`running`, `started`, `last-shutdown`, `forced`, `stop-requested`, `boot.json`),
+  which both call; it reads `running` last (`record_previous_run` deletes it first),
+  so a present `running` proves the other reads came before any deletion. It returns the verdict (clean,
   forced, nostart, or none) and whether it completes step 5 (a clean setup boot that
   no stop request asked for). The markers stay on disk until the next start consumes
   them, so the view sees the ended run before any command. `setup_plan` reads the
@@ -1250,8 +1252,8 @@ what it reads, without writing:
   deletes them), so a setup call in between cannot yield "step5 false, no markers";
 - a changed storage location (`setup_follow`'s reset) and step 3's automatic
   "taken" when snapshots exist.
-`finished` follows step 7's rule (setup done for this location, no open round, the
-guest not behind the pin, step 4's stamp current); step 1 and 2 problems show only
+`finished` follows step 7's rule (setup done for this location, no open round,
+`step5` not false, the guest not behind the pin, step 4's stamp current); step 1 and 2 problems show only
 while setup is not finished, since the VM state already covers in-use and a pending
 restore. Step 4 checks the pinned client by a stamp file inside its build folder
 holding `LG_BUILD` (so a rebuild or `builds_prune` removes it with the binary), never
@@ -1270,9 +1272,12 @@ Shut down during the setup boot (a clean guest shutdown with a matching stop req
 gives the display choices, and the setup job stops following).
 
 **The setup job follows its own waits.** The panel never decides when to call setup
-again. `ui-job setup` runs `lanai setup`; while the reply is an ok:true wait (step 5,
-or step 6 with no questions; step 3a's and step 7's ok:true replies are not waits),
-the job waits for that wait's expected next state and then calls `lanai setup` again:
+again. `ui-job setup` runs `lanai setup` with the click's arguments (a display choice,
+answers, `--no-snapshot`); while the reply is an ok:true wait (step 5, or step 6 with
+no questions; step 3a's and step 7's ok:true replies are not waits), the job checks
+every 2 s for that wait's expected next state (an activating unit counts as active)
+and then calls bare `lanai setup` again, never repeating the click's arguments (a
+repeated `--window` would start another setup boot):
 - step 5: `run_verdict` says that run ended and completes step 5, and the unit is
   inactive or failed; if the run ended any other way (a panel Shut down, a forced
   stop), the job stops and the view offers the display choices;
@@ -1285,31 +1290,45 @@ every 10 s, never two at a time, never after a failure, keyed on step and state,
 it keeps going with the panel closed. Open, notice dismissal and settings saves do
 not stop it; Shut down and Force stop end it through the expected-state check. The
 job holds `panel-job.lock` while it follows, which only blocks snapshot and restore,
-and those refuse while the VM runs anyway.
+and those refuse while the VM runs anyway; the view disables the long-job controls
+while the lock is held. `ui-job` starts through `systemd-run --user --collect` in
+`session.slice`, as `client_start` does, so a shell restart or plugin reload does not
+end it (spec 18). A client-mode setup boot starts its own client: `setup_command`
+runs `client_start` with `build_select`'s build after it, as the step 6 boot starts
+the pinned client, so no panel call is needed.
 
 **Records.** The panel runs every command it offers through `lib/ui.sh`, never
-directly: the quick ones through a new `lanai ui-run`, the long ones through `lanai
-ui-job`. Groups: `vm` (start, open, stop, force-stop, notice-seen), `setup` (setup,
-setup with a display choice or answers, setup-host, step 3's skip), `settings`
-(settings), `snapshots` (snapshot, including step 3's take, and restore, with or
-without a name). Each group has one record, `panel-result-<group>.json`, written by
+directly. Through a new `lanai ui-run`, which the QML runs as a `Process` without a
+deadline (never killed partway) and refreshes when it exits: `start`, `open`, `stop`,
+`force-stop`, `notice-seen`, `settings`, `setup-host`. Through `lanai ui-job`
+(detached, as above): every `lanai setup` call (including step 3's skip, the display
+choices and the answers), `snapshot` (including step 3's take) and `restore`. Groups:
+`vm` (start, open, stop, force-stop, notice-seen), `setup` (setup, setup-host),
+`settings` (settings), `snapshots` (snapshot and restore). Each group has one record, `panel-result-<group>.json`, written by
 atomic rename: the token, the command and its arguments, the VM's `InvocationID`,
 the start and end times, and the reply. `ui-job` writes a started record (no end, no
 reply) at launch, holds `panel-job.lock` while it runs, writes each result before it
-releases the lock, and on exit writes the final record before it releases; a started
-record whose lock is free reads as interrupted, which is not a wait. There is no
-separate job file: the running job is the started record whose lock is held. The view
-probes the lock before it reads the records. `ui-run` writes its record when its
-command ends, and its stderr goes to `panel-run.log` (the long jobs' go to
-`panel-job.log`). A result shows only while it is still current: a setup result while
-its reply's step equals `setup_plan`'s step; a vm result while the unit's invocation
-equals the recorded one; settings and snapshot results until the next action in their
-group. `ui-job` waits up to 1 s for `panel-job.lock` (`flock -w 1`), so a view's
-brief probe does not refuse a launch.
+releases the lock, and on exit writes the final record before it releases. A record
+is started (no reply), following (a reply, no end) or ended (an end). There is no
+separate job file: the running job is the started or following record whose lock is
+held. The view reads the records while holding a non-blocking probe on
+`panel-job.lock` (only for the read, well under `ui-job`'s `flock -w 1`): if it gets
+the lock, no job runs and the records are final, and a started or following record
+then reads as interrupted, with Continue setup offered; if it does not, a job runs. A
+launch refused by `flock -w 1` writes no record (so it cannot overwrite the running
+job's); the pending token then times out. `ui-run` writes its record when its command
+ends, with the unit's `InvocationID` read at that moment, and its stderr goes to
+`panel-run.log` (the long jobs' go to `panel-job.log`). A result shows only when it
+says something the state and `setup_plan` cannot: an `ok: false` failure (until the
+next action in its group), start's no-network message (while that run is active), the
+snapshot success text spec 7 requires, and a restore's outcome (both until the next
+action in their group). Offers, waits and other successes map to nothing in the words
+table, because the state already shows them; a stepless failure (the lock busy, the
+user manager unreachable) stays until the next action in its group.
 
-**The QML.** It polls `lanai panel`: every 2 s while its own panel is open, or while
-the state is starting or stopping; every 15 s otherwise (the tooltip). Other monitors'
-bars stay at 15 s. It has a 10 s deadline, skips a tick while a call runs, and an
+**The QML.** It polls `lanai panel` every 2 s while its own panel is open, and every
+15 s otherwise (the tooltip), whatever the state; only the bar whose panel is open
+polls fast. It has a 10 s deadline, skips a tick while a call runs, and an
 action asks for exactly one fresh call after it ends. It renders the view's fields as
 plain text (`Text.PlainText`), shows and enables controls from `buttons`, and runs
 every command through `ui-run` or `ui-job`. Besides moment-to-moment input that
@@ -1334,7 +1353,11 @@ job running, interrupted and never started; a pending restore (stopped,
 setup-needed, in-use); a restore success and failure; the forced-stop notice; Shut
 down shown and enabled while stopping; Force stop only when `force_stop` is true,
 with its armed second click in the QML; result currency (a setup result after a
-restore, a vm result after the VM stopped); every reply-to-words table entry and its
+restore, a vm result after the VM stopped, a wait reply after a Shut down ended its
+job); the step 5 transition after a clean setup shutdown started from a `--window`
+click (the follow-up call is bare); a finished install with `step5` false after a
+failed explicit display choice (not finished); a record read racing a launch and an
+end; every reply-to-words table entry and its
 `reason` codes; and that `setup-reply.json` is ignored. The setup job's following:
 the step 5 transition after a clean setup shutdown (one more call), a panel Shut down
 during the setup boot (stops), step 6 waits spaced 10 s apart, a stop during step 6
@@ -1607,3 +1630,4 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
 | plan amendment (panel view) | a (gpt-6.1-sol) | 3 (full, cap) | 1 P1, 3 P2; all confirmed and integrated: `auto` after step 5 waited on bookkeeping only the next setup call does (a pure `run_verdict` over the markers still on disk); a Windows restart could revive step 6's questions (the event logger counts QMP RESET events); transient input had no home (exempted, decides nothing); direct commands routed inconsistently (every panel command through ui-run or ui-job). Stage closed at the cap |
 | plan amendment (panel view) | b single (opus-5.5) | 1 (full; single by John's Claude-usage rule) | 5 should-fix, 6 nits, 0 refuted; all integrated in a rewrite of the amendment: `setup_plan` applies `record_previous_run`'s and `setup_follow`'s pending effects through a pure `run_verdict` (and agrees with `setup_resume` in both marker states); `auto` keeps the 10 s spacing and a precise wait definition; one result file per control group; step 6's questions from a `$RUN/step6-asked` file the event logger deletes on RESET (replacing the reset counter); no duplicated /proc scan or client run per poll, 15 s polling unless something is happening; session per bar instance passed to ui-run and ui-job; no list control; named Shut down and Force stop tests |
 | plan amendment (panel view) | b single (opus-5.5) | 2 (full) | 8 should-fix, 9 nits, 0 refuted; all integrated in a second rewrite. The main one simplifies: the setup job follows its own waits, so session ids, the `auto` field and its rules, and the paused flag go away (and clicking Open no longer cancels progress). Also: one record per group with a started record at launch (no separate job file), a fixed write and read order, result currency rules, panel words from a table with `reason` codes, `finished` by step 7's rule, one shared fact gatherer with a builtin cgroup scan skipped while the VM runs, 2 s polling only on the monitor whose panel is open, and the superseded contract lines named |
+| plan amendment (panel view) | b single (opus-5.5) | 3 (full, cap) | 9 should-fix, 4 nits, 0 refuted; all integrated: follow-up setup calls are bare (a repeated `--window` looped setup boots); results show only what the state cannot say (failures, spec 7's snapshot text, a restore's outcome), since wait replies and systemd's kept InvocationID made currency rules leak; `finished` needs `step5` not false; the view reads records while holding the lock probe, with three named record states; `ui-job` runs as a systemd user unit (spec 18); a client-mode setup boot starts its own client; `ui-run` has no deadline; `run_verdict` reads `running` last; the overlay applies only while the unit is inactive or failed; job polling 2 s; only the open panel's bar polls fast. Stage closed at the cap; the amendment's gate is closed |
