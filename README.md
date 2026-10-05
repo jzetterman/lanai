@@ -85,8 +85,10 @@ media or substitute files written by Windows. Setup shuts Windows down when the 
 install finishes. Let that shutdown finish; Shut down from the panel does not count.
 Continue setup to restart Windows, then answer whether `~/Windows` appears in
 Explorer and whether text looks the right size. If a setup boot stopped unfinished,
-the panel offers QEMU's screen for a guest without the IDD, or the Windows window
-when the IDD is installed. Open window is hidden while QEMU's setup window is in use.
+the panel offers **Use QEMU's screen** until the Lanai display driver is installed,
+or **Use the Looking Glass window** afterward. Open window is hidden while QEMU's
+setup window is in use. Reopening the panel watches setup that is still running;
+it does not resume setup from a result left by an earlier session.
 
 ## Daily use
 
@@ -97,8 +99,9 @@ Space; Escape closes it. The shell can summon this widget's panel through its pl
 routing. Settings accept whole numbers: 1–512 GiB and 1–64 cores, and apply at the
 next start. The CLI equivalent is `bin/lanai settings <GiB> <cores>`.
 
-Shut down asks Windows to shut down cleanly and returns immediately. After two
-minutes the panel offers Force stop, followed by a separate confirming click.
+Shut down asks Windows to shut down cleanly and returns immediately. If Windows
+ignores the request while starting, click Shut down again. After two minutes from
+the first request, the panel offers Force stop, followed by a separate confirming click.
 Unsaved work is lost on a forced stop. If the display fails or builds mismatch,
 read the panel's cause, next step and log path. Stop Lanai before using
 `omarchy-windows-vm` through RDP or its web console as the fallback.

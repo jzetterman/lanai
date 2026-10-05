@@ -69,7 +69,7 @@ cmd_ui_job() {
   fi
   shift 2
   umask 077
-  args=$(jq -nc '$ARGS.positional' --args "$@")
+  args=$(jq -nc '$ARGS.positional' --args -- "$@")
   s=$(state_dir)
   mkdir -p -- "$s"
   exec {fd}>>"$s/panel-job.lock"
@@ -100,7 +100,11 @@ cmd_ui_job_status() {
   if [[ $(jq -r '.active' <<<"$doc") == true ]]; then
     exec {fd}>>"$s/panel-job.lock"
     if flock -n "$fd"; then
-      doc=$(jq -c '. + {active:false, reply:{ok:false, message:"The panel job was interrupted.", next:"retry the operation; setup and restore can resume"}}' <<<"$doc")
+      # The worker may have finished after our first read, before releasing its lock.
+      doc=$(jq -ce 'select(type == "object")' "$s/panel-job.json") || return 1
+      if [[ $(jq -r '.active' <<<"$doc") == true ]]; then
+        doc=$(jq -c '. + {active:false, reply:{ok:false, message:"The operation was interrupted.", next:"try again; setup and restore can resume"}}' <<<"$doc")
+      fi
     fi
   fi
   emit true "" "Panel job status." "" "$doc"

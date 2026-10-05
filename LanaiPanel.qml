@@ -22,8 +22,8 @@ Panel {
   readonly property bool questions: model.fresh && model.status.active === true
     && model.status.state === "setup-needed" && model.status.window !== true
     && model.setupReply.step === "6" && (model.setupReply.questions || []).length > 0
-  readonly property var steps: ["Check the Windows install", "Install host packages", "Offer a snapshot",
-    "Build the pinned client", "Install in Windows; let setup shut it down", "Restart and check Windows", "Ready"]
+  readonly property var steps: ["Check the Windows install", "Install required software", "Offer a snapshot",
+    "Prepare the Windows window", "Install drivers in Windows and shut down", "Restart and check Windows", "Ready"]
 
   onOpenedChanged: if (!opened) { forceArmed = false; restoreArmed = "" }
   Connections {
@@ -80,12 +80,13 @@ Panel {
           width: flick.width
           spacing: Style.space(10)
 
-          PanelSectionHeader { text: "LANAI — " + root.model.status.state; foreground: root.foreground; fontFamily: root.fontFamily }
+          PanelSectionHeader { text: "Lanai"; foreground: root.foreground; fontFamily: root.fontFamily }
+          Note { text: root.model.stateLabel }
           Note { text: root.model.status.message }
           Note { visible: text !== ""; text: root.model.status.next ? "Next: " + root.model.status.next : "" }
           Note { visible: text !== ""; text: root.model.status.warning || "" }
           Note { visible: text !== ""; text: root.model.status.notice || "" }
-          Note { visible: root.model.status.window === true; text: "This setup boot uses QEMU's window. Use that window to run setup.cmd." }
+          Note { visible: root.model.status.window === true; text: "Windows is open in QEMU's screen. Run setup.cmd there." }
 
           Flow {
             width: parent.width
@@ -115,26 +116,26 @@ Panel {
           }
 
           PanelSeparator { foreground: root.foreground }
-          PanelSectionHeader { text: "SETUP"; foreground: root.foreground; fontFamily: root.fontFamily }
+          PanelSectionHeader { text: "Setup"; foreground: root.foreground; fontFamily: root.fontFamily }
           Repeater {
             model: root.steps
             delegate: Note {
               required property string modelData
               required property int index
               text: (index + 1) + ". " + modelData
-                + (parseInt(root.model.setupReply.step || "0", 10) === index + 1 ? " ← last reply" : "")
+                + (parseInt(root.model.setupReply.step || "0", 10) === index + 1 ? " ← current step" : "")
               opacity: parseInt(root.model.setupReply.step || "0", 10) > index + 1 ? 0.6 : 1
             }
           }
           Note {
             visible: root.model.longBusy
-            text: "Working on " + (root.model.job.command || "the next step") + "… Downloads, snapshot verification and the client build can take minutes. Progress log: " + root.model.stateDir + "/panel-job.log"
+            text: "Working… This may take a few minutes.\nDetails: " + root.model.stateDir + "/panel-job.log"
           }
-          Note { visible: text !== ""; text: root.model.setupReply.message ? "Last setup reply: " + root.model.setupReply.message : "" }
+          Note { visible: text !== ""; text: root.model.setupReply.message || "" }
           Note { visible: text !== ""; text: root.model.setupReply.next ? "Next: " + root.model.setupReply.next : "" }
           Note {
             visible: root.model.setupReply.step === "2"
-            text: "Missing: " + (root.model.setupReply.missing || []).join(", ") + "\nInstall command: " + (root.model.setupReply.command || "")
+            text: "Software needed: " + (root.model.setupReply.missing || []).join(", ") + "\nInstall command: " + (root.model.setupReply.command || "")
           }
           Flow {
             width: parent.width
@@ -147,7 +148,7 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
             visible: root.model.setupReply.step === "3" && root.model.status.active === false
-            Note { text: "The snapshot shares disk blocks and grows as Windows changes. Lanai reports its location and delete command when done. If this filesystem cannot reflink, make a backup before continuing." }
+            Note { text: "A snapshot saves a copy of Windows. It uses more space as Windows changes. Lanai shows where it is saved and how to delete it. If Lanai cannot take a snapshot, make a backup before continuing." }
             Flow {
               width: parent.width
               spacing: Style.space(6)
@@ -160,15 +161,15 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
             visible: root.displayChoices
-            Note { text: "The setup boot stopped before finishing. Choose QEMU's screen if Windows has no Lanai display driver yet; choose the Windows window after the driver is installed." }
+            Note { text: "Setup stopped before finishing. Use QEMU's screen until the Lanai display driver is installed. After that, use the Looking Glass window." }
             Flow {
               width: parent.width
               spacing: Style.space(6)
               Action { text: "Use QEMU's screen"; enabled: !root.model.busy; onClicked: root.model.launch(["setup", "--window"]) }
-              Action { text: "Use Windows window"; enabled: !root.model.busy; onClicked: root.model.launch(["setup", "--no-window"]) }
+              Action { text: "Use the Looking Glass window"; enabled: !root.model.busy; onClicked: root.model.launch(["setup", "--no-window"]) }
             }
           }
-          Note { visible: root.model.setupReply.step === "5" && root.model.status.active === true; text: "In Windows, run setup.cmd from Lanai's read-only setup drive. Approve as the same Windows user. It installs the drivers and shuts Windows down; that shutdown is the required restart. A panel Shut down does not count." }
+          Note { visible: root.model.setupReply.step === "5" && root.model.status.active === true; text: "In Windows, open Lanai's setup drive and run setup.cmd. Approve as the same Windows user. Let setup install the drivers and shut Windows down. Using Shut down here does not finish setup." }
 
           Column {
             width: parent.width
@@ -196,7 +197,8 @@ Panel {
           }
 
           PanelSeparator { foreground: root.foreground }
-          PanelSectionHeader { text: "SETTINGS — NEXT START"; foreground: root.foreground; fontFamily: root.fontFamily }
+          PanelSectionHeader { text: "Settings"; foreground: root.foreground; fontFamily: root.fontFamily }
+          Note { text: "Changes apply the next time Windows starts." }
           Flow {
             width: parent.width
             spacing: Style.space(12)
@@ -206,8 +208,8 @@ Panel {
           }
 
           PanelSeparator { foreground: root.foreground }
-          PanelSectionHeader { text: "SNAPSHOTS"; foreground: root.foreground; fontFamily: root.fontFamily }
-          Note { text: "Both VMs must be stopped. Restoring replaces Windows' current data and requires running Lanai setup again." }
+          PanelSectionHeader { text: "Snapshots"; foreground: root.foreground; fontFamily: root.fontFamily }
+          Note { text: "Shut Windows down in both Lanai and omarchy-windows-vm first. Restoring replaces Windows' current data. Run Lanai setup again afterward." }
           Flow {
             width: parent.width
             spacing: Style.space(6)
@@ -238,9 +240,9 @@ Panel {
             spacing: Style.space(6)
             visible: root.model.status.state === "failed" || root.model.status.state === "version-mismatch"
               || root.model.actionReply.ok === false || root.model.setupReply.ok === false
-            PanelSectionHeader { text: "RECOVERY"; foreground: root.foreground; fontFamily: root.fontFamily }
-            Note { text: "Logs: " + (root.model.status.logs || root.model.actionReply.logs || "journalctl --user -u lanai-vm.service -u lanai-client.service") + "\nPanel operations: " + root.model.stateDir + "/panel-job.log" }
-            Note { text: "If Windows cannot display, shut Lanai down first, then use omarchy-windows-vm (RDP or its web console). Never start both together." }
+            PanelSectionHeader { text: "Help"; foreground: root.foreground; fontFamily: root.fontFamily }
+            Note { text: "Logs: " + (root.model.status.logs || root.model.actionReply.logs || "journalctl --user -u lanai-vm.service -u lanai-client.service") + "\nSetup and snapshot log: " + root.model.stateDir + "/panel-job.log" }
+            Note { text: "If the Windows screen is blank, shut Lanai down first. Then use omarchy-windows-vm to open Windows. Never start both together." }
           }
         }
       }

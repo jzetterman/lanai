@@ -1179,17 +1179,23 @@ reviews look hard at the panel's wording, layout and states.
 - `Widget.qml` follows the shell's BarWidget/BarIconButton contract and forwards
   open/close/opened/popout switching to `LanaiPanel.qml`. An L-in-a-monitor glyph identifies
   Lanai; primary click starts or opens, secondary click opens the panel. All status
-  text, causes, next steps, warnings and logs use plain text. Status `window: true`
-  hides Open and routes the primary click to the panel during a QEMU setup boot.
+  text, causes, next steps, warnings and logs use plain text. The heading and tooltip
+  share readable state labels; section headings and setup guidance use plain language.
+  Status `window: true` hides Open and routes the primary click to the panel during
+  a QEMU setup boot.
 - `LanaiModel.qml` owns status polling (2 s with the panel open or while starting or
   stopping, 15 s otherwise) and literal-argv Processes with a hard 10 s deadline.
   `LanaiPanel.qml` uses KeyboardPanel, Button, NumberField, PanelSectionHeader,
   PanelSeparator and the shell's theme tokens. Tab/Shift+Tab and Enter/Space reach
   its controls; Escape dismisses it. Force stop appears only for status's
   `force_stop: true` while stopping, with a second confirmation and cancel.
+  Shut down stays available while stopping so early-boot requests can be retried;
+  the CLI retains the first request's time.
 - Setup runs only through detached `lanai setup`. Replies are read from
   `$XDG_STATE_HOME/lanai/setup-reply.json` only after the corresponding job finishes,
   and must agree with that job's CLI reply. A stale file cannot authorize a call.
+  On attach, finished jobs are ignored unless they match this panel's pending launch;
+  running jobs remain watched. Failed polls also enforce the 10 s launch deadline.
   Only an `ok: true` wait reply enables automatic progress: step 5 requires an
   inactive setup-needed status; step 6 requires an active VM. Automatic calls are
   at least 10 s apart across monitors (`SetupCalls.js`); failures and explicit display choices require a click.
@@ -1201,8 +1207,10 @@ reviews look hard at the panel's wording, layout and states.
   preserving storage and other keys, under the operation lock with atomic writes.
   `lanai ui-job` serializes detached setup/snapshot/restore across monitors and
   publishes an atomic `panel-job.json`; `lanai ui-job-status` detects an interrupted
-  worker from its lock. These additions make detached completion and settings
-  writes reviewable and testable without shell interpolation in QML. They are the
+  worker from its lock, rereading the marker under that lock so a just-finished job
+  keeps its real reply. Setup flags use jq's `--` separator and reach the CLI literally.
+  These additions make detached completion and settings writes reviewable and
+  testable without shell interpolation in QML. They are the
   only backend scope addition; snapshots and restores still use phase 4's commands.
   Snapshot results retain their location/delete guidance. Restore needs a second
   click; interrupted restore can resume. Restoring requires running setup again.
@@ -1220,7 +1228,9 @@ reviews look hard at the panel's wording, layout and states.
   measurements remain explicit placeholders, not inferred results.
 - Validation: `test/ui.bats` was written before implementation and exercises settings
   bounds, preservation/refusal, literal detached arguments, failures, concurrent
-  jobs, interrupted jobs and the one-JSON CLI contract. Only that touched bats file
+  jobs, interrupted jobs and the one-JSON CLI contract. Regression tests first reproduced
+  flagged setup invocations failing and the completion/lock race; all 12 tests pass
+  with the fixes, covering all four panel invocations. Only that touched bats file
   was run because this sandbox blocks Unix sockets. `/usr/bin/qmllint` passes all
   three new QML files with the shell import path. The complete project shellcheck
   command passes. No VM, shell, real units, plugin installation or review stage ran.

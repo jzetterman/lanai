@@ -9,13 +9,14 @@ Item {
   property bool panelOpen: false
   readonly property string cli: Qt.resolvedUrl("bin/lanai").toString().replace(/^file:\/\//, "")
   readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/lanai"
-  property var status: ({state: "checking", message: "Reading Windows' state…", next: "wait for the status check"})
+  property var status: ({state: "checking", message: "Checking Windows…", next: ""})
   property bool fresh: false
   property var setupReply: ({})
   property var actionReply: ({})
   property var job: ({active: false})
   property string pendingToken: ""
   property string seenToken: ""
+  property bool jobAttached: false
   property string action: ""
   property bool autoPaused: false
   property double lastSetupAt: 0
@@ -30,10 +31,16 @@ Item {
   readonly property bool busy: actionProcess.running || longBusy
   readonly property bool canOpen: fresh && status.active === true && status.window !== true && status.state !== "stopping" && status.state !== "starting"
   readonly property bool canStart: fresh && status.active === false && (status.state === "stopped" || status.state === "failed") && !busy
-  readonly property bool canStop: fresh && status.active === true && status.state !== "stopping" && !actionProcess.running
+  readonly property bool canStop: fresh && status.active === true && !actionProcess.running
   readonly property bool canForce: fresh && status.state === "stopping" && status.force_stop === true && !actionProcess.running
   readonly property int pollInterval: panelOpen || status.state === "starting" || status.state === "stopping" ? 2000 : 15000
-  readonly property string tooltip: "Lanai — " + status.state + "\n" + status.message
+  readonly property string stateLabel: ({
+    "checking": "Checking", "setup-needed": "Setup needed", "not-installed": "Not installed",
+    "in-use": "Running under omarchy-windows-vm", "version-mismatch": "Driver version mismatch",
+    "starting": "Starting", "running": "Running", "stopping": "Shutting down",
+    "stopped": "Stopped", "failed": "Failed"
+  })[status.state] || "Status unavailable"
+  readonly property string tooltip: "Lanai\n" + stateLabel + "\n" + status.message
     + (status.next ? "\nNext: " + status.next : "")
     + (status.logs ? "\nLogs: " + status.logs : "")
     + (status.state === "failed" ? "\nShut Lanai down, then use omarchy-windows-vm." : "")
@@ -45,8 +52,8 @@ Item {
 
   function parse(raw) {
     try { return JSON.parse(raw) } catch (_) {
-      return {ok: false, message: "Lanai gave no valid reply, or the call exceeded 10 seconds.",
-        next: "check the logs, then retry", logs: "journalctl --user -u lanai-vm.service -u lanai-client.service"}
+      return {ok: false, message: "Lanai did not respond, or its reply could not be read.",
+        next: "check the logs, then try again", logs: "journalctl --user -u lanai-vm.service -u lanai-client.service"}
     }
   }
 
@@ -83,13 +90,20 @@ Item {
 
   // Read setup's atomic reply only for the matching completed job, never on load.
   function acceptJob(reply) {
-    if (reply.ok !== true) { actionReply = reply; return }
-    job = reply
-    if (pendingToken && job.token === pendingToken) pendingToken = ""
-    if (pendingToken && Date.now() - pendingAt >= 10000 && job.active !== true) {
+    if (reply.ok === true) {
+      job = reply
+      // Attach to running work, but do not replay a previous session's completion.
+      if (!jobAttached) {
+        jobAttached = true
+        if (job.active !== true && (!pendingToken || job.token !== pendingToken)) seenToken = job.token || ""
+      }
+      if (pendingToken && job.token === pendingToken) pendingToken = ""
+    } else actionReply = reply
+    if (pendingToken && Date.now() - pendingAt >= 10000 && (reply.ok !== true || job.active !== true)) {
       pendingToken = ""
-      actionReply = {ok: false, message: "The detached operation did not start.", next: "retry; see " + stateDir + "/panel-job.log"}
+      actionReply = {ok: false, message: "The operation did not start.", next: "try again; see " + stateDir + "/panel-job.log"}
     }
+    if (reply.ok !== true) return
     if (job.active === true || !job.reply || job.token === seenToken) return
     seenToken = job.token
     autoPaused = (job.args || []).indexOf("--window") >= 0 || (job.args || []).indexOf("--no-window") >= 0
@@ -179,12 +193,12 @@ Item {
       var reply = root.parse(text())
       // A simultaneous outside CLI caller may replace the file. Require agreement.
       if (JSON.stringify(reply) === JSON.stringify(root.completedSetup)) root.setupReply = reply
-      else root.setupReply = {ok: false, message: "Setup's reply changed outside this panel.", next: "click Continue setup to check it again"}
+      else root.setupReply = {ok: false, message: "Setup changed outside this panel.", next: "click Continue setup to check it again"}
       root.completedSetup = null
     }
     onLoadFailed: {
       if (!root.completedSetup) return
-      root.setupReply = {ok: false, message: "Lanai could not read setup-reply.json.", next: "retry setup; see " + root.stateDir + "/panel-job.log"}
+      root.setupReply = {ok: false, message: "Lanai could not read the setup result.", next: "try setup again; see " + root.stateDir + "/panel-job.log"}
       root.completedSetup = null
     }
   }

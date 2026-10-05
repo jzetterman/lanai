@@ -102,6 +102,49 @@ SH
   assert_equal "$(jq -r '.reply.ok' <<<"$output")" false
 }
 
+@test "ui-job: forwards the panel's snapshot and display setup flags" {
+  make_job_cli
+  local flag
+  for flag in --no-snapshot --window --no-window; do
+    run cmd_ui_job token-flags setup "$flag"
+    assert_success
+    run cmd_ui_job_status
+    assert_success
+    assert_equal "$(jq -c '.args' <<<"$output")" "[\"$flag\"]"
+    assert_equal "$(jq -r '.reply.ok' <<<"$output")" true
+    run cat "$XDG_STATE_HOME/args"
+    assert_output "$(printf 'setup\n%s' "$flag")"
+  done
+}
+
+@test "ui-job: forwards both final setup answers from the panel" {
+  make_job_cli
+  run cmd_ui_job token-answers setup --share-ok yes --scale-ok yes
+  assert_success
+  run cmd_ui_job_status
+  assert_success
+  assert_equal "$(jq -c '.args' <<<"$output")" '["--share-ok","yes","--scale-ok","yes"]'
+  assert_equal "$(jq -r '.reply.ok' <<<"$output")" true
+  run cat "$XDG_STATE_HOME/args"
+  assert_output $'setup\n--share-ok\nyes\n--scale-ok\nyes'
+}
+
+@test "ui-job-status: preserves completion published between the read and lock" {
+  mkdir -p "$(state_dir)"
+  panel_job_write '{"token":"racing","command":"setup","active":true}'
+  # Finish at the lock attempt, after the poll has read the active marker.
+  flock() {
+    panel_job_write '{"token":"racing","command":"setup","active":false,"reply":{"ok":true,"message":"done"}}'
+    command flock "$@"
+  }
+  run cmd_ui_job_status
+  assert_success
+  assert_equal "$(jq -r '.active' <<<"$output")" false
+  assert_equal "$(jq -r '.token' <<<"$output")" racing
+  assert_equal "$(jq -r '.reply.ok' <<<"$output")" true
+  assert_equal "$(jq -r '.reply.message' <<<"$output")" 'done'
+}
+
 @test "ui-job: refuses concurrent jobs and recovers an interrupted job" {
   make_job_cli
   mkdir -p "$(state_dir)"
