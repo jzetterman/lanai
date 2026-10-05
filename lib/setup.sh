@@ -525,7 +525,9 @@ setup_resume() {
     [[ -z $(setup_get snapshot) ]]; then
     want=taken
     [[ $nosnap != true || -n $(snapshot_list "$dir") ]] || want=declined
-    setup_set snapshot "\"$want\"" || { setup_reply false 3 "Lanai cannot record its setup state." "run setup again" '{"reason":"record"}'; return 1; }
+    # Existing snapshots advance the read-only plan even if this write fails.
+    # Keep the failure stepless so the panel retains it until the next action.
+    setup_set snapshot "\"$want\"" || { emit false "" "Lanai cannot record its setup state." "run setup again" '{"reason":"record"}'; return 1; }
   fi
   case $action in
     done) setup_reply true 7 "Lanai setup is finished." "start Windows" ;;

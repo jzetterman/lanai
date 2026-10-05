@@ -804,7 +804,7 @@ exec /usr/bin/mv "$@"'
     setup_run --no-snapshot
     assert_failure
     assert_equal "$(field ok)" false
-    assert_equal "$(field step)" 3
+    assert_equal "$(jq 'has("step")' <<<"$JSON")" false
     assert_equal "$(field message)" "Lanai cannot record its setup state."
     assert_equal "$(field reason)" record
     assert_equal "$(field next)" "run setup again"

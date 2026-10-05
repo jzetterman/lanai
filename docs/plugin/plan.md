@@ -1388,8 +1388,12 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   its sole permitted write. Status and reply tables supply plain text rather than
   CLI messages. Structured `reason` codes distinguish step 1 problems,
   back-to-step-5 failures, failed snapshot-choice writes and unsupported snapshots.
-  A failed step 3 write carries `reason: record` and tells the user to check home
-  folder space before continuing; it is distinct from the silent snapshot offer.
+  A failed snapshot-choice write carries `reason: record` with no `step`, so an
+  existing snapshot advancing the plan to step 4 or 5 cannot hide the failure.
+  It persists until the next setup action and tells the user to check home folder
+  space, then click Continue without a snapshot or take a snapshot again when the
+  plan is at step 3, or click Continue setup otherwise. The snapshot offer stays
+  silent.
   Snapshot success keeps its location, growth and file-manager deletion guidance.
   Snapshot outcomes also show below the step 3 snapshot controls. The Setup
   header shows whenever Continue setup shows. Missing-install guidance appears

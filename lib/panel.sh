@@ -1,10 +1,11 @@
 # The panel's read-only view and copy table. No setup reply file is consulted.
 # shellcheck shell=bash
 
-# Reply words depend only on command, ok, step and structured details/reasons.
+# Reply words depend on command, ok, step and structured details/reasons.
+# The optional current plan step selects visible snapshot-choice retry controls.
 # Offers and waits belong to the durable view and therefore have no result text.
 panel_words() {
-  jq -r --arg c "$1" '
+  jq -r --arg c "$1" --arg step "${3:-}" '
     def log: {setup:"setup log",snapshot:"snapshot log",restore:"restore log"}[$c] // "button actions log";
     def reasons: {
       busy:"Lanai is busy with another task. Try again in a moment.",
@@ -31,8 +32,11 @@ panel_words() {
       "invalid-reply":"Lanai did not give a readable reply. Check the " + log + " and try again."
     };
     if .ok == false then
-      if $c == "setup" and .step == "3" and .reason == "record" then
-        "Lanai could not save the snapshot choice. Check that your home folder has free space, then click Continue setup."
+      if $c == "setup" and (.step == null or .step == "3") and .reason == "record" then
+        "Lanai could not save the snapshot choice. Check that your home folder has free space, then click " +
+        (if $step == "3" or ($step == "" and .step == "3") then
+          "Continue without a snapshot or take a snapshot again."
+        else "Continue setup." end)
       elif .reason and (reasons[.reason] != null) then reasons[.reason]
       elif $c == "setup" and .step == "2" and .missing then ""
       elif $c == "setup" and .step == "3" and .reason == null then ""
@@ -99,7 +103,7 @@ cmd_panel() {
       if [[ $(jq -r '.command' <<<"$doc") != start ]] ||
         [[ $(jq -r '.reply.ok' <<<"$doc") == false ]] ||
         { [[ $(jq -r '.active' <<<"$status") == true && $(jq -r '.invocation' <<<"$doc") == "$inv" ]]; }; then
-        words=$(panel_words "$(jq -r '.command' <<<"$doc")" "$(jq -c .reply <<<"$doc")")
+        words=$(panel_words "$(jq -r '.command' <<<"$doc")" "$(jq -c .reply <<<"$doc")" "$(jq -r .step <<<"$plan")")
       fi
     fi
     if [[ $group == setup ]] && jq -e --argjson p "$plan" '

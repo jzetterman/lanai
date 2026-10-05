@@ -113,16 +113,55 @@ assert_plan_agreement() {
 }
 
 @test "panel words: failed snapshot decision is actionable while the offer stays silent" {
-  run panel_words setup '{"ok":false,"step":"3","reason":"record","message":"UNTRUSTED"}'
+  run panel_words setup '{"ok":false,"reason":"record","message":"UNTRUSTED"}' 3
   assert_success
+  assert_output 'Lanai could not save the snapshot choice. Check that your home folder has free space, then click Continue without a snapshot or take a snapshot again.'
+  run panel_words setup '{"ok":false,"reason":"record","message":"UNTRUSTED"}' 5
   assert_output 'Lanai could not save the snapshot choice. Check that your home folder has free space, then click Continue setup.'
   state '{}'
-  panel_result_write setup '{"command":"setup","ended":1,"reply":{"ok":false,"step":"3","reason":"record"}}'
+  setup_set() { return 1; }
+  run setup_resume auto true '' ''
+  assert_failure
+  assert_equal "$(jq 'has("step")' <<<"$output")" false
+  assert_equal "$(jq -r .reason <<<"$output")" record
+  panel_result_write setup "$(jq -nc --argjson r "$output" '{command:"setup",ended:1,reply:$r}')"
   run cmd_panel
   assert_success
-  assert_equal "$(jq -r .result.setup <<<"$output")" 'Lanai could not save the snapshot choice. Check that your home folder has free space, then click Continue setup.'
+  assert_equal "$(jq -r .setup.step <<<"$output")" 3
+  assert_equal "$(jq -r .buttons.continue_setup.show <<<"$output")" false
+  assert_equal "$(jq -r .buttons.skip_snapshot.show <<<"$output")" true
+  assert_equal "$(jq -r .buttons.setup_snapshot.show <<<"$output")" true
+  assert_equal "$(jq -r .result.setup <<<"$output")" 'Lanai could not save the snapshot choice. Check that your home folder has free space, then click Continue without a snapshot or take a snapshot again.'
   run panel_words setup '{"ok":false,"step":"3"}'
   assert_output ''
+}
+
+@test "panel: failed existing snapshot decision stays visible at steps 4 and 5 until the next setup action" {
+  state '{}'
+  snapshot_list() { echo "$T/snapshot"; }
+  setup_set() { return 1; }
+  local step attempt
+  for step in 4 5; do
+    build_stamp_current() { [[ $step == 5 ]]; }
+    for attempt in 1 2; do
+      run setup_resume auto false '' ''
+      assert_failure
+      assert_equal "$(jq 'has("step")' <<<"$output")" false
+      assert_equal "$(jq -r .reason <<<"$output")" record
+      assert_equal "$(jq -r '.snapshot // "unset"' "$S/setup.json")" unset
+      panel_result_write setup "$(jq -nc --argjson r "$output" --argjson a "$attempt" '{command:"setup",ended:$a,reply:$r}')"
+      run cmd_panel
+      assert_success
+      assert_equal "$(jq -r .setup.step <<<"$output")" "$step"
+      assert_equal "$(jq -r .buttons.continue_setup.show <<<"$output")" true
+      assert_equal "$(jq -r .result.setup <<<"$output")" 'Lanai could not save the snapshot choice. Check that your home folder has free space, then click Continue setup.'
+    done
+  done
+  run cmd_panel
+  assert_output --partial 'Lanai could not save the snapshot choice.'
+  panel_result_write setup '{"command":"setup","ended":3,"reply":{"ok":true,"step":"5"}}'
+  run cmd_panel
+  assert_equal "$(jq -r .result.setup <<<"$output")" ''
 }
 
 @test "setup plan: steps and acting resume agree before and after marker consumption" {
