@@ -178,9 +178,20 @@ from those checks.
 
 ## Removal
 
-1. First, **inside Windows**, under Lanai or over RDP under `omarchy-windows-vm`, open
-   an administrator Command Prompt as **the same Windows user who ran setup**
-   (`HKCU` is account-specific). Restore Windows' default lock settings:
+1. First, shut Lanai's VM down. This Linux command works even without the plugin:
+
+   ```sh
+   systemctl --user stop lanai-vm.service
+   ```
+
+   It waits for shutdown and can force-stop at the timeout. Let any detached setup,
+   snapshot or restore operation finish before removing its code. Once Lanai's VM
+   is stopped, start Windows with `omarchy-windows-vm` and connect over RDP.
+   **Do every Windows removal step below in that RDP session**: uninstalling the
+   IDD or SPICE vdagent can remove Lanai's display or input, and a normal Lanai boot
+   has no QEMU display. Open an administrator Command Prompt as **the same Windows
+   user who ran setup** (`HKCU` is account-specific). Restore Windows' default lock
+   settings:
 
    ```bat
    reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System /v DisableLockWorkstation /f
@@ -224,15 +235,7 @@ from those checks.
 
 4. Shut Windows down from its **Start menu**. Restored locking can drop Lanai's
    shutdown request. The container does not restart automatically
-   (`omarchy-windows-vm` uses `restart: "no"`). If Lanai's VM still runs, this Linux
-   command works even without the plugin:
-
-   ```sh
-   systemctl --user stop lanai-vm.service
-   ```
-
-   It waits for shutdown and can force-stop at the timeout. Let any detached setup,
-   snapshot or restore operation finish before removing its code.
+   (`omarchy-windows-vm` uses `restart: "no"`).
 
 5. Remove the plugin on Linux:
 

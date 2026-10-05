@@ -101,6 +101,7 @@ Item {
     } else actionReply = reply
     if (pendingToken && Date.now() - pendingAt >= 10000 && (reply.ok !== true || job.active !== true)) {
       pendingToken = ""
+      autoPaused = true
       actionReply = {ok: false, message: "The operation did not start.", next: "try again; see " + stateDir + "/panel-job.log"}
     }
     if (reply.ok !== true) return

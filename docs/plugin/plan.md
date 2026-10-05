@@ -1137,8 +1137,12 @@ reviews look hard at the panel's wording, layout and states.
 - README rules from phase 6: no step asks the user to press Super shortcuts or
   Ctrl+Alt+Del (the host keys bullet), and it says that a restore means running setup
   again.
-- README: install; removal (first, inside Windows, under Lanai or over RDP under
-  `omarchy-windows-vm`, in an administrator Command Prompt as the same Windows user
+- README: install; removal (first shut Lanai's VM down with
+  `systemctl --user stop lanai-vm.service`, then start Windows with
+  `omarchy-windows-vm` and connect over RDP; every Windows removal step runs in that
+  RDP session, since removing the IDD or SPICE vdagent can remove Lanai's display or
+  input and a normal Lanai boot has no QEMU display. In an administrator Command
+  Prompt as the same Windows user
   (some settings are in `HKCU`): restore Windows' default lock settings with `reg delete
   HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System /v
   DisableLockWorkstation /f`, `reg delete
@@ -1152,9 +1156,8 @@ reviews look hard at the panel's wording, layout and states.
   (`virtiofs.exe` and `lanai-scale.ps1`); remove HostFission's certificate from
   Trusted Publishers (`certlm.msc`, Trusted Publishers). Then shut Windows down
   from its Start menu, since a restored lock can drop the stop request (the container
-  does not restart by itself: `omarchy-windows-vm` sets `restart: "no"`). Then, if
-  Lanai's VM still runs, `systemctl --user stop lanai-vm.service`, which works without
-  the plugin); verified Omarchy and dockur versions; the remaining risks from req 5a
+  does not restart by itself: `omarchy-windows-vm` sets `restart: "no"`)); verified
+  Omarchy and dockur versions; the remaining risks from req 5a
   (including the disk-size check skipped when the compose is unreadable); the clipboard
   exposure (req 29); the publisher trust exposure: setup adds HostFission's signing
   certificate to the machine's Trusted Publishers, so Windows then accepts any
@@ -1195,7 +1198,9 @@ reviews look hard at the panel's wording, layout and states.
   `$XDG_STATE_HOME/lanai/setup-reply.json` only after the corresponding job finishes,
   and must agree with that job's CLI reply. A stale file cannot authorize a call.
   On attach, finished jobs are ignored unless they match this panel's pending launch;
-  running jobs remain watched. Failed polls also enforce the 10 s launch deadline.
+  running jobs remain watched. Failed polls also enforce the 10 s launch deadline;
+  a launch timeout pauses automatic progress until a click, even with a previous
+  successful wait reply.
   Only an `ok: true` wait reply enables automatic progress: step 5 requires an
   inactive setup-needed status; step 6 requires an active VM. Automatic calls are
   at least 10 s apart across monitors (`SetupCalls.js`); failures and explicit display choices require a click.
@@ -1214,8 +1219,9 @@ reviews look hard at the panel's wording, layout and states.
   only backend scope addition; snapshots and restores still use phase 4's commands.
   Snapshot results retain their location/delete guidance. Restore needs a second
   click; interrupted restore can resume. Restoring requires running setup again.
-- README documents installation, dependencies, Windows-first removal and literal
-  registry restoration commands, guest components/service/task removal or reasons
+- README documents installation, dependencies, RDP-only Windows removal after
+  shutting Lanai's VM down, and literal registry restoration commands,
+  guest components/service/task removal or reasons
   to keep them, publisher/lock/clipboard exposures, DNS, coexistence, remaining
   dockur risks, host key handling, read-only media and pending measurements.
 - Departures/deferred checks: at John's explicit instruction the two hands-on checks
@@ -1234,6 +1240,11 @@ reviews look hard at the panel's wording, layout and states.
   was run because this sandbox blocks Unix sockets. `/usr/bin/qmllint` passes all
   three new QML files with the shell import path. The complete project shellcheck
   command passes. No VM, shell, real units, plugin installation or review stage ran.
+  Follow-up validation reproduced the launch-timeout retry before the fix with a
+  model-function harness; all five cases pass after it, covering failed, empty and
+  stale marker polls, click-to-retry, failed setup completion and successful wait
+  continuation. All 12 `test/ui.bats` tests, the three-file `/usr/bin/qmllint` check
+  and the complete project shellcheck command pass again.
 
 ## Phase 8: Acceptance
 
