@@ -1197,9 +1197,10 @@ reviews look hard at the panel's wording, layout and states.
   settings readiness and their own reply; user
   actions and job results own `actionReply`, so reopening preserves snapshot and
   restore results, guidance and failures. Settings saves remain user actions.
-  Opening the panel resets unsaved field edits to the model's settings. A refresh
-  requested during a status read discards that older result and reads again, so
-  start, stop and notice dismissal keep their merged state until the fresh result.
+  Opening the panel resets unsaved field edits to the model's settings. Routine
+  polls and panel opening skip an in-flight status read. Only a refresh after an
+  action or finished job discards that older result and reads again, so start,
+  stop and notice dismissal keep their merged state until the fresh result.
   `LanaiPanel.qml` uses KeyboardPanel, Button, NumberField, PanelSectionHeader,
   PanelSeparator and the shell's theme tokens. Tab/Shift+Tab and Enter/Space reach
   its controls; Escape dismisses it. Force stop appears only for status's
@@ -1228,7 +1229,9 @@ reviews look hard at the panel's wording, layout and states.
   failures have their own reply rather than replacing action results.
   Status gates Open, display choices and the two final questions. The UI shows the
   seven steps while setup is underway, then "Setup is finished" and Run setup again.
-  A successful step 7 reply shows completion immediately. After a shell restart,
+  A successful step 7 reply shows completion immediately. A successful status
+  read begun after that reply clears the cached completion if `setup_done` is
+  false; an older read or failed read cannot clear it. After a shell restart,
   completion requires status's `setup_done: true`; an empty reply asks the user to
   click Continue setup to see where setup stands.
   A missing install asks for installation first. During setup boots the top guidance
@@ -1271,7 +1274,10 @@ reviews look hard at the panel's wording, layout and states.
   testable without shell interpolation in QML. They are the
   backend scope additions; snapshots and restores still use phase 4's commands.
   Snapshot results outside setup retain their location/delete guidance. Restore needs a second
-  click; interrupted restore can resume. Restoring requires running setup again.
+  click; interrupted restore can resume. Failed restores point to Finish the
+  unfinished restore only when status reports `restore_pending: true`, including
+  interrupted jobs. A refusal with no pending restore keeps its cause and message
+  without recovery button guidance. Restoring requires running setup again.
 - README documents installation, dependencies, RDP-only Windows removal after
   shutting Lanai's VM down, and literal registry restoration commands,
   guest components/service/task removal or reasons
@@ -1300,6 +1306,14 @@ reviews look hard at the panel's wording, layout and states.
   A temporary source-based harness passes 12 checks for status refresh races,
   setup completion, restore blocking and snapshot copy. A standalone Qt 6 test
   verifies that reopening resets both settings fields and restores their bindings.
+  Follow-up fixes pass 17 checks in a temporary Qt 6 harness loading the real
+  model with inert Process/FileView stubs and the panel's completion binding and
+  guidance functions: slow polls accept replies, actions discard older reads,
+  later status clears cached step 7 completion, and restore failure guidance
+  follows `restore_pending`. `test/ui.bats` passes with its Node check skipped
+  because Node is unavailable; all 12 socket-free `status_map` tests pass.
+  QML lint with the shell import path and the complete shellcheck command pass.
+  The follow-up harness and all scratch were removed from `.btrfs-test/`.
   Both harnesses were removed after validation.
   A further temporary harness passes 11 behavioral checks for glyph feedback,
   persistent launch timeouts, paused and active setup copy, automatic waits,

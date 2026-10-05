@@ -87,9 +87,11 @@ Panel {
 
   function panelNext(reply, command) {
     var next = reply.next || ""
+    if (command === "restore" && reply.ok === false)
+      return model.status.restore_pending === true ? "Click Finish the unfinished restore." : ""
     if (command === "setup" && reply.step === "4") return "Click Continue setup to build it again."
     if (reply.message === "The operation was interrupted.") return "Click Continue setup to resume."
-    if (/lanai restore/.test(next) || (command === "restore" && reply.ok === false)) return "Click Finish the unfinished restore."
+    if (/lanai restore/.test(next)) return "Click Finish the unfinished restore."
     if (/lanai snapshots/.test(next)) return "Choose a snapshot from the list below."
     if (/run (Lanai )?setup/.test(next)) return "Click Continue setup to try again."
     if (command === "setup" && /setup|journalctl/.test(next)) return "Click Continue setup to try again."

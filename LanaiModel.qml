@@ -12,6 +12,7 @@ Item {
   property var status: ({state: "checking", message: "Checking Windows…", next: ""})
   property bool fresh: false
   property bool refreshAgain: false
+  property bool statusAfterSetupCompletion: false
   property var setupReply: ({})
   property var actionReply: ({})
   property var snapshotReply: ({})
@@ -70,8 +71,14 @@ Item {
     }
   }
 
-  function refresh() {
-    if (statusProcess.running) { refreshAgain = true; return }
+  onSetupReplyChanged: statusAfterSetupCompletion = false
+
+  function refresh(afterAction) {
+    if (statusProcess.running) {
+      if (afterAction === true) refreshAgain = true
+      return
+    }
+    statusAfterSetupCompletion = setupReply.ok === true && setupReply.step === "7"
     statusProcess.command = command(["status"])
     statusProcess.running = true
   }
@@ -151,7 +158,7 @@ Item {
       if (job.command === "restore" && job.reply.ok === true) setupReply = {}
       if (job.command === "snapshot" || job.command === "restore") loadSnapshots()
     }
-    refresh()
+    refresh(true)
   }
 
   // Only successful wait replies authorize another setup call, at most every 10 s.
@@ -212,6 +219,8 @@ Item {
       root.fresh = code === 0 && reply.ok === true
       if (!root.fresh) reply.state = "failed"
       root.status = reply
+      // Only a read begun after the latest completion can supersede it.
+      if (root.fresh && root.statusAfterSetupCompletion && reply.setup_done === false) root.setupReply = {}
     }
   }
 
@@ -235,7 +244,7 @@ Item {
         root.status = Object.assign({}, root.status, reply, {active: true})
       if (reply.ok === true && root.action === "notice-seen")
         root.status = Object.assign({}, root.status, {notice: null})
-      if (root.action !== "settings" && root.action !== "snapshots") root.refresh()
+      if (root.action !== "settings" && root.action !== "snapshots") root.refresh(true)
     }
   }
 
