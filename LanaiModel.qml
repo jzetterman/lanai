@@ -63,6 +63,12 @@ Item {
     statusProcess.running = true
   }
 
+  function loadSettings() {
+    if (settingsProcess.running) return
+    settingsProcess.command = command(["settings"])
+    settingsProcess.running = true
+  }
+
   function run(args) {
     if (actionProcess.running) return
     action = args[0]
@@ -146,7 +152,21 @@ Item {
     onTriggered: { root.pollJob(); root.advanceSetup() }
   }
 
-  onPanelOpenChanged: if (panelOpen) { refresh(); run(["settings"]) }
+  onPanelOpenChanged: if (panelOpen) { refresh(); loadSettings() }
+
+  // Reads must neither wait for user actions nor replace their results.
+  Process {
+    id: settingsProcess
+    stdout: StdioCollector { id: settingsOutput; waitForEnd: true }
+    onExited: function(code) {
+      var reply = root.parse(settingsOutput.text)
+      if (code === 0 && reply.ok === true) {
+        root.memory = reply.memory_gib
+        root.cores = reply.cores
+        root.settingsLoaded = true
+      }
+    }
+  }
 
   Process {
     id: statusProcess

@@ -1188,6 +1188,10 @@ reviews look hard at the panel's wording, layout and states.
   a QEMU setup boot.
 - `LanaiModel.qml` owns status polling (2 s with the panel open or while starting or
   stopping, 15 s otherwise) and literal-argv Processes with a hard 10 s deadline.
+  Opening the panel reads settings through a separate Process, including while a
+  user action is running. Reads update only sizing and settings readiness; user
+  actions and job results own `actionReply`, so reopening preserves snapshot and
+  restore results, guidance and failures. Settings saves remain user actions.
   `LanaiPanel.qml` uses KeyboardPanel, Button, NumberField, PanelSectionHeader,
   PanelSeparator and the shell's theme tokens. Tab/Shift+Tab and Enter/Space reach
   its controls; Escape dismisses it. Force stop appears only for status's
@@ -1245,6 +1249,12 @@ reviews look hard at the panel's wording, layout and states.
   stale marker polls, click-to-retry, failed setup completion and successful wait
   continuation. All 12 `test/ui.bats` tests, the three-file `/usr/bin/qmllint` check
   and the complete project shellcheck command pass again.
+  A temporary QtTest harness against the real model with fake process objects
+  reproduced settings reads replacing job results and being dropped during an
+  action. After separating reads, all nine cases pass: snapshot/restore success
+  and failure retention, reads during actions, failed/malformed reads and settings
+  saves. The harness was removed; all 12 UI tests, three-file qmllint and the complete
+  shellcheck command pass again.
 
 ## Phase 8: Acceptance
 
