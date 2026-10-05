@@ -1,0 +1,36 @@
+<!doctype html>
+<!--
+  Frame-index animation for the lgtest spike (docs/spike/plan.md).
+  Fills the viewport with one solid color per rendered frame, stepping through
+  the 8 RGB-cube corners in a fixed order, one step per requestAnimationFrame
+  callback. ?fps=30 steps on every second callback. `lgtest frames` reads the
+  color back from a recording as an index (R = bit 0, G = bit 1, B = bit 2).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>frame-index</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; cursor: none; overflow: hidden; }
+</style>
+</head>
+<body>
+<script>
+  // black, red, green, yellow, blue, magenta, cyan, white
+  const palette = ["#000000", "#ff0000", "#00ff00", "#ffff00",
+                   "#0000ff", "#ff00ff", "#00ffff", "#ffffff"];
+  const every = new URLSearchParams(location.search).get("fps") === "30" ? 2 : 1;
+  let callbacks = 0;
+  let step = 0;
+  function tick() {
+    if (callbacks % every === 0) {
+      document.body.style.background = palette[step % 8];
+      step++;
+    }
+    callbacks++;
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+</script>
+</body>
+</html>

@@ -18,7 +18,7 @@ a GPU.
 ## Plan
 
 1. **Spike:** measure Looking Glass software mode against RDP on the same Windows VM.
-   See [docs/spike-software-mode.md](docs/spike-software-mode.md).
+   See the [spec](docs/spike/spec.md) and [plan](docs/spike/plan.md).
 2. If software mode clearly wins, spec an Omarchy plugin for
    [plugins.omarchy.org](https://plugins.omarchy.org).
 
