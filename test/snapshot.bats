@@ -1079,7 +1079,7 @@ set -euo pipefail
 if timeout 2 qemu-system-x86_64 -S -nodefaults -display none -machine q35,accel=tcg \
   -drive "file=$2,format=raw,if=none,id=d" -device virtio-scsi-pci -device scsi-hd,drive=d \
   </dev/null 3>&- 2>"$T/deleted-lock"; then exit 1; fi
-rg -q 'Failed to get.*lock' "$T/deleted-lock"
+grep -q 'Failed to get.*lock' "$T/deleted-lock"
 : >"$T/deleted-probed"
 SH
   chmod +x "$T/deleted-hook"
