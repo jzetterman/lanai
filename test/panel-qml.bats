@@ -6,8 +6,8 @@ setup() { isolate_home; T=$BATS_TEST_TMPDIR; }
 @test "QML renderer: poll cadence, refresh races, literal actions and armed confirmations" {
   [[ -x /usr/lib/qt6/bin/qmltestrunner ]] || skip "qmltestrunner is unavailable"
   mkdir -p "$T/qml/imports/TestIo" "$T/qml/imports/TestShell" "$T/qml/imports/TestUi" "$T/qml/imports/TestCommons"
-  cp "$REPO/LanaiModel.qml" "$REPO/LanaiPanel.qml" "$T/qml/"
-  sed -i 's/import Quickshell.Io/import TestIo/; s/import Quickshell$/import TestShell/; s/import qs.Commons/import TestCommons/; s/import qs.Ui/import TestUi/' "$T/qml/LanaiModel.qml" "$T/qml/LanaiPanel.qml"
+  cp "$REPO/LanaiModel.qml" "$REPO/LanaiPanel.qml" "$REPO/Widget.qml" "$T/qml/"
+  sed -i 's/import Quickshell.Io/import TestIo/; s/import Quickshell$/import TestShell/; s/import qs.Commons/import TestCommons/; s/import qs.Ui/import TestUi/' "$T/qml/LanaiModel.qml" "$T/qml/LanaiPanel.qml" "$T/qml/Widget.qml"
   cat >"$T/qml/imports/TestShell/qmldir" <<'QML'
 module TestShell
 singleton Quickshell 1.0 Quickshell.qml
@@ -48,6 +48,7 @@ pragma Singleton
 import QtQuick
 QtObject {
   property var selectedAccentFill
+  property var bar: ({iconFont:16,statusSlot:24})
   property var font: ({family:"sans",bodySmall:12})
   function space(n) { return n }
 }
@@ -56,6 +57,8 @@ QML
   echo 'pragma Singleton; import QtQuick; QtObject { function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) } }' >"$T/qml/imports/TestCommons/Util.qml"
   cat >"$T/qml/imports/TestUi/qmldir" <<'QML'
 module TestUi
+BarWidget 1.0 BarWidget.qml
+BarIconButton 1.0 BarIconButton.qml
 Panel 1.0 Panel.qml
 KeyboardPanel 1.0 KeyboardPanel.qml
 Button 1.0 Button.qml
@@ -63,11 +66,40 @@ NumberField 1.0 NumberField.qml
 PanelSectionHeader 1.0 PanelSectionHeader.qml
 PanelSeparator 1.0 PanelSeparator.qml
 QML
+  cat >"$T/qml/imports/TestUi/BarWidget.qml" <<'QML'
+import QtQuick
+Item {
+  property string moduleName
+  property var bar: null
+  property var settings: ({})
+}
+QML
+  cat >"$T/qml/imports/TestUi/BarIconButton.qml" <<'QML'
+import QtQuick
+Item {
+  property var bar
+  property string text
+  property Component iconComponent
+  property real slotSize
+  property string tooltipText
+  property bool active
+  property color activeColor: 'white'
+  property color foreground: 'white'
+  property string fontFamily: 'sans'
+  signal pressed(int button)
+  implicitWidth: 24
+  implicitHeight: 24
+}
+QML
   cat >"$T/qml/imports/TestUi/Panel.qml" <<'QML'
 import QtQuick
 Item {
   property string moduleName
   property bool manageIpc
+  property var settings
+  property bool popoutSwitchClosing: false
+  function toggle() { opened = !opened }
+  function closeForPopoutSwitch() { close() }
   property var bar: null
   property bool opened: false
   function open() { opened = true }
@@ -142,6 +174,7 @@ TestCase {
   height: 800
   Component { id: modelComponent; LanaiModel {} }
   Component { id: panelComponent; LanaiPanel {} }
+  Component { id: widgetComponent; Widget {} }
   function objects(item, predicate) {
     var found = []
     if (predicate(item)) found.push(item)
@@ -153,6 +186,85 @@ TestCase {
   function ready(model) {
     var poll = process(model, "timeout")
     if (poll && poll.running) poll.complete(JSON.stringify({ok:true,buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}), 0)
+  }
+  function widgetParts() {
+    var widget = createTemporaryObject(widgetComponent, tests)
+    verify(widget !== null)
+    wait(1)
+    var model = objects(widget, function(o) { return o.cli !== undefined })[0]
+    var button = objects(widget, function(o) { return o.tooltipText !== undefined })[0]
+    ready(model)
+    return {widget:widget, model:model, button:button}
+  }
+  function test_widget_panel_toggles_from_left_and_all_keyboard_keys_in_every_state() {
+    var p = widgetParts()
+    var states = ['not-installed','setup-needed','stopped','starting','running','stopping','in-use','version-mismatch','failed']
+    var keys = [Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Menu]
+    for (var i = 0; i < states.length; i++) {
+      p.model.view = {state:states[i],right_click:'start',buttons:{start:{enable:true},open:{enable:true}},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
+      p.widget.close()
+      p.button.pressed(Qt.LeftButton)
+      compare(p.widget.opened, true)
+      p.button.pressed(Qt.LeftButton)
+      compare(p.widget.opened, false)
+      for (var k = 0; k < keys.length; k++) {
+        p.button.forceActiveFocus()
+        keyClick(keys[k])
+        compare(p.widget.opened, true)
+        keyClick(keys[k])
+        compare(p.widget.opened, false)
+      }
+      verify(!process(p.model, p.model.cli))
+    }
+    p.widget.destroy(); wait(1)
+  }
+  function test_widget_right_click_uses_backend_action_and_literal_ui_run_argv() {
+    var p = widgetParts()
+    for (var i = 0; i < 2; i++) {
+      var actionName = i === 0 ? 'start' : 'open'
+      // Deliberately contradictory status/controls catch frontend decisions.
+      p.model.view = {state:'failed',right_click:actionName,buttons:{start:{enable:false},open:{enable:false}},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
+      p.button.pressed(Qt.RightButton)
+      compare(p.widget.opened, false)
+      var action = process(p.model, p.model.cli)
+      verify(action.running)
+      compare(action.command.length, 4)
+      compare(action.command[0], p.model.cli)
+      compare(action.command[1], 'ui-run')
+      verify(/^panel-[0-9]+-[0-9]+$/.test(action.command[2]))
+      compare(action.command[3], actionName)
+      action.complete('{"ok":false,"panel_requested":true}', 1)
+      compare(p.widget.opened, true)
+      ready(p.model); p.widget.close()
+    }
+    p.widget.destroy(); wait(1)
+  }
+  function test_widget_unknown_missing_and_panel_actions_open_without_toggling() {
+    var p = widgetParts()
+    var actions = ['panel', 'unknown', 'start; touch sentinel', '', null, undefined]
+    for (var i = 0; i < actions.length; i++) {
+      var v = {state:'stopped',buttons:{start:{enable:true},open:{enable:true}},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
+      if (actions[i] !== undefined) v.right_click = actions[i]
+      p.model.view = v
+      p.widget.close()
+      p.button.pressed(Qt.RightButton)
+      compare(p.widget.opened, true)
+      p.button.pressed(Qt.RightButton)
+      compare(p.widget.opened, true)
+      verify(!process(p.model, p.model.cli))
+    }
+    p.widget.destroy(); wait(1)
+  }
+  function test_widget_tooltip_includes_backend_right_click_words_and_error_fallback() {
+    var p = widgetParts()
+    p.model.view = {label:'Stopped',headline:'Windows is stopped',right_click:'start',right_click_tooltip:'Right click: Start Windows.',buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
+    compare(p.button.tooltipText, 'Lanai\nStopped\nWindows is stopped\nRight click: Start Windows.')
+    p.model.refresh(); var poll = process(p.model, 'timeout')
+    poll.complete('invalid', 1)
+    p.button.pressed(Qt.RightButton)
+    compare(p.widget.opened, true)
+    verify(!process(p.model, p.model.cli))
+    p.widget.destroy(); wait(1)
   }
   function test_cadence_and_refresh() {
     var model = createTemporaryObject(modelComponent, tests)

@@ -1745,6 +1745,19 @@ The orchestrator runs the gate; delegates run no review stage.
   skips). Local strace measurement skips when unavailable;
   John's rehearsal-image timing and container-start check remain manual proofs.
 
+- **Icon clicks (amendment Phase C):** Bash supplies the right-click action and
+  tooltip: Start only for a stopped install with current setup finished and no
+  blocking operation or unfinished restore; Open for a running, finished install
+  with its window closed, including during a blocking operation; otherwise open
+  the panel. Pending update steps keep the panel's Start available while the icon
+  opens the panel. Left click, Return, keypad Enter, Space and Menu toggle the
+  panel; right click dispatches literal `ui-run` argv or opens the panel, with
+  existing command guards retained. Tests first cover the nine states, setup and
+  check boots, CLI and panel operations, recovery, window state, keyboard input,
+  fallback actions and tooltips using inert QML bar/button types. README names
+  both clicks and keyboard keys. No plan deviation; John's rehearsal-copy click,
+  keyboard, shutdown and close/reopen checks remain pending.
+
 - **During setup:** Start and Open hide only before setup has finished for the
   current storage location or while a setup boot or final check boot is active.
   Working installs keep their daily controls beside pending build, driver and

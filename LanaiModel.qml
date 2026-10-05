@@ -13,7 +13,7 @@ Item {
   property bool refreshAgain: false
   signal panelRequested()
   signal settingsSaved(int memoryGib, int cores, var windowsScale)
-  readonly property string tooltip: ["Lanai", view.label, view.headline, view.cause, view.next, view.notice, view.warning].filter(function(s) { return !!s }).join("\n")
+  readonly property string tooltip: ["Lanai", view.label, view.headline, view.cause, view.next, view.notice, view.warning, view.right_click_tooltip].filter(function(s) { return !!s }).join("\n")
 
   function control(name) { return view.buttons[name] || {show: false, enable: false, label: ""} }
   function token() { return "panel-" + Date.now() + "-" + Math.floor(Math.random() * 1000000) }
