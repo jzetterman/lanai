@@ -78,6 +78,7 @@ panel_records() {
 # One view: gather once, status makes its one bounded QMP session, and setup plans
 # from the same host facts. Settings/list errors are data, never swallowed results.
 cmd_panel() {
+  local client_running=false setup_boot=false basic_window=false
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv problem_line results='{}' group doc words
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
@@ -95,6 +96,14 @@ cmd_panel() {
     problem_line=$(panel_words setup "$(jq -c '. + {ok:false}' <<<"$plan")")
   fi
   s=$(state_dir); run=$(run_dir 2>/dev/null) || run=''
+  # Boot flags also cover activation, before status reports a window.
+  if jq -e '.active' <<<"$status" >/dev/null; then
+    jq -e '.setup == true' "$s/boot.json" >/dev/null 2>&1 && setup_boot=true
+    boot_window && basic_window=true
+    if jq -e '.finished == false' <<<"$plan" >/dev/null && ! $basic_window; then
+      client_active && client_running=true
+    fi
+  fi
   inv=$(sed -n 's/^InvocationID=//p' <<<"$facts")
   for group in vm setup settings snapshots; do
     doc=$(jq -c --arg g "$group" '.records[$g] // {}' <<<"$records")
@@ -133,6 +142,7 @@ cmd_panel() {
      (if $client == "" then {} else {client:("Windows window log: " + $client)} end)')
   jq -nc --argjson st "$status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
     --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
+    --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson basicWindow "$basic_window" \
     --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" '
     def button($show;$enable;$label): {show:$show,enable:($show and $enable),label:$label};
     ({"not-installed":["Not installed","Windows is not installed","No supported Windows install was found.","Install Windows with Omarchy, then continue setup."],
@@ -153,13 +163,21 @@ cmd_panel() {
     ($token != "" and ($seen|not) and $now - $at >= 10) as $launchFailed |
     ($st.active|not) as $off | ($st.state != "in-use") as $available |
     ($off and $available and ($st.restore_pending|not)) as $idle |
+    ($p.finished or $off) as $snapshotsShow |
+    (($p.finished|not) and $st.active and $setupBoot) as $confirmStop |
+    (($p.finished|not) and $st.active and ($basicWindow|not) and
+      ($setupBoot or $p.step == "6") and ($client|not) and $st.state != "stopping") as $reopen |
     {ok:true,state:$st.state,active:$st.active,label:$w[0],headline:$w[1],cause:$w[2],next:$w[3],
      pending_ack:(if $seen then $token else "" end),
-     notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:$snaps,
+     notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
      busy:{active:$busy,line:(if $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
-       elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes."}[$job.command] // "Starting the operation.") else "" end)},
+       elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes."}[$job.command // ""] // "Starting the operation.") else "" end)},
      result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot and restore log, then try again." else "" end)}),
-     setup:{show:($p.finished|not),finished:$p.finished,step:$p.step,questions:$p.questions,
+     setup:{show:($p.finished|not),finished:$p.finished,
+       attention:(($p.finished|not) and ($p.reason != "" or $r.setup != "" or $launchFailed or
+         ($p.step == "3" and $rec.records.snapshots.reply.ok == false) or $st.state == "failed" or
+         $reopen or ($st.state != "stopping" and
+           (($setupBoot and $st.state != "starting") or ($p.questions|length)>0 or ($busy|not))))),step:$p.step,questions:$p.questions,
        choices:(if $p.finished then ["--no-window","--window"] else $p.choices end),
        again_line:"Choose how Windows should show during setup.",
        share_question:"Does Explorer show the files from your Linux Windows folder?",scale_question:"Does text in Windows look the right size?",
@@ -179,9 +197,12 @@ cmd_panel() {
            elif $setupJob then "Windows is starting or being checked."
            else "Click Continue setup so Lanai can check Windows." end),
          "7":"Setup is finished."}[$p.step] end])},
-     buttons:{start:button($off;$idle and ($busy|not) and ($st.setup_done == true);"Start Windows"),
-       open:button($st.active and ($st.window|not);$st.state != "stopping";"Open window"),
-       stop:button($st.active;true;"Shut down"),
+     buttons:{start:button($p.finished and $off;$idle and ($busy|not) and ($st.setup_done == true);"Start Windows"),
+       open:button($p.finished and $st.active and ($st.window|not);$st.state != "stopping";"Open window"),
+       stop:button($st.active;true;"Shut down") + {confirm:$confirmStop},
+       stop_confirm:button($confirmStop;true;"Shut down and stop setup") +
+         {hint:"Shutting down now stops setup. You\u0027ll choose how to continue."},
+       reopen_window:button($reopen;true;"Reopen the Windows window"),
        force_stop:button($st.force_stop;$st.force_stop;"Force stop"),
        force_confirm:button($st.force_stop;$st.force_stop;"Force stop and lose unsaved work"),
        cancel:button(true;true;"Cancel"),
@@ -200,19 +221,23 @@ cmd_panel() {
        answer_yes:button(($p.questions|length)>0;($busy|not);"Yes"),
        answer_no:button(($p.questions|length)>0;($busy|not);"No"),
        send_answers:button(($p.questions|length)>0;($busy|not) and $st.active;"Send answers"),
-       finish_restore:button($st.restore_pending;$off and $available and ($busy|not);"Finish the unfinished restore"),
-       take_snapshot:button(true;$idle and ($busy|not);"Take a snapshot"),
-       restore_snapshot:button(($snaps.names|length)>0;$off and $available and ($busy|not);"Restore snapshot") +
+       finish_restore:button($snapshotsShow and $st.restore_pending;$off and $available and ($busy|not);"Finish the unfinished restore"),
+       take_snapshot:button($snapshotsShow;$idle and ($busy|not);"Take a snapshot"),
+       restore_snapshot:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore snapshot") +
          {labels:($snaps.names | map({key:.,value:("Restore snapshot " + .)}) | from_entries)},
-       restore_confirm:button(($snaps.names|length)>0;$off and $available and ($busy|not);"Restore and replace Windows") +
+       restore_confirm:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore and replace Windows") +
          {labels:($snaps.names | map({key:.,value:("Restore " + . + " and replace Windows")}) | from_entries)},
        save_settings:button(true;$settings.error == "";"Save settings")}} |
+    if ($p.finished|not) and ($st.state == "stopped" or $st.state == "running") then
+      .next="Follow the Setup section below." else . end |
     if $st.restore_pending then .cause="A restore did not finish, so Windows cannot start." |
       .next=(if $available then "Click Finish the unfinished restore when Windows is stopped." else "Stop the other VM, then finish the unfinished restore." end) else . end |
     if $st.force_stop then .next="Wait, or use Force stop below if you accept losing unsaved work." else . end |
     .warning = ([
       if $facts | contains("LanaiHelpersMissing=") then "Some background services stopped. Shut Windows down and start it again." else empty end,
-      if $facts | contains("LanaiClient=timeout") then "The Windows window did not open in time. Try Open window again." else empty end,
+      if $facts | contains("LanaiClient=timeout") then "The Windows window did not open in time. " +
+        (if $p.finished then "Try Open window again." elif $reopen then "Try Reopen the Windows window in Setup."
+         else "Check the Windows window log, then shut down and continue setup." end) else empty end,
       if $st.state != "version-mismatch" and ($facts | contains("LanaiDriverOld=")) then "The Windows display driver needs an update. Shut down and continue setup." else empty end
     ] | join(" "))'
   # shellcheck disable=SC2034

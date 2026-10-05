@@ -95,8 +95,15 @@ stops during the final checks, click **Continue setup** to start it again. In Fi
 This PC and check for a drive with the files from Linux's `~/Windows` folder.
 Answer that question and whether text looks the right size. If a setup boot stopped unfinished,
 the panel offers **Set up in a basic window** until the Lanai display driver is installed,
-or **Set up in the Windows window** afterward. Open window is hidden while QEMU's
-setup window is in use. Setup keeps checking while the panel is closed or the shell restarts.
+or **Set up in the Windows window** afterward. During setup, Lanai starts Windows
+and opens its window itself, so **Start Windows** and **Open window** are hidden.
+If the Windows window closes, use **Reopen the Windows window** in the Setup section.
+**Snapshots** is hidden while Windows runs during setup and returns when Windows is
+off. Settings stay available and apply at the next start. The Setup section uses
+your theme's accent color when it needs you to act and clears the highlight while
+Lanai works by itself. During the setup boot, **Shut down** asks for a second click:
+“Shutting down now stops setup. You'll choose how to continue.” Once setup finishes,
+the usual controls return. Setup keeps checking while the panel is closed or the shell restarts.
 Reopening the panel shows the current step and any running operation. The panel says
 setup is finished only when Lanai has recorded its completion for this disk.
 A failed or interrupted operation asks you to continue or retry. Click **Continue setup**

@@ -1402,6 +1402,35 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
 
 ### As built (2026-10-05)
 
+- **During setup:** the view hides Start and Open until `setup_plan` is finished.
+  Setup offers Reopen the Windows window only while a client-mode setup boot or
+  step 6 boot is active, the client is not running, and shutdown is not in progress.
+  Boot flags also cover activation before status reports the display.
+  Reopen uses `ui-run open`. `snapshots.show` and its control descriptors hide
+  the section only during unfinished setup with an active unit; settings stay.
+  Shut down during the setup boot supplies a confirmation control and the warning
+  “Shutting down now stops setup. You'll choose how to continue.” The second click
+  uses `ui-run stop`; Cancel, closing the panel or a view that no longer needs
+  confirmation clears it.
+  `setup.attention` marks user actions, setup failures, interrupted work, a failed
+  launch and a closed client window. It clears during automatic work, startup
+  before the setup drive is available, and shutdown waits. Guidance during setup
+  points to Setup and its Reopen control rather than hidden Start or Open controls.
+  QML wraps Setup in a border using `Color.accent` and a light background
+  using `Util.alpha(Color.accent, 0.10)`, following shell theme changes. Finished
+  setup retains its usual controls and has no attention highlight.
+  A pending launch with no record now supplies progress without indexing a missing
+  command. Nine new Bats cases cover every setup step, worker and idle attention,
+  both boot displays and client states, section visibility, confirmation and finished
+  controls. The inert QML test also covers confirmation, cancellation and resets,
+  daily shutdown, Reopen transport, section visibility and live theme colors.
+  Validation for this addition: `bats test/panel.bats test/panel-jobs.bats
+  test/panel-qml.bats test/ui.bats` passes 94 tests with one comma-locale skip;
+  the renderer runs 14 QML test functions. `test/qml-lint` passes all three QML
+  files, and the complete project ShellCheck command including both fake servers
+  and `test/qml-lint` passes. Tests were written first and failed before the changes.
+  Scratch stayed under `.btrfs-test/` and was removed. No VM, real units, shell,
+  review stage or commit ran.
 - **View and words:** `lanai panel` in `lib/panel.sh` returns one complete view,
   including controls, setup, results, settings, snapshot names and logs. It never
   acts and ignores `setup-reply.json`; status's existing `guest_version_note` is

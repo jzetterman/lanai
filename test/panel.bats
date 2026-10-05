@@ -897,6 +897,7 @@ assert_plan_agreement() {
 }
 
 @test "panel: warnings have no leading space and mismatch already explains the old driver" {
+  state '{"done":true}'
   status_facts() { printf 'ActiveState=active\nLanaiClient=timeout\nLanaiDriverOld=old\nLanaiVersion=mismatch\n'; }
   run cmd_panel
   assert_equal "$(jq -r .warning <<<"$output")" 'The Windows window did not open in time. Try Open window again.'
@@ -1034,4 +1035,222 @@ assert_plan_agreement() {
   assert_equal "$(jq -r .state <<<"$output")" not-installed
   assert_equal "$(jq -c .setup.lines <<<"$output")" '[]'
   assert_equal "$(jq -r .next <<<"$output")" 'Install Windows with Omarchy, then continue setup.'
+}
+
+
+# Durable steps, with a running worker supplied without a service or process.
+setup_worker() {
+  panel_records() { echo '{"held":true,"records":{"setup":{"command":"setup","started":1}}}'; }
+}
+
+@test "panel: unfinished setup hides Start and Open at every step and keeps settings" {
+  local step
+  for step in 1 2 3 3a 4 5 6; do
+    setup_plan() { jq -nc --arg step "$step" '{finished:false,step:$step,action:"problem",reason:"",choices:[],questions:[]}'; }
+    for ST in inactive activating active deactivating reloading failed; do
+      run cmd_panel
+      assert_success
+      assert_equal "$(jq -r '.buttons.start.show or .buttons.open.show' <<<"$output")" false
+      assert_equal "$(jq -r .buttons.save_settings.show <<<"$output")" true
+    done
+  done
+}
+
+@test "panel: each setup step needs attention before its action and not while its worker runs" {
+  local fixture expected
+  for fixture in problem packages snapshot base build setup-boot normal-boot; do
+    ST=inactive
+    state '{"snapshot":"declined"}'
+    echo base >"$STORE/windows.base"
+    share_check() { [[ $fixture != problem ]]; }
+    host_packages_missing() { [[ $fixture != packages ]] || echo package; }
+    build_stamp_current() { [[ $fixture != build ]]; }
+    case $fixture in
+      problem) expected=1 ;;
+      packages) expected=2 ;;
+      snapshot) expected=3; state '{}' ;;
+      base) expected=3a; rm "$STORE/windows.base" ;;
+      build) expected=4 ;;
+      setup-boot) expected=5 ;;
+      normal-boot) expected=6; state '{"snapshot":"declined","step5":true}' ;;
+    esac
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .setup.step <<<"$output")" "$expected"
+    assert_equal "$(jq -r .setup.attention <<<"$output")" true
+    # Problems still need the user even while a worker winds down.
+    if [[ $fixture != problem ]]; then
+      setup_worker
+      run cmd_panel
+      assert_success
+      assert_equal "$(jq -r .setup.attention <<<"$output")" false
+      unset -f panel_records
+      # Restore the real reader after the fixture worker.
+      source "$REPO/lib/panel.sh"
+    fi
+  done
+}
+
+@test "panel: setup boot needs attention, checks wait quietly, questions and recovery need attention" {
+  state '{"snapshot":"declined","step5":false}'
+  ST=active
+  echo '{"setup":true,"window":true}' >"$S/boot.json"
+  setup_worker
+  run cmd_panel
+  assert_equal "$(jq -r .setup.attention <<<"$output")" true
+  state '{"snapshot":"declined","step5":true}'
+  echo '{"setup":false,"window":false}' >"$S/boot.json"
+  client_active() { return 0; }
+  for ST in active activating reloading deactivating; do
+    run cmd_panel
+    assert_equal "$(jq -r .setup.step <<<"$output")" 6
+    assert_equal "$(jq -r .setup.attention <<<"$output")" false
+  done
+  ST=active
+  : >"$RUN/step6-asked"
+  run cmd_panel
+  assert_equal "$(jq -r .setup.attention <<<"$output")" true
+  rm "$RUN/step6-asked"
+  client_active() { return 1; }
+  run cmd_panel
+  assert_equal "$(jq -r .setup.attention <<<"$output")" true
+  assert_equal "$(jq -r .buttons.reopen_window.show <<<"$output")" true
+  client_active() { return 0; }
+  panel_records() { echo '{"held":false,"records":{}}'; }
+  run cmd_panel
+  assert_equal "$(jq -r .setup.attention <<<"$output")" true
+  state '{"snapshot":"declined","step5":false}'
+  ST=inactive
+  run cmd_panel
+  assert_equal "$(jq -r .buttons.window.show <<<"$output")" true
+  assert_equal "$(jq -r .setup.attention <<<"$output")" true
+}
+
+@test "panel: failures, interrupted work and failed launches need attention, pending launches do not" {
+  state '{"snapshot":"declined","step5":true}'
+  ST=active
+  client_active() { return 0; }
+  setup_worker
+  run cmd_panel
+  assert_equal "$(jq -r .setup.attention <<<"$output")" false
+  panel_records() { echo '{"held":true,"records":{"setup":{"command":"setup","started":1,"reply":{"ok":false,"step":"6","reason":"client"}}}}'; }
+  run cmd_panel
+  assert_equal "$(jq -r .setup.attention <<<"$output")" true
+  source "$REPO/lib/panel.sh"
+  panel_result_write setup '{"command":"setup","started":1}'
+  run cmd_panel
+  assert_equal "$(jq -r .setup.attention <<<"$output")" true
+  rm "$S/panel-result-setup.json"
+  run cmd_panel --pending missing "$EPOCHSECONDS"
+  assert_equal "$(jq -r .setup.attention <<<"$output")" false
+  run cmd_panel --pending missing "$((EPOCHSECONDS - 11))"
+  assert_equal "$(jq -r .setup.attention <<<"$output")" true
+}
+
+@test "panel: reopen belongs only to a closed client in either setup boot, never a basic window or shutdown" {
+  local boot client window
+  for boot in setup checks other finished; do
+    case $boot in
+      setup) state '{"snapshot":"declined","step5":false}'; echo '{"setup":true}' >"$S/boot.json" ;;
+      checks) state '{"snapshot":"declined","step5":true}'; echo '{"setup":false}' >"$S/boot.json" ;;
+      other) state '{"snapshot":"declined"}'; echo '{"setup":false}' >"$S/boot.json" ;;
+      finished) state '{"snapshot":"declined","done":true}'; echo '{"setup":false}' >"$S/boot.json" ;;
+    esac
+    for ST in inactive active activating reloading deactivating; do
+      for client in closed running; do
+        client_active() { [[ $client == running ]]; }
+        for window in false true; do
+          jq --argjson w "$window" '.window=$w' "$S/boot.json" >"$S/new"; mv "$S/new" "$S/boot.json"
+          run cmd_panel
+          assert_success
+          local expected=false
+          if [[ ($boot == setup || $boot == checks) && ($ST == active || $ST == reloading || $ST == activating) && $client == closed && $window == false ]]; then expected=true; fi
+          if [[ $(jq -r .buttons.reopen_window.show <<<"$output") != "$expected" ]]; then echo "$boot / $ST / $client / $window" >&3; fi
+          assert_equal "$(jq -r .buttons.reopen_window.show <<<"$output")" "$expected"
+          assert_equal "$(jq -r .buttons.reopen_window.enable <<<"$output")" "$expected"
+          assert_equal "$(jq -r .buttons.reopen_window.label <<<"$output")" 'Reopen the Windows window'
+        done
+      done
+    done
+  done
+}
+
+@test "panel: Snapshots hide only for unfinished setup with an active unit" {
+  local finished expected
+  snapshot_list() { echo "$T/snapshot"; }
+  for finished in false true; do
+    state "{\"snapshot\":\"declined\",\"done\":$finished}"
+    for ST in inactive failed activating active reloading deactivating; do
+      run cmd_panel
+      assert_success
+      expected=true
+      if [[ $finished == false && $ST != inactive && $ST != failed ]]; then expected=false; fi
+      assert_equal "$(jq -r .snapshots.show <<<"$output")" "$expected"
+      assert_equal "$(jq -r .buttons.take_snapshot.show <<<"$output")" "$expected"
+      assert_equal "$(jq -r .buttons.restore_snapshot.show <<<"$output")" "$expected"
+      assert_equal "$(jq -r .buttons.restore_confirm.show <<<"$output")" "$expected"
+    done
+  done
+  state '{"snapshot":"declined"}'
+  status_facts() { printf 'ActiveState=%s\nLanaiRestorePending=true\n' "$ST"; }
+  for ST in active inactive; do
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .buttons.finish_restore.show <<<"$output")" "$([[ $ST == inactive ]] && echo true || echo false)"
+  done
+}
+
+@test "panel: setup boot Shut down carries its second click and finished controls stay unchanged" {
+  local boot finished
+  for finished in false true; do
+    state "{\"snapshot\":\"declined\",\"done\":$finished}"
+    for boot in true false; do
+      echo "{\"setup\":$boot}" >"$S/boot.json"
+      for ST in inactive active activating reloading deactivating; do
+        run cmd_panel
+        assert_success
+        local expected=false
+        if [[ $finished == false && $boot == true && $ST != inactive ]]; then expected=true; fi
+        assert_equal "$(jq -r .buttons.stop.confirm <<<"$output")" "$expected"
+        assert_equal "$(jq -r .buttons.stop_confirm.show <<<"$output")" "$expected"
+        assert_equal "$(jq -r .buttons.stop_confirm.hint <<<"$output")" "Shutting down now stops setup. You'll choose how to continue."
+        if [[ $finished == true ]]; then
+          assert_equal "$(jq -r .setup.attention <<<"$output")" false
+          assert_equal "$(jq -r .buttons.start.show <<<"$output")" "$([[ $ST == inactive ]] && echo true || echo false)"
+          assert_equal "$(jq -r .buttons.open.show <<<"$output")" "$([[ $ST == inactive ]] && echo false || echo true)"
+          assert_equal "$(jq -r .buttons.continue_setup.label <<<"$output")" 'Run setup again'
+        fi
+      done
+    done
+  done
+}
+
+@test "panel: setup guidance never asks for the hidden Start or Open controls" {
+  local finished
+  status_facts() { printf 'ActiveState=%s\nLanaiSetup=done\nLanaiQmp=running\nLanaiQga=open\nLanaiClient=timeout\n' "$ST"; }
+  for finished in false true; do
+    state "{\"snapshot\":\"declined\",\"done\":true,\"round\":$([[ $finished == true ]] && echo false || echo true)}"
+    for ST in inactive active; do
+      run cmd_panel
+      assert_success
+      if [[ $finished == false ]]; then
+        assert_equal "$(jq -r .next <<<"$output")" 'Follow the Setup section below.'
+        refute_output --partial 'Try Open window again.'
+      else
+        assert_equal "$(jq -r .next <<<"$output")" "$([[ $ST == inactive ]] && echo 'Click Start Windows.' || echo 'Click Open window.')"
+        assert_output --partial 'Try Open window again.'
+      fi
+    done
+  done
+}
+
+@test "panel: automatic setup startup waits quietly until Windows can show its setup drive" {
+  state '{"snapshot":"declined","step5":false}'
+  echo '{"setup":true,"window":true}' >"$S/boot.json"
+  setup_worker
+  for ST in activating active; do
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .setup.attention <<<"$output")" "$([[ $ST == activating ]] && echo false || echo true)"
+  done
 }

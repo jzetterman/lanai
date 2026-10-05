@@ -41,6 +41,7 @@ QML
 module TestCommons
 singleton Style 1.0 Style.qml
 singleton Color 1.0 Color.qml
+singleton Util 1.0 Util.qml
 QML
   cat >"$T/qml/imports/TestCommons/Style.qml" <<'QML'
 pragma Singleton
@@ -50,7 +51,8 @@ QtObject {
   function space(n) { return n }
 }
 QML
-  echo 'pragma Singleton; import QtQuick; QtObject { property color foreground: "white" }' >"$T/qml/imports/TestCommons/Color.qml"
+  echo 'pragma Singleton; import QtQuick; QtObject { property color foreground: "white"; property color accent: "#4080c0" }' >"$T/qml/imports/TestCommons/Color.qml"
+  echo 'pragma Singleton; import QtQuick; QtObject { function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) } }' >"$T/qml/imports/TestCommons/Util.qml"
   cat >"$T/qml/imports/TestUi/qmldir" <<'QML'
 module TestUi
 Panel 1.0 Panel.qml
@@ -129,6 +131,7 @@ QML
 import QtQuick
 import QtTest
 import TestShell
+import TestCommons
 TestCase {
   id: tests
   name: "PanelRenderer"
@@ -384,6 +387,78 @@ TestCase {
     secondPoll.complete(JSON.stringify({ok:true,pending_ack:'',buttons:{}}), 0)
     compare(first.pendingToken, '')
     compare(second.pendingToken, '')
+  }
+  function test_setup_shutdown_confirmation_cancel_reset_and_daily_stop() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    function view(confirm) {
+      return {buttons:{stop:{show:true,enable:true,label:'Shut down',confirm:confirm},
+        stop_confirm:{show:confirm,enable:confirm,label:"Shut down and stop setup",hint:"Shutting down now stops setup. You'll choose how to continue."},
+        cancel:{show:true,enable:true,label:'Cancel'}},setup:{show:true,attention:true},settings:{},snapshots:{names:[]},result:{},logs:{}}
+    }
+    model.view = view(true)
+    var panel = createTemporaryObject(panelComponent, tests, {model:model})
+    panel.open()
+    var stop = objects(panel, function(o) { return o.control === 'stop' })[0]
+    stop.clicked()
+    compare(panel.stopArmed, true)
+    compare(stop.control, 'stop_confirm')
+    compare(stop.text, "Shut down and stop setup")
+    verify(objects(panel, function(o) { return o.text === model.control('stop_confirm').hint && o.visible }).length > 0)
+    verify(!process(model, model.cli))
+    var cancel = objects(panel, function(o) { return o.control === 'cancel' && o.visible })[0]
+    cancel.clicked()
+    compare(panel.stopArmed, false)
+    stop.clicked()
+    panel.close(); panel.open()
+    compare(panel.stopArmed, false)
+    stop.clicked()
+    model.view = view(false)
+    compare(panel.stopArmed, false)
+    compare(stop.control, 'stop')
+    model.view = view(true)
+    stop.clicked(); stop.clicked()
+    compare(panel.stopArmed, false)
+    var action = process(model, model.cli)
+    compare(action.command[1], 'ui-run')
+    compare(action.command.slice(3).join(' '), 'stop')
+    action.complete('{"ok":true}', 0); ready(model)
+    model.view = view(false)
+    stop.clicked()
+    compare(action.command.slice(3).join(' '), 'stop')
+    verify(action.running)
+    panel.destroy(); wait(1)
+  }
+  function test_setup_accent_follows_theme_and_reopen_uses_ui_run() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    function view(attention, snapshots) {
+      return {buttons:{reopen_window:{show:true,enable:true,label:'Reopen the Windows window'}},
+        setup:{show:true,attention:attention},settings:{},snapshots:{show:snapshots,names:[]},result:{},logs:{}}
+    }
+    model.view = view(true, false)
+    var panel = createTemporaryObject(panelComponent, tests, {model:model})
+    panel.open()
+    var section = objects(panel, function(o) { return o.objectName === 'setupSection' })[0]
+    verify(section !== undefined)
+    compare(section.border.width, 1)
+    compare(section.border.color, Color.accent)
+    compare(section.color, Util.alpha(Color.accent, 0.10))
+    Color.accent = '#c06030'
+    compare(section.border.color, Color.accent)
+    compare(section.color, Util.alpha(Color.accent, 0.10))
+    compare(objects(panel, function(o) { return o.text === 'Snapshots' && o.visible }).length, 0)
+    var reopen = objects(section, function(o) { return o.control === 'reopen_window' })[0]
+    verify(reopen.visible)
+    reopen.clicked()
+    var action = process(model, model.cli)
+    compare(action.command[1], 'ui-run')
+    compare(action.command.slice(3).join(' '), 'open')
+    model.view = view(false, true)
+    compare(section.border.width, 0)
+    compare(section.color, Qt.rgba(0, 0, 0, 0))
+    verify(objects(panel, function(o) { return o.text === 'Snapshots' && o.visible }).length > 0)
+    panel.destroy(); wait(1)
   }
   function test_force_stop_two_clicks() {
     var model = createTemporaryObject(modelComponent, tests)
