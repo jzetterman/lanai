@@ -1,4 +1,4 @@
-# Windows on Omarchy
+# Lanai
 
 Run Windows in a window on Omarchy, through [Looking Glass](https://github.com/gnif/LookingGlass).
 

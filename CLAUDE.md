@@ -1,4 +1,4 @@
-# windows-on-omarchy
+# Lanai
 
 Windows in a window on Omarchy: plain QEMU plus Looking Glass IDD. The spike is done
 except its measured sessions; the Lanai plugin is being built (docs/plugin/).

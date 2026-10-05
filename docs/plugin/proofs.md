@@ -52,7 +52,7 @@ copies the verified SPICE agent into the setup disk; it never reuses the spike's
    the runbook uses in a small file, so every terminal can load them:
 
    ```sh
-   cd ~/Development/github/jzetterman/windows-on-omarchy
+   cd ~/Development/github/jzetterman/lanai
    git switch plugin/v1
    mkdir -p ~/lanai-proofs    # scratch; must be on the same btrfs filesystem as ~/.windows
    printf 'R=%q\nK=%q\nS=%q\n' "$PWD" "$PWD/docs/plugin/proof-kit" ~/lanai-proofs \
