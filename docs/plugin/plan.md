@@ -1369,36 +1369,6 @@ the user.
   the shell's selected accent fill when available, else a light accent fill.
 Once setup is finished, every control shows as before. Tests cover each rule.
 
-**Display scale** (John, 2026-10-05, spec req 12 amended). In the panel run, Windows'
-scale changed with the Looking Glass window's size (125% full screen, 175% at a
-quarter). Cause: `lanai-scale.ps1` runs once at sign-in and sets the scale with
-`DisplayConfigSetDeviceInfo`, which stores it as steps from Windows' recommended
-scale for the current resolution; when the window resizes, Windows' resolution and
-recommended scale change, and the stored offset lands on another absolute scale.
-- Setting: `settings.json` gains `windows_scale`, either `"auto"` (match my monitor,
-  the default and today's rule) or one valid step (100 to 250 by 25, 300 to 500 by
-  50). `lanai settings` validates it like memory and cores; a missing key means
-  `"auto"`. `boot_vm` passes the fixed step, or the monitor's nearest step for
-  `"auto"`, in the SMBIOS string as now. The panel's Settings section gets a "Windows
-  text size" choice: "Match my monitor", then each step; it applies at the next start.
-- Holding it: `lanai-scale.ps1` applies the target at sign-in as now, then keeps
-  running for the session: every 2 s it reads the Looking Glass monitor's current
-  resolution and, when it changed, applies the target again as an absolute scale
-  (recomputing the steps from the new recommended scale), capped at Windows' maximum
-  for that resolution, and logs one line per change. It exits at sign-out with the
-  session. Its decision (target, current recommended, allowed range, to steps) is a
-  small pure function the tests call. `setup.cmd` registers the task with no
-  execution time limit (Task Scheduler stops tasks after 72 hours by default) and so
-  that it does not start a second copy (`MultipleInstances IgnoreNew`).
-- Existing installs get the new script only when setup runs again (it lives in
-  `C:\Program Files\Lanai`); the README says to click "Run setup again" after this
-  update. The test copy does so.
-- Tests: bats for the setting (valid steps, "auto", a missing key, invalid values) and
-  for `boot_vm`'s SMBIOS step from each; pwsh tests (skipped without pwsh, as the
-  StepName tests are) for the decision function: a target within the allowed range,
-  above it (capped), a resolution change that moves the recommended scale, and no
-  change; `guest.bats` checks the task's registration flags.
-
 **The QML.** It polls `lanai panel` every 2 s while its own panel is open, and every
 15 s otherwise (the tooltip), whatever the state; only the bar whose panel is open
 polls fast. It has a 10 s deadline, skips a tick while a call runs, and an
@@ -1439,6 +1409,188 @@ during the setup boot (stops), step 6 waits spaced 10 s apart, a stop during ste
 (stops), a failure (stops), and the record written before the lock is released. The
 open phase 7 findings (gate rounds b 1-4, a 4) become test cases where they concern a
 decision. The QML stays small enough to read in one sitting; `qmllint` must pass.
+
+### Amendment: scale, progress and clicks (John, 2026-10-05)
+
+This implements the approved spec changes to reqs 7, 11 and 12 and acceptance
+rows 7 and 10-17. It supersedes the earlier scale and widget click rules. The
+2026-10-05 spec review rows explain the proof and click cases John accepted.
+Risk order: B, A, C. Start B's storage proof first. A's guest script and B's storage
+helper can run in parallel. Integrate their shared bash, QML and test files in
+turn. C follows B's operation-lock and progress contract.
+
+Each phase starts with failing bats tests. Keep strict mode in bash entry points
+(`set -euo pipefail`), preserve callers' options in sourced libraries, and pass
+ShellCheck. Bash decides the `lanai panel` view; QML renders it. Keep all agent
+scratch in the repository, including isolated HOME/XDG paths and `.btrfs-test/`.
+Agents never touch John's live `~/.windows`. John runs the Windows checks on a
+rehearsal copy and records them in `proofs.md` before phase 8's acceptance gate.
+
+**Phase A: display scale (req 12).** Windows' scale changed with the Looking Glass
+window's size (125% full screen, 175% at a quarter). `lanai-scale.ps1` currently
+runs once at sign-in. Its API stores steps from Windows' recommended scale, which
+changes with resolution. Keep the chosen absolute step through those changes.
+
+- Tests first: extend `test/ui.bats`, `test/lifecycle.bats`, `test/checks.bats`,
+  `test/guest.bats`, `test/panel.bats` and `test/panel-qml.bats`. Cover every valid
+  step, `"auto"`, a missing key, invalid types and values, old two-argument saves,
+  preserved settings keys, fixed boots without a monitor query, and automatic
+  boots with the existing nearest-step matrix and 100% fallback. Test unsaved
+  scale edits across polls, successful and failed saves, and reopening. Extract
+  the guest's pure scale decision through its PowerShell AST, as StepName tests
+  do; skip without pwsh. Cover caps, recovery, a moved recommended step, an
+  unchanged display, and a display that appears after sign-in. Pin task flags.
+- Files: `lib/ui.sh`, `lib/lanai.sh` (`boot_vm`), `lib/vm.sh` as needed for a shared
+  settings reader, `lib/panel.sh`, `LanaiPanel.qml`, `LanaiModel.qml`,
+  `guest/lanai-scale.ps1`, `guest/setup.cmd` and `README.md`.
+  `settings.json` gains `windows_scale`: `"auto"` by default, or a valid integer
+  step (100 to 250 by 25, then 300 to 500 by 50). `lanai settings` reads it and
+  accepts it as an optional third save argument; old saves preserve it. Validate
+  it in bash, including at boot. `boot_vm` uses the fixed step or samples the
+  focused monitor for `"auto"`, then passes the resolved step through boot.json
+  and the existing SMBIOS string. Changes apply at the next start.
+- The Settings view supplies the value and labeled choices for "Windows text
+  size", starting with "Match my monitor". QML keeps only the unsaved choice and
+  sends it with memory and cores. Extend the settings-saved transport too.
+  The guest applies the target at sign-in, then checks the current display path,
+  resolution and scale range every 2 s. Recompute the target's relative steps
+  each time and set only when its absolute scale differs. Cap at Windows' limit
+  and recover when it grows. Checking the range as well as resolution catches
+  Windows updating its recommendation later. Retry while the display is absent;
+  log actual changes and errors without repeating unchanged polls. Exit at
+  sign-out. Register the task with no execution time limit and
+  `MultipleInstances IgnoreNew`, so it lasts past 72 hours without duplicates.
+- Verify: run the named bats suites, ShellCheck and `test/qml-lint`. John reruns
+  setup on the test copy to install the script, then checks fixed 125% from a
+  quarter-size window to full screen, caps and recovery, two host scales, and
+  both late and immediate client attachment from the earlier scale-timing check.
+  Record the Windows scale and guest log. README tells existing users to click
+  "Run setup again" after this update.
+
+**Phase B: snapshot and restore (req 7).** Clone first, then hash once. Every
+allocated block must be shared before the read. On tested btrfs modes, a later
+write to either file moves a shared block, including NOCOW's first write to a
+shared extent; compressed clones share the encoded extent. An unchanged copy
+map that still matches the other file proves the hashed data stayed shared.
+
+- Tests first: extend `test/snapshot.bats`, `test/lanai-copy.bats`,
+  `test/panel.bats` and `test/panel-qml.bats`. Use real reflinks under
+  `LANAI_TEST_BTRFS_DIR=$REPO/.btrfs-test`, with normal, `chattr +C` and `chattr +c`
+  images; set attributes before filling files and confirm compressed extents.
+  For each mode and each operation, a test-only environment hook changes one
+  allocated block of the clone after its first map, before hashing. A second
+  hook changes the original source or snapshot after hashing, before proof.
+  Both restore size and mtime. Each must reject completion with a clear message;
+  snapshots leave no COMPLETE snapshot and restores keep recovery possible.
+  Also change the actual read file at the second hook. Cover sparse maps, map
+  failures, partial files, damaged manifests, deleted disks, inode preservation,
+  resumable markers, late stray files, locks, progress and cleanup on failure.
+  Plain-copy shims may test errors, but cannot establish a successful proof.
+- Files: `lib/snapshot.sh`, `lib/copy.sh`, `lib/ficlone.py`, a new
+  `lib/image-proof.py`, `lib/lanai.sh` (`layout_check`, `shared_facts`,
+  `cmd_snapshot`, `cmd_restore`), `lib/panel.sh`, `LanaiPanel.qml`, `LanaiModel.qml`,
+  `.github/workflows/test.yml` and `README.md`. Keep generic `tree_manifest` for
+  `lanai-copy`; snapshot/restore use manifests that hash data.img only once.
+- Use Python's FIEMAP ioctl, alongside the existing Python FICLONE helper.
+  It adds no filefrag dependency and avoids parsing tool output. Synchronize
+  allocations and collect the complete map, including holes and EOF. Compare
+  logical offset, physical offset, length, encoded and unwritten flags; require
+  shared allocated extents. Reject inline, unknown or unresolved mappings and
+  ioctl errors. Open files without following symlinks; map and read the same
+  open files and reject path replacement. Size only bounds the map; size and
+  timestamps never prove data equality. Only btrfs's three fixture modes count
+  as tested. XFS and every untested mode get the existing unsupported-snapshot
+  response and backup advice, even if reflink itself succeeds.
+- Expand `snapshot_root`'s probe under the disk lock. Clone data.img into a probe
+  in each candidate root, compare maps, overwrite one allocated block in the
+  probe without reading it, and require its map to differ from the source.
+  Remove the probe on every exit. This replaces windows.mac, which can be
+  inline, and tests the actual filesystem pair and image mode without another
+  image read. A failed probe means this location cannot make an instant copy.
+- Snapshot: retain the partial folder, SOURCE, COMPLETE format, rename and flush
+  rules. Clone the install, record both image maps and require equality, hash
+  the clone once, then require both maps to equal that saved map. Hash small
+  files from the clone and byte-compare them to the source; check the exact file
+  list too. Only then write COMPLETE and publish. Failure removes the partial
+  snapshot and says nothing was kept. Reading the shared clone hashes the
+  source's data while keeping the single read easy to count.
+- Restore: retain validation, NOCOW refusal, the operation and disk locks,
+  resumable marker, stray-file check and flush rules. Clone snapshot data.img to
+  a `.lanai-restore.*` temporary file in storage, record equal maps, hash that
+  file once against COMPLETE, then require both maps to equal the saved map.
+  Verify small files before replacing install files. The marker must precede
+  the storage temporary file. A clean verification refusal removes the temporary
+  file and any newly created marker; preserve an older unfinished marker.
+  Interruption keeps the marker. After proof, clone the verified temporary file
+  onto data.img with `ficlone.py`, keeping QEMU's locked inode. Compare the final
+  map with the saved temporary map, byte-check the small copies and remove the
+  temporary file before the stray-file check. Never run a final image hash.
+  For a deleted disk, install the verified temporary image and lock it before
+  replacing other files. On success, clear the marker and reset setup only after
+  completion.
+  Preserve today's messages' intent, including damage before replacement and
+  recovery guidance after a partial replacement.
+- One chunked hashlib reader in `image-proof.py` reads image data. Fold the
+  first-100-KiB nonzero adoption check into that pass for snapshots.
+  `layout_check` currently reads those bytes separately; split its structural
+  checks from that data check. Snapshot uses the structural checks first, and
+  panel polls omit the image read while the operation lock is held. Normal boot
+  checks stay complete. Test this with a panel opened during both operations.
+- Publish `<state>/image-progress.json` by atomic rename, about once a second:
+  operation, phase, bytes done, total and owner pid. Bash publishes cloning,
+  checking and finishing phases too. Initialize and remove it inside the
+  operation lock for CLI and panel starts. Keep completion below 100% until
+  proof and flush succeed. `lanai panel` validates the owner and held operation
+  lock, then returns `progress: {label,percent}` or null. Use this activity for
+  busy controls even without a panel-job record. Ignore stale, dead-owner and
+  malformed files; polling writes nothing. Supply null in initial/error views.
+  QML shows a progress bar and the percentage as plain text in Snapshots. Test
+  advancing progress, a newly opened
+  panel, CLI starts, failure, interruption and stale records.
+- Verify the read budget with `strace -f -yy`, summing successful read/pread and
+  readv/preadv variants on storage, snapshot and temporary-copy files across all
+  children. Include concurrent panel polls; keep fixture preparation and
+  independent outcome hashes outside the trace. Image reads must total at most
+  one logical image size. For a one-snapshot fixture, cap small-file reads at
+  `4*S + (P+1)*64 KiB`: S is the sum of install files other than data.img, P is
+  the fixed number of panel polls, and 64 KiB covers SOURCE/COMPLETE reads.
+  Report image and small-file counts separately. Add strace to CI and require
+  the measurement there. Skip locally if unavailable and report the skip.
+  This observes reads outside the helper and cannot hide a second pass in page
+  cache. Run the named bats suites, ShellCheck and `test/qml-lint`; CI must run
+  all three real btrfs modes. Record row 7's hashes, traces and proof fixtures in
+  `proofs.md`. Use mocked lock contenders in agent runs; John checks the real
+  container-start refusal on a separate test install. README explains progress
+  and the fallback for an unprovable filesystem.
+
+**Phase C: icon clicks (req 11).** Change the icon's clicks and leave the panel's
+Start, Open and Shut down controls in place.
+
+- Tests first: extend `test/panel.bats` for all nine req 10 states, finished and
+  unfinished setup, setup and check boots, snapshot/restore from CLI and panel,
+  an unfinished restore, and running with the window open or closed. Assert
+  `right_click` and its tooltip words. Extend `test/panel-qml.bats` to load
+  `Widget.qml` with inert bar/button types too. Test left click, Enter and Space
+  opening and closing the panel, right-click dispatch, unknown/missing actions
+  opening the panel, and literal `ui-run` argv without a real service or shell.
+- Files: `lib/panel.sh`, `Widget.qml`, `LanaiModel.qml` and `README.md`.
+  Bash returns `right_click: "start"` only for stopped, finished setup with no
+  blocking operation or unfinished restore; `"open"` only for running, finished
+  setup with its window closed and no blocking operation or unfinished restore;
+  otherwise `"panel"`. Use current setup completion, not merely a historical
+  setup-done stamp or existing button enablement. Bash supplies a tooltip line
+  naming "Right click" and the action; `LanaiModel.qml` includes that line.
+  Widget left click, Enter and Space toggle the panel in every state. Right
+  click dispatches the supplied start/open action through `ui-run`, or opens the
+  panel. It never decides from status or control enablement. Keep command-side
+  guards for changes since the last poll.
+- Verify: run both named bats suites, ShellCheck and `test/qml-lint`. John checks
+  clicks and keyboard input on the rehearsal copy using the row 10-17 matrix,
+  then checks shut down and close/reopen (rows 16-17). README names both clicks,
+  Enter and Space. Rows 10 and 13-17 keep their other phase 8 checks.
+
+**Review.** Put the plan amendment's gate rows in this document's Review log.
+The orchestrator runs the gate; delegates run no review stage.
 
 ### As built (2026-10-05)
 
