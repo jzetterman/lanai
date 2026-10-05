@@ -50,7 +50,7 @@ First rehearse on a reflink copy, as described in the [acceptance plan](docs/plu
 Stop the container VM before setup. For the released plugin, the host commands are:
 
 ```sh
-omarchy plugin add https://github.com/jzetterman/windows-on-omarchy.git
+omarchy plugin add https://github.com/jzetterman/lanai.git
 omarchy plugin enable io.github.jzetterman.lanai --section right
 ```
 
@@ -73,8 +73,12 @@ and tools. Files Lanai downloads itself are pinned with SHA-256 in
 
 Accept the snapshot offer before the first boot, or make a backup and explicitly
 continue without a snapshot. A snapshot shares disk blocks, takes little space
-initially and grows as Windows changes. Lanai reports its exact path, delete command
-and restore command. It tries the Lanai data directory's `snapshots/`, then
+initially and grows as Windows changes. The panel reports its path and explains
+how to delete the snapshot folder. Restore buttons appear after **List snapshots**.
+Snapshot and restore jobs show a note while they run. You can close the panel
+during a snapshot. Keep Windows off until a restore finishes. Lanai blocks Start
+while a restore is unfinished; use **Finish the unfinished restore** to resume it.
+It tries the Lanai data directory's `snapshots/`, then
 `<storage>.lanai-snapshots/` on the storage filesystem. Both VMs must be stopped for
 snapshot or restore. A restore requires running Lanai setup again.
 
@@ -83,12 +87,15 @@ the administrator prompt as the same Windows user; approval as a different accou
 is refused. The setup drive must stay **read-only**: do not attach writable setup
 media or substitute files written by Windows. Setup shuts Windows down when the guest
 install finishes. Let that shutdown finish; Shut down from the panel does not count.
-The panel then restarts Windows (click Continue setup if it waits). Answer whether
-`~/Windows` appears in Explorer and whether text looks the right size. If a setup boot stopped unfinished,
+The panel continues setup after Windows shuts down. If Windows stops during the
+final checks, click **Continue setup** to start it again. In File Explorer, select
+This PC and check for a drive with the files from Linux's `~/Windows` folder.
+Answer that question and whether text looks the right size. If a setup boot stopped unfinished,
 the panel offers **Set up in QEMU's screen** until the Lanai display driver is installed,
 or **Set up in the Windows window** afterward. Open window is hidden while QEMU's
 setup window is in use. Reopening the panel watches setup that is still running;
-it does not resume setup from a result left by an earlier session.
+it does not resume setup from a result left by an earlier session. The panel says
+setup is finished only when Lanai has recorded its completion for this disk.
 
 ## Daily use
 
@@ -96,10 +103,12 @@ Left-click the glyph to start Windows, or open/focus its window while it runs.
 Closing the Looking Glass window leaves Windows running; click the glyph to reopen
 it. Right-click opens the panel. Panel controls support Tab, Shift+Tab, Enter and
 Space; Escape closes it. Settings accept whole numbers: 1–512 GiB and 1–64 cores,
-and apply at the next start. The CLI equivalent is `bin/lanai settings <GiB> <cores>`.
+and apply at the next start. Reopening the panel discards unsaved settings edits.
+The CLI equivalent is `bin/lanai settings <GiB> <cores>`.
 
-Shut down asks Windows to shut down cleanly and returns immediately. If Windows
-ignores the request while starting, click Shut down again. After two minutes from
+Shut down is available while Windows starts and shuts down. It asks Windows to
+shut down cleanly and returns immediately. If Windows ignores the request while
+starting, click Shut down again. After two minutes from
 the first request, the panel offers Force stop, followed by a separate confirming click.
 Unsaved work is lost on a forced stop. If the display fails or builds mismatch,
 read the panel's cause, next step and log path. Stop Lanai before using

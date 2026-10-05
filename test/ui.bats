@@ -111,6 +111,59 @@ setup() {
   assert_equal "$(wc -l <<<"$output")" 1
 }
 
+@test "status: setup_done follows LanaiSetup, independent of the displayed state" {
+  local facts
+  for facts in 'ActiveState=inactive' 'ActiveState=activating' 'ActiveState=deactivating' \
+    $'ActiveState=inactive\nLanaiInstall=none' $'ActiveState=inactive\nLanaiContainer=running' \
+    $'ActiveState=failed\nResult=exit-code'; do
+    run status_map <<<"$facts"
+    assert_success
+    assert_equal "$(jq -r '.setup_done' <<<"$output")" false
+    run status_map <<<"$facts"$'\nLanaiSetup=needed'
+    assert_success
+    assert_equal "$(jq -r '.setup_done' <<<"$output")" false
+    run status_map <<<"$facts"$'\nLanaiSetup=done'
+    assert_success
+    assert_equal "$(jq -r '.setup_done' <<<"$output")" true
+  done
+}
+
+@test "SetupCalls: only successful waits advance, using step and status, never text" {
+  command -v node >/dev/null && node --version >/dev/null 2>&1 || skip "node is not available"
+  run node - "$REPO/SetupCalls.js" <<'JS'
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const calls = {};
+vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8').replace(/^\.pragma library\s*/, ''), calls);
+const off = {active: false, state: 'setup-needed'};
+const on = {active: true, state: 'setup-needed'};
+for (const step of ['5', '6']) {
+  const reply = {ok: true, step, message: 'unrelated text', next: 'unrelated text'};
+  assert.equal(calls.waiting(reply), true);
+  assert.equal(calls.shouldAdvance(reply, step === '5' ? off : on), true);
+  assert.equal(calls.shouldAdvance(reply, step === '5' ? on : off), false);
+  assert.equal(calls.shouldAdvance(reply, {active: true, state: 'stopping'}), false);
+  for (const ok of [false, undefined, 'true']) {
+    const failure = {...reply, ok, message: 'Windows has shut down. Waiting for Windows.'};
+    assert.equal(calls.waiting(failure), false);
+    assert.equal(calls.shouldAdvance(failure, off), false);
+    assert.equal(calls.shouldAdvance(failure, on), false);
+  }
+}
+assert.equal(calls.shouldAdvance({ok: true, step: '5'}, {active: false, state: 'failed'}), false);
+assert.equal(calls.waiting({ok: true, step: '6', questions: ['share', 'scale']}), false);
+assert.equal(calls.shouldAdvance({ok: true, step: '6', questions: ['share']}, on), false);
+for (const step of ['3', '7', undefined]) {
+  const reply = {ok: true, step, message: 'Windows has shut down. Waiting for Windows.'};
+  assert.equal(calls.waiting(reply), false);
+  assert.equal(calls.shouldAdvance(reply, off), false);
+  assert.equal(calls.shouldAdvance(reply, on), false);
+}
+JS
+  assert_success
+}
+
 # Override only the child CLI: no units, storage or desktop commands run.
 make_job_cli() {
   LANAI_BIN=$T/cli

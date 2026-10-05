@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls as QQC
 import qs.Commons
 import qs.Ui
+import "SetupCalls.js" as SetupCalls
 
 // Shared shell popup, theme tokens and Tab-focusable controls.
 Panel {
@@ -23,16 +24,28 @@ Panel {
   readonly property bool questions: model.fresh && model.status.active === true
     && model.status.state === "setup-needed" && model.status.window !== true
     && model.setupReply.step === "6" && (model.setupReply.questions || []).length > 0
-  readonly property bool setupFinished: model.fresh && model.status.state !== "setup-needed"
+  readonly property bool setupFinished: model.fresh && model.status.setup_done === true && model.status.state !== "setup-needed"
     && !model.setupBusy && (Object.keys(model.setupReply).length === 0 || model.setupReply.step === "7")
   readonly property bool setupStopped: model.setupReply.ok === true && model.setupReply.step === "5"
     && model.fresh && model.status.active === false
   readonly property bool waitingForBoot: model.setupWaiting && model.setupReply.step === "6"
     && (!model.setupBusy || model.automaticWait)
+  readonly property bool snapshotSaved: model.snapshotReply.ok === true
+  readonly property string progressCommand: model.pendingToken !== "" ? model.pendingCommand
+    : model.job.active === true ? model.job.command : ""
+  readonly property string snapshotProgress: progressCommand === "snapshot"
+    ? "Taking a snapshot… This can take several minutes. You can close this panel."
+    : progressCommand === "restore"
+      ? "Restoring the snapshot… This can take several minutes. Do not start Windows until it finishes." : ""
   readonly property var steps: ["Check the Windows install", "Install required software", "Offer a snapshot",
     "Prepare the Windows window", "Install drivers in Windows and shut down", "Restart and check Windows", "Ready"]
 
-  onOpenedChanged: if (!opened) { forceArmed = false; restoreArmed = "" }
+  onOpenedChanged: {
+    if (opened) {
+      memoryField.field.value = Qt.binding(function() { return root.model.memory })
+      coresField.field.value = Qt.binding(function() { return root.model.cores })
+    } else { forceArmed = false; restoreArmed = "" }
+  }
   Connections {
     target: root.model
     function onCanForceChanged() { if (!root.model.canForce) root.forceArmed = false }
@@ -68,6 +81,12 @@ Panel {
     return reply.next || ""
   }
 
+  // The panel has restore buttons and gives deletion guidance without commands.
+  function snapshotMessage(reply) {
+    return (reply.message || "").replace(/ Restore it with: lanai restore [\s\S]*$/, "")
+      .replace(/Delete it with: rm -rf [\s\S]*$/, "To delete it, remove the snapshot folder in your file manager.")
+  }
+
   KeyboardPanel {
     id: popup
     anchorItem: root.anchorItem
@@ -101,7 +120,14 @@ Panel {
           PanelSectionHeader { text: "Lanai"; foreground: root.foreground; fontFamily: root.fontFamily }
           Note { text: root.model.stateLabel }
           Note { text: root.model.status.message }
-          Note { visible: text !== ""; text: root.model.status.state === "setup-needed" ? "Click Continue setup." : root.model.status.next || "" }
+          Note {
+            visible: text !== ""
+            text: root.model.status.state === "setup-needed"
+              ? root.model.status.active === false && Object.keys(root.model.setupReply).length === 0
+                ? "Click Continue setup." : "Follow the steps under Setup below."
+              : root.model.status.next ? "Next step: " + root.model.status.next : ""
+          }
+          Note { visible: root.model.status.restore_pending === true; text: "A restore did not finish. Windows cannot start until it does. Click Finish the unfinished restore under Snapshots." }
           Note { visible: text !== ""; text: root.model.status.warning || "" }
           Note { visible: text !== ""; text: root.model.status.notice || "" }
           Action { text: "Dismiss"; visible: !!root.model.status.notice; onClicked: root.model.run(["notice-seen"]) }
@@ -136,6 +162,7 @@ Panel {
 
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader { text: "Setup"; foreground: root.foreground; fontFamily: root.fontFamily }
+          Note { visible: root.model.status.state === "not-installed"; text: "Install Windows with omarchy-windows-vm first. Then click Continue setup." }
           Note { visible: root.setupFinished; text: "Setup is finished." }
           Action { visible: root.setupFinished; text: "Run setup again"; enabled: !root.model.busy && !root.model.longBusy; onClicked: root.model.launch(["setup"]) }
           Column {
@@ -158,7 +185,11 @@ Panel {
             }
             Note {
               visible: text !== ""
-              text: root.setupStopped ? "Windows has shut down. Click Continue setup."
+              text: root.setupStopped
+                ? SetupCalls.shouldAdvance(root.model.setupReply, root.model.status)
+                  ? "Windows has shut down. Lanai continues setup in a few seconds." : "Windows has shut down. Click Continue setup."
+                : root.model.setupWaiting && root.model.setupReply.step === "6" && root.model.status.active === false
+                  ? "Windows is off, so setup cannot finish its checks. Click Continue setup to start Windows again."
                 : root.waitingForBoot ? "Waiting for Windows to finish starting. Lanai checks again every 10 seconds."
                 : root.model.setupReply.step === "3a" ? "Lanai filled in a missing file in the Windows install. Click Continue setup."
                 : root.model.setupReply.message || ""
@@ -168,7 +199,7 @@ Panel {
             Flow {
               width: parent.width
               spacing: Style.space(6)
-              Action { text: "Continue setup"; enabled: !root.model.busy && !root.model.longBusy; onClicked: root.model.launch(["setup"]) }
+              Action { text: "Continue setup"; visible: root.model.setupReply.step !== "3" || root.snapshotSaved; enabled: !root.model.busy && !root.model.longBusy; onClicked: root.model.launch(["setup"]) }
               Action { text: "Install in a terminal"; visible: root.model.setupReply.step === "2"; enabled: !root.model.busy; onClicked: root.model.run(["setup-host"]) }
             }
 
@@ -177,15 +208,17 @@ Panel {
               spacing: Style.space(6)
               visible: root.model.setupReply.step === "3" && root.model.status.active === false
               Note { text: "A snapshot saves a copy of Windows. It uses more space as Windows changes. Lanai shows where it is saved and how to delete it. If Lanai cannot take a snapshot, make a backup before continuing." }
+              Note { visible: text !== ""; text: root.snapshotProgress }
               Flow {
                 width: parent.width
                 spacing: Style.space(6)
+                visible: !root.snapshotSaved
                 Action { text: "Take snapshot"; enabled: !root.model.busy; onClicked: root.model.launch(["snapshot"]) }
                 Action { text: "Continue without snapshot"; enabled: !root.model.busy; onClicked: root.model.launch(["setup", "--no-snapshot"]) }
               }
               Note {
-                visible: root.model.action === "snapshot" && root.model.actionReply.ok === true
-                text: "Snapshot saved. Click Continue setup."
+                visible: root.snapshotSaved
+                text: root.snapshotMessage(root.model.snapshotReply) + "\nClick Continue setup."
               }
               ActionResult { commands: ["snapshot"]; visible: root.model.actionReply.ok !== true }
             }
@@ -204,14 +237,19 @@ Panel {
                 Note { text: "Use this once Lanai's display driver is installed in Windows." }
               }
             }
-            Note { visible: root.model.setupReply.step === "5" && root.model.setupReply.ok === true && root.model.status.active === true; text: "In Windows, open Lanai's setup drive and run setup.cmd. Approve as the same Windows user. Let setup install the drivers and shut Windows down. Using Shut down here does not finish setup." }
+            Note {
+              visible: root.model.setupReply.step === "5" && root.model.setupReply.ok === true && root.model.status.active === true
+              text: "Windows is running the setup boot. "
+                + (root.model.status.window !== true ? "If you cannot see Windows, click Open window. " : "")
+                + "In Windows, open File Explorer, open Lanai's setup drive and run setup.cmd. When Windows asks to allow changes, click Yes. Do not sign in as a different user. Setup installs the drivers and shuts Windows down by itself. Shut down in this panel does not finish setup."
+            }
             Note { visible: root.model.setupReply.step === "5" && root.model.setupReply.ok === false; text: "Setup needs another pass. Click Shut down, wait for Windows to stop, then click Continue setup." }
 
             Column {
               width: parent.width
               spacing: Style.space(6)
               visible: root.questions
-              Note { text: "In Windows, open File Explorer. Can you see your Linux ~/Windows folder there?" }
+              Note { text: "In Windows, open File Explorer and select This PC. Do you see a drive with the files from your Linux ~/Windows folder?" }
               Flow {
                 width: parent.width
                 spacing: Style.space(6)
@@ -233,6 +271,7 @@ Panel {
             }
           }
           Note { visible: text !== ""; text: root.model.jobError.message || "" }
+          Note { visible: text !== ""; text: root.model.jobError.next || "" }
 
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader { text: "Settings"; foreground: root.foreground; fontFamily: root.fontFamily }
@@ -249,7 +288,8 @@ Panel {
 
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader { text: "Snapshots"; foreground: root.foreground; fontFamily: root.fontFamily }
-          Note { text: "Shut Windows down in both Lanai and omarchy-windows-vm first. Restoring replaces Windows' current data. Run Lanai setup again afterward." }
+          Note { text: "Restoring replaces Windows with the snapshot. Anything saved in Windows since then is lost. Shut Windows down in both Lanai and omarchy-windows-vm first, and run Lanai setup again afterward." }
+          Note { visible: text !== ""; text: root.snapshotProgress }
           Flow {
             width: parent.width
             spacing: Style.space(6)
@@ -272,15 +312,16 @@ Panel {
             }
           }
           Action { text: "Cancel restore"; visible: root.restoreArmed !== ""; onClicked: root.restoreArmed = "" }
+          Note { visible: root.model.action === "snapshots" && root.model.actionReply.ok === true && root.model.snapshots.length === 0; text: "No snapshots yet." }
 
           ActionResult { commands: ["snapshot", "snapshots", "restore"]; visible: root.model.setupReply.step !== "3" || root.model.action !== "snapshot" }
           Column {
             width: parent.width
             spacing: Style.space(6)
-            visible: root.model.status.state === "failed" || root.model.status.state === "version-mismatch"
-              || root.model.actionReply.ok === false || root.model.setupReply.ok === false
+            visible: root.model.status.state === "failed" || root.model.setupReply.ok === false
+              || (root.model.actionReply.ok === false && (root.model.action === "start" || root.model.action === "open"))
             PanelSectionHeader { text: "Help"; foreground: root.foreground; fontFamily: root.fontFamily }
-            Note { text: "Logs: " + (root.model.status.logs || root.model.actionReply.logs || "journalctl --user -u lanai-vm.service -u lanai-client.service") + "\nSetup and snapshot log: " + root.model.stateDir + "/panel-job.log" }
+            Note { text: "Open the user service logs for Lanai's Windows and window services.\nSetup and snapshot log: " + root.model.stateDir + "/panel-job.log" }
             Note { text: "If the Windows screen is blank, shut Lanai down first. Then use omarchy-windows-vm to open Windows. Never start both together." }
           }
         }
@@ -296,6 +337,8 @@ Panel {
     Note {
       visible: text !== ""
       text: commands.indexOf(root.model.action) < 0 ? ""
+        : root.model.action === "snapshot" && root.model.actionReply.ok === true ? root.snapshotMessage(root.model.actionReply)
+        : root.model.action === "snapshots" && root.model.actionReply.ok === true && root.model.snapshots.length === 0 ? ""
         : successMessage && root.model.actionReply.ok === true ? successMessage : root.model.actionReply.message || ""
     }
     Note {
@@ -320,6 +363,7 @@ Panel {
     foreground: root.foreground
     fontFamily: root.fontFamily
     enabled: !root.model.busy
+    opacity: enabled ? 1.0 : 0.4
     onActiveFocusChanged: if (activeFocus) root.reveal(this)
   }
 }

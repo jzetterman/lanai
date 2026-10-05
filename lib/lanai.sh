@@ -855,7 +855,8 @@ status_facts() {
 # that is not the pinned build), force_stop (true once a shutdown from the
 # bar has run 2 minutes, spec 16), active (the unit runs, starts or stops:
 # an active VM before setup is done also reads setup-needed, so the panel
-# needs it during the setup boot), window (the running VM shows QEMU's
+# needs it during the setup boot), setup_done (LanaiSetup is done),
+# window (the running VM shows QEMU's
 # window, so Open is hidden) and, for failed, logs. The client log's
 # verdict (LanaiVersion) makes a mismatch version-mismatch, and a missing
 # IDD on a booted VM failed, with the client log as its logs (spec 8); a
@@ -947,9 +948,11 @@ status_map() {
     --argjson force "$force" --arg logs "$logs" --argjson pending "$([[ $forced == yes ]] && echo true || echo false)" \
     --argjson active "$up" --argjson window "$([[ ${f[LanaiWindow]:-} == true ]] && echo true || echo false)" \
     --argjson restore "${f[LanaiRestorePending]:-false}" \
+    --argjson setup_done "$([[ $setup == "done" ]] && echo true || echo false)" \
     '{notice: (if $notice == "" then null else $notice end),
       warning: (if $warning == "" then null else $warning end),
-      force_stop: $force, forced_pending: $pending, active: $active, window: $window, restore_pending: $restore} +
+      force_stop: $force, forced_pending: $pending, active: $active, setup_done: $setup_done,
+      window: $window, restore_pending: $restore} +
       (if $logs == "" then {} else {logs: $logs} end)')"
 }
 

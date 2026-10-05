@@ -11,8 +11,10 @@ Item {
   readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/lanai"
   property var status: ({state: "checking", message: "Checking Windows…", next: ""})
   property bool fresh: false
+  property bool refreshAgain: false
   property var setupReply: ({})
   property var actionReply: ({})
+  property var snapshotReply: ({})
   property var settingsReply: ({})
   property var jobError: ({})
   property var job: ({active: false})
@@ -36,8 +38,8 @@ Item {
   readonly property bool setupBusy: (pendingToken !== "" && pendingCommand === "setup") || (job.active === true && job.command === "setup")
   readonly property bool busy: actionProcess.running || (longBusy && !automaticWait)
   readonly property bool canOpen: fresh && status.active === true && status.window !== true && status.state !== "stopping" && status.state !== "starting"
-  readonly property bool canStart: fresh && status.active === false && (status.state === "stopped" || status.state === "failed") && !busy
-  readonly property bool canStop: fresh && status.active === true && status.state !== "starting" && !actionProcess.running
+  readonly property bool canStart: fresh && status.active === false && status.restore_pending !== true && (status.state === "stopped" || status.state === "failed") && !busy
+  readonly property bool canStop: fresh && status.active === true && !actionProcess.running
   readonly property bool canForce: fresh && status.state === "stopping" && status.force_stop === true && !actionProcess.running
   readonly property int pollInterval: panelOpen || status.state === "starting" || status.state === "stopping" ? 2000 : 15000
   readonly property string stateLabel: ({
@@ -47,7 +49,7 @@ Item {
     "stopped": "Stopped", "failed": "Failed"
   })[status.state] || "Status unavailable"
   readonly property string tooltip: "Lanai\n" + stateLabel + "\n" + status.message
-    + (status.next ? "\nNext: " + status.next : "")
+    + (status.next ? "\nNext step: " + status.next : "")
     + (status.logs ? "\nLogs: " + status.logs : "")
 
   // All ordinary commands have a hard ten-second deadline and use literal argv.
@@ -63,7 +65,7 @@ Item {
   }
 
   function refresh() {
-    if (statusProcess.running) return
+    if (statusProcess.running) { refreshAgain = true; return }
     statusProcess.command = command(["status"])
     statusProcess.running = true
   }
@@ -86,6 +88,7 @@ Item {
   function launch(args, automatic) {
     if (actionProcess.running || longBusy) return
     automaticJob = automatic === true
+    if (args[0] === "setup" && setupReply.step !== "3") snapshotReply = {}
     if (!automaticJob) { action = args[0]; actionReply = {} }
     autoPaused = false
     if (args[0] === "setup") { lastSetupAt = Date.now(); SetupCalls.record(lastSetupAt) }
@@ -130,6 +133,7 @@ Item {
     } else {
       action = job.command
       actionReply = job.reply
+      if (job.command === "snapshot" && job.reply.ok === true) snapshotReply = job.reply
       if (job.command === "restore" && job.reply.ok === true) setupReply = {}
 
     }
@@ -185,6 +189,11 @@ Item {
     id: statusProcess
     stdout: StdioCollector { id: statusOutput; waitForEnd: true }
     onExited: function(code) {
+      if (root.refreshAgain) {
+        root.refreshAgain = false
+        root.refresh()
+        return
+      }
       var reply = root.parse(statusOutput.text)
       root.fresh = code === 0 && reply.ok === true
       if (!root.fresh) reply.state = "failed"
