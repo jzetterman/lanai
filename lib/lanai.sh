@@ -881,7 +881,7 @@ status_map() {
         if ((${f[LanaiStopAge]:-0} >= 120)); then
           force=true
           message="Windows has not shut down after 2 minutes. It may be installing updates, or a Windows security screen may be open."
-          next="wait, or use the forced stop in the panel"
+          next="wait, or use Force stop below"
         fi
       elif [[ $qmp == internal-error || $qmp == guest-panicked || $qmp == io-error ]]; then
         state=failed message="QEMU reports $qmp." next=$failed_next
@@ -935,6 +935,11 @@ status_map() {
       ;;
     *) state=failed message="Lanai cannot read the VM's state from systemd." next=$failed_next ;;
   esac
+  if [[ ${f[LanaiRestorePending]:-false} == true && ($active == inactive || $active == failed)
+    && ($state == stopped || $state == setup-needed) ]]; then
+    message="A restore did not finish, so Windows cannot start."
+    next="finish the restore in the Lanai panel"
+  fi
   # status_facts reports LanaiClient only for an active unit.
   if [[ ${f[LanaiClient]:-} == timeout ]]; then
     warning+="${warning:+ }The Windows window did not open: QEMU did not answer within $LANAI_CLIENT_WAIT s. Try Open again."
@@ -1469,10 +1474,12 @@ cmd_snapshot() {
 # snapshots: list the complete snapshots of the storage location, oldest
 # first.
 cmd_snapshots() {
-  local dir list
+  local dir list count noun=snapshots
   dir=$(storage_dir) || return 1
   list=$(snapshot_list "$dir" | jq -R . | jq -s -c .)
-  emit true "" "$(jq -r 'length' <<<"$list") snapshot(s)" "" "{\"snapshots\": $list}"
+  count=$(jq -r 'length' <<<"$list")
+  ((count != 1)) || noun=snapshot
+  emit true "" "$count $noun" "" "{\"snapshots\": $list}"
 }
 
 # restore [<name>]: return the storage location to a snapshot (spec 7).

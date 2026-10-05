@@ -74,7 +74,8 @@ and tools. Files Lanai downloads itself are pinned with SHA-256 in
 Accept the snapshot offer before the first boot, or make a backup and explicitly
 continue without a snapshot. A snapshot shares disk blocks, takes little space
 initially and grows as Windows changes. The panel reports its path and explains
-how to delete the snapshot folder. Restore buttons appear after **List snapshots**.
+how to delete the snapshot folder. The list updates after each snapshot or restore
+job. **List snapshots** also refreshes it.
 Snapshot and restore jobs show a note while they run. You can close the panel
 during a snapshot. Keep Windows off until a restore finishes. Lanai blocks Start
 while a restore is unfinished; use **Finish the unfinished restore** to resume it.
@@ -96,13 +97,18 @@ or **Set up in the Windows window** afterward. Open window is hidden while QEMU'
 setup window is in use. Reopening the panel watches setup that is still running;
 it does not resume setup from a result left by an earlier session. The panel says
 setup is finished only when Lanai has recorded its completion for this disk.
+If Lanai stops checking automatically, the panel says so. Click **Continue setup**
+to go on. After a shell restart, that button checks where setup stands.
 
 ## Daily use
 
 Left-click the glyph to start Windows, or open/focus its window while it runs.
 Closing the Looking Glass window leaves Windows running; click the glyph to reopen
 it. Right-click opens the panel. Panel controls support Tab, Shift+Tab, Enter and
-Space; Escape closes it. Settings accept whole numbers: 1–512 GiB and 1–64 cores,
+Space; Escape closes it. The tooltip includes warnings and forced-stop notices.
+If starting or opening fails, the glyph opens the panel to explain why. It also
+opens the panel when a start reports that the previous run was forced to stop.
+Settings accept whole numbers: 1–512 GiB and 1–64 cores,
 and apply at the next start. Reopening the panel discards unsaved settings edits.
 The CLI equivalent is `bin/lanai settings <GiB> <cores>`.
 
@@ -262,7 +268,8 @@ from those checks.
 
    Settings, downloaded builds, runtime copies and setup state remain in the Lanai
    directories under XDG config/data/state/cache. Keep snapshots until you know you
-   no longer need them; use the exact snapshot deletion command Lanai reported.
+   no longer need them. To delete one, remove its folder, at the path Lanai showed
+   when it took the snapshot.
    Windows' disk and firmware are kept, and `omarchy-windows-vm` remains available.
    Host packages may stay for other apps; remove only dependencies you know are unused.
 

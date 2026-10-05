@@ -177,7 +177,7 @@ map() {
   assert_equal "$(field state)" stopping
   assert_equal "$(field force_stop)" true
   run field next
-  assert_output --partial "forced stop"
+  assert_output "wait, or use Force stop below"
   unit_show deactivating
   map LanaiInstall=present LanaiSetup=done LanaiContainer=none
   assert_equal "$(field state)" stopping

@@ -92,6 +92,61 @@ setup() {
   assert_output ''
 }
 
+@test "notice-seen: a busy operation cannot overwrite its forced verdict" {
+  local s lock_fd
+  s=$(state_dir)
+  mkdir -p "$s"
+  printf 'forced\n' >"$s/last-run"
+  exec {lock_fd}>"$s/lock"
+  flock "$lock_fd"
+  lanai_run notice-seen
+  assert_failure
+  assert_equal "$(field ok)" false
+  assert_equal "$(field message)" "$LANAI_BUSY."
+  assert_equal "$(wc -l <<<"$output")" 1
+  assert_equal "$(cat "$s/last-run")" forced
+  exec {lock_fd}>&-
+  lanai_run notice-seen
+  assert_success
+  assert_equal "$(cat "$s/last-run")" clean
+}
+
+@test "status: an unfinished restore replaces start and setup guidance while stopped" {
+  local setup state
+  for setup in 'done' needed; do
+    [[ $setup == 'done' ]] && state=stopped || state="setup-needed"
+    run status_map <<EOF
+ActiveState=inactive
+LanaiInstall=present
+LanaiSetup=$setup
+LanaiRestorePending=true
+EOF
+    assert_success
+    assert_equal "$(jq -r '.state' <<<"$output")" "$state"
+    assert_equal "$(jq -r '.active' <<<"$output")" false
+    assert_equal "$(jq -r '.message' <<<"$output")" "A restore did not finish, so Windows cannot start."
+    assert_equal "$(jq -r '.next' <<<"$output")" "finish the restore in the Lanai panel"
+  done
+}
+
+@test "snapshots: counts use singular for one and plural for zero or many" {
+  local snapshot_count
+  snapshot_list() {
+    local i
+    for ((i = 0; i < snapshot_count; i++)); do printf '%s/snapshot-%s\n' "$T" "$i"; done
+  }
+  for snapshot_count in 0 1 2; do
+    run cmd_snapshots
+    assert_success
+    assert_equal "$(jq -r '.snapshots | length' <<<"$output")" "$snapshot_count"
+    if ((snapshot_count == 1)); then
+      assert_equal "$(jq -r '.message' <<<"$output")" "1 snapshot"
+    else
+      assert_equal "$(jq -r '.message' <<<"$output")" "$snapshot_count snapshots"
+    fi
+  done
+}
+
 @test "status: reports an unfinished restore without contacting a VM or install" {
   # Exercise real facts and mapping, with only external/install reads stubbed.
   systemctl() { printf 'ActiveState=inactive\n'; }

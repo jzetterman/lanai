@@ -24,12 +24,15 @@ Panel {
   readonly property bool questions: model.fresh && model.status.active === true
     && model.status.state === "setup-needed" && model.status.window !== true
     && model.setupReply.step === "6" && (model.setupReply.questions || []).length > 0
-  readonly property bool setupFinished: model.fresh && model.status.setup_done === true && model.status.state !== "setup-needed"
-    && !model.setupBusy && (Object.keys(model.setupReply).length === 0 || model.setupReply.step === "7")
+  readonly property bool setupFinished: !model.setupBusy && ((model.setupReply.ok === true && model.setupReply.step === "7")
+    || (model.fresh && model.status.setup_done === true && model.status.state !== "setup-needed"
+      && Object.keys(model.setupReply).length === 0))
   readonly property bool setupStopped: model.setupReply.ok === true && model.setupReply.step === "5"
     && model.fresh && model.status.active === false
   readonly property bool waitingForBoot: model.setupWaiting && model.setupReply.step === "6"
     && (!model.setupBusy || model.automaticWait)
+  readonly property bool setupBoot: model.setupReply.step === "5" && model.setupReply.ok === true
+    && model.status.active === true && !model.setupBusy
   readonly property bool snapshotSaved: model.snapshotReply.ok === true
   readonly property string progressCommand: model.pendingToken !== "" ? model.pendingCommand
     : model.job.active === true ? model.job.command : ""
@@ -72,13 +75,33 @@ Panel {
 
   function setupNext() {
     var reply = model.setupReply
-    if (setupStopped || reply.step === "3a" || reply.step === "3" || displayChoices
+    if (model.autoPaused || setupBoot || reply.step === "7" || setupStopped || reply.step === "3a" || reply.step === "3" || displayChoices
         || (reply.step === "5" && reply.ok === false)) return ""
     if (reply.step === "2") return "Click Install in a terminal, type your password there, then click Continue setup."
     if (questions) return "Answer both questions, then click Send answers."
     if (waitingForBoot) return ""
     if (model.setupWaiting) return "Lanai checks again by itself every 10 seconds."
-    return reply.next || ""
+    var next = panelNext(reply, "setup")
+    return next ? "Next step: " + next : ""
+  }
+
+  function panelNext(reply, command) {
+    var next = reply.next || ""
+    if (command === "setup" && reply.step === "4") return "Click Continue setup to build it again."
+    if (reply.message === "The operation was interrupted.") return "Click Continue setup to resume."
+    if (/lanai restore/.test(next) || (command === "restore" && reply.ok === false)) return "Click Finish the unfinished restore."
+    if (/lanai snapshots/.test(next)) return "Choose a snapshot from the list below."
+    if (/run (Lanai )?setup/.test(next)) return "Click Continue setup to try again."
+    if (command === "setup" && /setup|journalctl/.test(next)) return "Click Continue setup to try again."
+    if (/journalctl/.test(next)) return "Check the logs under Help, then try again."
+    return next
+  }
+
+  function panelMessage(reply) {
+    return (reply.message || "").replace(/\s*\(lanai snapshots lists them\)/g, "")
+      .replace(/run lanai restore again(?: to finish it first)?/g, "click Finish the unfinished restore")
+      .replace(/Restore another snapshot by name/g, "Choose another snapshot from the list below")
+      .replace(/name a snapshot to restore/g, "Choose a snapshot from the list below")
   }
 
   // The panel has restore buttons and gives deletion guidance without commands.
@@ -122,12 +145,12 @@ Panel {
           Note { text: root.model.status.message }
           Note {
             visible: text !== ""
-            text: root.model.status.state === "setup-needed"
-              ? root.model.status.active === false && Object.keys(root.model.setupReply).length === 0
-                ? "Click Continue setup." : "Follow the steps under Setup below."
+            text: root.setupFinished ? "" : root.model.status.state === "setup-needed"
+              ? Object.keys(root.model.setupReply).length === 0
+                ? "Click Continue setup to see where setup stands." : "Follow the steps under Setup below."
               : root.model.status.next ? "Next step: " + root.model.status.next : ""
           }
-          Note { visible: root.model.status.restore_pending === true; text: "A restore did not finish. Windows cannot start until it does. Click Finish the unfinished restore under Snapshots." }
+          Note { visible: root.model.status.restore_pending === true; text: "Click Finish the unfinished restore under Snapshots." }
           Note { visible: text !== ""; text: root.model.status.warning || "" }
           Note { visible: text !== ""; text: root.model.status.notice || "" }
           Action { text: "Dismiss"; visible: !!root.model.status.notice; onClicked: root.model.run(["notice-seen"]) }
@@ -185,21 +208,23 @@ Panel {
             }
             Note {
               visible: text !== ""
-              text: root.setupStopped
+              text: root.model.autoPaused ? "Lanai stopped checking automatically. Click Continue setup to go on."
+                : root.setupBoot ? ""
+                : root.setupStopped
                 ? SetupCalls.shouldAdvance(root.model.setupReply, root.model.status)
                   ? "Windows has shut down. Lanai continues setup in a few seconds." : "Windows has shut down. Click Continue setup."
                 : root.model.setupWaiting && root.model.setupReply.step === "6" && root.model.status.active === false
                   ? "Windows is off, so setup cannot finish its checks. Click Continue setup to start Windows again."
                 : root.waitingForBoot ? "Waiting for Windows to finish starting. Lanai checks again every 10 seconds."
                 : root.model.setupReply.step === "3a" ? "Lanai filled in a missing file in the Windows install. Click Continue setup."
-                : root.model.setupReply.message || ""
+                : root.panelMessage(root.model.setupReply)
             }
             Note { visible: text !== ""; text: root.setupNext() }
             ActionResult { commands: ["setup-host"] }
             Flow {
               width: parent.width
               spacing: Style.space(6)
-              Action { text: "Continue setup"; visible: root.model.setupReply.step !== "3" || root.snapshotSaved; enabled: !root.model.busy && !root.model.longBusy; onClicked: root.model.launch(["setup"]) }
+              Action { text: "Continue setup"; visible: !root.displayChoices && (root.model.setupReply.step !== "3" || root.snapshotSaved); enabled: !root.model.busy && (!root.model.longBusy || root.model.automaticWait); onClicked: root.model.launch(["setup"]) }
               Action { text: "Install in a terminal"; visible: root.model.setupReply.step === "2"; enabled: !root.model.busy; onClicked: root.model.run(["setup-host"]) }
             }
 
@@ -238,12 +263,12 @@ Panel {
               }
             }
             Note {
-              visible: root.model.setupReply.step === "5" && root.model.setupReply.ok === true && root.model.status.active === true
+              visible: root.setupBoot
               text: "Windows is running the setup boot. "
                 + (root.model.status.window !== true ? "If you cannot see Windows, click Open window. " : "")
                 + "In Windows, open File Explorer, open Lanai's setup drive and run setup.cmd. When Windows asks to allow changes, click Yes. Do not sign in as a different user. Setup installs the drivers and shuts Windows down by itself. Shut down in this panel does not finish setup."
             }
-            Note { visible: root.model.setupReply.step === "5" && root.model.setupReply.ok === false; text: "Setup needs another pass. Click Shut down, wait for Windows to stop, then click Continue setup." }
+            Note { visible: root.model.setupReply.step === "5" && root.model.setupReply.ok === false && root.model.status.active === true; text: "Setup needs another pass. Click Shut down, wait for Windows to stop, then click Continue setup." }
 
             Column {
               width: parent.width
@@ -272,6 +297,8 @@ Panel {
           }
           Note { visible: text !== ""; text: root.model.jobError.message || "" }
           Note { visible: text !== ""; text: root.model.jobError.next || "" }
+          Note { visible: text !== ""; text: root.model.launchError.message || "" }
+          Note { visible: text !== ""; text: root.model.launchError.next ? "Next step: " + root.model.launchError.next : "" }
 
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader { text: "Settings"; foreground: root.foreground; fontFamily: root.fontFamily }
@@ -284,7 +311,7 @@ Panel {
             NumberField { id: coresField; label: "CPU cores"; from: 1; to: 64; value: root.model.cores; enabled: root.model.settingsLoaded; foreground: root.foreground; fontFamily: root.fontFamily }
             Action { text: "Save settings"; enabled: root.model.settingsLoaded && !root.model.busy; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value)]) }
           }
-          ActionResult { commands: ["settings"]; successMessage: "Saved. Memory and cores change the next time Windows starts." }
+          ActionResult { commands: ["settings"]; successMessage: "Saved." }
 
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader { text: "Snapshots"; foreground: root.foreground; fontFamily: root.fontFamily }
@@ -318,10 +345,11 @@ Panel {
           Column {
             width: parent.width
             spacing: Style.space(6)
-            visible: root.model.status.state === "failed" || root.model.setupReply.ok === false
+            visible: root.model.status.state === "failed" || (root.model.setupReply.ok === false
+              && root.model.setupReply.step !== "2" && root.model.setupReply.step !== "3")
               || (root.model.actionReply.ok === false && (root.model.action === "start" || root.model.action === "open"))
             PanelSectionHeader { text: "Help"; foreground: root.foreground; fontFamily: root.fontFamily }
-            Note { text: "Open the user service logs for Lanai's Windows and window services.\nSetup and snapshot log: " + root.model.stateDir + "/panel-job.log" }
+            Note { text: "Logs: " + (root.model.status.logs || "journalctl --user -u lanai-vm -u lanai-client") + "\nSetup and snapshot log: " + root.model.stateDir + "/panel-job.log" }
             Note { text: "If the Windows screen is blank, shut Lanai down first. Then use omarchy-windows-vm to open Windows. Never start both together." }
           }
         }
@@ -332,18 +360,23 @@ Panel {
   component ActionResult: Column {
     required property var commands
     property string successMessage: ""
+    readonly property bool showReply: commands.indexOf(root.model.action) >= 0
+      && (["start", "open", "stop", "notice-seen"].indexOf(root.model.action) < 0
+        || root.model.actionReply.ok === false
+        || (root.model.action === "start" && root.model.actionReply.network === false))
     width: parent.width
     spacing: Style.space(6)
     Note {
       visible: text !== ""
-      text: commands.indexOf(root.model.action) < 0 ? ""
+      text: !showReply ? ""
         : root.model.action === "snapshot" && root.model.actionReply.ok === true ? root.snapshotMessage(root.model.actionReply)
         : root.model.action === "snapshots" && root.model.actionReply.ok === true && root.model.snapshots.length === 0 ? ""
-        : successMessage && root.model.actionReply.ok === true ? successMessage : root.model.actionReply.message || ""
+        : successMessage && root.model.actionReply.ok === true ? successMessage : root.panelMessage(root.model.actionReply)
     }
     Note {
       visible: text !== ""
-      text: commands.indexOf(root.model.action) < 0 ? "" : root.model.actionReply.next || ""
+      text: showReply && root.panelNext(root.model.actionReply, root.model.action)
+        ? "Next step: " + root.panelNext(root.model.actionReply, root.model.action) : ""
     }
   }
 

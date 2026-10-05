@@ -17,12 +17,15 @@ Item {
   property var snapshotReply: ({})
   property var settingsReply: ({})
   property var jobError: ({})
+  property var launchError: ({})
   property var job: ({active: false})
   property string pendingToken: ""
   property string pendingCommand: ""
   property string seenToken: ""
   property bool jobAttached: false
   property string action: ""
+  property bool glyphAction: false
+  signal panelRequested()
   property bool autoPaused: false
   property bool automaticJob: false
   property double lastSetupAt: 0
@@ -32,6 +35,7 @@ Item {
   property int cores: 1
   property bool settingsLoaded: false
   property var snapshots: []
+  property bool snapshotsAgain: false
   readonly property bool longBusy: pendingToken !== "" || job.active === true
   readonly property bool setupWaiting: SetupCalls.waiting(setupReply)
   readonly property bool automaticWait: automaticJob && setupWaiting
@@ -49,7 +53,9 @@ Item {
     "stopped": "Stopped", "failed": "Failed"
   })[status.state] || "Status unavailable"
   readonly property string tooltip: "Lanai\n" + stateLabel + "\n" + status.message
-    + (status.next ? "\nNext step: " + status.next : "")
+    + (status.next ? "\nNext step: " + (status.force_stop === true ? "wait, or open the Lanai panel to force a stop" : status.next) : "")
+    + (status.notice ? "\n" + status.notice : "")
+    + (status.warning ? "\n" + status.warning : "")
     + (status.logs ? "\nLogs: " + status.logs : "")
 
   // All ordinary commands have a hard ten-second deadline and use literal argv.
@@ -76,17 +82,26 @@ Item {
     settingsProcess.running = true
   }
 
-  function run(args) {
+  function run(args, fromGlyph) {
     if (actionProcess.running) return
     action = args[0]
+    glyphAction = fromGlyph === true
     actionReply = {}
     actionProcess.command = command(args)
     actionProcess.running = true
   }
 
+  // Refresh the list without replacing a snapshot or restore's action reply.
+  function loadSnapshots() {
+    if (snapshotsProcess.running) { snapshotsAgain = true; return }
+    snapshotsProcess.command = command(["snapshots"])
+    snapshotsProcess.running = true
+  }
+
   // Long operations survive panel/plugin unloading. The helper publishes progress.
   function launch(args, automatic) {
     if (actionProcess.running || longBusy) return
+    launchError = {}
     automaticJob = automatic === true
     if (args[0] === "setup" && setupReply.step !== "3") snapshotReply = {}
     if (!automaticJob) { action = args[0]; actionReply = {} }
@@ -120,12 +135,11 @@ Item {
     if (pendingToken && Date.now() - pendingAt >= 10000 && (reply.ok !== true || job.active !== true)) {
       pendingToken = ""
       autoPaused = true
-      jobError = {ok: false, message: "The operation did not start.", next: "try again; see " + stateDir + "/panel-job.log"}
+      launchError = {ok: false, message: "The operation did not start.", next: "try again; see " + stateDir + "/panel-job.log"}
     }
     if (reply.ok !== true) return
     if (job.active === true || !job.reply || job.token === seenToken) return
     seenToken = job.token
-    autoPaused = false
     if (job.command === "setup") {
       lastSetupAt = Date.now()
       if (job.reply.ok === false) setupReply = job.reply
@@ -135,7 +149,7 @@ Item {
       actionReply = job.reply
       if (job.command === "snapshot" && job.reply.ok === true) snapshotReply = job.reply
       if (job.command === "restore" && job.reply.ok === true) setupReply = {}
-
+      if (job.command === "snapshot" || job.command === "restore") loadSnapshots()
     }
     refresh()
   }
@@ -208,6 +222,8 @@ Item {
       var reply = root.parse(actionOutput.text)
       if (code !== 0) reply.ok = false
       root.actionReply = reply
+      if (root.glyphAction && (root.action === "start" || root.action === "open")
+          && (reply.ok !== true || (root.action === "start" && reply.last_run === "forced"))) root.panelRequested()
       if (reply.ok === true && root.action === "settings") {
         root.memory = reply.memory_gib
         root.cores = reply.cores
@@ -220,6 +236,20 @@ Item {
       if (reply.ok === true && root.action === "notice-seen")
         root.status = Object.assign({}, root.status, {notice: null})
       if (root.action !== "settings" && root.action !== "snapshots") root.refresh()
+    }
+  }
+
+  Process {
+    id: snapshotsProcess
+    stdout: StdioCollector { id: snapshotsOutput; waitForEnd: true }
+    onExited: function(code) {
+      if (root.snapshotsAgain) {
+        root.snapshotsAgain = false
+        root.loadSnapshots()
+        return
+      }
+      var reply = root.parse(snapshotsOutput.text)
+      if (code === 0 && reply.ok === true) root.snapshots = reply.snapshots || []
     }
   }
 

@@ -1187,6 +1187,9 @@ reviews look hard at the panel's wording, layout and states.
   Status `window: true` hides Open and routes the primary click to the panel during
   a QEMU setup boot. The bar widget owns the popout so the shell's open-panel dot
   follows it. The mismatch label reads "Display driver needs an update".
+  The tooltip includes notices and warnings. Failed glyph starts/opens and starts
+  that report a forced previous run open the panel. Force-stop guidance names the
+  button below in the panel and points to the panel from the tooltip.
 - `LanaiModel.qml` owns status polling (2 s with the panel open or while starting or
   stopping, 15 s otherwise) and literal-argv Processes with a hard 10 s deadline.
   Opening the panel reads settings through a separate Process, including while a
@@ -1211,6 +1214,10 @@ reviews look hard at the panel's wording, layout and states.
   running jobs remain watched. Failed polls also enforce the 10 s launch deadline;
   a launch timeout pauses automatic progress until a click, even with a previous
   successful wait reply.
+  Its error is separate from polling errors and survives successful polls until
+  the next launch. Paused guidance asks for Continue setup instead of promising
+  automatic checks. Continue setup stays enabled during automatic waits; launch
+  still refuses overlapping work.
   `SetupCalls.js` decides automatic progress without matching English: any
   successful step 5 reply requires an inactive setup-needed status; a successful
   step 6 reply without questions requires an active VM. Automatic calls are
@@ -1221,7 +1228,9 @@ reviews look hard at the panel's wording, layout and states.
   failures have their own reply rather than replacing action results.
   Status gates Open, display choices and the two final questions. The UI shows the
   seven steps while setup is underway, then "Setup is finished" and Run setup again.
-  Completion requires status's `setup_done: true`, including after a shell restart.
+  A successful step 7 reply shows completion immediately. After a shell restart,
+  completion requires status's `setup_done: true`; an empty reply asks the user to
+  click Continue setup to see where setup stands.
   A missing install asks for installation first. During setup boots the top guidance
   points to Setup; a stopped step 6 wait asks to start Windows again.
   Panel instructions refer to its buttons. A stopped setup boot takes precedence
@@ -1233,6 +1242,14 @@ reviews look hard at the panel's wording, layout and states.
   Snapshots and step 3. Empty snapshot lists say "No snapshots yet." The panel uses
   restore buttons and file-manager deletion guidance instead of CLI instructions.
   Action replies appear under VM controls, Settings or Snapshots as appropriate.
+  Display choices hide Continue setup; the shutdown retry note requires an active
+  VM. The active step 5 setup-drive note replaces the reply and automatic-wait
+  text, and hides during the next setup job. Ordinary start/open/stop/dismiss
+  successes add no reply text, except a start without a network. Next-step hints
+  name panel controls, and settings success says only "Saved." Help excludes the
+  expected package/snapshot offers and names service and panel-job logs. Snapshot
+  and restore completion refreshes the list without replacing the action reply;
+  counts read "1 snapshot" or "N snapshots".
   The panel shows the detached operation log;
   the existing backend emits no incremental build/download progress percentages.
 - Small backend additions in `lib/ui.sh` (sourced by `lib/lanai.sh`): `lanai settings`
@@ -1242,10 +1259,13 @@ reviews look hard at the panel's wording, layout and states.
   publishes an atomic `panel-job.json`; `lanai ui-job-status` detects an interrupted
   worker from its lock, rereading the marker under that lock so a just-finished job
   keeps its real reply. The log retains only the last run. `lanai notice-seen`
-  atomically sets last-run to clean; the forced-stop notice's Dismiss button calls
+  takes the operation lock, replies busy on contention, and atomically sets
+  last-run to clean; the forced-stop notice's Dismiss button calls
   it with literal argv. Status includes `setup_done` and `restore_pending`. An
   unfinished restore blocks Start, shows guidance at the top, and offers Finish the
-  unfinished restore outside in-use. Setup flags use jq's `--`
+  unfinished restore outside in-use. Stopped and setup-needed status explain that
+  an unfinished restore prevents starting Windows; the panel adds just the button
+  hint. Setup flags use jq's `--`
   separator and reach the CLI literally.
   These additions make detached completion and settings writes reviewable and
   testable without shell interpolation in QML. They are the
@@ -1267,17 +1287,24 @@ reviews look hard at the panel's wording, layout and states.
   measurements remain explicit placeholders, not inferred results.
 - Validation: `test/ui.bats` was written before implementation and exercises settings
   bounds, preservation/refusal, literal detached arguments, failures, concurrent
-  jobs, interrupted jobs and the one-JSON CLI contract. All 18 tests pass, including
-  status's `setup_done` and SetupCalls' successful-wait rules. The setup flag test
+  jobs, interrupted jobs and the one-JSON CLI contract. All 21 tests pass, including
+  notice dismissal under contention, unfinished-restore guidance, snapshot count
+  wording, status's `setup_done` and SetupCalls' successful-wait rules. The setup flag test
   reproduced the missing field before the backend change. The SetupCalls test runs
   the real functions with Node and skips cleanly if that runtime is unavailable.
-  Only that touched bats file was run because this sandbox blocks Unix sockets.
+  The 12 socket-free `status_map` tests in touched `test/lifecycle.bats` also pass,
+  including the panel's Force stop hint. Other lifecycle tests were not run because
+  this sandbox blocks Unix sockets. All scratch stayed under `.btrfs-test/`.
   `/usr/bin/qmllint` passes `LanaiPanel.qml`, `LanaiModel.qml` and `Widget.qml` with
   the shell import path. The complete project shellcheck command passes.
   A temporary source-based harness passes 12 checks for status refresh races,
   setup completion, restore blocking and snapshot copy. A standalone Qt 6 test
   verifies that reopening resets both settings fields and restores their bindings.
   Both harnesses were removed after validation.
+  A further temporary harness passes 11 behavioral checks for glyph feedback,
+  persistent launch timeouts, paused and active setup copy, automatic waits,
+  display choices, Help, completion, action hints and snapshot-list refreshes.
+  It was removed after validation.
   Earlier temporary harnesses verified launch timeouts and settings reads during
   actions. No VM, shell, real units, plugin installation or review stage ran.
 

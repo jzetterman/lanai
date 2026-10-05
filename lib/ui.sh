@@ -10,6 +10,10 @@ cmd_notice_seen() {
     return 2
   fi
   umask 077
+  if ! lanai_flock; then
+    emit false "" "$LANAI_BUSY." "try again when it finishes"
+    return 1
+  fi
   s=$(state_dir)
   mkdir -p -- "$s"
   tmp=$(mktemp "$s/last-run.XXXXXX") || return 1

@@ -19,12 +19,12 @@ BarWidget {
 
   // A QEMU setup window has no Looking Glass display yet; use the panel instead.
   function primaryClick() {
-    if (model.canStart) model.run(["start"])
-    else if (model.canOpen && !model.busy) model.run(["open"])
+    if (model.canStart) model.run(["start"], true)
+    else if (model.canOpen && !model.busy) model.run(["open"], true)
     else panel.open()
   }
 
-  LanaiModel { id: model; panelOpen: panel.opened }
+  LanaiModel { id: model; panelOpen: panel.opened; onPanelRequested: panel.open() }
   LanaiPanel { id: panel; bar: root.bar; settings: root.settings; anchorItem: button; hostWidget: root; model: model }
 
   BarIconButton {
