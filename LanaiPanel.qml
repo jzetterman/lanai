@@ -10,6 +10,7 @@ Panel {
   manageIpc: false
   required property LanaiModel model
   property Item anchorItem: null
+  property var hostWidget: null
   property bool forceArmed: false
   property string restoreArmed: ""
   property string shareAnswer: ""
@@ -22,6 +23,12 @@ Panel {
   readonly property bool questions: model.fresh && model.status.active === true
     && model.status.state === "setup-needed" && model.status.window !== true
     && model.setupReply.step === "6" && (model.setupReply.questions || []).length > 0
+  readonly property bool setupFinished: model.fresh && model.status.state !== "setup-needed"
+    && !model.setupBusy && (Object.keys(model.setupReply).length === 0 || model.setupReply.step === "7")
+  readonly property bool setupStopped: model.setupReply.ok === true && model.setupReply.step === "5"
+    && model.fresh && model.status.active === false
+  readonly property bool waitingForBoot: model.setupWaiting && model.setupReply.step === "6"
+    && (!model.setupBusy || model.automaticWait)
   readonly property var steps: ["Check the Windows install", "Install required software", "Offer a snapshot",
     "Prepare the Windows window", "Install drivers in Windows and shut down", "Restart and check Windows", "Ready"]
 
@@ -50,10 +57,21 @@ Panel {
       flick.contentY = Math.min(Math.max(0, flick.contentHeight - flick.height), y + item.height - flick.height)
   }
 
+  function setupNext() {
+    var reply = model.setupReply
+    if (setupStopped || reply.step === "3a" || reply.step === "3" || displayChoices
+        || (reply.step === "5" && reply.ok === false)) return ""
+    if (reply.step === "2") return "Click Install in a terminal, type your password there, then click Continue setup."
+    if (questions) return "Answer both questions, then click Send answers."
+    if (waitingForBoot) return ""
+    if (model.setupWaiting) return "Lanai checks again by itself every 10 seconds."
+    return reply.next || ""
+  }
+
   KeyboardPanel {
     id: popup
     anchorItem: root.anchorItem
-    owner: root
+    owner: root.hostWidget || root
     bar: root.bar
     open: root.opened
     focusTarget: focusScope
@@ -83,10 +101,10 @@ Panel {
           PanelSectionHeader { text: "Lanai"; foreground: root.foreground; fontFamily: root.fontFamily }
           Note { text: root.model.stateLabel }
           Note { text: root.model.status.message }
-          Note { visible: text !== ""; text: root.model.status.next ? "Next: " + root.model.status.next : "" }
+          Note { visible: text !== ""; text: root.model.status.state === "setup-needed" ? "Click Continue setup." : root.model.status.next || "" }
           Note { visible: text !== ""; text: root.model.status.warning || "" }
           Note { visible: text !== ""; text: root.model.status.notice || "" }
-          Note { visible: root.model.status.window === true; text: "Windows is open in QEMU's screen. Run setup.cmd there." }
+          Action { text: "Dismiss"; visible: !!root.model.status.notice; onClicked: root.model.run(["notice-seen"]) }
 
           Flow {
             width: parent.width
@@ -95,12 +113,13 @@ Panel {
             Action { text: "Open window"; visible: root.model.status.window !== true; enabled: root.model.canOpen && !root.model.busy; onClicked: root.model.run(["open"]) }
             Action { text: "Shut down"; enabled: root.model.canStop; onClicked: root.model.run(["stop"]) }
           }
+          ActionResult { commands: ["start", "open", "stop", "force-stop", "notice-seen"] }
 
           Column {
             width: parent.width
             spacing: Style.space(6)
             visible: root.model.canForce
-            Note { text: "Windows has not shut down after 2 minutes. Updates may still be running. A forced stop loses unsaved work." }
+            Note { text: "A forced stop is like pulling the plug: anything unsaved in Windows is lost." }
             Flow {
               width: parent.width
               spacing: Style.space(6)
@@ -117,77 +136,95 @@ Panel {
 
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader { text: "Setup"; foreground: root.foreground; fontFamily: root.fontFamily }
-          Repeater {
-            model: root.steps
-            delegate: Note {
-              required property string modelData
-              required property int index
-              text: (index + 1) + ". " + modelData
-                + (parseInt(root.model.setupReply.step || "0", 10) === index + 1 ? " ← current step" : "")
-              opacity: parseInt(root.model.setupReply.step || "0", 10) > index + 1 ? 0.6 : 1
-            }
-          }
-          Note {
-            visible: root.model.longBusy
-            text: "Working… This may take a few minutes.\nDetails: " + root.model.stateDir + "/panel-job.log"
-          }
-          Note { visible: text !== ""; text: root.model.setupReply.message || "" }
-          Note { visible: text !== ""; text: root.model.setupReply.next ? "Next: " + root.model.setupReply.next : "" }
-          Note {
-            visible: root.model.setupReply.step === "2"
-            text: "Software needed: " + (root.model.setupReply.missing || []).join(", ") + "\nInstall command: " + (root.model.setupReply.command || "")
-          }
-          Flow {
-            width: parent.width
-            spacing: Style.space(6)
-            Action { text: "Continue setup"; enabled: !root.model.busy; onClicked: root.model.launch(["setup"]) }
-            Action { text: "Install in a terminal"; visible: root.model.setupReply.step === "2"; enabled: !root.model.busy; onClicked: root.model.run(["setup-host"]) }
-          }
-
+          Note { visible: root.setupFinished; text: "Setup is finished." }
+          Action { visible: root.setupFinished; text: "Run setup again"; enabled: !root.model.busy && !root.model.longBusy; onClicked: root.model.launch(["setup"]) }
           Column {
             width: parent.width
-            spacing: Style.space(6)
-            visible: root.model.setupReply.step === "3" && root.model.status.active === false
-            Note { text: "A snapshot saves a copy of Windows. It uses more space as Windows changes. Lanai shows where it is saved and how to delete it. If Lanai cannot take a snapshot, make a backup before continuing." }
+            spacing: Style.space(10)
+            visible: !root.setupFinished
+            Repeater {
+              model: root.steps
+              delegate: Note {
+                required property string modelData
+                required property int index
+                text: (index + 1) + ". " + modelData
+                  + (parseInt(root.model.setupReply.step || "0", 10) === index + 1 ? " ← current step" : "")
+                opacity: parseInt(root.model.setupReply.step || "0", 10) > index + 1 ? 0.6 : 1
+              }
+            }
+            Note {
+              visible: root.model.setupBusy && !root.model.automaticWait
+              text: "Working… This may take a few minutes.\nDetails: " + root.model.stateDir + "/panel-job.log"
+            }
+            Note {
+              visible: text !== ""
+              text: root.setupStopped ? "Windows has shut down. Click Continue setup."
+                : root.waitingForBoot ? "Waiting for Windows to finish starting. Lanai checks again every 10 seconds."
+                : root.model.setupReply.step === "3a" ? "Lanai filled in a missing file in the Windows install. Click Continue setup."
+                : root.model.setupReply.message || ""
+            }
+            Note { visible: text !== ""; text: root.setupNext() }
+            ActionResult { commands: ["setup-host"] }
             Flow {
               width: parent.width
               spacing: Style.space(6)
-              Action { text: "Take snapshot"; enabled: !root.model.busy; onClicked: root.model.launch(["snapshot"]) }
-              Action { text: "Continue without snapshot"; enabled: !root.model.busy; onClicked: root.model.launch(["setup", "--no-snapshot"]) }
+              Action { text: "Continue setup"; enabled: !root.model.busy && !root.model.longBusy; onClicked: root.model.launch(["setup"]) }
+              Action { text: "Install in a terminal"; visible: root.model.setupReply.step === "2"; enabled: !root.model.busy; onClicked: root.model.run(["setup-host"]) }
             }
-          }
 
-          Column {
-            width: parent.width
-            spacing: Style.space(6)
-            visible: root.displayChoices
-            Note { text: "Setup stopped before finishing. Use QEMU's screen until the Lanai display driver is installed. After that, use the Looking Glass window." }
-            Flow {
+            Column {
               width: parent.width
               spacing: Style.space(6)
-              Action { text: "Use QEMU's screen"; enabled: !root.model.busy; onClicked: root.model.launch(["setup", "--window"]) }
-              Action { text: "Use the Looking Glass window"; enabled: !root.model.busy; onClicked: root.model.launch(["setup", "--no-window"]) }
+              visible: root.model.setupReply.step === "3" && root.model.status.active === false
+              Note { text: "A snapshot saves a copy of Windows. It uses more space as Windows changes. Lanai shows where it is saved and how to delete it. If Lanai cannot take a snapshot, make a backup before continuing." }
+              Flow {
+                width: parent.width
+                spacing: Style.space(6)
+                Action { text: "Take snapshot"; enabled: !root.model.busy; onClicked: root.model.launch(["snapshot"]) }
+                Action { text: "Continue without snapshot"; enabled: !root.model.busy; onClicked: root.model.launch(["setup", "--no-snapshot"]) }
+              }
+              Note {
+                visible: root.model.action === "snapshot" && root.model.actionReply.ok === true
+                text: "Snapshot saved. Click Continue setup."
+              }
+              ActionResult { commands: ["snapshot"]; visible: root.model.actionReply.ok !== true }
             }
-          }
-          Note { visible: root.model.setupReply.step === "5" && root.model.status.active === true; text: "In Windows, open Lanai's setup drive and run setup.cmd. Approve as the same Windows user. Let setup install the drivers and shut Windows down. Using Shut down here does not finish setup." }
 
-          Column {
-            width: parent.width
-            spacing: Style.space(6)
-            visible: root.questions
-            Note { text: "Does ~/Windows show in Windows Explorer?" }
-            Flow {
+            Column {
               width: parent.width
               spacing: Style.space(6)
-              Action { text: "Yes"; selected: root.shareAnswer === "yes"; onClicked: root.shareAnswer = "yes" }
-              Action { text: "No"; selected: root.shareAnswer === "no"; onClicked: root.shareAnswer = "no" }
+              visible: root.displayChoices
+              Note { text: "Setup stopped before it finished. Choose where to run setup.cmd next." }
+              Column {
+                width: parent.width
+                spacing: Style.space(6)
+                Action { text: "Set up in QEMU's screen"; onClicked: root.model.launch(["setup", "--window"]) }
+                Note { text: "Use this the first time, or if the Windows window stayed empty." }
+                Action { text: "Set up in the Windows window"; onClicked: root.model.launch(["setup", "--no-window"]) }
+                Note { text: "Use this once Lanai's display driver is installed in Windows." }
+              }
             }
-            Note { text: "Does text in Windows look the right size?" }
-            Flow {
+            Note { visible: root.model.setupReply.step === "5" && root.model.setupReply.ok === true && root.model.status.active === true; text: "In Windows, open Lanai's setup drive and run setup.cmd. Approve as the same Windows user. Let setup install the drivers and shut Windows down. Using Shut down here does not finish setup." }
+            Note { visible: root.model.setupReply.step === "5" && root.model.setupReply.ok === false; text: "Setup needs another pass. Click Shut down, wait for Windows to stop, then click Continue setup." }
+
+            Column {
               width: parent.width
               spacing: Style.space(6)
-              Action { text: "Yes"; selected: root.scaleAnswer === "yes"; onClicked: root.scaleAnswer = "yes" }
-              Action { text: "No"; selected: root.scaleAnswer === "no"; onClicked: root.scaleAnswer = "no" }
+              visible: root.questions
+              Note { text: "In Windows, open File Explorer. Can you see your Linux ~/Windows folder there?" }
+              Flow {
+                width: parent.width
+                spacing: Style.space(6)
+                Action { text: "Yes"; selected: root.shareAnswer === "yes"; onClicked: root.shareAnswer = "yes" }
+                Action { text: "No"; selected: root.shareAnswer === "no"; onClicked: root.shareAnswer = "no" }
+              }
+              Note { text: "Does text in Windows look the right size?" }
+              Flow {
+                width: parent.width
+                spacing: Style.space(6)
+                Action { text: "Yes"; selected: root.scaleAnswer === "yes"; onClicked: root.scaleAnswer = "yes" }
+                Action { text: "No"; selected: root.scaleAnswer === "no"; onClicked: root.scaleAnswer = "no" }
+              }
               Action {
                 text: "Send answers"
                 enabled: root.shareAnswer !== "" && root.scaleAnswer !== "" && !root.model.busy
@@ -195,9 +232,11 @@ Panel {
               }
             }
           }
+          Note { visible: text !== ""; text: root.model.jobError.message || "" }
 
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader { text: "Settings"; foreground: root.foreground; fontFamily: root.fontFamily }
+          Note { visible: root.model.settingsReply.ok === false; text: root.model.settingsReply.message || "Lanai cannot read its settings file. Repair it, then reopen this panel." }
           Note { text: "Changes apply the next time Windows starts." }
           Flow {
             width: parent.width
@@ -206,6 +245,7 @@ Panel {
             NumberField { id: coresField; label: "CPU cores"; from: 1; to: 64; value: root.model.cores; enabled: root.model.settingsLoaded; foreground: root.foreground; fontFamily: root.fontFamily }
             Action { text: "Save settings"; enabled: root.model.settingsLoaded && !root.model.busy; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value)]) }
           }
+          ActionResult { commands: ["settings"]; successMessage: "Saved. Memory and cores change the next time Windows starts." }
 
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader { text: "Snapshots"; foreground: root.foreground; fontFamily: root.fontFamily }
@@ -213,9 +253,9 @@ Panel {
           Flow {
             width: parent.width
             spacing: Style.space(6)
-            Action { text: "Take snapshot"; enabled: root.model.fresh && root.model.status.active === false && root.model.status.state !== "in-use" && !root.model.busy; onClicked: root.model.launch(["snapshot"]) }
+            Action { text: "Take snapshot"; visible: root.model.setupReply.step !== "3"; enabled: root.model.fresh && root.model.status.active === false && root.model.status.state !== "in-use" && !root.model.busy; onClicked: root.model.launch(["snapshot"]) }
             Action { text: "List snapshots"; enabled: !root.model.busy; onClicked: root.model.run(["snapshots"]) }
-            Action { text: "Resume interrupted restore"; enabled: root.model.fresh && root.model.status.active === false && !root.model.busy; onClicked: root.model.launch(["restore"]) }
+            Action { text: "Finish the unfinished restore"; visible: root.model.status.restore_pending === true && root.model.status.state !== "in-use"; enabled: root.model.fresh && root.model.status.active === false && !root.model.busy; onClicked: root.model.launch(["restore"]) }
           }
           Repeater {
             model: root.model.snapshots
@@ -233,8 +273,7 @@ Panel {
           }
           Action { text: "Cancel restore"; visible: root.restoreArmed !== ""; onClicked: root.restoreArmed = "" }
 
-          Note { visible: text !== ""; text: root.model.actionReply.message || "" }
-          Note { visible: text !== ""; text: root.model.actionReply.next ? "Next: " + root.model.actionReply.next : "" }
+          ActionResult { commands: ["snapshot", "snapshots", "restore"]; visible: root.model.setupReply.step !== "3" || root.model.action !== "snapshot" }
           Column {
             width: parent.width
             spacing: Style.space(6)
@@ -246,6 +285,22 @@ Panel {
           }
         }
       }
+    }
+  }
+
+  component ActionResult: Column {
+    required property var commands
+    property string successMessage: ""
+    width: parent.width
+    spacing: Style.space(6)
+    Note {
+      visible: text !== ""
+      text: commands.indexOf(root.model.action) < 0 ? ""
+        : successMessage && root.model.actionReply.ok === true ? successMessage : root.model.actionReply.message || ""
+    }
+    Note {
+      visible: text !== ""
+      text: commands.indexOf(root.model.action) < 0 ? "" : root.model.actionReply.next || ""
     }
   }
 

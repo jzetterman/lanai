@@ -1185,31 +1185,45 @@ reviews look hard at the panel's wording, layout and states.
   text, causes, next steps, warnings and logs use plain text. The heading and tooltip
   share readable state labels; section headings and setup guidance use plain language.
   Status `window: true` hides Open and routes the primary click to the panel during
-  a QEMU setup boot.
+  a QEMU setup boot. The bar widget owns the popout so the shell's open-panel dot
+  follows it. The mismatch label reads "Display driver needs an update".
 - `LanaiModel.qml` owns status polling (2 s with the panel open or while starting or
   stopping, 15 s otherwise) and literal-argv Processes with a hard 10 s deadline.
   Opening the panel reads settings through a separate Process, including while a
-  user action is running. Reads update only sizing and settings readiness; user
+  user action is running. Read failures appear under Settings. Reads update sizing,
+  settings readiness and their own reply; user
   actions and job results own `actionReply`, so reopening preserves snapshot and
   restore results, guidance and failures. Settings saves remain user actions.
   `LanaiPanel.qml` uses KeyboardPanel, Button, NumberField, PanelSectionHeader,
   PanelSeparator and the shell's theme tokens. Tab/Shift+Tab and Enter/Space reach
   its controls; Escape dismisses it. Force stop appears only for status's
   `force_stop: true` while stopping, with a second confirmation and cancel.
-  Shut down stays available while stopping so early-boot requests can be retried;
+  Shut down is disabled while starting and stays available while stopping;
   the CLI retains the first request's time.
 - Setup runs only through detached `lanai setup`. Replies are read from
   `$XDG_STATE_HOME/lanai/setup-reply.json` only after the corresponding job finishes,
-  and must agree with that job's CLI reply. A stale file cannot authorize a call.
+  and successful replies must agree with that job's CLI reply. Failed setup jobs
+  show their own reply directly. A stale file cannot authorize a call.
   On attach, finished jobs are ignored unless they match this panel's pending launch;
   running jobs remain watched. Failed polls also enforce the 10 s launch deadline;
   a launch timeout pauses automatic progress until a click, even with a previous
   successful wait reply.
-  Only an `ok: true` wait reply enables automatic progress: step 5 requires an
-  inactive setup-needed status; step 6 requires an active VM. Automatic calls are
-  at least 10 s apart across monitors (`SetupCalls.js`); failures and explicit display choices require a click.
+  `SetupCalls.js` decides automatic progress without matching English: any
+  successful step 5 reply requires an inactive setup-needed status; a successful
+  step 6 reply without questions requires an active VM. Automatic calls are
+  at least 10 s apart across monitors, including after a display choice. Failures
+  and display choices themselves require a click. Automatic wait jobs show steady
+  guidance and leave unrelated controls enabled; click-started jobs show Working.
+  Job status is polled only with the panel open or a pending/active job, and poll
+  failures have their own reply rather than replacing action results.
   Status gates Open, display choices and the two final questions. The UI shows the
-  seven steps, an indeterminate working message and the detached operation log;
+  seven steps while setup is underway, then "Setup is finished" and Run setup again.
+  Panel instructions refer to its buttons. A stopped setup boot takes precedence
+  over a stale step 5 reply; only a successful active setup boot shows the setup-drive
+  instruction. A failed step 5 check asks for shutdown and another pass. Snapshot
+  success appears at step 3 and its duplicate Take snapshot button is hidden.
+  Action replies appear under VM controls, Settings or Snapshots as appropriate.
+  The panel shows the detached operation log;
   the existing backend emits no incremental build/download progress percentages.
 - Small backend additions in `lib/ui.sh` (sourced by `lib/lanai.sh`): `lanai settings`
   reads/writes memory and cores, using vm_args' exact integer syntax and ranges,
@@ -1217,11 +1231,15 @@ reviews look hard at the panel's wording, layout and states.
   `lanai ui-job` serializes detached setup/snapshot/restore across monitors and
   publishes an atomic `panel-job.json`; `lanai ui-job-status` detects an interrupted
   worker from its lock, rereading the marker under that lock so a just-finished job
-  keeps its real reply. Setup flags use jq's `--` separator and reach the CLI literally.
+  keeps its real reply. The log retains only the last run. `lanai notice-seen`
+  atomically sets last-run to clean; the forced-stop notice's Dismiss button calls
+  it with literal argv. Status includes `restore_pending`, so Finish the unfinished
+  restore appears only for pending work outside in-use. Setup flags use jq's `--`
+  separator and reach the CLI literally.
   These additions make detached completion and settings writes reviewable and
   testable without shell interpolation in QML. They are the
-  only backend scope addition; snapshots and restores still use phase 4's commands.
-  Snapshot results retain their location/delete guidance. Restore needs a second
+  backend scope additions; snapshots and restores still use phase 4's commands.
+  Snapshot results outside setup retain their location/delete guidance. Restore needs a second
   click; interrupted restore can resume. Restoring requires running setup again.
 - README documents installation, dependencies, RDP-only Windows removal after
   shutting Lanai's VM down, and literal registry restoration commands,

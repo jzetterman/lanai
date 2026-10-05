@@ -2,6 +2,24 @@
 # shellcheck shell=bash
 set -euo pipefail
 
+# notice-seen: acknowledge the forced-stop notice without touching run markers.
+cmd_notice_seen() {
+  local s tmp
+  if (($#)); then
+    emit false "" "This command takes no arguments." ""
+    return 2
+  fi
+  umask 077
+  s=$(state_dir)
+  mkdir -p -- "$s"
+  tmp=$(mktemp "$s/last-run.XXXXXX") || return 1
+  if ! printf 'clean\n' >"$tmp" || ! mv -f -- "$tmp" "$s/last-run"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  emit true "" "Notice dismissed." ""
+}
+
 # settings [<memory GiB> <cores>]: preserve all other keys; apply next boot.
 # The ranges and integer syntax are the same as vm_args in lib/vm.sh.
 cmd_settings() {
@@ -78,7 +96,7 @@ cmd_ui_job() {
     return 1
   fi
   panel_job_write "$(jq -nc --arg t "$token" --arg c "$command" --argjson a "$args" '{token:$t, command:$c, args:$a, active:true}')"
-  out=$("$LANAI_BIN/lanai" "$command" "$@" 2>>"$s/panel-job.log") || rc=$?
+  out=$("$LANAI_BIN/lanai" "$command" "$@" 2>"$s/panel-job.log") || rc=$?
   if ! jq -se 'length == 1 and (.[0] | type == "object" and (.ok | type == "boolean"))' <<<"$out" >/dev/null 2>&1; then
     out=$(jq -nc --arg m "Lanai gave no valid reply (exit $rc)." \
       --arg n "see $s/panel-job.log, then retry" '{ok:false, message:$m, next:$n}')

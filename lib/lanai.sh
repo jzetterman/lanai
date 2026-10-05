@@ -804,6 +804,7 @@ status_facts() {
   fi
   [[ ! -e $s/forced ]] || echo LanaiForced=yes
   [[ ! -f $s/last-run ]] || echo "LanaiLastRun=$(<"$s/last-run")"
+  if restore_pending >/dev/null; then echo LanaiRestorePending=true; fi
   if [[ $active == active || $active == reloading ]] && boot_window; then
     echo LanaiWindow=true
   fi
@@ -945,9 +946,10 @@ status_map() {
   emit true "$state" "$message" "$next" "$(jq -n -c --arg notice "$notice" --arg warning "$warning" \
     --argjson force "$force" --arg logs "$logs" --argjson pending "$([[ $forced == yes ]] && echo true || echo false)" \
     --argjson active "$up" --argjson window "$([[ ${f[LanaiWindow]:-} == true ]] && echo true || echo false)" \
+    --argjson restore "${f[LanaiRestorePending]:-false}" \
     '{notice: (if $notice == "" then null else $notice end),
       warning: (if $warning == "" then null else $warning end),
-      force_stop: $force, forced_pending: $pending, active: $active, window: $window} +
+      force_stop: $force, forced_pending: $pending, active: $active, window: $window, restore_pending: $restore} +
       (if $logs == "" then {} else {logs: $logs} end)')"
 }
 

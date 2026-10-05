@@ -43,8 +43,8 @@ and `test/`. It is under construction; see the
 Lanai requires Omarchy's Quickshell plugin API, an existing supported UEFI Windows
 install from `omarchy-windows-vm`, `/dev/kvm` access as your user, and enough memory
 for Windows and Linux. It does not install Windows or support TPM, Secure Boot or
-legacy layouts. Marketplace submission is intended to be manual setup with maintainer
-review: setup installs Arch packages and builds a native client.
+legacy layouts. Setup installs Arch packages and builds a native client. The plugin
+will need manual setup and a maintainer review before it joins the marketplace.
 
 First rehearse on a reflink copy, as described in the [acceptance plan](docs/plugin/plan.md#phase-8-acceptance).
 Stop the container VM before setup. For the released plugin, the host commands are:
@@ -63,8 +63,8 @@ host's memory (at most 16 GiB) and half its CPU threads (at most 8).
 Right-click Lanai's L-in-a-monitor glyph to open the panel, then click **Continue setup**.
 The panel walks through checking the install, installing host packages, offering a
 snapshot, building the pinned client, installing in Windows, restarting and checking
-the result. At the package step it displays the exact install command; **Install in
-a terminal** opens a terminal which shows it again before the normal package-manager
+the result. At the package step, **Install in a terminal** opens a terminal which
+shows the exact install command before the normal package-manager
 password prompt. Nothing else in Lanai escalates. Dependencies are listed in
 [`LANAI_HOST_PACKAGES`](lib/client.sh): QEMU and its GTK/SPICE/device modules,
 virtiofsd, passt, socat, jq, Python, diffutils and the Looking Glass build libraries
@@ -83,10 +83,10 @@ the administrator prompt as the same Windows user; approval as a different accou
 is refused. The setup drive must stay **read-only**: do not attach writable setup
 media or substitute files written by Windows. Setup shuts Windows down when the guest
 install finishes. Let that shutdown finish; Shut down from the panel does not count.
-Continue setup to restart Windows, then answer whether `~/Windows` appears in
-Explorer and whether text looks the right size. If a setup boot stopped unfinished,
-the panel offers **Use QEMU's screen** until the Lanai display driver is installed,
-or **Use the Looking Glass window** afterward. Open window is hidden while QEMU's
+The panel then restarts Windows (click Continue setup if it waits). Answer whether
+`~/Windows` appears in Explorer and whether text looks the right size. If a setup boot stopped unfinished,
+the panel offers **Set up in QEMU's screen** until the Lanai display driver is installed,
+or **Set up in the Windows window** afterward. Open window is hidden while QEMU's
 setup window is in use. Reopening the panel watches setup that is still running;
 it does not resume setup from a result left by an earlier session.
 
@@ -95,9 +95,8 @@ it does not resume setup from a result left by an earlier session.
 Left-click the glyph to start Windows, or open/focus its window while it runs.
 Closing the Looking Glass window leaves Windows running; click the glyph to reopen
 it. Right-click opens the panel. Panel controls support Tab, Shift+Tab, Enter and
-Space; Escape closes it. The shell can summon this widget's panel through its plugin
-routing. Settings accept whole numbers: 1–512 GiB and 1–64 cores, and apply at the
-next start. The CLI equivalent is `bin/lanai settings <GiB> <cores>`.
+Space; Escape closes it. Settings accept whole numbers: 1–512 GiB and 1–64 cores,
+and apply at the next start. The CLI equivalent is `bin/lanai settings <GiB> <cores>`.
 
 Shut down asks Windows to shut down cleanly and returns immediately. If Windows
 ignores the request while starting, click Shut down again. After two minutes from

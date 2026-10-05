@@ -2,7 +2,7 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 
-// Bar host contract and panel routing match the bundled weather widget.
+// The bar widget owns the popout, as in the bundled weather widget.
 BarWidget {
   id: root
   moduleName: "io.github.jzetterman.lanai"
@@ -25,7 +25,7 @@ BarWidget {
   }
 
   LanaiModel { id: model; panelOpen: panel.opened }
-  LanaiPanel { id: panel; bar: root.bar; settings: root.settings; anchorItem: button; model: model }
+  LanaiPanel { id: panel; bar: root.bar; settings: root.settings; anchorItem: button; hostWidget: root; model: model }
 
   BarIconButton {
     id: button

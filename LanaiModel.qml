@@ -13,14 +13,17 @@ Item {
   property bool fresh: false
   property var setupReply: ({})
   property var actionReply: ({})
+  property var settingsReply: ({})
+  property var jobError: ({})
   property var job: ({active: false})
   property string pendingToken: ""
+  property string pendingCommand: ""
   property string seenToken: ""
   property bool jobAttached: false
   property string action: ""
   property bool autoPaused: false
+  property bool automaticJob: false
   property double lastSetupAt: 0
-  property double lastStatusAt: 0
   property double pendingAt: 0
   property var completedSetup: null
   property int memory: 1
@@ -28,22 +31,24 @@ Item {
   property bool settingsLoaded: false
   property var snapshots: []
   readonly property bool longBusy: pendingToken !== "" || job.active === true
-  readonly property bool busy: actionProcess.running || longBusy
+  readonly property bool setupWaiting: SetupCalls.waiting(setupReply)
+  readonly property bool automaticWait: automaticJob && setupWaiting
+  readonly property bool setupBusy: (pendingToken !== "" && pendingCommand === "setup") || (job.active === true && job.command === "setup")
+  readonly property bool busy: actionProcess.running || (longBusy && !automaticWait)
   readonly property bool canOpen: fresh && status.active === true && status.window !== true && status.state !== "stopping" && status.state !== "starting"
   readonly property bool canStart: fresh && status.active === false && (status.state === "stopped" || status.state === "failed") && !busy
-  readonly property bool canStop: fresh && status.active === true && !actionProcess.running
+  readonly property bool canStop: fresh && status.active === true && status.state !== "starting" && !actionProcess.running
   readonly property bool canForce: fresh && status.state === "stopping" && status.force_stop === true && !actionProcess.running
   readonly property int pollInterval: panelOpen || status.state === "starting" || status.state === "stopping" ? 2000 : 15000
   readonly property string stateLabel: ({
     "checking": "Checking", "setup-needed": "Setup needed", "not-installed": "Not installed",
-    "in-use": "Running under omarchy-windows-vm", "version-mismatch": "Driver version mismatch",
+    "in-use": "Running under omarchy-windows-vm", "version-mismatch": "Display driver needs an update",
     "starting": "Starting", "running": "Running", "stopping": "Shutting down",
     "stopped": "Stopped", "failed": "Failed"
   })[status.state] || "Status unavailable"
   readonly property string tooltip: "Lanai\n" + stateLabel + "\n" + status.message
     + (status.next ? "\nNext: " + status.next : "")
     + (status.logs ? "\nLogs: " + status.logs : "")
-    + (status.state === "failed" ? "\nShut Lanai down, then use omarchy-windows-vm." : "")
 
   // All ordinary commands have a hard ten-second deadline and use literal argv.
   function command(args) {
@@ -72,18 +77,21 @@ Item {
   function run(args) {
     if (actionProcess.running) return
     action = args[0]
+    actionReply = {}
     actionProcess.command = command(args)
     actionProcess.running = true
   }
 
   // Long operations survive panel/plugin unloading. The helper publishes progress.
-  function launch(args) {
-    if (busy) return
-    autoPaused = args.indexOf("--window") >= 0 || args.indexOf("--no-window") >= 0
+  function launch(args, automatic) {
+    if (actionProcess.running || longBusy) return
+    automaticJob = automatic === true
+    if (!automaticJob) { action = args[0]; actionReply = {} }
+    autoPaused = false
     if (args[0] === "setup") { lastSetupAt = Date.now(); SetupCalls.record(lastSetupAt) }
     pendingToken = "job-" + Date.now() + "-" + Math.floor(Math.random() * 1000000)
+    pendingCommand = args[0]
     pendingAt = Date.now()
-    actionReply = {}
     Quickshell.execDetached([decodeURIComponent(cli), "ui-job", pendingToken].concat(args))
     pollJob()
   }
@@ -97,6 +105,7 @@ Item {
   // Read setup's atomic reply only for the matching completed job, never on load.
   function acceptJob(reply) {
     if (reply.ok === true) {
+      jobError = {}
       job = reply
       // Attach to running work, but do not replay a previous session's completion.
       if (!jobAttached) {
@@ -104,21 +113,22 @@ Item {
         if (job.active !== true && (!pendingToken || job.token !== pendingToken)) seenToken = job.token || ""
       }
       if (pendingToken && job.token === pendingToken) pendingToken = ""
-    } else actionReply = reply
+    } else jobError = reply
     if (pendingToken && Date.now() - pendingAt >= 10000 && (reply.ok !== true || job.active !== true)) {
       pendingToken = ""
       autoPaused = true
-      actionReply = {ok: false, message: "The operation did not start.", next: "try again; see " + stateDir + "/panel-job.log"}
+      jobError = {ok: false, message: "The operation did not start.", next: "try again; see " + stateDir + "/panel-job.log"}
     }
     if (reply.ok !== true) return
     if (job.active === true || !job.reply || job.token === seenToken) return
     seenToken = job.token
-    autoPaused = (job.args || []).indexOf("--window") >= 0 || (job.args || []).indexOf("--no-window") >= 0
+    autoPaused = false
     if (job.command === "setup") {
       lastSetupAt = Date.now()
-      completedSetup = job.reply
-      setupFile.reload()
+      if (job.reply.ok === false) setupReply = job.reply
+      else { completedSetup = job.reply; setupFile.reload() }
     } else {
+      action = job.command
       actionReply = job.reply
       if (job.command === "restore" && job.reply.ok === true) setupReply = {}
 
@@ -128,11 +138,8 @@ Item {
 
   // Only successful wait replies authorize another setup call, at most every 10 s.
   function advanceSetup() {
-    if (!fresh || busy || autoPaused || setupReply.ok !== true || Date.now() - lastSetupAt < 10000 || !SetupCalls.due(Date.now())) return
-    var waiting = /\bwait\b|once Windows has shut down/i.test(String(setupReply.next || ""))
-    if (!waiting) return
-    if (setupReply.step === "5" && status.active === false && status.state === "setup-needed") launch(["setup"])
-    else if (setupReply.step === "6" && status.active === true && status.state !== "stopping") launch(["setup"])
+    if (!fresh || actionProcess.running || longBusy || autoPaused || Date.now() - lastSetupAt < 10000 || !SetupCalls.due(Date.now())) return
+    if (SetupCalls.shouldAdvance(setupReply, status)) launch(["setup"], true)
   }
 
   Timer {
@@ -149,10 +156,13 @@ Item {
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: { root.pollJob(); root.advanceSetup() }
+    onTriggered: {
+      if (root.panelOpen || root.longBusy) root.pollJob()
+      root.advanceSetup()
+    }
   }
 
-  onPanelOpenChanged: if (panelOpen) { refresh(); loadSettings() }
+  onPanelOpenChanged: if (panelOpen) { refresh(); loadSettings(); pollJob() }
 
   // Reads must neither wait for user actions nor replace their results.
   Process {
@@ -160,6 +170,9 @@ Item {
     stdout: StdioCollector { id: settingsOutput; waitForEnd: true }
     onExited: function(code) {
       var reply = root.parse(settingsOutput.text)
+      if (code !== 0) reply.ok = false
+      root.settingsReply = reply
+      root.settingsLoaded = code === 0 && reply.ok === true
       if (code === 0 && reply.ok === true) {
         root.memory = reply.memory_gib
         root.cores = reply.cores
@@ -174,7 +187,6 @@ Item {
     onExited: function(code) {
       var reply = root.parse(statusOutput.text)
       root.fresh = code === 0 && reply.ok === true
-      root.lastStatusAt = Date.now()
       if (!root.fresh) reply.state = "failed"
       root.status = reply
     }
@@ -191,10 +203,13 @@ Item {
         root.memory = reply.memory_gib
         root.cores = reply.cores
         root.settingsLoaded = true
+        root.settingsReply = reply
       }
       if (reply.ok === true && root.action === "snapshots") root.snapshots = reply.snapshots || []
       if (reply.ok === true && (root.action === "start" || root.action === "stop"))
         root.status = Object.assign({}, root.status, reply, {active: true})
+      if (reply.ok === true && root.action === "notice-seen")
+        root.status = Object.assign({}, root.status, {notice: null})
       if (root.action !== "settings" && root.action !== "snapshots") root.refresh()
     }
   }

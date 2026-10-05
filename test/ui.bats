@@ -56,6 +56,61 @@ setup() {
   assert_equal "$(cat "$T/target")" '{}'
 }
 
+@test "notice-seen: atomically clears the verdict with one JSON reply and is repeatable" {
+  local s
+  s=$(state_dir)
+  mkdir -p "$s"
+  printf 'forced\n' >"$s/last-run"
+  lanai_run notice-seen
+  assert_success
+  assert_equal "$(field ok)" true
+  assert_equal "$(wc -l <<<"$output")" 1
+  assert_equal "$(cat "$s/last-run")" clean
+  assert_equal "$(stat -c %a "$s/last-run")" 600
+  lanai_run notice-seen
+  assert_success
+  assert_equal "$(cat "$s/last-run")" clean
+  run find "$s" -name 'last-run.*'
+  assert_output ''
+}
+
+@test "notice-seen: refuses arguments and a failed replacement leaves the verdict intact" {
+  local s
+  s=$(state_dir)
+  mkdir -p "$s"
+  printf 'forced\n' >"$s/last-run"
+  lanai_run notice-seen extra
+  assert_failure
+  assert_equal "$(cat "$s/last-run")" forced
+  shim mv 'exit 1'
+  PATH=$T/shims:$PATH lanai_run notice-seen
+  assert_failure
+  assert_equal "$(field ok)" false
+  assert_equal "$(wc -l <<<"$output")" 1
+  assert_equal "$(cat "$s/last-run")" forced
+  run find "$s" -name 'last-run.*'
+  assert_output ''
+}
+
+@test "status: reports an unfinished restore without contacting a VM or install" {
+  # Exercise real facts and mapping, with only external/install reads stubbed.
+  systemctl() { printf 'ActiveState=inactive\n'; }
+  storage_dir() { return 1; }
+  setup_done() { return 1; }
+  container_running() { return 1; }
+  container_preparing() { return 1; }
+  guest_version_behind() { return 1; }
+  run lanai_main status
+  assert_success
+  assert_equal "$(jq -r '.restore_pending' <<<"$output")" false
+  mkdir -p "$(state_dir)"
+  : >"$(state_dir)/restore-in-progress"
+  run lanai_main status
+  assert_success
+  assert_equal "$(jq -r '.restore_pending' <<<"$output")" true
+  assert_equal "$(wc -l <<<"$output")" 1
+}
+
 # Override only the child CLI: no units, storage or desktop commands run.
 make_job_cli() {
   LANAI_BIN=$T/cli
@@ -65,6 +120,7 @@ make_job_cli() {
 set -euo pipefail
 printf '%s\n' "$@" >"$XDG_STATE_HOME/args"
 case ${LANAI_FAKE_JOB:-ok} in
+  log) echo "$2" >&2; printf '{"ok":true}\n' ;;
   failure) printf '{"ok":false,"message":"backup needed","next":"make a backup"}\n'; exit 1 ;;
   bad-json) echo broken ;;
   many-json) printf '{"ok":true}\n{"ok":true}\n' ;;
@@ -72,6 +128,23 @@ case ${LANAI_FAKE_JOB:-ok} in
 esac
 SH
   chmod +x "$LANAI_BIN/lanai"
+}
+
+@test "ui-job: keeps only the last run's log and a rejected job cannot truncate it" {
+  make_job_cli
+  LANAI_FAKE_JOB=log run cmd_ui_job log-1 setup first
+  assert_success
+  LANAI_FAKE_JOB=log run cmd_ui_job log-2 setup second
+  assert_success
+  run cat "$(state_dir)/panel-job.log"
+  assert_output second
+  exec {JOB_FD}>"$(state_dir)/panel-job.lock"
+  flock "$JOB_FD"
+  LANAI_FAKE_JOB=log run cmd_ui_job log-3 setup rejected
+  assert_failure
+  exec {JOB_FD}>&-
+  run cat "$(state_dir)/panel-job.log"
+  assert_output second
 }
 
 @test "ui-job: carries literal arguments and publishes its completion" {
