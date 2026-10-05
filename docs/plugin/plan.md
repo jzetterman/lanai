@@ -1188,8 +1188,10 @@ bats tests can cover it, and makes the QML a renderer.
 
 - `lanai panel` (new, `lib/panel.sh`) prints one JSON object, the view. It reads, in
   one call and with no side effects: what `lanai status` computes (`status_facts`
-  and `status_map`), `setup.json`, `setup-reply.json`, the panel job file
-  (`panel-job.json`, from `lib/ui.sh`) and `last-run`. It fits the 10 s deadline (the
+  and `status_map`), `setup_plan`'s decision (below), the panel's records
+  (`panel-job.json` and `panel-result.json`, from `lib/ui.sh`), `last-run`, the
+  settings and the snapshot list. `setup-reply.json` stays for the CLI and is not an
+  input. It fits the 10 s deadline (the
   same QMP budget as status). The view holds:
   - `label`, `headline`, `cause`, `next`: the state in plain words, why, and the
     next step, written for a user who is not an engineer (no CLI text, no internal
@@ -1210,31 +1212,51 @@ bats tests can cover it, and makes the QML a renderer.
   - `auto`: true only when the panel should call `lanai setup` by itself now (the
     "For phase 7" rule: after an ok:true wait reply, by step and status, never by
     text, never after a failure, not while a job runs).
-- Every panel action leaves a record. The panel runs every command, direct or
-  detached, through `lib/ui.sh`: direct ones (`start`, `stop`, `open`,
-  `notice-seen`, `settings`) through a new `lanai ui-run <token> <command...>`,
-  which runs the command and saves its reply; detached ones (`setup`, `snapshot`,
-  `restore`) through `lanai ui-job` as now. Both write one record, `panel-job.json`:
-  the token, the command, its arguments, when it started and ended, and the reply.
-  `lanai panel` reads that record for `result`, so a failed Shut down shows beside
-  Shut down even when nothing else changed.
-- Freshness has two rules, both in `lanai panel`:
-  - What to show: status, computed in the same call, always wins. The last setup
-    reply's lines show only while they still describe the current state (its step
-    agrees with status and `setup.json`); otherwise the setup lines come from status
-    and `setup.json` alone.
-  - When to continue by itself (`auto`): only after an ok:true wait reply for step 5
-    or 6, and only for that reply's expected next state: step 5's reply allows one
-    call once the unit is inactive (Windows shut down, as setup.cmd does); step 6's
-    reply allows one call while the unit is active. Never after a failure, never
-    while a job runs, never when a panel action started after that reply, never by
-    text. A test covers the step 5 active-to-inactive transition.
-- The QML keeps exactly two values of its own, and passes both to `lanai panel`: the
-  token of a launch it started and when (`--pending <token> <epoch>`), and whether
-  automatic progress is paused (`--paused`). If no record with that token appears
-  within 10 s, the view reports the launch as failed (with the job log path), and
-  `auto` stays false. The QML sets paused after a failed or timed-out launch and
-  clears it on the user's next click. It caches nothing else about setup or jobs.
+- Setup's step comes from durable state, not from replies. `setup_resume` is split:
+  a read-only `setup_plan` decides the current step and what it needs (an action
+  such as a package install or the snapshot offer, the step 5 display choices, a
+  boot to wait for, step 6's checks, done) from the same facts `setup_resume` uses
+  now (`setup.json`'s keys, status, the run markers, the guest version), and
+  `setup_resume` acts on that decision. `lanai panel` calls `setup_plan`, so its
+  setup lines never depend on a saved reply. A bats test pins that `setup_plan` and
+  `setup_resume` agree on the step for every fixture.
+- Every panel action leaves a record, in two files. The panel runs every command
+  through `lib/ui.sh`: direct ones (`start`, `stop`, `open`, `notice-seen`,
+  `settings`) through a new `lanai ui-run`, detached ones (`setup`, `snapshot`,
+  `restore`) through `lanai ui-job`. `panel-job.json` tracks only the running
+  detached job (token, command, start time, active). `panel-result.json` holds the
+  last result per control group (`vm`, `setup`, `settings`, `snapshots`): the token,
+  the panel session, the VM's `InvocationID` when the command ended, the end time
+  and the reply. A direct command never touches `panel-job.json`, so Shut down during
+  a detached setup call cannot erase its tracking, and each group's result stays
+  beside its controls.
+- Authority comes from this session and this boot. The QML makes a random session id
+  when it loads and passes it to `lanai panel` (`--session <id>`). A saved result
+  counts for `result` and for authority only when its session is the current one;
+  a newly loaded panel shows earlier results as history at most, and never acts on
+  them.
+  - `auto` (continue by itself) is true only after this session's ok:true step 5 or
+    6 wait result, for that result's expected next state: step 5's once the VM
+    that result's boot started has ended (`last-run`'s invocation equals the
+    result's invocation and the unit is inactive); step 6's while the unit is
+    active with the same invocation. Never after a failure, never while a job
+    runs, never when a later panel action exists, never by text.
+  - Step 6's questions show only from this session's step 6 result whose
+    invocation is the running one; any other boot, or a restart inside it (the
+    guest agent's port closed since), asks `setup_plan` again.
+  - Tests cover: a reload with a saved step 5 wait result and an inactive unit
+    (no `auto`); the step 5 active-to-inactive transition (`auto`); cached step 6
+    questions after Windows restarted (not shown); Shut down during a setup job (the
+    job's tracking stays).
+- The view carries its data: `settings` (memory, cores, or the read error),
+  `snapshots` (names, or the read error, refreshed after a snapshot or restore
+  job), `logs` (the VM and client log paths status names, and the panel job log).
+- The QML keeps exactly three values of its own, all passed to `lanai panel`: the
+  session id, the token and time of a launch it started (`--pending <token>
+  <epoch>`), and whether automatic progress is paused (`--paused`). If no record with
+  that token appears within 10 s, the view reports the launch as failed (with the
+  job log path), and `auto` stays false. The QML sets paused after a failed or
+  timed-out launch and clears it on the user's next click. It caches nothing else.
 - The QML (`LanaiModel.qml`, `LanaiPanel.qml`, `Widget.qml`) polls `lanai panel`
   (2 s while the panel is open or a job or boot is in flight, 15 s otherwise; a 10 s
   deadline; a tick is skipped while a call runs, and an action asks for exactly one
@@ -1516,3 +1538,4 @@ bats tests can cover it, and makes the QML a renderer.
 | diff (phase 7) | a (gpt-6.1-sol) | 4 (full, the rerun on the final diff, approved by John) | 3 P2, 0 refuted, 0 downgraded to nit; all confirmed (one reproduced headless) and integrated (fixes by Codex): routine polls discarded every slow status read; a cached step 7 reply outlived a restore; restore failure advice ignored `restore_pending`. Above nit, so stage b and stage a run again; stage b is at its cap, so John decides |
 | diff (phase 7) | b single (opus-5.5) | 4 (full, John's extra round) | 6 should-fix, 4 nits, 0 refuted, 0 downgraded to nit; all confirmed, none integrated: the step 5 note during step 6's boot, guidance from status read before the newest reply, a successful restore saying "try again", contradictory unfinished-restore hints, "Setup is finished" over a driver update, no checked-in test for the model. Claude diagnosed the pattern (every round finds new clashes in the QML's decisions) and John chose to move every decision into bash (`lanai panel`, amendment above); the round's findings become its test cases |
 | plan amendment (panel view) | a (gpt-6.1-sol) | 1 (full) | 3 P2; all confirmed and integrated: direct action results had no record (every panel action now goes through `lib/ui.sh` and leaves one); the freshness rule would have rejected step 5's wait reply right when it must authorize the next call (separate rules for what to show and when to continue); a launch that never started was untracked (the QML keeps a pending token and a paused flag and passes them to `lanai panel`) |
+| plan amendment (panel view) | a (gpt-6.1-sol) | 2 (full) | 4 P2; all confirmed and integrated: a reloaded panel could act on an old reply (records carry the panel session and VM invocation; only this session's results authorize); Shut down could overwrite a running job's tracking (running job and last results in separate files); the view lacked settings, snapshots and log data (added); the reply-freshness rule was not implementable (setup's step now comes from a read-only `setup_plan` split from `setup_resume`, not from replies) |
