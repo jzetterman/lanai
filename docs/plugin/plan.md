@@ -1501,6 +1501,13 @@ map that still matches the other file proves the hashed data stayed shared.
   timestamps never prove data equality. Only btrfs's three fixture modes count
   as tested. XFS and every untested mode get the existing unsupported-snapshot
   response and backup advice, even if reflink itself succeeds.
+- Threat model of the proof: it catches any write, crash or tool that changes
+  either file after the clone, which is what row 7's fixtures test. For a
+  compressed extent, FIEMAP reports the encoded extent's start but not the offset
+  of a file's slice inside it, so a same-user process that deliberately clones a
+  different slice of the same extent into the same position would not change the
+  map. That is out of scope: the same process could rewrite COMPLETE or the
+  snapshot's files outright. Say so in a comment at the comparison.
 - Expand `snapshot_root`'s probe under the disk lock. Clone data.img into a probe
   in each candidate root, compare maps, overwrite one allocated block in the
   probe without reading it, and require its map to differ from the source.
@@ -1555,7 +1562,12 @@ map that still matches the other file proves the hashed data stayed shared.
   `4*S + (P+1)*64 KiB`: S is the sum of install files other than data.img, P is
   the fixed number of panel polls, and 64 KiB covers SOURCE/COMPLETE reads.
   Report image and small-file counts separately. Add strace to CI and require
-  the measurement there. Skip locally if unavailable and report the skip.
+  the measurement there. CI's container cannot mount btrfs, so a host step
+  before it (the runner's own sudo, never on John's machine) makes a loop-backed
+  btrfs image, mounts it, gives it to the test user and bind-mounts it into the
+  container as `LANAI_TEST_BTRFS_DIR`; CI sets `LANAI_REQUIRE_BTRFS=1`, which makes
+  a missing or non-btrfs test folder fail the btrfs tests instead of skipping
+  them. Local runs keep skipping without it. Skip locally if unavailable and report the skip.
   This observes reads outside the helper and cannot hide a second pass in page
   cache. Run the named bats suites, ShellCheck and `test/qml-lint`; CI must run
   all three real btrfs modes. Record row 7's hashes, traces and proof fixtures in
@@ -1975,3 +1987,4 @@ The orchestrator runs the gate; delegates run no review stage.
 | diff (phase 7, during setup) | b single (opus-5.5) | 1 (full; single by John's Claude-usage rule) | 1 should-fix, 1 test gap, 6 nits, 0 refuted, 0 downgraded to nit; integrated (fixes by Codex) except one accepted nit: Start and Open hid on a working install with a pending update step (spec 8); untested client timeout warnings; one Cancel at a time; no confirm once a stop is under way; setup accepts a window already open; constant Setup inset; step 5 copy. Accepted: the highlight lights before the setup drive is visible (no guest signal before setup) |
 | diff (phase 7, during setup) | b single (opus-5.5) | 2 (full; single by John's Claude-usage rule) | 0 should-fix, 7 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex, the log rows by Claude): Snapshots stay for a working install with a pending update; Reopen only on an active unit; truthful attention note; a guard comment; no empty Setup band on a finished install; test counts; these log rows. Stage closed clean |
 | diff (phase 7, during setup) | a (gpt-6.1-sol) | 2 (full, the rerun on the final diff) | 0 findings, 0 refuted, 0 downgraded to nit. Clean; its sandbox could not run bats, so Claude ran the full suite on 1563c2b (626 pass, 1 locale skip). The gate is closed |
+| plan amendment (scale, progress, clicks) | a (gpt-6.1-sol) | 1 (full) | 1 P1, 1 P2, 0 refuted; both integrated: the compressed-extent limit of the FIEMAP proof is stated as out of the threat model (a same-user process that clones a chosen slice could rewrite COMPLETE anyway; flagged to John); CI gets a host-made btrfs folder and fails, not skips, without it |
