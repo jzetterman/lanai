@@ -1210,11 +1210,31 @@ bats tests can cover it, and makes the QML a renderer.
   - `auto`: true only when the panel should call `lanai setup` by itself now (the
     "For phase 7" rule: after an ok:true wait reply, by step and status, never by
     text, never after a failure, not while a job runs).
-- Freshness has one rule, in one place: `lanai panel` computes status in the same
-  call, so status always wins. It uses `setup-reply.json` only when that reply is
-  newer than the last state change it describes (the run markers, `setup.json`) and
-  agrees with the current status; otherwise it derives the setup lines from status
-  and `setup.json` alone. The panel QML caches nothing about setup or jobs.
+- Every panel action leaves a record. The panel runs every command, direct or
+  detached, through `lib/ui.sh`: direct ones (`start`, `stop`, `open`,
+  `notice-seen`, `settings`) through a new `lanai ui-run <token> <command...>`,
+  which runs the command and saves its reply; detached ones (`setup`, `snapshot`,
+  `restore`) through `lanai ui-job` as now. Both write one record, `panel-job.json`:
+  the token, the command, its arguments, when it started and ended, and the reply.
+  `lanai panel` reads that record for `result`, so a failed Shut down shows beside
+  Shut down even when nothing else changed.
+- Freshness has two rules, both in `lanai panel`:
+  - What to show: status, computed in the same call, always wins. The last setup
+    reply's lines show only while they still describe the current state (its step
+    agrees with status and `setup.json`); otherwise the setup lines come from status
+    and `setup.json` alone.
+  - When to continue by itself (`auto`): only after an ok:true wait reply for step 5
+    or 6, and only for that reply's expected next state: step 5's reply allows one
+    call once the unit is inactive (Windows shut down, as setup.cmd does); step 6's
+    reply allows one call while the unit is active. Never after a failure, never
+    while a job runs, never when a panel action started after that reply, never by
+    text. A test covers the step 5 active-to-inactive transition.
+- The QML keeps exactly two values of its own, and passes both to `lanai panel`: the
+  token of a launch it started and when (`--pending <token> <epoch>`), and whether
+  automatic progress is paused (`--paused`). If no record with that token appears
+  within 10 s, the view reports the launch as failed (with the job log path), and
+  `auto` stays false. The QML sets paused after a failed or timed-out launch and
+  clears it on the user's next click. It caches nothing else about setup or jobs.
 - The QML (`LanaiModel.qml`, `LanaiPanel.qml`, `Widget.qml`) polls `lanai panel`
   (2 s while the panel is open or a job or boot is in flight, 15 s otherwise; a 10 s
   deadline; a tick is skipped while a call runs, and an action asks for exactly one
@@ -1495,3 +1515,4 @@ bats tests can cover it, and makes the QML a renderer.
 | diff (phase 7) | b single (opus-5.5) | 3 (full, cap) | 8 should-fix, 8 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): silent glyph failures and missing tooltip notices; a false "start Windows" with a restore pending; a lost launch-timeout error; Help during normal setup steps; repeated and flashing setup notes; CLI hints in results; a README snapshot-deletion contradiction; `notice-seen` without the lock. Stage closed at the cap; John approved the stage a rerun on the final diff |
 | diff (phase 7) | a (gpt-6.1-sol) | 4 (full, the rerun on the final diff, approved by John) | 3 P2, 0 refuted, 0 downgraded to nit; all confirmed (one reproduced headless) and integrated (fixes by Codex): routine polls discarded every slow status read; a cached step 7 reply outlived a restore; restore failure advice ignored `restore_pending`. Above nit, so stage b and stage a run again; stage b is at its cap, so John decides |
 | diff (phase 7) | b single (opus-5.5) | 4 (full, John's extra round) | 6 should-fix, 4 nits, 0 refuted, 0 downgraded to nit; all confirmed, none integrated: the step 5 note during step 6's boot, guidance from status read before the newest reply, a successful restore saying "try again", contradictory unfinished-restore hints, "Setup is finished" over a driver update, no checked-in test for the model. Claude diagnosed the pattern (every round finds new clashes in the QML's decisions) and John chose to move every decision into bash (`lanai panel`, amendment above); the round's findings become its test cases |
+| plan amendment (panel view) | a (gpt-6.1-sol) | 1 (full) | 3 P2; all confirmed and integrated: direct action results had no record (every panel action now goes through `lib/ui.sh` and leaves one); the freshness rule would have rejected step 5's wait reply right when it must authorize the next call (separate rules for what to show and when to continue); a launch that never started was untracked (the QML keeps a pending token and a paused flag and passes them to `lanai panel`) |
