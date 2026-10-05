@@ -79,13 +79,14 @@ panel_records() {
 # from the same host facts. Settings/list errors are data, never swallowed results.
 cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
-  local token='' at=0 facts status_details status plan records settings snapshots logs s run inv problem_line results='{}' group doc words
+  local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
       emit false "" "Invalid panel input." ""; return 2
     fi
     token=$2 at=$3
   fi
+  progress=$(python3 "$LANAI_LIB/image-proof.py" activity "$(state_dir)/lock" "$(state_dir)/image-progress.json")
   facts=$(shared_facts)
   status_details=$(status_facts "$facts")
   status=$(status_map <<<"$status_details")
@@ -147,7 +148,7 @@ cmd_panel() {
     '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Setup, snapshot and restore log: " + $job),command:("Button actions log: " + $command)} +
      (if $client == "" then {} else {client:("Windows window log: " + $client)} end)')
   jq -nc --argjson st "$status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
-    --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
+    --argjson progress "$progress" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
     --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" '
@@ -164,7 +165,7 @@ cmd_panel() {
     ([$rec.records[] | select(. != null and has("started") and (has("ended")|not))] | max_by(.started) // {}) as $job |
     ([$rec.records[] | select(.token == $token)] | length > 0) as $seen |
     ($token != "" and ($seen|not) and $now - $at < 10) as $pending |
-    ($rec.held or $pending) as $busy |
+    ($rec.held or $pending or $progress != null) as $busy |
     ($rec.held and $job.command == "setup") as $setupJob |
     (($rec.held|not) and ($rec.records.setup|has("started")) and ($rec.records.setup|has("ended")|not)) as $interruptedSetup |
     ($token != "" and ($seen|not) and $now - $at >= 10) as $launchFailed |
@@ -179,8 +180,8 @@ cmd_panel() {
       ($client|not) and $st.state != "stopping") as $reopen |
     {ok:true,state:$st.state,active:$st.active,label:$w[0],headline:$w[1],cause:$w[2],next:$w[3],
      pending_ack:(if $seen then $token else "" end),
-     notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
-     busy:{active:$busy,line:(if $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
+     progress:$progress,notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
+     busy:{active:$busy,line:(if $progress != null then $progress.label elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
        elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes."}[$job.command // ""] // "Starting the operation.") else "" end)},
      result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot and restore log, then try again." else "" end)}),
      setup:{show:($p.finished|not),finished:$p.finished,

@@ -142,9 +142,15 @@ make_install() {
 # that variable is unset or does not point at btrfs. Call it directly, not in
 # $(...), or the skip is lost.
 btrfs_tmp() {
-  [[ -n ${LANAI_TEST_BTRFS_DIR:-} ]] || skip "LANAI_TEST_BTRFS_DIR is unset"
+  if [[ -z ${LANAI_TEST_BTRFS_DIR:-} ]]; then
+    [[ ${LANAI_REQUIRE_BTRFS:-0} != 1 ]] || fail "LANAI_TEST_BTRFS_DIR is required"
+    skip "LANAI_TEST_BTRFS_DIR is unset"
+  fi
   mkdir -p "$LANAI_TEST_BTRFS_DIR"
-  [[ $(stat -f -c %T "$LANAI_TEST_BTRFS_DIR") == btrfs ]] || skip "LANAI_TEST_BTRFS_DIR is not on btrfs"
+  if [[ $(stat -f -c %T "$LANAI_TEST_BTRFS_DIR") != btrfs ]]; then
+    [[ ${LANAI_REQUIRE_BTRFS:-0} != 1 ]] || fail "LANAI_TEST_BTRFS_DIR must be btrfs"
+    skip "LANAI_TEST_BTRFS_DIR is not on btrfs"
+  fi
   B=$(mktemp -d "$LANAI_TEST_BTRFS_DIR/t.XXXXXX")
 }
 

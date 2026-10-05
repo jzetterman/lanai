@@ -1724,11 +1724,27 @@ The orchestrator runs the gate; delegates run no review stage.
   README documents rerunning setup, next-start choices and manual Windows scale
   changes reverting within 2 s. Tests were written first, including PowerShell
   AST decision and late-display fixtures run locally with pwsh. All 14 new Bats
-  cases and the added QML test function pass. The full suite planned 640 cases:
-  582 passed, 56 socket-fixture failures, one locale skip and one spike live-flock
-  case with no result. Unix socket bind is denied by this agent sandbox. QML lint,
+  cases and the added QML test function pass. Outside the agent sandbox (which denies
+  Unix socket binds), Claude ran the full suite: 640 of 640 pass, one locale skip. QML lint,
   the full ShellCheck command and `git diff --check` pass. No plan deviation;
   John's Windows checks and proof log on a rehearsal copy remain pending.
+- **Phase B, snapshot and restore:** FIEMAP gates btrfs images and proves equal
+  shared maps before and after the one image hash, with a final map after restore
+  FICLONE. Small files are verified before replacement; deleted disks publish the
+  locked inode with renameat2 no-replace and install boot files before hashing,
+  using John's approved req 7 exception. CLI and panel operations publish phases,
+  byte progress and owner under the operation lock; QML renders the percentage.
+  Real normal, NOCOW, compressed, mixed and UNWRITTEN mutation fixtures cover the
+  proof, plus sparse pagination, recovery and publication races. CI requires btrfs
+  and strace; the read-budget test includes concurrent panel polls. Deviation:
+  this PID namespace hides /proc/locks entries after external flock exits even
+  while the lock remains held. In that case the reader checks the matching
+  owner's kernel FLOCK entry in /proc/<pid>/fdinfo, without probing the lock.
+  The existing read-only extent census gains map timing and JSON output; no
+  duplicate script was needed. Outside the sandbox the full suite passes 650 of 650 (locale and strace
+  skips). Local strace measurement skips when unavailable;
+  John's rehearsal-image timing and container-start check remain manual proofs.
+
 - **During setup:** Start and Open hide only before setup has finished for the
   current storage location or while a setup boot or final check boot is active.
   Working installs keep their daily controls beside pending build, driver and

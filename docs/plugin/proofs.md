@@ -883,6 +883,42 @@ batches; phase B times it and shows it under "checking". Its one hash pass cover
 whole 256 GiB, but only about 56 GB comes from disk; the holes read as zeros, so
 hashing speed, not the disk, sets most of the time.
 
+## Phase B automated storage proof (2026-10-05)
+
+Agent runs used isolated fixtures in this repository's `.btrfs-test`, never the
+rehearsal image or live storage. Normal (`+m`), NOCOW (`+C`), compressed (`+c`)
+and mixed images passed the real FIEMAP/reflink mutation matrix, including
+`fallocate -z` UNWRITTEN regions. Mutations restore size and mtime and still
+refuse completion. Independent manifests in the restore tests match the initial
+install; snapshot failures publish no COMPLETE and restore failures retain
+recovery markers once replacement has begun. Tests also cover changed original
+snapshots while the hashed clone still matches COMPLETE, locked no-replace
+publication of a deleted disk, small-file hashes before rename, and recovery.
+
+A read-only census of a local sparse fixture (9,007,104 logical bytes,
+4,505,600 allocated bytes, 1,100 plain extents, NOCOW false) took 0.002907 s;
+this crosses both the census and proof helper's FIEMAP batch boundaries. This
+is a small-fixture measurement, not timing for John's approximately 320k extents;
+John still records that rehearsal-image measurement using the census script.
+
+The strace read-budget test includes three concurrent panel polls and separately
+reports image and small-file reads; strace is unavailable in this agent sandbox,
+so that local measurement skips. CI installs it and requires both the measurement
+and real btrfs fixtures. A sandbox PID namespace hides /proc/locks records after
+external flock exits while the lock remains held; progress validates the matching
+owner's fdinfo FLOCK record in that case. The real container-start check and
+rehearsal-image traces remain John's manual row 7 proofs.
+
+Final local verification: 24 added Bats tests (23 pass, one strace skip); the
+four focused suites report 171 pass, zero fail, one skip. The required full run
+schedules 650 tests: 591 pass, 56 fail because the sandbox refuses Unix-socket
+binds, two skip (strace and a missing comma-decimal locale), and the existing
+spike real-flock test emits no TAP result (Bats reports 649 executed). A direct
+socat fixture bind confirms `Operation not permitted`. QML lint and the required
+ShellCheck command pass; these environment-limited results need a full rerun
+outside this sandbox before the acceptance gate.
+
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

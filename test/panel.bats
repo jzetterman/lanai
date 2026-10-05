@@ -1494,3 +1494,57 @@ setup_worker() {
     assert_equal "$(jq -r .setup.attention <<<"$output")" "$([[ $ST == activating ]] && echo false || echo true)"
   done
 }
+
+@test "panel progress: external flock owner advances without a job record and blocks controls" {
+  local fd pid=$BASHPID
+  exec {fd}>"$S/lock"
+  flock -n "$fd"
+  # flock exits; the live owner retains its open descriptor and lock.
+  jq -nc --argjson p "$pid" '{operation:"snapshot",phase:"hashing",done:25,total:100,pid:$p}' >"$S/image-progress.json"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r '.progress.percent' <<<"$output")" 24
+  assert_equal "$(jq -r '.busy.active' <<<"$output")" true
+  assert_equal "$(jq -r '.buttons.take_snapshot.enable' <<<"$output")" false
+  assert_equal "$(jq -r '.progress.label' <<<"$output")" "Taking snapshot: reading image"
+  jq '.done=100' "$S/image-progress.json" >"$S/next.json"
+  mv "$S/next.json" "$S/image-progress.json"
+  run cmd_panel
+  assert_equal "$(jq -r '.progress.percent' <<<"$output")" 99
+  exec {fd}>&-
+  run cmd_panel
+  assert_equal "$(jq -r '.progress' <<<"$output")" null
+}
+
+@test "panel progress: dead owners, unrelated open files, wrong lock inodes and malformed records are ignored" {
+  local fd pid=$BASHPID
+  exec {fd}>"$S/other-lock"
+  flock -n "$fd"
+  : >"$S/lock"
+  jq -nc --argjson p "$pid" '{operation:"restore",phase:"checking",done:0,total:0,pid:$p}' >"$S/image-progress.json"
+  run cmd_panel
+  assert_equal "$(jq -r '.progress' <<<"$output")" null
+  exec {fd}>&-
+  exec {fd}>"$S/lock"
+  # An open descriptor without a FLOCK does not suffice.
+  run cmd_panel
+  assert_equal "$(jq -r '.progress' <<<"$output")" null
+  flock -n "$fd"
+  jq '.pid=2147483647' "$S/image-progress.json" >"$S/next.json"
+  mv "$S/next.json" "$S/image-progress.json"
+  run cmd_panel
+  assert_equal "$(jq -r '.progress' <<<"$output")" null
+  # A live owner which has no descriptor to this lock also fails.
+  (exec {fd}>&-; sleep 30) &
+  local live=$!
+  BG_PIDS+=("$live")
+  jq -nc --argjson p "$live" '{operation:"restore",phase:"checking",done:0,total:0,pid:$p}' >"$S/image-progress.json"
+  run cmd_panel
+  assert_equal "$(jq -r '.progress' <<<"$output")" null
+  echo '{broken' >"$S/image-progress.json"
+  run cmd_panel
+  assert_equal "$(jq -r '.progress' <<<"$output")" null
+  exec {fd}>&-
+  kill "$live"
+  wait "$live" || true
+}

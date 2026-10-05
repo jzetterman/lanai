@@ -181,6 +181,24 @@ TestCase {
     action.complete('{"ok":true}', 0)
     verify(poll.running)
   }
+  function test_progress_renders_backend_percentage_and_clears() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    compare(model.view.progress || null, null)
+    var panel = createTemporaryObject(panelComponent, tests, {model:model})
+    panel.open()
+    var v = {buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{},
+             progress:{label:"Restoring Windows: reading image",percent:37}}
+    model.view = v
+    var bar = objects(panel, function(o) { return o.objectName === "imageProgress" })[0]
+    var words = objects(panel, function(o) { return o.objectName === "imageProgressText" })[0]
+    verify(bar !== undefined)
+    compare(bar.value, 37)
+    compare(words.text, "Restoring Windows: reading image — 37%")
+    model.view = {buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{},progress:null}
+    compare(bar.visible, false)
+    compare(words.text, "")
+  }
   function test_each_monitor_polls_its_own_panel() {
     var first = createTemporaryObject(modelComponent, tests)
     var second = createTemporaryObject(modelComponent, tests)
