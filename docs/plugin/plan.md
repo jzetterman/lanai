@@ -1442,6 +1442,9 @@ changes with resolution. Keep the chosen absolute step through those changes.
   the guest's pure scale decision through its PowerShell AST, as StepName tests
   do; skip without pwsh. Cover caps, recovery, a moved recommended step, an
   unchanged display, and a display that appears after sign-in. Pin task flags.
+  Add `powershell-bin` to CI only if it enters Arch's official repos.
+  [ArchWiki](https://wiki.archlinux.org/title/PowerShell) lists it in the AUR,
+  so guest scale tests skip in CI and must run locally with pwsh.
 - Files: `lib/ui.sh`, `lib/lanai.sh` (`boot_vm`), `lib/vm.sh` as needed for a shared
   settings reader, `lib/panel.sh`, `LanaiPanel.qml`, `LanaiModel.qml`,
   `guest/lanai-scale.ps1`, `guest/setup.cmd` and `README.md`.
@@ -1469,15 +1472,26 @@ changes with resolution. Keep the chosen absolute step through those changes.
   quarter-size window to full screen, caps and recovery, two host scales, and
   both late and immediate client attachment from the earlier scale-timing check.
   Record the Windows scale and guest log. README tells existing users to click
-  "Run setup again" after this update. It says a fixed scale overrides a manual
-  change in Windows Settings within 2 s.
+  "Run setup again" after this update. Both "Match my monitor" and a fixed step
+  resolve to one target at boot. README says the guest loop reverts manual scale
+  changes in Windows Settings within 2 s for both choices.
 
 **Phase B: snapshot and restore (req 7).** Clone first, then hash once. Every
 allocated block must be shared before the read. On tested btrfs modes, a later
 write to either file moves a shared block, including NOCOW's first write to a
 shared extent; compressed clones share the encoded extent. An unchanged copy
 map that still matches the other file proves the hashed data stayed shared.
+Preallocated UNWRITTEN extents pass too. Dockur opens data.img with
+`discard=unmap,detect-zeroes=on` (`lib/dockur-6.05.args`). QEMU turns guest zero
+writes into fallocate zero ranges, which btrfs reports as UNWRITTEN. John's disk
+likely has these extents. A clone reports them as shared and unwritten. A write
+into a shared unwritten extent moves the block in both COW and NOCOW files, so
+the same proof holds.
 
+- Before building B, add `docs/plugin/proof-kit/count-image-extents.py`, a small
+  read-only script that counts FIEMAP extent classes and flags without reading
+  image data. John runs it on his rehearsal copy and records the counts in
+  `proofs.md`. Agents never run it on `~/.windows`.
 - Tests first: extend `test/snapshot.bats`, `test/lanai-copy.bats`,
   `test/panel.bats` and `test/panel-qml.bats`. Use real reflinks under
   `LANAI_TEST_BTRFS_DIR=$REPO/.btrfs-test`, with normal, NOCOW (`chattr +C`),
@@ -1485,6 +1499,8 @@ map that still matches the other file proves the hashed data stayed shared.
   files. Use `chattr +m` or incompressible data for normal images and assert no
   ENCODED extents. Assert ENCODED extents for compressed images, and both plain
   and ENCODED extents for mixed images. Check NOCOW through the file attribute.
+  Add `fallocate -z` regions to every mode and assert UNWRITTEN extents. Run the
+  same mutation hooks on those regions as on the other allocated extents.
   For each mode and each operation, a test-only environment hook changes one
   allocated block of the clone after its first map, before hashing. A second
   hook changes the original source or snapshot after hashing, before proof.
@@ -1500,27 +1516,40 @@ map that still matches the other file proves the hashed data stayed shared.
   late stray files, locks, progress and cleanup on failure. For a deleted disk,
   assert data.img exists and holds the disk lock before hashing starts. Test a
   contender creating data.img before publication: never replace its inode.
+  A lock failure on the temporary inode must leave data.img absent.
   A failed proof keeps the marker. Resume with a stale `.lanai-restore.data.img`
   whose NOCOW attribute differs; remove it and clone afresh with the right flag.
-  Gate refusals create no restore marker or partial snapshot folder. Test probe
-  cleanup on every exit and stale probe cleanup under the lock.
+  Restore over an existing disk with rejected extent classes; only its btrfs
+  filesystem and NOCOW match gate that destination. Gate refusals create no
+  restore marker or partial snapshot folder. Test root fallback on EXDEV and
+  EINVAL, partial-folder cleanup, and refusal on other clone errors. Test each
+  small restore file's temporary hash before its rename.
   Plain-copy shims may test errors, but cannot establish a successful proof.
 - Files: `lib/snapshot.sh`, `lib/copy.sh`, `lib/ficlone.py`, a new
   `lib/image-proof.py`, `lib/lanai.sh` (`layout_check`, `shared_facts`,
   `cmd_snapshot`, `cmd_restore`), `lib/panel.sh`, `LanaiPanel.qml`, `LanaiModel.qml`,
-  `.github/workflows/test.yml` and `README.md`. Keep generic `tree_manifest` for
+  `test/helpers.bash` (`LANAI_REQUIRE_BTRFS`),
+  `docs/plugin/proof-kit/count-image-extents.py`, `.github/workflows/test.yml`
+  and `README.md`. Keep generic `tree_manifest` for
   `lanai-copy`; snapshot/restore use manifests that hash data.img only once.
 - Use Python's FIEMAP ioctl, alongside the existing Python FICLONE helper.
   It adds no filefrag dependency and avoids parsing tool output. Define the
   provability gate: statfs must report btrfs magic (`0x9123683e`). Synchronize
-  allocations and collect the complete map, including holes and EOF. Every
-  allocated extent must be plain or ENCODED (compressed). Apart from SHARED and
-  LAST bookkeeping, allow only ENCODED; reject all other flags, including inline,
-  unknown, unwritten and delalloc still present after sync. Read NOCOW from the
-  file attribute, not the extent flags. Omarchy mounts btrfs with `compress=zstd`,
+  allocations and collect the complete map, including holes and EOF. Python's
+  `os.statvfs` has no `f_type`; use ctypes statfs or `stat -f -c %t`.
+  Loop over FIEMAP batches with `fm_extent_count` as the capacity. Read each
+  batch's `fm_mapped_extents` entries and continue until LAST or EOF. A compressed
+  64 GiB image can map to about 500k extents. Measure map time, record it in
+  `proofs.md`, and show this work under the "checking" progress phase.
+  Every allocated extent must be plain, ENCODED (compressed) or UNWRITTEN
+  (`FIEMAP_EXTENT_UNWRITTEN`, preallocated). Apart from SHARED and LAST
+  bookkeeping, allow only ENCODED and UNWRITTEN; reject all other flags,
+  including inline, unknown and delalloc still present after sync. Read NOCOW
+  from the file attribute, not the extent flags. Omarchy mounts btrfs with `compress=zstd`,
   so an image with no attributes can have both plain and ENCODED extents. That
-  mix passes. Compare logical offset, physical offset, length and encoded flags;
-  require shared allocated extents. Reject ioctl errors. Open files without
+  mix passes. Compare logical offset, physical offset, length and ENCODED and
+  UNWRITTEN flags. Equal physical offsets in two inodes prove sharing; drop the
+  separate SHARED flag check. Reject ioctl errors. Open files without
   following symlinks; map and read the same open files and reject path
   replacement. Size only bounds the map; size and timestamps never prove data
   equality. Only btrfs with these extent classes and the tested NOCOW modes
@@ -1536,14 +1565,12 @@ map that still matches the other file proves the hashed data stayed shared.
   map. Compressed slices are one instance of the broader exclusion. The same
   process could rewrite COMPLETE or the snapshot's files outright. Say so in a
   comment at the comparison.
-- Replace `snapshot_root`'s probe under the disk lock. Apply the statfs and
-  extent-class gate first. Use FICLONERANGE to clone one allocated extent of
-  data.img into a small `.lanai-probe.*` file in each candidate root, with the
-  NOCOW attribute matched. Compare that range's map. Do not write into the probe
-  or clone the whole image. Remove it on every exit and sweep stale
-  `.lanai-probe.*` files under the lock. This replaces windows.mac, which can be
-  inline, and tests the filesystem pair and image mode without another image
-  read. A failed probe means this location cannot make an instant copy.
+- Remove `snapshot_root`'s probe, its cleanup and stale sweep, FICLONERANGE code
+  and probe tests. Under the disk lock, apply the statfs and extent-class gate
+  first. Try the real clone into the first snapshot root's partial folder, with
+  NOCOW matched. On EXDEV or EINVAL, remove that folder and try the next root.
+  Other clone errors fail the operation. If no root works, say this location
+  cannot make an instant copy and suggest a backup.
 - Snapshot: retain the partial folder, SOURCE, COMPLETE format, rename and flush
   rules. Apply the provability gate before creating the partial folder. Clone
   the install, record both image maps and require equality. Hash the clone once,
@@ -1553,31 +1580,40 @@ map that still matches the other file proves the hashed data stayed shared.
   snapshot and says nothing was kept. Reading the shared clone hashes the
   source's data while keeping the single read easy to count.
 - Restore: retain validation, NOCOW refusal, the operation and disk locks,
-  resumable marker, stray-file check and flush rules. Apply the provability gate
-  to the snapshot image and any existing disk before the marker. A gate failure
-  is a clean refusal. When data.img exists, hold its disk lock, clone snapshot
-  data.img to `.lanai-restore.data.img` in storage with NOCOW matched, record
+  resumable marker, stray-file check and flush rules. Apply the full provability
+  gate to the snapshot image before the marker. For an existing storage disk,
+  check only statfs for btrfs and NOCOW match, not its extent classes. FICLONE
+  replaces all its extents; the final map check compares data.img with the saved
+  temporary map. A gate failure is a clean refusal. When data.img exists, hold
+  its disk lock, clone snapshot data.img to `.lanai-restore.data.img` in storage
+  with NOCOW matched, record
   equal maps, hash that file once against COMPLETE, then require both maps to
   equal the saved map. A resumed restore removes the stale temporary file and
   re-clones it with the snapshot's NOCOW attribute matched.
-  Verify small files before replacing install files. The marker must precede
-  the storage temporary file. With an existing disk, a clean verification
-  refusal removes the temporary file and any newly created marker; preserve an
+  Clone each small file to `.lanai-restore.<name>`, hash that temporary file
+  against COMPLETE, then rename it after the image proof. Drop the separate byte
+  check; restore reads each small file once. The marker must precede the storage
+  temporary files. With an existing disk, a clean verification refusal removes
+  the temporary files and any newly created marker; preserve an
   older unfinished marker.
   Interruption keeps the marker. After proof, clone the verified temporary file
   onto data.img with `ficlone.py`, keeping QEMU's locked inode. Compare the final
-  map with the saved temporary map, byte-check the small copies and remove the
-  temporary file before the stray-file check. Never run a final image hash.
+  map with the saved temporary map, rename the verified small files and remove
+  the temporary image before the stray-file check. Never run a final image hash.
   When data.img is absent, write the marker, clone snapshot data.img into
-  `.lanai-restore.data.img` with NOCOW matched, then publish it straight to
-  data.img with a no-replace rename (`renameat2 RENAME_NOREPLACE` or a link-based
-  move). Never use `mv -f -T`: dockur may have created a disk in the meantime.
-  Take the disk lock at once, before hashing. Record equal maps, hash and prove
-  data.img in place against COMPLETE and the saved maps, then replace other
+  `.lanai-restore.data.img` with NOCOW matched. Take `lock_disk` on that temporary
+  inode before publishing it as data.img. QEMU's OFD locks stay with the inode,
+  so data.img holds the disk lock the moment it appears. Publish with ctypes
+  `renameat2(RENAME_NOREPLACE)`. Never use `mv -n` or `mv -f -T`: dockur may have
+  created a disk in the meantime. Lock failure stops before publication; drop
+  the branch for locking failure after publication. Record equal maps, hash and
+  prove data.img in place against COMPLETE and the saved maps, then replace other
   files. Never replace this locked inode later. A failed proof keeps the marker;
-  the disk was already gone, so nothing is lost. Keep the marker if publication
-  or locking fails too. On success, clear the marker and reset setup only after
-  completion.
+  the disk was already gone, so nothing is lost. This path changes storage before
+  the hash. It is a deliberate exception to req 7's "before anything changes",
+  justified by its disk-lock clause: the disk was already gone. Keep the marker
+  if publication or locking fails too. On success, clear the marker and reset
+  setup only after completion.
   Preserve today's messages' intent, including damage before replacement and
   recovery guidance after a partial replacement.
 - One chunked hashlib reader in `image-proof.py` reads image data. Fold the
@@ -1590,16 +1626,22 @@ map that still matches the other file proves the hashed data stayed shared.
   operation, phase, bytes done, total and owner pid. Bash publishes cloning,
   checking and finishing phases too. Initialize and remove it inside the
   operation lock for CLI and panel starts. Keep completion below 100% until
-  proof and flush succeed. `lanai panel` validates the owner and held operation
-  lock through `/proc/locks`, using `lib/lanai.sh`'s existing parser near line
-  140, then returns `progress: {label,percent}` or null. Never probe with flock:
-  even a brief probe can make concurrent `lanai_flock` (`flock -n` on
+  proof and flush succeed. "Held" means a FLOCK entry for `<state>/lock`'s dev:ino
+  in `/proc/locks`; use `lib/lanai.sh`'s existing device and inode parser near
+  line 140. "Owner" means the progress file's pid is alive and has `<state>/lock`
+  open, checked with `readlink /proc/<pid>/fd/*`. `lanai_flock` runs external
+  `flock -n "$fd"`, so `/proc/locks` names the short-lived flock process, not the
+  holder. Do not compare that pid with the progress owner. `lanai panel` requires
+  both checks, then returns `progress: {label,percent}` or null. Never probe with
+  flock: even a brief probe can make concurrent `lanai_flock` (`flock -n` on
   `<state>/lock`) fail as busy. Use this activity for busy controls even without
   a panel-job record. Ignore stale, dead-owner and
   malformed files; polling writes nothing. Supply null in initial/error views.
   QML shows a progress bar and the percentage as plain text in Snapshots. Test
   advancing progress, a newly opened
-  panel, CLI starts, failure, interruption and stale records.
+  panel, CLI starts, failure, interruption and stale records. Test the real
+  external flock case after flock exits, a live pid without the lock file open,
+  a dead owner, a held lock on another inode and an open file without a held lock.
 - Verify the read budget with `strace -f -yy`, summing successful read/pread and
   readv/preadv variants on storage, snapshot and temporary-copy files across all
   children. Also fail if mmap, sendfile, splice or copy_file_range touches a
@@ -1635,11 +1677,13 @@ Start, Open and Shut down controls in place.
   unknown/missing actions opening the panel, and literal `ui-run` argv without a
   real service or shell. Cover a stopped install with a pending update step:
   right click opens the panel and Start stays enabled.
+  Test running with a closed window during a blocking operation: right click
+  still opens the window, as the panel's Open button does.
 - Files: `lib/panel.sh`, `Widget.qml`, `LanaiModel.qml` and `README.md`.
   Bash returns `right_click: "start"` only for stopped, finished setup with no
   blocking operation or unfinished restore; `"open"` only for running, finished
-  setup with its window closed and no blocking operation or unfinished restore;
-  otherwise `"panel"`. Use `panel.sh`'s `$p.finished` for current setup completion.
+  setup with its window closed; otherwise `"panel"`.
+  Use `panel.sh`'s `$p.finished` for current setup completion.
   This is stricter than dailyControls' `setup_done` for a stopped VM, on purpose.
   A right click on a working install with a pending update step opens the panel;
   its Start still works. Bash supplies a tooltip line naming "Right click" and
@@ -2043,3 +2087,4 @@ The orchestrator runs the gate; delegates run no review stage.
 | plan amendment (scale, progress, clicks) | a (gpt-6.1-sol) | 2 (full) | 1 P2, 0 refuted; integrated: round 1's host-step CI fix could not run (job-level container); the plan keeps CI's existing loop-mounted btrfs, adds strace, and fails rather than skips without btrfs in CI |
 | plan amendment (scale, progress, clicks) | a (gpt-6.1-sol) | 3 (full, cap) | 0 findings. Stage a clean |
 | plan amendment (scale, progress, clicks) | b single (opus-5.5) | 1 (full) | 4 should-fix, 6 nits, 0 refuted; all integrated (by Codex): a restore onto a deleted disk installs and locks the clone before hashing; provability defined by statfs and extent classes, with mixed plain and compressed extents (Omarchy mounts compress=zstd) and a fixture each; a one-extent probe with no write; a hook for restore's final map compare; threat model covers deliberate re-cloning in any mode; strace also rejects mmap/sendfile/splice/copy_file_range and polls start after the lock; the progress lock is read from /proc/locks; a resumed restore re-clones a stale temp; invalid windows_scale refuses boot like memory/cores, label "Windows scale"; right click uses $p.finished on purpose, Menu key toggles |
+| plan amendment (scale, progress, clicks) | b single (opus-5.5) | 2 (full) | 1 blocker, 2 should-fix, 8 nits, 0 refuted; all integrated (by Codex): unwritten (preallocated) extents count as provable, since dockur's detect-zeroes and discard make them (verified), with zero-range fixtures and a read-only extent count John runs on the rehearsal copy first; the existing disk needs only btrfs and a NOCOW match; the progress owner is the pid holding the lock file open (/proc/locks names the short-lived flock process, verified); no probe, the real clone falls back to the next root; the deleted-disk clone is locked before it appears; small files cloned then hashed once; no separate SHARED check; right-click open needs no idle lock; pwsh tests skip in CI (AUR only); README covers both scale choices; ctypes statfs/renameat2, FIEMAP batching, map timing, helpers.bash |
