@@ -20,6 +20,7 @@ Panel {
   property bool setupAgainArmed: false
   property int memoryInput: root.model.view.settings.memory_gib || 1
   property int coresInput: root.model.view.settings.cores || 1
+  property var windowsScaleInput: root.model.view.settings.windows_scale === undefined ? "auto" : root.model.view.settings.windows_scale
   // The shell supplies bar/theme fields dynamically on QObject groups.
   // qmllint disable missing-property
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -30,6 +31,7 @@ Panel {
     if (opened) {
       memoryInput = Qt.binding(function() { return root.model.view.settings.memory_gib || 1 })
       coresInput = Qt.binding(function() { return root.model.view.settings.cores || 1 })
+      windowsScaleInput = Qt.binding(function() { return root.model.view.settings.windows_scale === undefined ? "auto" : root.model.view.settings.windows_scale })
     } else { stopArmed = false; forceArmed = false; restoreArmed = ""; setupAgainArmed = false }
   }
   Connections {
@@ -41,9 +43,10 @@ Panel {
       if (!root.model.control("send_answers").show) { root.shareAnswer = ""; root.scaleAnswer = "" }
       if (!root.model.view.setup.finished) root.setupAgainArmed = false
     }
-    function onSettingsSaved(memoryGib: int, cores: int) {
+    function onSettingsSaved(memoryGib: int, cores: int, windowsScale: var) {
       root.memoryInput = memoryGib
       root.coresInput = cores
+      root.windowsScaleInput = windowsScale
     }
   }
   // SpinBox edits keep its value binding. Freeze the input that feeds it instead.
@@ -211,7 +214,23 @@ Panel {
             spacing: Style.space(12)
             NumberField { id: memoryField; label: "Memory (GiB)"; from: 1; to: 512; value: root.memoryInput; enabled: root.model.control("save_settings").enable; foreground: root.foreground; fontFamily: root.fontFamily }
             NumberField { id: coresField; label: "CPU cores"; from: 1; to: 64; value: root.coresInput; enabled: root.model.control("save_settings").enable; foreground: root.foreground; fontFamily: root.fontFamily }
-            Action { control: "save_settings"; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value)], false) }
+            Column {
+              width: Style.space(230)
+              spacing: Style.space(4)
+              Note { text: "Windows scale" }
+              QQC.ComboBox {
+                objectName: "windowsScale"
+                width: parent.width
+                model: root.model.view.settings.scale_choices || []
+                textRole: "label"
+                valueRole: "value"
+                currentIndex: model.findIndex(function(choice) { return choice.value === root.windowsScaleInput })
+                enabled: root.model.control("save_settings").enable
+                onActivated: root.windowsScaleInput = currentValue
+                onActiveFocusChanged: if (activeFocus) root.reveal(this)
+              }
+            }
+            Action { control: "save_settings"; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value), String(root.windowsScaleInput)], false) }
           }
           Note { text: root.model.view.result.settings || "" }
 

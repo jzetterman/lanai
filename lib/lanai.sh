@@ -1118,8 +1118,8 @@ runtime_refresh() {
 # boot_vm <setup true|false> [<window auto|true|false>] [<step6 true|false>]:
 # the one path that starts the VM unit (lanai start, lanai setup-guest and
 # setup's step 6 boot). Under lanai_flock it runs preflight, rechecks setup
-# state without changing it, turns the focused monitor's scale into a
-# Windows step (100% without Hyprland), checks vm_plan, refreshes the
+# state without changing it, resolves fixed scale or the focused monitor's
+# nearest Windows step (100% without Hyprland), checks vm_plan, refreshes the
 # runtime copy, writes the scale and boot mode to boot.json, and starts
 # the unit. Setup boots require this disk's snapshot decision; step 6
 # requires this disk's step5 to be true; ordinary starts require setup_done
@@ -1175,8 +1175,14 @@ boot_vm() {
   else
     window=false
   fi
-  scale=$(host_scale) || scale=100
-  step=$(scale_step "$scale") || step=100
+  if ! step=$(vm_windows_scale); then
+    emit false "" "Lanai cannot read Windows scale in its settings file." "set auto or a valid Windows scale step"
+    return 1
+  fi
+  if [[ $step == auto ]]; then
+    scale=$(host_scale) || scale=100
+    step=$(scale_step "$scale") || step=100
+  fi
   if ! reason=$(vm_plan "$step" "$media" "$window"); then
     emit false "" "$reason" ""
     return 1

@@ -45,7 +45,7 @@ panel_words() {
         stop:"Windows could not be asked to shut down. Check the button actions log and try again.",
         "force-stop":"Windows could not be force-stopped. Check the button actions log and try again.",
         "notice-seen":"The notice could not be dismissed. Try again.",
-        settings:"Settings could not be saved. Use whole numbers from 1 to 512 for memory and 1 to 64 for cores, then try again.",
+        settings:"Settings could not be saved. Use whole numbers from 1 to 512 for memory and 1 to 64 for cores, and choose a listed Windows scale, then try again.",
         "setup-host":"The installation terminal could not open. Check the button actions log and try again.",
         setup:"Setup could not finish. Check the setup log, then continue setup.",
         snapshot:"Lanai could not take the snapshot. Check the snapshot log and try again.",
@@ -136,7 +136,9 @@ cmd_panel() {
     results=$(jq -nc --argjson r "$results" --arg g "$group" --arg w "$words" '$r + {($g):$w}')
   done
   if settings=$(cmd_settings 2>/dev/null) && jq -e '.ok' <<<"$settings" >/dev/null; then
-    settings=$(jq -c '{memory_gib,cores,error:"",line:"Changes apply the next time Windows starts."}' <<<"$settings")
+    settings=$(jq -c --arg steps "$LANAI_SCALE_STEPS" '{memory_gib,cores,windows_scale,error:"",line:"Changes apply the next time Windows starts.",
+      scale_choices:([{value:"auto",label:"Match my monitor"}] +
+        [$steps | splits(" ") | select(length > 0) | tonumber | {value:.,label:(tostring + "%")}])}' <<<"$settings")
   else settings='{"error":"Lanai could not read the VM settings. Check the settings file."}'; fi
   if snapshots=$(cmd_snapshots 2>/dev/null) && jq -e '.ok' <<<"$snapshots" >/dev/null; then
     snapshots=$(jq -c '{names:(.snapshots | map(split("/")[-1])),error:"",line:(if (.snapshots|length) == 0 then "No snapshots yet." else "Restoring replaces Windows. Anything saved since the snapshot is lost. Stop Windows in both VMs before restoring." end)}' <<<"$snapshots")

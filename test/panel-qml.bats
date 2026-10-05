@@ -216,7 +216,7 @@ TestCase {
     var save = objects(panel, function(o) { return o.control === 'save_settings' })[0]
     save.clicked()
     var action = objects(model, function(o) { return o.command && o.command[1] === 'ui-run' })[0]
-    compare(action.command.slice(3).join(' '), 'settings 9 3')
+    compare(action.command.slice(3).join(' '), 'settings 9 3 auto')
     action.complete('{"ok":false}', 0)
     model.view = view(16, 8)
     compare(memory.field.value, 9)
@@ -234,6 +234,44 @@ TestCase {
     panel.close(); panel.open()
     compare(memory.field.value, 16)
     compare(cores.field.value, 8)
+    panel.destroy(); wait(1)
+  }
+  function test_scale_edits_survive_polls_and_save_result_transport() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    function view(scale) {
+      return {buttons:{save_settings:{show:true,enable:true,label:'Save settings'}},setup:{},
+        settings:{memory_gib:8,cores:4,windows_scale:scale,scale_choices:[
+          {value:'auto',label:'Match my monitor'},{value:125,label:'125%'},{value:250,label:'250%'}]},
+        snapshots:{names:[]},result:{},logs:{}}
+    }
+    model.view = view('auto')
+    var panel = createTemporaryObject(panelComponent, tests, {model:model})
+    panel.open()
+    var scale = objects(panel, function(o) { return o.objectName === 'windowsScale' })[0]
+    verify(scale !== undefined)
+    compare(scale.currentText, 'Match my monitor')
+    scale.forceActiveFocus()
+    keyClick(Qt.Key_Down); keyClick(Qt.Key_Return)
+    compare(panel.windowsScaleInput, 125)
+    model.view = view(250)
+    compare(scale.currentText, '125%')
+    var save = objects(panel, function(o) { return o.control === 'save_settings' })[0]
+    save.clicked()
+    var action = process(model, model.cli)
+    compare(action.command.slice(3).join(' '), 'settings 8 4 125')
+    action.complete('{"ok":false}', 0); ready(model)
+    model.view = view(250)
+    compare(panel.windowsScaleInput, 125)
+    save.clicked()
+    panel.windowsScaleInput = 250
+    action.complete('{"ok":true,"windows_scale":125}', 0); ready(model)
+    compare(panel.windowsScaleInput, 125)
+    model.view = view(250)
+    compare(panel.windowsScaleInput, 125)
+    panel.close(); panel.open()
+    compare(panel.windowsScaleInput, 250)
+    compare(scale.currentText, '250%')
     panel.destroy(); wait(1)
   }
   function test_finished_setup_reveals_both_display_choices_without_a_bare_job() {

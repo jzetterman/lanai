@@ -34,6 +34,33 @@ setup() {
 }
 
 # Write setup state belonging to the fixture's storage.
+
+@test "panel scale: supplies current value and every labeled scale choice" {
+  state '{"done":true}'
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .settings.windows_scale <<<"$output")" auto
+  assert_equal "$(jq -c '.settings.scale_choices | map(.value)' <<<"$output")" '["auto",100,125,150,175,200,225,250,300,350,400,450,500]'
+  assert_equal "$(jq -r .settings.scale_choices[0].label <<<"$output")" 'Match my monitor'
+  assert_equal "$(jq -r .settings.scale_choices[-1].label <<<"$output")" '500%'
+  jq '.windows_scale=175' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .settings.windows_scale <<<"$output")" 175
+}
+
+@test "panel scale: invalid persisted scale shows a settings error" {
+  local value
+  for value in null true '"125"' '{}' '[]' 275 125.5; do
+    jq --argjson v "$value" '.windows_scale=$v' "$(settings_file)" >"$T/settings"
+    mv "$T/settings" "$(settings_file)"
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r '.settings.error != ""' <<<"$output")" true
+    assert_equal "$(jq -r .buttons.save_settings.enable <<<"$output")" false
+  done
+}
 state() { jq -nc --arg l "$STORE" --argjson d "$1" '$d + {location:$l}' >"$S/setup.json"; }
 
 # Leave a stopped setup boot's evidence; a panel request is clean but incomplete.

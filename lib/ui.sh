@@ -24,10 +24,10 @@ cmd_notice_seen() {
   emit true "" "Notice dismissed." ""
 }
 
-# settings [<memory GiB> <cores>]: preserve all other keys; apply next boot.
-# The ranges and integer syntax are the same as vm_args in lib/vm.sh.
+# settings [<memory GiB> <cores> [<Windows scale>]]: apply next boot.
+# Old two-argument saves preserve scale and all unrelated keys.
 cmd_settings() {
-  local f doc='{}' mem cores tmp
+  local f doc='{}' mem cores scale tmp
   f=$(settings_file)
   if [[ -L $f ]] || { [[ -e $f ]] && ! doc=$(jq -ce 'select(type == "object")' "$f"); }; then
     emit false "" "Lanai cannot read its settings file: $f." "repair that file, then try again"
@@ -35,10 +35,10 @@ cmd_settings() {
   fi
   if (($# == 0)); then
     read -r mem cores < <(vm_settings) || return 1
-  elif (($# == 2)); then
+  elif (($# == 2 || $# == 3)); then
     mem=$1 cores=$2
   else
-    emit false "" "Settings need memory in GiB and cores." "use lanai settings <memory> <cores>"
+    emit false "" "Settings need memory in GiB, cores and optionally Windows scale." "use lanai settings <memory> <cores> [auto|scale]"
     return 2
   fi
   if [[ ! $mem =~ ^[1-9][0-9]{0,2}$ ]] || ((mem > 512)); then
@@ -48,6 +48,16 @@ cmd_settings() {
   if [[ ! $cores =~ ^[1-9][0-9]?$ ]] || ((cores > 64)); then
     emit false "" "Cores must be a whole number from 1 to 64." "choose a valid core count"
     return 2
+  fi
+  if (($# == 3)); then
+    scale=$3
+    if [[ $scale != auto && ! ( $scale =~ ^[1-9][0-9]{2}$ && $LANAI_SCALE_STEPS == *" $scale "* ) ]]; then
+      emit false "" "Windows scale must be auto or a Windows scale step." "choose Match my monitor or a listed percentage"
+      return 2
+    fi
+  elif ! scale=$(windows_scale_value "$doc"); then
+    emit false "" "Lanai cannot read Windows scale in its settings file." "set auto or a valid Windows scale step"
+    return 1
   fi
   if (($#)); then
     if ! lanai_flock; then
@@ -59,15 +69,20 @@ cmd_settings() {
       emit false "" "Lanai cannot read its settings file: $f." "repair that file"
       return 1
     fi
+    if (($# == 2)) && ! scale=$(windows_scale_value "$doc"); then
+      emit false "" "Lanai cannot read Windows scale in its settings file." "set auto or a valid Windows scale step"
+      return 1
+    fi
     if ! mkdir -p -- "${f%/*}" || ! tmp=$(mktemp "$f.XXXXXX"); then return 1; fi
-    if ! jq --argjson m "$mem" --argjson c "$cores" '. + {memory_gib:$m, cores:$c}' <<<"$doc" >"$tmp" ||
+    if ! jq --argjson m "$mem" --argjson c "$cores" --argjson w "$(scale_json "$scale")" \
+      '. + {memory_gib:$m, cores:$c, windows_scale:$w}' <<<"$doc" >"$tmp" ||
       ! mv -f -- "$tmp" "$f"; then
       rm -f -- "$tmp"
       return 1
     fi
   fi
   emit true "" "VM settings apply at the next start." "" \
-    "$(jq -nc --argjson m "$mem" --argjson c "$cores" '{memory_gib:$m, cores:$c}')"
+    "$(jq -nc --argjson m "$mem" --argjson c "$cores" --argjson w "$(scale_json "$scale")" '{memory_gib:$m, cores:$c, windows_scale:$w}')"
 }
 
 # Atomic result per group; no temporary file is shared between callers.

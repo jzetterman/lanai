@@ -650,6 +650,29 @@ vm_settings() {
   printf '%s %s\n' "$mem" "$cores"
 }
 
+# Preserve JSON types: only an absent key defaults to auto, never null or false.
+windows_scale_value() {
+  jq -er --arg steps "$LANAI_SCALE_STEPS" '
+    select(type == "object") |
+    (if has("windows_scale") then .windows_scale else "auto" end) |
+    select(. == "auto" or (type == "number" and
+      (. as $v | [$steps | splits(" ") | select(length > 0) | tonumber] | index($v) != null)))' <<<"$1"
+}
+
+# Shared by boot and settings; no monitor reads for a fixed setting.
+vm_windows_scale() {
+  local f doc='{}'
+  f=$(settings_file)
+  [[ ! -L $f ]] || return 1
+  if [[ -e $f ]]; then doc=$(cat -- "$f") || return 1; fi
+  windows_scale_value "$doc"
+}
+
+# A validated CLI value as JSON, retaining auto's string type.
+scale_json() {
+  if [[ $1 == auto ]]; then printf '"auto"\n'; else printf '%s\n' "$1"; fi
+}
+
 # Print the host's IPv4 default gateway, or nothing when there is no
 # default route (or none with a gateway, such as `default dev wg0`).
 default_gateway() {

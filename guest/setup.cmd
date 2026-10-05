@@ -138,7 +138,7 @@ if not "%RC%"=="0" goto :failed
 rem An interactive task for this user (the SID check above), which stores no
 rem password. -Force replaces it on a rerun. [char]34 quotes the path, which
 rem holds a space, without nested quotes for cmd.
-powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $u = $env:USERDOMAIN + '\' + $env:USERNAME; $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + [char]34 + 'C:\Program Files\Lanai\lanai-scale.ps1' + [char]34); $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive; Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Force | Out-Null"
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $u = $env:USERDOMAIN + '\' + $env:USERNAME; $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + [char]34 + 'C:\Program Files\Lanai\lanai-scale.ps1' + [char]34); $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew; Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 

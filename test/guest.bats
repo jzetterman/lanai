@@ -306,6 +306,87 @@ stage1_code() {
 
 # --- guest/lanai-scale.ps1 ---
 
+# Load the actual pure decision, without the Windows-only API or main loop.
+scale_decision() {
+  PS1=$REPO/guest/lanai-scale.ps1 EXPR=$1 pwsh -NoProfile -NonInteractive -Command '
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
+    $f = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $n.Name -eq "ScaleDecision" }, $true) | Select-Object -First 1
+    if (-not $f) { throw "no ScaleDecision function" }
+    $Steps = @(100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500)
+    . ([scriptblock]::Create($f.Extent.Text))
+    Invoke-Expression $env:EXPR'
+}
+
+@test "guest scale decision: caps the target and recovers as the allowed range grows" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run scale_decision '
+    (ScaleDecision 3 -1 0 1) | ConvertTo-Json -Compress
+    (ScaleDecision 3 -1 1 5) | ConvertTo-Json -Compress'
+  assert_success
+  assert_output $'{"recommended":1,"current":1,"target":2,"relative":1,"change":true}\n{"recommended":1,"current":2,"target":3,"relative":2,"change":true}'
+}
+
+@test "guest scale decision: moved recommendation changes the offset, unchanged scale needs no set" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run scale_decision '
+    (ScaleDecision 1 -3 0 4) | ConvertTo-Json -Compress
+    (ScaleDecision 1 -3 -2 4) | ConvertTo-Json -Compress
+    (ScaleDecision 11 0 0 30) | ConvertTo-Json -Compress'
+  assert_success
+  assert_output $'{"recommended":3,"current":3,"target":1,"relative":-2,"change":true}\n{"recommended":3,"current":1,"target":1,"relative":-2,"change":false}\n{"recommended":0,"current":0,"target":11,"relative":11,"change":true}'
+}
+
+@test "guest scale loop: retries a late display and sets only actual changes without repeated logs" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  PS1=$REPO/guest/lanai-scale.ps1 run pwsh -NoProfile -NonInteractive -Command '
+    class LanaiDisplay {
+      static [object[]] $Paths = @()
+      static [object] $Dpi = @{minScaleRel=-1;curScaleRel=0;maxScaleRel=5}
+      static [int] $Sets = 0
+      static [object[]] ActivePaths() { return [LanaiDisplay]::Paths }
+      static [object] GetTargetName([object] $p) { return @{monitorFriendlyDeviceName="LGIDD";monitorDevicePath="display"} }
+      static [string] Resolution([object] $p) { return "1920x1080" }
+      static [object] GetScale([object] $p) { return [LanaiDisplay]::Dpi }
+      static [void] SetScale([object] $p, [int] $rel) { [LanaiDisplay]::Sets++; [LanaiDisplay]::Dpi.curScaleRel=$rel }
+    }
+    $ErrorActionPreference="Stop"
+    $Steps = @(100,125,150,175,200,225,250,300,350,400,450,500)
+    $script:LastScaleError=""
+    $script:Logs=@()
+    function Write-Log($Message) { $script:Logs += $Message }
+    $ast=[System.Management.Automation.Language.Parser]::ParseFile($env:PS1,[ref]$null,[ref]$null)
+    foreach ($name in "StepName","ScaleDecision","Update-DisplayScale") {
+      $f=$ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true) | Select-Object -First 1
+      if (-not $f) { throw "missing $name" }
+      . ([scriptblock]::Create($f.Extent.Text))
+    }
+    Update-DisplayScale 1
+    $count=$Logs.Count
+    Update-DisplayScale 1
+    if ($Logs.Count -ne $count) { throw "repeated absent-display error" }
+    [LanaiDisplay]::Paths=@(@{sourceInfo=@{id=1};targetInfo=@{id=2}})
+    Update-DisplayScale 1
+    if ([LanaiDisplay]::Sets -ne 0) { throw "set unchanged display" }
+    [LanaiDisplay]::Dpi=@{minScaleRel=-3;curScaleRel=0;maxScaleRel=5}
+    Update-DisplayScale 1
+    if ([LanaiDisplay]::Sets -ne 1 -or [LanaiDisplay]::Dpi.curScaleRel -ne -2) { throw "late recommendation not corrected" }
+    $count=$Logs.Count
+    Update-DisplayScale 1
+    if ([LanaiDisplay]::Sets -ne 1 -or $Logs.Count -ne $count) { throw "unchanged poll set or logged" }
+    "ok"'
+  assert_success
+  assert_output ok
+}
+
+@test "setup scale task: no execution limit and duplicates ignored" {
+  run setup_code
+  assert_output --partial "New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew"
+  assert_output --partial '-Settings $s'
+  run cat "$REPO/guest/lanai-scale.ps1"
+  assert_output --partial 'Start-Sleep -Seconds 2'
+}
+
 # Print the result of PowerShell <expression> after defining $Steps and the
 # script's StepName function, taken from the script itself (its other parts
 # need Windows). Callers skip without pwsh before they call it: a skip

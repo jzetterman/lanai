@@ -22,6 +22,60 @@ setup() {
   assert_equal "$(stat -c %a "$(settings_file)")" 600
 }
 
+@test "settings scale: missing key defaults to auto and every choice round trips" {
+  lanai_run settings
+  assert_success
+  assert_equal "$(field windows_scale)" auto
+  local value
+  for value in auto 100 125 150 175 200 225 250 300 350 400 450 500; do
+    lanai_run settings 8 4 "$value"
+    assert_success
+    assert_equal "$(field windows_scale)" "$value"
+    assert_equal "$(jq -r .windows_scale "$(settings_file)")" "$value"
+    assert_equal "$(jq -c '{storage,extra}' "$(settings_file)")" '{"storage":"/test-copy","extra":true}'
+    lanai_run settings
+    assert_success
+    assert_equal "$(field windows_scale)" "$value"
+  done
+}
+
+@test "settings scale: old saves preserve fixed scale and explicit choice repairs bad scale" {
+  jq '.windows_scale=225' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  lanai_run settings 16 8
+  assert_success
+  assert_equal "$(field windows_scale)" 225
+  jq '.windows_scale=null' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  lanai_run settings 16 8 auto
+  assert_success
+  assert_equal "$(field windows_scale)" auto
+}
+
+@test "settings scale: invalid CLI choices leave all settings intact" {
+  local value before
+  before=$(cat "$(settings_file)")
+  for value in '' AUTO 0 99 126 275 550 0125 125.0 -100 true null '"125"' '{}' '[]'; do
+    lanai_run settings 8 4 "$value"
+    assert_failure
+    assert_equal "$(field ok)" false
+    assert_output --partial "Windows scale"
+    assert_equal "$(cat "$(settings_file)")" "$before"
+  done
+}
+
+@test "settings scale: JSON types and unsupported values are refused on read and old saves" {
+  local value
+  for value in null true false '"125"' '"AUTO"' '{}' '[]' 99 126 275 550 125.5; do
+    jq --argjson v "$value" '.windows_scale=$v' "$(settings_file)" >"$T/settings"
+    mv "$T/settings" "$(settings_file)"
+    lanai_run settings
+    assert_failure
+    lanai_run settings 8 4
+    assert_failure
+  done
+}
+
 @test "settings: rejects invalid values with the VM's validation and leaves the file intact" {
   local before mem cores
   before=$(cat "$(settings_file)")
