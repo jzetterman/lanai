@@ -172,6 +172,11 @@ cmd_panel() {
     ($st.active|not) as $off | ($st.state != "in-use") as $available |
     ($off and $available and ($st.restore_pending|not)) as $idle |
     ($st.setup_done == true and ($p.finished or ($st.active and ($setupBoot or $checksBoot)|not))) as $dailyControls |
+    # Icon shortcuts require the current setup plan to be finished. Daily
+    # controls still permit a working install to start beside a pending update.
+    (if $st.state == "stopped" and $p.finished and ($busy|not) and ($st.restore_pending|not) then "start"
+     elif $st.state == "running" and $p.finished and ($st.window|not) then "open"
+     else "panel" end) as $rightClick |
     ($off or $dailyControls) as $snapshotsShow |
     ($facts | split("\n") | index("ActiveState=active") != null) as $unitActive |
     (($p.finished|not) and $st.active and $setupBoot and $st.state != "stopping" and
@@ -179,6 +184,8 @@ cmd_panel() {
     (($p.finished|not) and ($dailyControls|not) and $unitActive and ($basicWindow|not) and
       ($client|not) and $st.state != "stopping") as $reopen |
     {ok:true,state:$st.state,active:$st.active,label:$w[0],headline:$w[1],cause:$w[2],next:$w[3],
+     right_click:$rightClick,
+     right_click_tooltip:({start:"Right click: Start Windows.",open:"Right click: Open the Windows window.",panel:"Right click: Open the panel."}[$rightClick]),
      pending_ack:(if $seen then $token else "" end),
      progress:$progress,notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
      busy:{active:$busy,line:(if $progress != null then $progress.label elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)

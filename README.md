@@ -60,7 +60,7 @@ Without that setting Lanai uses `~/.windows`. Memory and cores are optional; set
 seeds them from the container's settings when readable, otherwise from half the
 host's memory (at most 16 GiB) and half its CPU threads (at most 8).
 
-Right-click Lanai's L-in-a-monitor glyph to open the panel, then click **Continue setup**.
+Left-click Lanai's L-in-a-monitor glyph to open the panel, then click **Continue setup**.
 The panel walks through checking the install, installing host packages, offering a
 snapshot, building the pinned client, installing in Windows, restarting and checking
 the result. At the package step, **Install in a terminal** opens a terminal which
@@ -135,10 +135,17 @@ shows whether setup still needs to finish.
 
 ## Daily use
 
-Left-click the glyph to start Windows, or open/focus its window while it runs.
-Closing the Looking Glass window leaves Windows running; click the glyph to reopen
-it. Right-click opens the panel. Panel controls support Tab, Shift+Tab, Enter and
-Space; Escape closes it. The tooltip includes warnings and forced-stop notices.
+Left-click the glyph to open or close the panel in every state. Enter (including
+keypad Enter), Space and the Menu key on the focused glyph also toggle the panel.
+Right-click starts Windows only when stopped with setup finished and no blocking
+operation or unfinished restore. It opens the Windows window when running with
+setup finished and the window closed; otherwise it opens the panel. A pending
+update step opens the panel, where **Start Windows** remains available for a
+working install. Closing the Looking Glass window leaves Windows running;
+right-click to reopen it. The tooltip names the right-click action and includes
+warnings and forced-stop notices. The panel keeps **Start Windows**, **Open window**
+and **Shut down** controls. Panel controls support Tab, Shift+Tab, Enter and Space;
+Escape closes it.
 If starting or opening fails, the glyph opens the panel to explain why. It also
 opens the panel when a start reports that the previous run was forced to stop.
 Settings accept whole numbers: 1–512 GiB and 1–64 cores. Windows scale is

@@ -104,6 +104,7 @@ assert_plan_agreement() {
 
 @test "panel: every status state has plain words and the full view" {
   local fixture_facts expected
+  state '{"done":true}'
   for expected in not-installed setup-needed stopped starting running stopping in-use version-mismatch failed; do
     case $expected in
       not-installed) fixture_facts=$'ActiveState=inactive\nLanaiInstall=none' ;;
@@ -121,6 +122,11 @@ assert_plan_agreement() {
     assert_success
     assert_equal "$(jq -r .state <<<"$output")" "$expected"
     assert_equal "$(jq -r '[.label,.headline,.cause,.next,.notice,.warning,.busy,.buttons,.setup,.result,.settings,.snapshots,.logs] | length' <<<"$output")" 13
+    case $expected in
+      stopped) assert_right_click start ;;
+      running) assert_right_click open ;;
+      *) assert_right_click panel ;;
+    esac
     refute_output --partial 'journalctl'
     refute_output --partial '—'
   done
@@ -1340,6 +1346,7 @@ setup_worker() {
       assert_equal "$(jq -r .setup.step <<<"$output")" "$([[ $pending == stamp ]] && echo 4 || echo 5)"
       assert_equal "$(jq -r '.buttons.start.show and .buttons.start.enable' <<<"$output")" "$([[ $ST == inactive ]] && echo true || echo false)"
       assert_equal "$(jq -r '.buttons.open.show and .buttons.open.enable' <<<"$output")" "$([[ $ST == active ]] && echo true || echo false)"
+      assert_right_click panel
       assert_equal "$(jq -r .buttons.reopen_window.show <<<"$output")" false
       assert_equal "$(jq -r .cause <<<"$output")" "$([[ $ST == inactive ]] && echo 'Windows is ready to start.' || echo 'Windows is available.')"
       assert_equal "$(jq -r .next <<<"$output")" "$([[ $ST == inactive ]] && echo 'Click Start Windows.' || echo 'Click Open window.')"
@@ -1547,4 +1554,112 @@ setup_worker() {
   exec {fd}>&-
   kill "$live"
   wait "$live" || true
+}
+
+# Check both the transport action and the words shown by the icon.
+assert_right_click() {
+  assert_equal "$(jq -r .right_click <<<"$output")" "$1"
+  local words
+  case $1 in
+    start) words='Right click: Start Windows.' ;;
+    open) words='Right click: Open the Windows window.' ;;
+    panel) words='Right click: Open the panel.' ;;
+  esac
+  assert_equal "$(jq -r .right_click_tooltip <<<"$output")" "$words"
+}
+
+@test "panel clicks: stopped requires current finished setup and no unfinished restore" {
+  state '{"done":true}'
+  run cmd_panel
+  assert_success
+  assert_right_click start
+  state '{"snapshot":"declined"}'
+  run cmd_panel
+  assert_success
+  assert_right_click panel
+  state '{"done":true}'
+  : >"$S/restore-in-progress"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .buttons.start.enable <<<"$output")" false
+  assert_right_click panel
+}
+
+@test "panel clicks: setup and final check boots open the panel" {
+  local boot
+  ST=active
+  state '{"snapshot":"declined","done":true,"round":true,"step5":true}'
+  for boot in setup step6; do
+    echo "{\"$boot\":true,\"window\":false}" >"$S/boot.json"
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .setup.finished <<<"$output")" false
+    assert_right_click panel
+  done
+}
+
+@test "panel clicks: finished running install opens only its closed window" {
+  state '{"done":true}'
+  ST=active
+  local window
+  for window in false true; do
+    status_facts() { printf 'ActiveState=active\nLanaiSetup=done\nLanaiQmp=running\nLanaiQga=open\nLanaiWindow=%s\n' "$window"; }
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .setup.finished <<<"$output")" true
+    if [[ $window == false ]]; then assert_right_click open; else assert_right_click panel; fi
+  done
+}
+
+@test "panel clicks: CLI and panel snapshot or restore block Start but allow Open" {
+  local origin operation fd pid=$BASHPID
+  state '{"done":true}'
+  for origin in cli panel; do
+    for operation in snapshot restore; do
+      exec {fd}>"$S/lock"
+      flock -n "$fd"
+      jq -nc --argjson p "$pid" --arg op "$operation" '{operation:$op,phase:"checking",done:0,total:100,pid:$p}' >"$S/image-progress.json"
+      if [[ $origin == panel ]]; then
+        exec {PANEL_CLICK_FD}>"$S/panel-job.lock"
+        flock -n "$PANEL_CLICK_FD"
+        panel_result_write snapshots "$(jq -nc --arg op "$operation" '{command:$op,started:1}')"
+      fi
+      ST=inactive
+      run cmd_panel
+      assert_success
+      assert_equal "$(jq -r .busy.active <<<"$output")" true
+      assert_equal "$(jq -r .buttons.start.enable <<<"$output")" false
+      assert_right_click panel
+      ST=active
+      status_facts() { printf 'ActiveState=%s\nLanaiSetup=done\nLanaiQmp=running\nLanaiQga=open\n' "$ST"; }
+      run cmd_panel
+      assert_success
+      assert_equal "$(jq -r .buttons.open.enable <<<"$output")" true
+      assert_right_click open
+      exec {fd}>&-
+      [[ $origin != panel ]] || exec {PANEL_CLICK_FD}>&-
+      rm -f "$S/image-progress.json" "$S/panel-result-snapshots.json"
+    done
+  done
+}
+
+@test "panel clicks: pending panel launch opens the panel until it starts" {
+  state '{"done":true}'
+  run cmd_panel --pending click-job "$EPOCHSECONDS"
+  assert_success
+  assert_equal "$(jq -r .busy.active <<<"$output")" true
+  assert_right_click panel
+}
+
+@test "panel clicks: active panel setup work blocks the stopped shortcut" {
+  state '{"done":true}'
+  local fd
+  exec {fd}>"$S/panel-job.lock"
+  flock -n "$fd"
+  panel_result_write setup '{"command":"setup","started":1}'
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .busy.active <<<"$output")" true
+  assert_right_click panel
+  exec {fd}>&-
 }

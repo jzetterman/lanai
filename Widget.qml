@@ -18,10 +18,10 @@ BarWidget {
   function closeForPopoutSwitch() { panel.closeForPopoutSwitch() }
   function refresh() { model.refresh() }
 
-  // A QEMU setup window has no Looking Glass display yet; use the panel instead.
-  function primaryClick() {
-    if (model.control("start").enable) model.run(["start"], false)
-    else if (model.control("open").enable) model.run(["open"], false)
+  // Bash supplies the shortcut; stale decisions still pass command-side guards.
+  function rightClick() {
+    var action = model.view.right_click
+    if (action === "start" || action === "open") model.run([action], false)
     else panel.open()
   }
 
@@ -67,12 +67,13 @@ BarWidget {
     tooltipText: model.tooltip
     active: model.view.active === true
     activeFocusOnTab: true
-    Keys.onReturnPressed: root.primaryClick()
-    Keys.onSpacePressed: root.primaryClick()
+    Keys.onReturnPressed: root.togglePanel()
+    Keys.onEnterPressed: root.togglePanel()
+    Keys.onSpacePressed: root.togglePanel()
     Keys.onMenuPressed: root.togglePanel()
     onPressed: function(b) {
-      if (b === Qt.RightButton) root.togglePanel()
-      else if (b === Qt.LeftButton) root.primaryClick()
+      if (b === Qt.RightButton) root.rightClick()
+      else if (b === Qt.LeftButton) root.togglePanel()
     }
   }
 }
