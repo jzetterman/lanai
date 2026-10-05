@@ -879,8 +879,9 @@ provable classes only: yes
 
 Result: every extent is in a class phase B proves. The image is NOCOW, so it has no
 compressed extents. It has about 320k extents, so the map read takes many FIEMAP
-batches; phase B times it and shows it under "checking". Its one hash pass reads
-about 56 GB of allocated data (the rest of the 256 GiB is holes).
+batches; phase B times it and shows it under "checking". Its one hash pass covers the
+whole 256 GiB, but only about 56 GB comes from disk; the holes read as zeros, so
+hashing speed, not the disk, sets most of the time.
 
 ## After the proofs
 
