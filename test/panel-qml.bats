@@ -47,6 +47,7 @@ QML
 pragma Singleton
 import QtQuick
 QtObject {
+  property var selectedAccentFill
   property var font: ({family:"sans",bodySmall:12})
   function space(n) { return n }
 }
@@ -429,6 +430,27 @@ TestCase {
     verify(action.running)
     panel.destroy(); wait(1)
   }
+  function test_shutdown_and_force_confirmation_are_mutually_exclusive() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    model.view = {buttons:{stop:{show:true,enable:true,label:'Shut down',confirm:true},
+      stop_confirm:{show:true,enable:true,label:'Shut down and stop setup'},
+      force_stop:{show:true,enable:true,label:'Force stop'},force_confirm:{show:true,enable:true,label:'Force stop and lose unsaved work'},
+      cancel:{show:true,enable:true,label:'Cancel'}},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
+    var panel = createTemporaryObject(panelComponent, tests, {model:model,opened:true})
+    var stop = objects(panel, function(o) { return o.control === 'stop' })[0]
+    var force = objects(panel, function(o) { return o.control === 'force_stop' })[0]
+    stop.clicked(); force.clicked()
+    compare(panel.stopArmed, false)
+    compare(panel.forceArmed, true)
+    compare(objects(panel, function(o) { return o.control === 'cancel' && o.visible }).length, 1)
+    stop.clicked()
+    compare(panel.stopArmed, true)
+    compare(panel.forceArmed, false)
+    compare(objects(panel, function(o) { return o.control === 'cancel' && o.visible }).length, 1)
+    verify(!process(model, model.cli))
+    panel.destroy(); wait(1)
+  }
   function test_setup_accent_follows_theme_and_reopen_uses_ui_run() {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)
@@ -441,9 +463,17 @@ TestCase {
     panel.open()
     var section = objects(panel, function(o) { return o.objectName === 'setupSection' })[0]
     verify(section !== undefined)
+    var column = section.children[0]
+    compare(column.x, Style.space(8))
+    compare(column.y, Style.space(8))
+    var sectionHeight = section.implicitHeight
+    var columnWidth = column.width
     compare(section.border.width, 1)
     compare(section.border.color, Color.accent)
     compare(section.color, Util.alpha(Color.accent, 0.10))
+    Style.selectedAccentFill = '#336699'
+    compare(section.color, Style.selectedAccentFill)
+    Style.selectedAccentFill = undefined
     Color.accent = '#c06030'
     compare(section.border.color, Color.accent)
     compare(section.color, Util.alpha(Color.accent, 0.10))
@@ -455,6 +485,10 @@ TestCase {
     compare(action.command[1], 'ui-run')
     compare(action.command.slice(3).join(' '), 'open')
     model.view = view(false, true)
+    compare(column.x, Style.space(8))
+    compare(column.y, Style.space(8))
+    compare(column.width, columnWidth)
+    compare(section.implicitHeight, sectionHeight)
     compare(section.border.width, 0)
     compare(section.color, Qt.rgba(0, 0, 0, 0))
     verify(objects(panel, function(o) { return o.text === 'Snapshots' && o.visible }).length > 0)

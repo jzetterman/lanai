@@ -89,20 +89,28 @@ the administrator prompt as the same Windows user; approval as a different accou
 is refused. The setup drive must stay **read-only**: do not attach writable setup
 media or substitute files written by Windows. Setup shuts Windows down when the guest
 install finishes. Let that shutdown finish; Shut down from the panel does not count.
+Use Shut down only if setup.cmd stops responding.
 When a setup operation is running, the panel continues setup after Windows shuts
 down. Otherwise, click **Continue setup** when the setup script finishes. If Windows
 stops during the final checks, click **Continue setup** to start it again. In File Explorer, select
 This PC and check for a drive with the files from Linux's `~/Windows` folder.
 Answer that question and whether text looks the right size. If a setup boot stopped unfinished,
 the panel offers **Set up in a basic window** until the Lanai display driver is installed,
-or **Set up in the Windows window** afterward. During setup, Lanai starts Windows
-and opens its window itself, so **Start Windows** and **Open window** are hidden.
-If the Windows window closes, use **Reopen the Windows window** in the Setup section.
+or **Set up in the Windows window** afterward. **Start Windows** and **Open window**
+are hidden only before first-time setup finishes for this location or while a setup
+boot or final check boot is running. Lanai starts Windows and opens its window itself
+for those boots. A working install keeps those controls when a client or driver
+update or an unfinished setup round is pending. Setup shows the pending step beside
+them. When the usual controls are hidden and the Windows window closes, use
+**Reopen the Windows window** in Setup.
 **Snapshots** is hidden while Windows runs during setup and returns when Windows is
 off. Settings stay available and apply at the next start. The Setup section uses
 your theme's accent color when it needs you to act and clears the highlight while
-Lanai works by itself. During the setup boot, **Shut down** asks for a second click:
-“Shutting down now stops setup. You'll choose how to continue.” Once setup finishes,
+Lanai works by itself. Its inset stays the same. During the setup boot, **Shut down**
+asks for a second click:
+“Shutting down now stops setup. You'll choose how to continue.” A shutdown already
+requested for this boot or in progress needs no further confirmation. Arming Shut
+down or Force stop clears the other confirmation. Once setup finishes,
 the usual controls return. Setup keeps checking while the panel is closed or the shell restarts.
 Reopening the panel shows the current step and any running operation. The panel says
 setup is finished only when Lanai has recorded its completion for this disk.

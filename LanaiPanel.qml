@@ -104,14 +104,14 @@ Panel {
             Action { control: "start"; onClicked: root.model.run(["start"], false) }
             Action { control: "open"; onClicked: root.model.run(["open"], false) }
             Action { control: root.stopArmed ? "stop_confirm" : "stop"; onClicked: {
-                if (root.model.control("stop").confirm && !root.stopArmed) root.stopArmed = true
+                if (root.model.control("stop").confirm && !root.stopArmed) { root.forceArmed = false; root.stopArmed = true }
                 else { root.stopArmed = false; root.model.run(["stop"], false) }
               }
             }
             Action { control: "cancel"; visible: root.stopArmed && descriptor.show; onClicked: root.stopArmed = false }
             Action { control: root.forceArmed ? "force_confirm" : "force_stop"; onClicked: {
                 if (root.forceArmed) { root.forceArmed = false; root.model.run(["force-stop", "--confirm"], false) }
-                else root.forceArmed = true
+                else { root.stopArmed = false; root.forceArmed = true }
               }
             }
             Action { control: "cancel"; visible: root.forceArmed && descriptor.show; onClicked: root.forceArmed = false }
@@ -125,12 +125,14 @@ Panel {
             objectName: "setupSection"
             width: parent.width
             implicitHeight: setupColumn.implicitHeight + 2 * setupColumn.y
-            color: root.model.view.setup.attention === true ? Util.alpha(Color.accent, 0.10) : "transparent"
+            color: root.model.view.setup.attention === true
+              ? (typeof Style.selectedAccentFill !== "undefined" ? Style.selectedAccentFill : Util.alpha(Color.accent, 0.10))
+              : "transparent"
             border.color: Color.accent
             border.width: root.model.view.setup.attention === true ? 1 : 0
             Column {
               id: setupColumn
-              x: root.model.view.setup.attention === true ? Style.space(8) : 0
+              x: Style.space(8)
               y: x
               width: parent.width - 2 * x
               spacing: Style.space(10)

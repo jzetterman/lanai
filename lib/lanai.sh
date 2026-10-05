@@ -1190,8 +1190,9 @@ boot_vm() {
     return 1
   fi
   if ! mkdir -p -- "$s" || ! jq -n -c --argjson scale "$step" --argjson setup "$setup" \
-    --argjson window "$window" --arg wayland "${WAYLAND_DISPLAY:-}" \
+    --argjson window "$window" --argjson step6 "$step6" --arg wayland "${WAYLAND_DISPLAY:-}" \
     '{scale: $scale, setup: $setup, window: $window} +
+      (if $step6 then {step6:true} else {} end) +
       (if $window then {wayland_display: $wayland} else {} end)' >"$s/boot.json"; then
     emit false "" "Lanai cannot write $s/boot.json." ""
     return 1
@@ -1440,7 +1441,7 @@ setup_command() {
         out=$(setup_guest "$window") || rc=$?
         if ((rc == 0)) && [[ $(jq -r '.window' <<<"$out") == false ]]; then
           local client
-          if ! client=$(build_select) || ! client_start "$client" >&2; then
+          if ! client=$(build_select) || ! { client_active || client_start "$client" >&2; }; then
             setup_reply false 5 "Lanai could not open the Windows window." "see the client log" '{"reason":"client"}'
             return 1
           fi
@@ -1452,7 +1453,7 @@ setup_command() {
       normal-boot)
         out=$(boot_vm false auto true) || rc=$?
         # Step 6 checks the IDD with the pinned client, not build_select's.
-        if ((rc == 0)) && ! client_start "$(pinned_client)" >&2; then
+        if ((rc == 0)) && ! { client_active || client_start "$(pinned_client)" >&2; }; then
           setup_reply false 6 "Lanai could not open the Windows window." "see the client log" '{"reason":"client"}'
           return 1
         fi

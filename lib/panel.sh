@@ -78,7 +78,7 @@ panel_records() {
 # One view: gather once, status makes its one bounded QMP session, and setup plans
 # from the same host facts. Settings/list errors are data, never swallowed results.
 cmd_panel() {
-  local client_running=false setup_boot=false basic_window=false
+  local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv problem_line results='{}' group doc words
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
@@ -99,12 +99,16 @@ cmd_panel() {
   # Boot flags also cover activation, before status reports a window.
   if jq -e '.active' <<<"$status" >/dev/null; then
     jq -e '.setup == true' "$s/boot.json" >/dev/null 2>&1 && setup_boot=true
+    if jq -e '.step6 == true' "$s/boot.json" >/dev/null 2>&1 &&
+      [[ $(setup_get round) == true ]]; then checks_boot=true; fi
     boot_window && basic_window=true
     if jq -e '.finished == false' <<<"$plan" >/dev/null && ! $basic_window; then
       client_active && client_running=true
     fi
   fi
   inv=$(sed -n 's/^InvocationID=//p' <<<"$facts")
+  if [[ -n $inv && -f $s/stop-requested ]] && read -r stop_inv stop_at <"$s/stop-requested" &&
+    [[ $stop_inv == "$inv" && $stop_at =~ ^[0-9]+$ ]]; then stop_requested=true; fi
   for group in vm setup settings snapshots; do
     doc=$(jq -c --arg g "$group" '.records[$g] // {}' <<<"$records")
     words=''
@@ -142,7 +146,8 @@ cmd_panel() {
      (if $client == "" then {} else {client:("Windows window log: " + $client)} end)')
   jq -nc --argjson st "$status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
     --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
-    --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson basicWindow "$basic_window" \
+    --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
+    --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
     --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" '
     def button($show;$enable;$label): {show:$show,enable:($show and $enable),label:$label};
     ({"not-installed":["Not installed","Windows is not installed","No supported Windows install was found.","Install Windows with Omarchy, then continue setup."],
@@ -164,8 +169,10 @@ cmd_panel() {
     ($st.active|not) as $off | ($st.state != "in-use") as $available |
     ($off and $available and ($st.restore_pending|not)) as $idle |
     ($p.finished or $off) as $snapshotsShow |
-    (($p.finished|not) and $st.active and $setupBoot) as $confirmStop |
-    (($p.finished|not) and $st.active and ($basicWindow|not) and
+    ($st.setup_done == true and ($p.finished or ($st.active and ($setupBoot or $checksBoot)|not))) as $dailyControls |
+    (($p.finished|not) and $st.active and $setupBoot and $st.state != "stopping" and
+      ($stopRequested|not)) as $confirmStop |
+    (($p.finished|not) and ($dailyControls|not) and $st.active and ($basicWindow|not) and
       ($client|not) and $st.state != "stopping") as $reopen |
     {ok:true,state:$st.state,active:$st.active,label:$w[0],headline:$w[1],cause:$w[2],next:$w[3],
      pending_ack:(if $seen then $token else "" end),
@@ -186,7 +193,7 @@ cmd_panel() {
          "3":"Before the first boot, take a snapshot so you can undo changes, or make a backup and continue without one.",
          "3a":"Continue setup to prepare the Windows install.",
          "4":"Continue setup to prepare the Windows window. This may take several minutes.",
-         "5":(if $p.action == "setup-wait" then (if $setupJob then "In Windows, open Lanai\u0027s setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Don\u0027t use Shut down here during this step."
+         "5":(if $p.action == "setup-wait" then (if $setupJob then "In Windows, open Lanai\u0027s setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Use Shut down only if setup.cmd stops responding."
            else "In Windows, open Lanai\u0027s setup drive and run setup.cmd. Then click Continue setup so Lanai can restart Windows and check it when setup.cmd finishes." end)
            elif ($p.choices|length)>0 then "The setup boot did not finish. Choose the screen to use for another setup boot."
            elif $st.active then "Shut Windows down before continuing setup."
@@ -196,8 +203,8 @@ cmd_panel() {
            elif $setupJob then "Windows is starting or being checked."
            else "Click Continue setup so Lanai can check Windows." end),
          "7":"Setup is finished."}[$p.step] end])},
-     buttons:{start:button($p.finished and $off;$idle and ($busy|not) and ($st.setup_done == true);"Start Windows"),
-       open:button($p.finished and $st.active and ($st.window|not);$st.state != "stopping";"Open window"),
+     buttons:{start:button($dailyControls and $off;$idle and ($busy|not) and ($st.setup_done == true);"Start Windows"),
+       open:button($dailyControls and $st.active and ($st.window|not);$st.state != "stopping";"Open window"),
        stop:button($st.active;true;"Shut down") + {confirm:$confirmStop},
        stop_confirm:button($confirmStop;true;"Shut down and stop setup") +
          {hint:"Shutting down now stops setup. You\u0027ll choose how to continue."},
@@ -227,15 +234,17 @@ cmd_panel() {
        restore_confirm:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore and replace Windows") +
          {labels:($snaps.names | map({key:.,value:("Restore " + . + " and replace Windows")}) | from_entries)},
        save_settings:button(true;$settings.error == "";"Save settings")}} |
-    if ($p.finished|not) and ($st.state == "stopped" or $st.state == "running") then
-      .next="Follow the Setup section below." else . end |
+    if ($dailyControls|not) and ($st.state == "stopped" or $st.state == "running") then
+      .next="Follow the Setup section below." |
+      if $st.state == "stopped" then .cause="Lanai setup has not finished for this Windows install." else . end
+    else . end |
     if $st.restore_pending then .cause="A restore did not finish, so Windows cannot start." |
       .next=(if $available then "Click Finish the unfinished restore when Windows is stopped." else "Stop the other VM, then finish the unfinished restore." end) else . end |
     if $st.force_stop then .next="Wait, or use Force stop below if you accept losing unsaved work." else . end |
     .warning = ([
       if $facts | contains("LanaiHelpersMissing=") then "Some background services stopped. Shut Windows down and start it again." else empty end,
       if $facts | contains("LanaiClient=timeout") then "The Windows window did not open in time. " +
-        (if $p.finished then "Try Open window again." elif $reopen then "Try Reopen the Windows window in Setup."
+        (if $dailyControls then "Try Open window again." elif $reopen then "Try Reopen the Windows window in Setup."
          else "Check the Windows window log, then shut down and continue setup." end) else empty end,
       if $st.state != "version-mismatch" and ($facts | contains("LanaiDriverOld=")) then "The Windows display driver needs an update. Shut down and continue setup." else empty end
     ] | join(" "))'

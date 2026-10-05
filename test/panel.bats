@@ -892,13 +892,13 @@ assert_plan_agreement() {
   exec {fd}>"$S/panel-job.lock"; flock "$fd"
   run cmd_panel
   assert_equal "$(jq -r .busy.line <<<"$output")" 'Waiting for Windows to finish setup. You can close this panel.'
-  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" "In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Don't use Shut down here during this step."
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" "In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Use Shut down only if setup.cmd stops responding."
   exec {fd}>&-
 }
 
 @test "panel: warnings have no leading space and mismatch already explains the old driver" {
   state '{"done":true}'
-  status_facts() { printf 'ActiveState=active\nLanaiClient=timeout\nLanaiDriverOld=old\nLanaiVersion=mismatch\n'; }
+  status_facts() { printf 'ActiveState=active\nLanaiClient=timeout\nLanaiDriverOld=old\nLanaiVersion=mismatch\nLanaiSetup=done\n'; }
   run cmd_panel
   assert_equal "$(jq -r .warning <<<"$output")" 'The Windows window did not open in time. Try Open window again.'
 }
@@ -932,7 +932,7 @@ assert_plan_agreement() {
       assert_success
       if [[ $step == 5 ]]; then
         expected="In Windows, open Lanai's setup drive and run setup.cmd. Then click Continue setup so Lanai can restart Windows and check it when setup.cmd finishes."
-        [[ $fixture != following ]] || expected="In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Don't use Shut down here during this step."
+        [[ $fixture != following ]] || expected="In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Use Shut down only if setup.cmd stops responding."
       else
         expected='Click Continue setup so Lanai can check Windows.'
         [[ $fixture != following ]] || expected='Windows is starting or being checked.'
@@ -1043,7 +1043,7 @@ setup_worker() {
   panel_records() { echo '{"held":true,"records":{"setup":{"command":"setup","started":1}}}'; }
 }
 
-@test "panel: unfinished setup hides Start and Open at every step and keeps settings" {
+@test "panel: first-time setup hides Start and Open at every step and keeps settings" {
   local step
   for step in 1 2 3 3a 4 5 6; do
     setup_plan() { jq -nc --arg step "$step" '{finished:false,step:$step,action:"problem",reason:"",choices:[],questions:[]}'; }
@@ -1267,7 +1267,7 @@ setup_worker() {
         run cmd_panel
         assert_success
         local expected=false
-        if [[ $finished == false && $boot == true && $ST != inactive ]]; then expected=true; fi
+        if [[ $finished == false && $boot == true && $ST != inactive && $ST != deactivating ]]; then expected=true; fi
         assert_equal "$(jq -r .buttons.stop.confirm <<<"$output")" "$expected"
         assert_equal "$(jq -r .buttons.stop_confirm.show <<<"$output")" "$expected"
         assert_equal "$(jq -r .buttons.stop_confirm.hint <<<"$output")" "Shutting down now stops setup. You'll choose how to continue."
@@ -1282,22 +1282,165 @@ setup_worker() {
   done
 }
 
-@test "panel: setup guidance never asks for the hidden Start or Open controls" {
-  local finished
-  status_facts() { printf 'ActiveState=%s\nLanaiSetup=done\nLanaiQmp=running\nLanaiQga=open\nLanaiClient=timeout\n' "$ST"; }
-  for finished in false true; do
-    state "{\"snapshot\":\"declined\",\"done\":true,\"round\":$([[ $finished == true ]] && echo false || echo true)}"
+@test "panel: working installs keep Start and Open beside each pending update step" {
+  local pending
+  client_active() { return 1; }
+  qmp_call() { printf '{"return":{"status":"running"}}\n{"return":[{"label":"qga0","frontend-open":true}]}\n'; }
+  for pending in stamp driver rerun; do
+    state '{"snapshot":"declined","done":true}'
+    build_stamp_current() { [[ $pending != stamp ]]; }
+    guest_version_behind() { [[ $pending != driver ]] || echo old; }
+    [[ $pending != rerun ]] || state '{"snapshot":"declined","done":true,"round":true,"step5":false}'
     for ST in inactive active; do
+      echo '{"setup":false,"step6":true,"window":false}' >"$S/boot.json"
+      [[ $pending != rerun ]] || echo '{"setup":false,"window":false}' >"$S/boot.json"
       run cmd_panel
       assert_success
-      if [[ $finished == false ]]; then
-        assert_equal "$(jq -r .next <<<"$output")" 'Follow the Setup section below.'
-        refute_output --partial 'Try Open window again.'
+      assert_equal "$(jq -r .setup.show <<<"$output")" true
+      assert_equal "$(jq -r .setup.step <<<"$output")" "$([[ $pending == stamp ]] && echo 4 || echo 5)"
+      assert_equal "$(jq -r '.buttons.start.show and .buttons.start.enable' <<<"$output")" "$([[ $ST == inactive ]] && echo true || echo false)"
+      assert_equal "$(jq -r '.buttons.open.show and .buttons.open.enable' <<<"$output")" "$([[ $ST == active ]] && echo true || echo false)"
+      assert_equal "$(jq -r .buttons.reopen_window.show <<<"$output")" false
+      assert_equal "$(jq -r .cause <<<"$output")" "$([[ $ST == inactive ]] && echo 'Windows is ready to start.' || echo 'Windows is available.')"
+      assert_equal "$(jq -r .next <<<"$output")" "$([[ $ST == inactive ]] && echo 'Click Start Windows.' || echo 'Click Open window.')"
+    done
+  done
+}
+
+@test "panel: completing final checks restores the daily controls in the same boot" {
+  ST=active
+  state '{"snapshot":"declined","done":true}'
+  echo '{"setup":false,"step6":true,"window":false}' >"$S/boot.json"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .setup.finished <<<"$output")" true
+  assert_equal "$(jq -r .buttons.open.show <<<"$output")" true
+}
+
+@test "panel: working installs hide daily controls only during setup or final check boots" {
+  local boot
+  state '{"snapshot":"declined","done":true,"round":true,"step5":true}'
+  for boot in setup step6; do
+    echo "{\"$boot\":true,\"window\":false}" >"$S/boot.json"
+    for ST in activating active reloading deactivating; do
+      run cmd_panel
+      assert_success
+      assert_equal "$(jq -r '.buttons.start.show or .buttons.open.show' <<<"$output")" false
+    done
+    ST=inactive
+    run cmd_panel
+    assert_equal "$(jq -r '.buttons.start.show and .buttons.start.enable' <<<"$output")" true
+    assert_equal "$(jq -r .cause <<<"$output")" 'Windows is ready to start.'
+  done
+  echo '{"location":"elsewhere","done":true}' >"$S/setup.json"
+  ST=inactive
+  run cmd_panel
+  assert_equal "$(jq -r .buttons.start.show <<<"$output")" false
+  refute_output --partial 'Windows is ready to start.'
+}
+
+@test "panel: hidden Start has setup guidance even when status says stopped" {
+  status_map() { echo '{"state":"stopped","active":false,"setup_done":false,"window":false,"force_stop":false,"restore_pending":false}'; }
+  run cmd_panel
+  assert_equal "$(jq -r .buttons.start.show <<<"$output")" false
+  assert_equal "$(jq -r .cause <<<"$output")" 'Lanai setup has not finished for this Windows install.'
+  assert_equal "$(jq -r .next <<<"$output")" 'Follow the Setup section below.'
+}
+
+@test "panel: client timeout guidance follows the available window control" {
+  local boot client
+  ST=active
+  status_facts() { printf '%s\n' "$1" 'LanaiClient=timeout' 'LanaiQmp=running' 'LanaiQga=open' 'LanaiSetup=done'; }
+  for boot in client basic; do
+    state '{"snapshot":"declined","step5":false}'
+    echo "{\"setup\":true,\"window\":$([[ $boot == basic ]] && echo true || echo false)}" >"$S/boot.json"
+    for client in closed running; do
+      client_active() { [[ $client == running ]]; }
+      run cmd_panel
+      assert_success
+      local advice='Check the Windows window log, then shut down and continue setup.'
+      if [[ $boot == client && $client == closed ]]; then advice='Try Reopen the Windows window in Setup.'; fi
+      assert_equal "$(jq -r .warning <<<"$output")" "The Windows window did not open in time. $advice"
+    done
+  done
+  state '{"snapshot":"declined","done":true,"round":true}'
+  echo '{"setup":false,"window":false}' >"$S/boot.json"
+  run cmd_panel
+  assert_equal "$(jq -r .warning <<<"$output")" 'The Windows window did not open in time. Try Open window again.'
+}
+
+@test "panel: an existing shutdown request never asks for another confirmation" {
+  local request
+  state '{"snapshot":"declined"}'
+  echo '{"setup":true}' >"$S/boot.json"
+  for request in current activating old stopping guest; do
+    ST=active
+    qmp_call() { echo '{"return":{"status":"running"}}'; }
+    rm -f "$S/stop-requested"
+    case $request in
+      current) echo "inv $EPOCHSECONDS" >"$S/stop-requested" ;;
+      activating) ST=activating; echo "inv $EPOCHSECONDS" >"$S/stop-requested" ;;
+      old) echo "other $EPOCHSECONDS" >"$S/stop-requested" ;;
+      stopping) ST=deactivating ;;
+      guest) qmp_call() { echo '{"return":{"status":"shutdown"}}'; } ;;
+    esac
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .buttons.stop.confirm <<<"$output")" "$([[ $request == old ]] && echo true || echo false)"
+    assert_equal "$(jq -r .buttons.stop_confirm.show <<<"$output")" "$([[ $request == old ]] && echo true || echo false)"
+    assert_equal "$(jq -r .buttons.stop.enable <<<"$output")" true
+  done
+}
+
+@test "setup command: a Reopen in either boot gap keeps setup successful" {
+  local boot running
+  build_select() { echo "$T/selected"; }
+  pinned_client() { echo "$T/pinned"; }
+  client_start() { echo "$1" >"$T/client-started"; [[ $running == false ]]; }
+  for boot in setup-boot normal-boot; do
+    setup_resume() { echo "$boot"; }
+    setup_guest() { echo '{"ok":true,"window":false}'; }
+    boot_vm() { echo '{"ok":true,"window":false}'; }
+    for running in true false; do
+      rm -f "$T/client-started"
+      client_active() { [[ $running == true ]]; }
+      run setup_command
+      assert_success
+      assert_equal "$(jq -r .step <<<"$output")" "$([[ $boot == setup-boot ]] && echo 5 || echo 6)"
+      if [[ $running == true ]]; then
+        assert [ ! -e "$T/client-started" ]
       else
-        assert_equal "$(jq -r .next <<<"$output")" "$([[ $ST == inactive ]] && echo 'Click Start Windows.' || echo 'Click Open window.')"
-        assert_output --partial 'Try Open window again.'
+        assert_equal "$(cat "$T/client-started")" "$T/$([[ $boot == setup-boot ]] && echo selected || echo pinned)"
       fi
     done
+  done
+}
+
+@test "setup command: Reopen while selecting the client does not fail the setup boot" {
+  setup_resume() { echo setup-boot; }
+  setup_guest() { echo '{"ok":true,"window":false}'; }
+  build_select() { touch "$T/client-open"; echo "$T/selected"; }
+  client_active() { [[ -e $T/client-open ]]; }
+  client_start() { touch "$T/client-started"; return 1; }
+  run setup_command
+  assert_success
+  assert_equal "$(jq -r .step <<<"$output")" 5
+  assert [ ! -e "$T/client-started" ]
+}
+
+@test "boot mode: final checks are recorded and an ordinary start clears the flag" {
+  state '{"snapshot":"declined","done":true,"round":true,"step5":true}'
+  lanai_flock() { return 0; }
+  preflight() { return 0; }
+  vm_plan() { return 0; }
+  runtime_refresh() { return 0; }
+  host_scale() { echo 100; }
+  default_gateway() { echo gateway; }
+  local checks
+  for checks in true false; do
+    run boot_vm false auto "$checks"
+    assert_success
+    assert_equal "$(jq -r '.step6 // false' "$S/boot.json")" "$checks"
   done
 }
 

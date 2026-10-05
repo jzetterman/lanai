@@ -887,7 +887,7 @@ exec /usr/bin/mv "$@"'
   assert_success
   assert_equal "$(field step)" 6
   assert_equal "$(jq -r .step5 "$S/setup.json")" true
-  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":100,"setup":false,"window":false}'
+  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":100,"setup":false,"window":false,"step6":true}'
   # The pinned client, not the build that matches the old record.
   run tail -n 1 "$T/systemd-run.args"
   assert_output "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"

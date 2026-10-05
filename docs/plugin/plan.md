@@ -1339,27 +1339,34 @@ table, because the state already shows them; a stepless failure (the lock busy, 
 user manager unreachable) stays until the next action in its group. A setup result
 with the same reason as the current plan is hidden to avoid repeated guidance.
 
-**During setup** (John, 2026-10-05, after the first panel test): while setup is not
-finished, the view hides controls the user can trip over, and draws the eye to what
-needs them.
-- Start Windows and Open window are hidden: setup starts Windows and opens the right
-  window itself. If the Looking Glass window was closed during a client-mode setup
-  boot or a normal boot before setup finishes, the Setup section offers "Reopen the
-  Windows window" instead, including after step 6 rolls back to step 5. It is hidden
-  for QEMU's basic window and while Windows shuts down.
+**During setup** (John, 2026-10-05, after the first panel test): the view hides
+controls during first-time setup and setup boots, and draws the eye to what needs
+the user.
+- Start Windows and Open window are hidden only when setup has never finished for
+  this storage location, or while a setup boot or final check boot is running.
+  Setup starts Windows and opens the right window itself during those boots.
+  A working install keeps Start Windows and Open window when an update or an
+  unfinished setup round is pending, with the pending step in Setup beside them.
+  This includes an outdated client build stamp after a Lanai update and a guest
+  driver behind the pin. The top guidance agrees with the visible controls.
+  When the usual window controls are hidden and the Looking Glass window closes,
+  Setup offers "Reopen the Windows window", including after step 6 rolls back to
+  step 5. It is hidden for QEMU's basic window and while Windows shuts down.
 - The Snapshots section is hidden while setup boots or checks Windows (the unit is
   active); it shows again when Windows is off, so step 3's offer and recovery
   restores still work.
-- Shut down stays during the setup boot (it is the way out if setup.cmd hangs, and
-  the forced stop needs it), but asks for a second click with "Shutting down now
-  stops setup. You'll choose how to continue."
+- Shut down stays during the setup boot. Use Shut down only if setup.cmd stops
+  responding. The first request asks for a second click with "Shutting down now
+  stops setup. You'll choose how to continue." A request already sent for this boot
+  or a shutdown in progress needs no further confirmation. Arming Shut down clears
+  Force stop's confirmation, and arming Force stop clears Shut down's confirmation.
 - Settings stay: they apply at the next start.
 - `setup.attention` is true when the user must act (an action such as Continue
   setup, the snapshot offer, the display choices, running setup.cmd, the step 6
   questions, or a failure) and false while Lanai works by itself, including every
-  shutdown wait regardless of the setup reason; the QML then draws
-  the Setup section with the theme's accent color (border and a light background),
-  so it follows the user's Omarchy theme.
+  shutdown wait regardless of the setup reason. QML changes the Setup section's
+  accent border and light background while keeping its inset constant. It uses
+  the shell's selected accent fill when available, else a light accent fill.
 Once setup is finished, every control shows as before. Tests cover each rule.
 
 **Display scale** (John, 2026-10-05, spec req 12 amended). In the panel run, Windows'
@@ -1435,35 +1442,42 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
 
 ### As built (2026-10-05)
 
-- **During setup:** the view hides Start and Open until `setup_plan` is finished.
-  Setup offers Reopen the Windows window only while a client-mode setup boot or
-  normal boot is active, the client is not running, and shutdown is not in progress,
-  including after a step 6 failure or no answer rolls back to step 5.
+- **During setup:** Start and Open hide only before setup has finished for the
+  current storage location or while a setup boot or final check boot is active.
+  Working installs keep their daily controls beside pending build, driver and
+  unfinished setup steps. Final check boots record their mode in the boot record;
+  an ordinary start clears it. A completed round stops treating that boot as a
+  final check boot, even if an update becomes pending while Windows stays running.
+  Setup offers Reopen the Windows window only while the usual window controls are
+  hidden, a client-mode boot is active, the client is not running, and shutdown is
+  not in progress, including after a step 6 failure or no answer rolls back to step 5.
   Boot flags also cover activation before status reports the display.
   Reopen uses `ui-run open`. `snapshots.show` and its control descriptors hide
   the section only during unfinished setup with an active unit; settings stay.
   Shut down during the setup boot supplies a confirmation control and the warning
   “Shutting down now stops setup. You'll choose how to continue.” The second click
   uses `ui-run stop`; Cancel, closing the panel or a view that no longer needs
-  confirmation clears it.
+  confirmation clears it. An existing request for the current boot and any
+  shutdown in progress bypass confirmation. Shut down and Force stop cannot both
+  be armed. Both setup client starts accept a window already opened by Reopen.
+  Step 5 says "Use Shut down only if setup.cmd stops responding."
   `setup.attention` marks user actions, setup failures, interrupted work, a failed
   launch and a closed client window. It clears during automatic work, startup
   before the setup drive is available, and shutdown waits regardless of the reason.
   Regression tests cover rollback with a closed client and all step 6 rollback
   reasons during unit deactivation, requested shutdown and guest shutdown.
-  Guidance during setup points to Setup and its Reopen control rather than hidden
-  Start or Open controls.
-  QML wraps Setup in a border using `Color.accent` and a light background
-  using `Util.alpha(Color.accent, 0.10)`, following shell theme changes. Finished
-  setup retains its usual controls and has no attention highlight.
+  Guidance follows the visible controls, including the cause in the top block.
+  QML keeps Setup's inset constant and uses an accent border and the shell's
+  `Style.selectedAccentFill`, falling back to `Util.alpha(Color.accent, 0.10)`,
+  following shell theme changes. Finished setup retains its usual controls and has no attention highlight.
   A pending launch with no record now supplies progress without indexing a missing
   command. Nine new Bats cases cover every setup step, worker and idle attention,
   both boot displays and client states, section visibility, confirmation and finished
   controls. The inert QML test also covers confirmation, cancellation and resets,
   daily shutdown, Reopen transport, section visibility and live theme colors.
-  Validation for this addition: `bats test/panel.bats test/panel-jobs.bats
-  test/panel-qml.bats test/ui.bats` passes 94 tests with one comma-locale skip;
-  the renderer runs 14 QML test functions. `test/qml-lint` passes all three QML
+  Validation for this addition and its follow-up fixes: `bats test/panel.bats
+  test/panel-jobs.bats test/panel-qml.bats test/ui.bats` passes 105 cases with one
+  comma-locale skip; the renderer runs 15 QML test functions. `test/qml-lint` passes all three QML
   files, and the complete project ShellCheck command including both fake servers
   and `test/qml-lint` passes. Tests were written first and failed before the changes.
   Scratch stayed under `.btrfs-test/` and was removed. No VM, real units, shell,
