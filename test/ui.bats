@@ -1,0 +1,150 @@
+#!/usr/bin/env bats
+# Panel settings and detached jobs, using isolated files and a fake CLI.
+load helpers
+
+setup() {
+  isolate_home
+  T=$BATS_TEST_TMPDIR
+  source "$REPO/lib/lanai.sh"
+  mkdir -p "$XDG_CONFIG_HOME/lanai"
+  printf '{"storage":"/test-copy","memory_gib":12,"cores":6,"extra":true}\n' >"$(settings_file)"
+}
+
+@test "settings: reads current sizing and preserves storage and unknown keys on save" {
+  lanai_run settings
+  assert_success
+  assert_equal "$(field memory_gib)" 12
+  assert_equal "$(field cores)" 6
+  lanai_run settings 512 64
+  assert_success
+  run jq -c '{storage, memory_gib, cores, extra}' "$(settings_file)"
+  assert_output '{"storage":"/test-copy","memory_gib":512,"cores":64,"extra":true}'
+  assert_equal "$(stat -c %a "$(settings_file)")" 600
+}
+
+@test "settings: rejects invalid values with the VM's validation and leaves the file intact" {
+  local before mem cores
+  before=$(cat "$(settings_file)")
+  for mem in 0 513 01 1.5 -1 garbage; do
+    lanai_run settings "$mem" 4
+    assert_failure
+    assert_equal "$(field ok)" false
+    run vm_args /test-copy 02:00:00:00:00:01 "$mem" 4 100 ""
+    assert_failure
+  done
+  for cores in 0 65 01 1.5 -1 garbage; do
+    lanai_run settings 12 "$cores"
+    assert_failure
+    run vm_args /test-copy 02:00:00:00:00:01 12 "$cores" 100 ""
+    assert_failure
+  done
+  assert_equal "$(cat "$(settings_file)")" "$before"
+  lanai_run settings 1 1
+  assert_success
+}
+
+@test "settings: refuses broken JSON and symlinks rather than replacing them" {
+  printf broken >"$(settings_file)"
+  lanai_run settings 8 4
+  assert_failure
+  assert_equal "$(cat "$(settings_file)")" broken
+  rm "$(settings_file)"
+  printf '{}' >"$T/target"
+  ln -s "$T/target" "$(settings_file)"
+  lanai_run settings 8 4
+  assert_failure
+  assert_equal "$(cat "$T/target")" '{}'
+}
+
+# Override only the child CLI: no units, storage or desktop commands run.
+make_job_cli() {
+  LANAI_BIN=$T/cli
+  mkdir -p "$LANAI_BIN"
+  cat >"$LANAI_BIN/lanai" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" >"$XDG_STATE_HOME/args"
+case ${LANAI_FAKE_JOB:-ok} in
+  failure) printf '{"ok":false,"message":"backup needed","next":"make a backup"}\n'; exit 1 ;;
+  bad-json) echo broken ;;
+  many-json) printf '{"ok":true}\n{"ok":true}\n' ;;
+  *) printf '{"ok":true,"message":"done","next":null}\n' ;;
+esac
+SH
+  chmod +x "$LANAI_BIN/lanai"
+}
+
+@test "ui-job: carries literal arguments and publishes its completion" {
+  make_job_cli
+  # Literal shell metacharacters must reach the CLI untouched.
+  # shellcheck disable=SC2016
+  run cmd_ui_job token-1 restore 'snapshot with spaces;$(false)'
+  assert_success
+  run cmd_ui_job_status
+  assert_success
+  assert_equal "$(jq -r '.active' <<<"$output")" false
+  assert_equal "$(jq -r '.token' <<<"$output")" token-1
+  assert_equal "$(jq -r '.reply.ok' <<<"$output")" true
+  run cat "$XDG_STATE_HOME/args"
+  assert_output $'restore\nsnapshot with spaces;$(false)'
+}
+
+@test "ui-job: publishes CLI failures and rejects malformed output" {
+  make_job_cli
+  LANAI_FAKE_JOB=failure run cmd_ui_job token-2 snapshot
+  assert_success
+  run cmd_ui_job_status
+  assert_equal "$(jq -r '.reply.ok' <<<"$output")" false
+  assert_equal "$(jq -r '.reply.next' <<<"$output")" 'make a backup'
+  LANAI_FAKE_JOB=bad-json run cmd_ui_job token-3 setup
+  assert_success
+  run cmd_ui_job_status
+  assert_equal "$(jq -r '.reply.ok' <<<"$output")" false
+}
+
+@test "ui-job: refuses concurrent jobs and recovers an interrupted job" {
+  make_job_cli
+  mkdir -p "$(state_dir)"
+  exec {JOB_FD}>"$(state_dir)/panel-job.lock"
+  flock "$JOB_FD"
+  run cmd_ui_job token-4 setup
+  assert_failure
+  assert [ ! -e "$XDG_STATE_HOME/args" ]
+  exec {JOB_FD}>&-
+  printf '{"token":"old","command":"setup","active":true}' >"$(state_dir)/panel-job.json"
+  run cmd_ui_job_status
+  assert_success
+  assert_equal "$(jq -r '.active' <<<"$output")" false
+  assert_equal "$(jq -r '.reply.ok' <<<"$output")" false
+}
+
+@test "ui-job: accepts only the three long operations" {
+  make_job_cli
+  run cmd_ui_job token-5 start
+  assert_failure
+  assert [ ! -e "$XDG_STATE_HOME/args" ]
+}
+
+@test "ui-job commands: CLI emits exactly one JSON object, including its EXIT trap" {
+  lanai_run ui-job-status
+  assert_success
+  assert_equal "$(wc -l <<<"$output")" 1
+  make_job_cli
+  run bash -c 'source "$1"; LANAI_BIN=$2; lanai_main ui-job token-cli snapshot' _ "$REPO/lib/lanai.sh" "$LANAI_BIN"
+  assert_success
+  assert_equal "$(wc -l <<<"$output")" 1
+  lanai_run ui-job-status
+  assert_success
+  assert_equal "$(wc -l <<<"$output")" 1
+  assert_equal "$(field active)" false
+}
+
+@test "ui-job: multiple JSON objects become a recoverable failure, never a broken marker" {
+  make_job_cli
+  LANAI_FAKE_JOB=many-json run cmd_ui_job token-6 setup
+  assert_success
+  run cmd_ui_job_status
+  assert_success
+  assert_equal "$(jq -r '.active' <<<"$output")" false
+  assert_equal "$(jq -r '.reply.ok' <<<"$output")" false
+}

@@ -22,6 +22,8 @@ source "$LANAI_LIB/snapshot.sh"
 source "$LANAI_LIB/client.sh"
 # shellcheck source-path=SCRIPTDIR source=setup.sh
 source "$LANAI_LIB/setup.sh"
+# shellcheck source-path=SCRIPTDIR source=ui.sh
+source "$LANAI_LIB/ui.sh"
 
 # --- output ---
 

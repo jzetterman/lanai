@@ -1174,6 +1174,57 @@ reviews look hard at the panel's wording, layout and states.
   stop, as can any Windows security screen left open (such as a UAC prompt); and how to
   turn the lock back on.
 
+### As built (2026-10-04)
+
+- `Widget.qml` follows the shell's BarWidget/BarIconButton contract and forwards
+  open/close/opened/popout switching to `LanaiPanel.qml`. An L-in-a-monitor glyph identifies
+  Lanai; primary click starts or opens, secondary click opens the panel. All status
+  text, causes, next steps, warnings and logs use plain text. Status `window: true`
+  hides Open and routes the primary click to the panel during a QEMU setup boot.
+- `LanaiModel.qml` owns status polling (2 s with the panel open or while starting or
+  stopping, 15 s otherwise) and literal-argv Processes with a hard 10 s deadline.
+  `LanaiPanel.qml` uses KeyboardPanel, Button, NumberField, PanelSectionHeader,
+  PanelSeparator and the shell's theme tokens. Tab/Shift+Tab and Enter/Space reach
+  its controls; Escape dismisses it. Force stop appears only for status's
+  `force_stop: true` while stopping, with a second confirmation and cancel.
+- Setup runs only through detached `lanai setup`. Replies are read from
+  `$XDG_STATE_HOME/lanai/setup-reply.json` only after the corresponding job finishes,
+  and must agree with that job's CLI reply. A stale file cannot authorize a call.
+  Only an `ok: true` wait reply enables automatic progress: step 5 requires an
+  inactive setup-needed status; step 6 requires an active VM. Automatic calls are
+  at least 10 s apart across monitors (`SetupCalls.js`); failures and explicit display choices require a click.
+  Status gates Open, display choices and the two final questions. The UI shows the
+  seven steps, an indeterminate working message and the detached operation log;
+  the existing backend emits no incremental build/download progress percentages.
+- Small backend additions in `lib/ui.sh` (sourced by `lib/lanai.sh`): `lanai settings`
+  reads/writes memory and cores, using vm_args' exact integer syntax and ranges,
+  preserving storage and other keys, under the operation lock with atomic writes.
+  `lanai ui-job` serializes detached setup/snapshot/restore across monitors and
+  publishes an atomic `panel-job.json`; `lanai ui-job-status` detects an interrupted
+  worker from its lock. These additions make detached completion and settings
+  writes reviewable and testable without shell interpolation in QML. They are the
+  only backend scope addition; snapshots and restores still use phase 4's commands.
+  Snapshot results retain their location/delete guidance. Restore needs a second
+  click; interrupted restore can resume. Restoring requires running setup again.
+- README documents installation, dependencies, Windows-first removal and literal
+  registry restoration commands, guest components/service/task removal or reasons
+  to keep them, publisher/lock/clipboard exposures, DNS, coexistence, remaining
+  dockur risks, host key handling, read-only media and pending measurements.
+- Departures/deferred checks: at John's explicit instruction the two hands-on checks
+  (resize drag and scale timing) were not run: they require a person and a running
+  Windows test copy. No client flags changed. The proof records do not name an exact
+  Omarchy version, so README marks that as a phase 8 release item; 4.0.0.alpha is the
+  installed API reference only. The four marketplace Windows plugins are not
+  installed here, so the icon uses a custom L-in-a-monitor mark rather than a stock
+  monitor or Windows-logo glyph. Final reboot timing and spike
+  measurements remain explicit placeholders, not inferred results.
+- Validation: `test/ui.bats` was written before implementation and exercises settings
+  bounds, preservation/refusal, literal detached arguments, failures, concurrent
+  jobs, interrupted jobs and the one-JSON CLI contract. Only that touched bats file
+  was run because this sandbox blocks Unix sockets. `/usr/bin/qmllint` passes all
+  three new QML files with the shell import path. The complete project shellcheck
+  command passes. No VM, shell, real units, plugin installation or review stage ran.
+
 ## Phase 8: Acceptance
 
 - Memory: before the rehearsal, the first Lanai boot on John's machine, set memory to

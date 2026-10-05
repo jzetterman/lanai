@@ -10,9 +10,12 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
 - The Lanai plugin sits at the root: `manifest.json`, `bin/` (the `lanai` CLI,
   `lanai-copy`, the VM unit's `lanai-vm-exec`, `lanai-vm-stop` and
   `lanai-vm-helper`, the client unit's `lanai-client-exec`, and `lanai-setup-host`,
-  which installs the host packages in a terminal), `lib/` (`client.sh` holds the
+  which installs the host packages in a terminal), `Widget.qml` (the bar glyph),
+  `LanaiPanel.qml` (setup, VM controls, settings and recovery), `LanaiModel.qml`
+  (polling and detached jobs), `SetupCalls.js` (shared setup retry clock), `lib/` (`client.sh` holds the
   Looking Glass client code, `setup.sh` the setup flow and setup media, `pins.sh`
-  the pinned downloads), `systemd/` (the VM unit template), `guest/` (what runs in
+  the pinned downloads, `ui.sh` the settings command and detached panel jobs),
+  `systemd/` (the VM unit template), `guest/` (what runs in
   Windows: `setup.cmd`, `lanai-lock.cmd`, `lanai-scale.ps1`) and `test/` (bats; fake
   QMP and guest agent servers and trimmed client logs in `test/fixtures/`).
   `docs/plugin/proof-kit/` holds the phase 1 proof scripts.

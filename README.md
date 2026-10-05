@@ -3,7 +3,8 @@
 Run Windows in a window on Omarchy, through [Looking Glass](https://github.com/gnif/LookingGlass).
 
 Status: the spike is done except its measured sessions, and the Lanai plugin is being
-built. Nothing here is ready to install.
+built. Phase 7 adds the bar and panel; acceptance and the measured spike sessions
+still gate release. The install steps below are for rehearsals on a copy.
 
 ## Why
 
@@ -33,24 +34,223 @@ Out of v1: GPU passthrough, and a dedicated partition or NVMe for Windows.
 Lanai is an Omarchy bar plugin (id `io.github.jzetterman.lanai`) that runs your
 `omarchy-windows-vm` Windows install in plain QEMU, as your user, and shows it in a
 Looking Glass window. The plugin sits at the repository root: `manifest.json`, `bin/`,
-`lib/`, `systemd/`, `guest/` and `test/`. It is under construction; see the
+`lib/`, `systemd/`, `guest/`, `Widget.qml`, `LanaiPanel.qml`, `LanaiModel.qml`
+and `test/`. It is under construction; see the
 [plan](docs/plugin/plan.md).
 
-These sections are filled in phase 7:
+## Install and setup
 
-- Install
-- Removal
-- Verified Omarchy and dockur versions
-- Remaining risks
-- Clipboard exposure
-- DNS clients inside Windows
-- Shutdown time at reboot
-- Other Windows plugins
+Lanai requires Omarchy's Quickshell plugin API, an existing supported UEFI Windows
+install from `omarchy-windows-vm`, `/dev/kvm` access as your user, and enough memory
+for Windows and Linux. It does not install Windows or support TPM, Secure Boot or
+legacy layouts. Marketplace submission is intended to be manual setup with maintainer
+review: setup installs Arch packages and builds a native client.
+
+First rehearse on a reflink copy, as described in the [acceptance plan](docs/plugin/plan.md#phase-8-acceptance).
+Stop the container VM before setup. For the released plugin, the host commands are:
+
+```sh
+omarchy plugin add https://github.com/jzetterman/windows-on-omarchy.git
+omarchy plugin enable io.github.jzetterman.lanai --section right
+```
+
+Before enabling it for a rehearsal, set `storage` in
+`${XDG_CONFIG_HOME:-$HOME/.config}/lanai/settings.json` to the copy's absolute path.
+Without that setting Lanai uses `~/.windows`. Memory and cores are optional; setup
+seeds them from the container's settings when readable, otherwise from half the
+host's memory (at most 16 GiB) and half its CPU threads (at most 8).
+
+Right-click Lanai's L-in-a-monitor glyph to open the panel, then click **Continue setup**.
+The panel walks through checking the install, installing host packages, offering a
+snapshot, building the pinned client, installing in Windows, restarting and checking
+the result. At the package step it displays the exact install command; **Install in
+a terminal** opens a terminal which shows it again before the normal package-manager
+password prompt. Nothing else in Lanai escalates. Dependencies are listed in
+[`LANAI_HOST_PACKAGES`](lib/client.sh): QEMU and its GTK/SPICE/device modules,
+virtiofsd, passt, socat, jq, Python, diffutils and the Looking Glass build libraries
+and tools. Files Lanai downloads itself are pinned with SHA-256 in
+[`lib/pins.sh`](lib/pins.sh); the client and IDD use the same build.
+
+Accept the snapshot offer before the first boot, or make a backup and explicitly
+continue without a snapshot. A snapshot shares disk blocks, takes little space
+initially and grows as Windows changes. Lanai reports its exact path, delete command
+and restore command. It tries the Lanai data directory's `snapshots/`, then
+`<storage>.lanai-snapshots/` on the storage filesystem. Both VMs must be stopped for
+snapshot or restore. A restore requires running Lanai setup again.
+
+In the setup window, open Lanai's setup drive in Explorer and run `setup.cmd`. Approve
+the administrator prompt as the same Windows user; approval as a different account
+is refused. The setup drive must stay **read-only**: do not attach writable setup
+media or substitute files written by Windows. Setup shuts Windows down when the guest
+install finishes. Let that shutdown finish; Shut down from the panel does not count.
+Continue setup to restart Windows, then answer whether `~/Windows` appears in
+Explorer and whether text looks the right size. If a setup boot stopped unfinished,
+the panel offers QEMU's screen for a guest without the IDD, or the Windows window
+when the IDD is installed. Open window is hidden while QEMU's setup window is in use.
+
+## Daily use
+
+Left-click the glyph to start Windows, or open/focus its window while it runs.
+Closing the Looking Glass window leaves Windows running; click the glyph to reopen
+it. Right-click opens the panel. Panel controls support Tab, Shift+Tab, Enter and
+Space; Escape closes it. The shell can summon this widget's panel through its plugin
+routing. Settings accept whole numbers: 1–512 GiB and 1–64 cores, and apply at the
+next start. The CLI equivalent is `bin/lanai settings <GiB> <cores>`.
+
+Shut down asks Windows to shut down cleanly and returns immediately. After two
+minutes the panel offers Force stop, followed by a separate confirming click.
+Unsaved work is lost on a forced stop. If the display fails or builds mismatch,
+read the panel's cause, next step and log path. Stop Lanai before using
+`omarchy-windows-vm` through RDP or its web console as the fallback.
+
+Omarchy's Super shortcuts and Ctrl+Alt+Del do **not** reach Windows; use Windows'
+onscreen menus. The shared folder is `~/Windows` on Linux and the virtiofs drive in
+Windows Explorer. Display scale follows the focused monitor at the next VM start.
+Host locking, suspend and session shutdown are covered by the
+[phase 8 checks](docs/plugin/plan.md#phase-8-acceptance), which remain pending.
+
+## Windows lock and trust exposure
+
+Setup turns locking off for the Windows user who runs it because a locked Windows
+ignores Lanai's clean shutdown request. Switch user and the machine inactivity limit
+are also off for **every account** on that Windows. Setup replaces any previous lock
+settings without saving them. Turning the lock back on uses the three registry
+commands in Removal below; they restore Windows' defaults, not your earlier settings.
+A domain or MDM policy may turn locking back on. Either that or restoring the lock can
+bring back the forced stop, as can a Windows security screen left open, such as UAC.
+
+Dockur already signs Windows in automatically at every boot. RDP and the web console
+at `127.0.0.1:8006` still ask for the Windows password (`PROTECT: "Y"`), and any
+process running as your Linux user can already read the stored password. Those facts
+do not change. Windows now no longer locks itself or on request: an unattended,
+unlocked Linux session leaves Windows open for as long as the VM runs. Lock Linux to
+cover the Windows window. Lanai never reads or handles the stored Windows password.
 
 Guest setup adds HostFission's signing certificate to the machine's Trusted
 Publishers to avoid the Looking Glass driver's publisher prompt. Windows then
-accepts any driver HostFission signs without asking. During removal, remove
-HostFission's certificate using `certlm.msc`, under Trusted Publishers.
+accepts **any driver HostFission signs** without asking. Remove that certificate
+during removal as described below.
+
+While the Windows window runs, Windows can read **anything copied on Linux,
+including files**. Files copied in Windows appear on Linux in a read-only folder
+under your runtime directory. This is an accepted guest-to-host exposure alongside
+Looking Glass's frames and cursor, SPICE input/audio/clipboard, the network backend,
+the confined `~/Windows` share and the clock-only QEMU guest agent channel.
+
+## Networking and coexistence
+
+DNS uses the host resolver, including search domains and Tailscale MagicDNS. A DNS
+client inside Windows, such as Cloudflare WARP or a corporate agent, overrides that.
+Windows can reach destinations the host can reach, including VPNs, but cannot reach
+services bound only to host loopback. Host services on other addresses remain
+reachable. Booting without a host default route starts Windows without networking;
+it stays offline until the VM next starts.
+
+The four container-based Windows plugins show **stopped** while Lanai runs plain
+QEMU. Lanai uses its own name, L-in-a-monitor glyph and `Lanai,process=lanai` VM name.
+A container start then fails safely under the verified dockur behavior. Still,
+**do not start `omarchy-windows-vm` while Lanai runs Windows**, and do not change the
+container's Windows version, language, disk size or format, `CLEAR`, or custom ISO
+mounts while using Lanai. Its known pre-boot write paths are checked at every start;
+future dockur changes remain a risk. When container settings are unreadable, Lanai
+compares `windows.base` against the normal Windows 11/no-language image and skips
+the disk-size check. A container may then grow the disk, adding space without
+overwriting Windows data. Unknown layouts are refused.
+
+Verified dockur baseline: **6.05**, captured in `lib/dockur-6.05.args` and the
+[proofs](docs/plugin/proofs.md). The exact Omarchy build used for those proof sessions
+was not recorded: **phase 8 must record it before release**. Phase 7 targets the
+installed shell API from Omarchy **4.0.0.alpha**; this is an API reference, not a
+claim of Windows acceptance on that version.
+
+Reboot/power-off shutdown is best effort within Omarchy's approximately 20-second
+window; logout allows up to two minutes. **Phase 8 measurement pending: Lanai's clean
+Windows shutdown time on John's machine at reboot.** Earlier proof 4 sessions with
+idle Windows took 7 seconds at reboot and 11–13 seconds at logout. They do not replace
+the final measurement. If the wait expires, the next start reports the forced stop.
+
+The resize-drag and scale-timing checks at the top of phase 7 still need a person and
+a running Windows test copy. No client flag changes or timing claims have been made
+from those checks.
+
+## Removal
+
+1. First, **inside Windows**, under Lanai or over RDP under `omarchy-windows-vm`, open
+   an administrator Command Prompt as **the same Windows user who ran setup**
+   (`HKCU` is account-specific). Restore Windows' default lock settings:
+
+   ```bat
+   reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System /v DisableLockWorkstation /f
+   reg delete HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v HideFastUserSwitching /f
+   reg delete "HKCU\Control Panel\Desktop" /v ScreenSaverIsSecure /f
+   ```
+
+   An already absent value needs no deletion. `InactivityTimeoutSecs` is absent by
+   default, so nothing is written back. These commands also turn the lock back on
+   while keeping Lanai installed. Restart Windows for settings that load at sign-in.
+
+2. Undo the other guest changes before removing the plugin. In Installed apps,
+   uninstall the Looking Glass IDD and the QEMU guest agent if no other workflow uses
+   them. Removing qemu-ga removes Lanai's clock-only
+   `--allow-rpcs=guest-sync,guest-sync-delimited,guest-set-time` service configuration;
+   no earlier service configuration was saved. The SPICE vdagent can stay if used by
+   the container or another SPICE connection; otherwise uninstall it there too.
+   Remove Lanai's scale task and virtiofs service from the administrator prompt:
+
+   ```bat
+   schtasks /Delete /TN "Lanai display scale" /F
+   sc.exe stop VirtioFsSvc
+   sc.exe delete VirtioFsSvc
+   rmdir /S /Q "C:\Program Files\Lanai"
+   ```
+
+   A service already stopped needs no further stop. This removes Lanai's
+   `virtiofs.exe`, `lanai-scale.ps1` and the service's auto-start, dependency and
+   executable-path settings. If another workflow depended on a pre-existing
+   `VirtioFsSvc`, reinstall/configure its own virtiofs tools before using it;
+   setup did not save its previous settings. WinFsp and the newer signed `viofs`
+   driver can stay: without that service they do not create Lanai's share, and
+   another virtiofs workflow may need them. If unused, uninstall WinFsp in Installed
+   apps and uninstall the VirtIO FS device/driver in Device Manager, selecting driver
+   removal only after checking that no other device uses it. Container RDP and its
+   normal file share do not require Lanai's virtiofs service or scale task.
+
+3. Run `certlm.msc`, open **Trusted Publishers → Certificates**, and remove the
+   **HostFission** signing certificate setup added. This removes the permission to
+   install any HostFission-signed driver without a publisher prompt.
+
+4. Shut Windows down from its **Start menu**. Restored locking can drop Lanai's
+   shutdown request. The container does not restart automatically
+   (`omarchy-windows-vm` uses `restart: "no"`). If Lanai's VM still runs, this Linux
+   command works even without the plugin:
+
+   ```sh
+   systemctl --user stop lanai-vm.service
+   ```
+
+   It waits for shutdown and can force-stop at the timeout. Let any detached setup,
+   snapshot or restore operation finish before removing its code.
+
+5. Remove the plugin on Linux:
+
+   ```sh
+   omarchy plugin remove io.github.jzetterman.lanai
+   ```
+
+   Reloading, disabling or removing the plugin alone does not stop its VM. With the
+   VM and panel operations stopped, optionally remove its persistent VM unit and
+   reload the user manager:
+
+   ```sh
+   rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/lanai-vm.service"
+   systemctl --user daemon-reload
+   ```
+
+   Settings, downloaded builds, runtime copies and setup state remain in the Lanai
+   directories under XDG config/data/state/cache. Keep snapshots until you know you
+   no longer need them; use the exact snapshot deletion command Lanai reported.
+   Windows' disk and firmware are kept, and `omarchy-windows-vm` remains available.
+   Host packages may stay for other apps; remove only dependencies you know are unused.
 
 ## Tests
 
@@ -64,5 +264,9 @@ are stand-ins. Lint with
 `shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
 docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
 docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga`.
+
+Lint each QML file with `/usr/bin/qmllint -I /usr/share/omarchy/shell -I /usr/lib/qt6/qml
+Widget.qml LanaiModel.qml LanaiPanel.qml SetupCalls.js`. Panel settings/job tests use a fake CLI,
+without sockets or a VM.
 
 Lanai is MIT licensed; see [LICENSE](LICENSE).
