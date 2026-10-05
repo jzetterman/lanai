@@ -1359,6 +1359,36 @@ needs them.
   so it follows the user's Omarchy theme.
 Once setup is finished, every control shows as before. Tests cover each rule.
 
+**Display scale** (John, 2026-10-05, spec req 12 amended). In the panel run, Windows'
+scale changed with the Looking Glass window's size (125% full screen, 175% at a
+quarter). Cause: `lanai-scale.ps1` runs once at sign-in and sets the scale with
+`DisplayConfigSetDeviceInfo`, which stores it as steps from Windows' recommended
+scale for the current resolution; when the window resizes, Windows' resolution and
+recommended scale change, and the stored offset lands on another absolute scale.
+- Setting: `settings.json` gains `windows_scale`, either `"auto"` (match my monitor,
+  the default and today's rule) or one valid step (100 to 250 by 25, 300 to 500 by
+  50). `lanai settings` validates it like memory and cores; a missing key means
+  `"auto"`. `boot_vm` passes the fixed step, or the monitor's nearest step for
+  `"auto"`, in the SMBIOS string as now. The panel's Settings section gets a "Windows
+  text size" choice: "Match my monitor", then each step; it applies at the next start.
+- Holding it: `lanai-scale.ps1` applies the target at sign-in as now, then keeps
+  running for the session: every 2 s it reads the Looking Glass monitor's current
+  resolution and, when it changed, applies the target again as an absolute scale
+  (recomputing the steps from the new recommended scale), capped at Windows' maximum
+  for that resolution, and logs one line per change. It exits at sign-out with the
+  session. Its decision (target, current recommended, allowed range, to steps) is a
+  small pure function the tests call. `setup.cmd` registers the task with no
+  execution time limit (Task Scheduler stops tasks after 72 hours by default) and so
+  that it does not start a second copy (`MultipleInstances IgnoreNew`).
+- Existing installs get the new script only when setup runs again (it lives in
+  `C:\Program Files\Lanai`); the README says to click "Run setup again" after this
+  update. The test copy does so.
+- Tests: bats for the setting (valid steps, "auto", a missing key, invalid values) and
+  for `boot_vm`'s SMBIOS step from each; pwsh tests (skipped without pwsh, as the
+  StepName tests are) for the decision function: a target within the allowed range,
+  above it (capped), a resolution change that moves the recommended scale, and no
+  change; `guest.bats` checks the task's registration flags.
+
 **The QML.** It polls `lanai panel` every 2 s while its own panel is open, and every
 15 s otherwise (the tooltip), whatever the state; only the bar whose panel is open
 polls fast. It has a 10 s deadline, skips a tick while a call runs, and an
@@ -1665,7 +1695,7 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
 |---|---|
 | 10 | Each state appears with its text, cause and next step: not installed (empty storage copy), setup needed, stopped, starting, running, stopping, in use by `omarchy-windows-vm` (test install), version mismatch (older client build), failed (kill QEMU) |
 | 11 | Start, open and shut down from the bar and panel; panel actions by keyboard |
-| 12 | Tile, fullscreen, resize; desktop follows; scale matrix through `scale_step` tests plus two real host scales |
+| 12 | Tile, fullscreen, resize; desktop follows; scale matrix through `scale_step` tests plus two real host scales; a fixed 125% scale setting holds from a quarter-size window to full screen (or caps and recovers where Windows' limit applies) |
 | 13 | Typing, mouse, clipboard text both ways, a file both ways, a system sound; a file copied in Windows appears on the host in the Looking Glass client's read-only FUSE folder under `/run/user/<uid>/` (the spike saw `looking-glass-clipboard-*`, `ro,nodev,nosuid,noexec`), checked with `findmnt` (spec req 29) |
 | 14 | Sign-in with the user's password (dockur signs in automatically, so first sign out from Start, as proof 4 did); `grep` for a sentinel password in Lanai's files and logs finds nothing |
 | 15 | A file round-trips through `~/Windows` |

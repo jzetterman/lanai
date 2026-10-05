@@ -77,7 +77,8 @@ Neither needs GPU acceleration.
    `omarchy-windows-vm` while Lanai runs Windows, and do not change its container
    settings (Windows version, language, disk size or format, CLEAR, custom ISO mounts)
    while Lanai is in use.
-6. Lanai keeps its own VM settings (memory and CPU cores). Setup fills them from
+6. Lanai keeps its own VM settings (memory, CPU cores and Windows' display scale,
+   requirement 12). Setup fills them from
    `omarchy-windows-vm`'s settings when it can read them without a prompt. Otherwise it
    uses half the host's memory, at most 16 GiB, and half the host's CPU threads, at
    most 8. From those settings it reads only the memory and core values; it
@@ -152,10 +153,15 @@ Neither needs GPU acceleration.
     Windows down. The panel also holds setup, settings, errors and the forced stop.
     Panel actions are reachable from the keyboard where the Omarchy shell allows it.
 12. The Windows window behaves like any Omarchy window. It tiles, goes fullscreen and
-    resizes, and the Windows desktop follows its size. At start, Windows uses the display
-    scale step (100 to 250 in steps of 25, then 300 to 500 in steps of 50) nearest the
-    focused monitor's scale, with ties rounded down (John, 2026-09-28). A host scale
-    change applies at the next start of Lanai's VM.
+    resizes, and the Windows desktop follows its size. Windows' display scale is a
+    setting: "match my monitor" (the default) or one fixed step the user picks (John,
+    2026-10-05). Steps are 100 to 250 in steps of 25, then 300 to 500 in steps of 50.
+    "Match my monitor" uses, at start, the step nearest the focused monitor's scale,
+    with ties rounded down (John, 2026-09-28); a host scale change applies at the next
+    start of Lanai's VM. Windows keeps the chosen scale when the window is resized and
+    Windows changes resolution, except that Windows caps the scale at what it allows
+    for the current resolution; the scale goes back up when the window grows again. A
+    scale setting change applies at the next start.
 13. Keyboard, mouse, clipboard (both ways) and audio output work in the Windows window.
 14. When Windows asks for a password (dockur normally signs in automatically), the user
     types the one they chose when `omarchy-windows-vm` installed Windows. Lanai never
@@ -338,3 +344,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | b Grok (substitute) | 2026-09-28 | Round 3 (full, cap): 2 P2, 1 P3; all confirmed and integrated (row 19 splits the clean reboot from the forced-stop fixture; row 7b's refusal compares against the before-setup inventory, since dockur already installs its own file-sharing service and guest agent; row 4 parenthetical dropped). Stage closed at the cap |
 | spec | amendment | 2026-09-28 | From the phase 4 review: req 23 lets Windows start with no host network (passt's local mode; checked by two reviewers), and row 23-24 tests it (John's decision) |
 | spec | amendment | 2026-10-04 | From the phase 6 hands-on runs (John's decisions): req 7 and row 7 allow at most one administrator prompt (none when UAC is off) and no other Windows prompt; the v2 no-touch install is described under Out of scope |
+| spec | amendment | 2026-10-05 | From the phase 7 panel run (John): Windows' scale drifted with the window size, because the sign-in task applied it once as an offset from Windows' recommended scale. Req 12 makes the scale a setting (match my monitor, or a fixed step) that Windows keeps through resizes, within Windows' cap; req 6 lists it |
