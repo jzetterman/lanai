@@ -129,6 +129,7 @@ Panel {
             Action { control: "setup_snapshot"; onClicked: root.model.run(["snapshot"], true) }
             Action { control: "skip_snapshot"; onClicked: root.model.run(["setup", "--no-snapshot"], true) }
           }
+          Note { text: root.model.control("continue_setup").hint || "" }
           Column {
             width: parent.width
             spacing: Style.space(6)

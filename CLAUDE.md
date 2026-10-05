@@ -21,8 +21,12 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   Windows: `setup.cmd`, `lanai-lock.cmd`, `lanai-scale.ps1`) and `test/` (bats; fake
   QMP and guest agent servers and trimmed client logs in `test/fixtures/`).
   `docs/plugin/proof-kit/` holds the phase 1 proof scripts.
-- QML lint: `/usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell <file>` (`/usr/bin/qmllint` is the
-  older Qt 5 linter and rejects Qt 6 syntax).
+- QML lint: `test/qml-lint` (or `test/qml-lint <file>`). It makes a temporary
+  repository-local import root with `qs` linked to `/usr/share/omarchy/shell`,
+  then runs `/usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell -I "$imports" "$@"`.
+  This resolves `qs.Commons` and `qs.Ui` against the installed shell's actual
+  types. The script removes its import root on exit and never starts the shell.
+  `/usr/bin/qmllint` is the older Qt 5 linter and rejects Qt 6 syntax.
 - Tests: `bats test spike/test`; btrfs tests read `LANAI_TEST_BTRFS_DIR` (the ignored
   `.btrfs-test/` works). CI runs the same in an Arch container
   (`.github/workflows/test.yml`).

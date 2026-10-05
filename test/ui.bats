@@ -103,6 +103,7 @@ setup() {
   assert_failure
   assert_equal "$(field ok)" false
   assert_equal "$(field message)" "$LANAI_BUSY."
+  assert_equal "$(field reason)" busy
   assert_equal "$(wc -l <<<"$output")" 1
   assert_equal "$(cat "$s/last-run")" forced
   exec {lock_fd}>&-
@@ -209,4 +210,38 @@ CHILD
   assert_output --partial 'not ok 1 intentional reporting failure'
   refute_output --partial 'Executed 0 instead of expected 1'
   refute_output --partial 'BATS_killer_pid: unbound variable'
+}
+
+@test "ui timestamp: JSON numbers use a local C locale and leave the caller locale intact" {
+  local comma_locale candidate
+  comma_locale=''
+  while IFS= read -r candidate; do
+    if [[ $(LC_ALL=$candidate locale decimal_point) == ',' ]]; then comma_locale=$candidate; break; fi
+  done < <(locale -a)
+  if [[ -n $comma_locale ]]; then
+    LC_ALL=$comma_locale LC_NUMERIC=$comma_locale run bash -c '
+      source "$1/lib/ui.sh"
+      before=$LC_ALL
+      value=$(ui_timestamp)
+      jq -ne --argjson t "$value" "\$t > 0"
+      [[ $LC_ALL == "$before" ]]
+    ' _ "$REPO"
+    assert_success
+  else
+    # Hosts without a comma locale still verify the local formatting guard.
+    run declare -f ui_timestamp
+    assert_output --partial 'local LC_ALL=C'
+  fi
+}
+
+@test "busy lock: every operation reports its structured reason" {
+  local command fd s
+  s=$(state_dir); mkdir -p "$s"
+  exec {fd}>"$s/lock"; flock "$fd"
+  for command in 'cmd_settings 8 4' cmd_notice_seen 'setup_resume auto false "" ""' 'setup_guest auto' cmd_snapshot 'cmd_restore sample' 'boot_vm false auto'; do
+    run bash -c 'source "$1/lib/lanai.sh"; storage_dir() { echo "$TMPDIR/storage"; }; setup_current() { return 0; }; setup_get() { echo declined; }; eval "$2"' _ "$REPO" "$command"
+    assert_failure
+    assert_equal "$(jq -r .reason <<<"$output")" busy
+  done
+  exec {fd}>&-
 }

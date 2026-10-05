@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Resolve qs.* against the installed shell's real types, without starting it.
+set -euo pipefail
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+mkdir -p -- "$repo/.btrfs-test"
+imports=$(mktemp -d "$repo/.btrfs-test/qml-lint.XXXXXX")
+trap 'rm -rf -- "$imports"' EXIT
+ln -s /usr/share/omarchy/shell "$imports/qs"
+if (($# == 0)); then set -- "$repo/Widget.qml" "$repo/LanaiPanel.qml" "$repo/LanaiModel.qml"; fi
+/usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell -I "$imports" "$@"

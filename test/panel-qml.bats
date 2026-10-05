@@ -236,7 +236,7 @@ TestCase {
     wait(1); ready(model)
     model.view = {buttons:{continue_setup:{show:true,enable:true,label:'Run setup again'},
       no_window:{show:true,enable:true,label:'Set up in the Windows window',hint:'Use this if the Windows display driver already works.'},
-      window:{show:true,enable:true,label:"Set up in QEMU's screen",hint:'Use this if the Windows window is blank or the display driver needs repair.'}},
+      window:{show:true,enable:true,label:"Set up in a basic window",hint:'Use a basic window if the Windows window is blank or the display driver needs repair.'}},
       setup:{finished:true,show:false,choices:['--no-window','--window']},settings:{},snapshots:{names:[]},result:{},logs:{}}
     for (var i = 0; i < 2; i++) {
       var panel = createTemporaryObject(panelComponent, tests, {model:model})
@@ -264,6 +264,19 @@ TestCase {
       compare(Quickshell.lastCommand.slice(3).join(' '), i === 0 ? 'setup --no-window' : 'setup --window')
       panel.destroy(); wait(1)
     }
+  }
+  function test_finished_setup_shows_the_disabled_button_reason() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    model.view = {buttons:{continue_setup:{show:true,enable:false,label:'Run setup again',hint:'Shut Windows down to run setup again.'}},
+      setup:{finished:true,show:false},settings:{},snapshots:{names:[]},result:{},logs:{}}
+    var panel = createTemporaryObject(panelComponent, tests, {model:model})
+    panel.open()
+    var again = objects(panel, function(o) { return o.control === 'continue_setup' })[0]
+    verify(again.visible)
+    verify(!again.enabled)
+    verify(objects(panel, function(o) { return o.text === model.control('continue_setup').hint && o.visible }).length > 0)
+    panel.destroy(); wait(1)
   }
   function test_long_job_pending_and_no_deadline() {
     var model = createTemporaryObject(modelComponent, tests)

@@ -66,6 +66,8 @@ SH
   echo inactive >"$T/session"
   run cmd_ui_job_worker token setup --window
   assert_success
+  assert_equal "$(jq -r .reply.ok "$S/panel-result-setup.json")" false
+  assert_equal "$(jq -r .reply.reason "$S/panel-result-setup.json")" session
   assert_equal "$(cat "$T/count")" 0
   assert [ ! -e "$T/calls" ]
   assert [ -n "$(jq -r '.ended // empty' "$S/panel-result-setup.json")" ]
@@ -216,4 +218,57 @@ SH
   run cmd_ui_job_worker token setup
   assert_success
   assert_equal "$(cat "$T/count")" 1
+}
+
+@test "ui job: a settings save and notice dismissal during step 6 checks do not end following" {
+  export MODE=step6
+  eval "$(declare -f ui_sleep | sed '1s/ui_sleep/fixture_sleep/')"
+  ui_sleep() {
+    if [[ ! -f $T/saved ]]; then
+      (cmd_settings 8 4) >"$T/saved"
+      (cmd_notice_seen) >"$T/dismissed"
+    fi
+    fixture_sleep "$1"
+  }
+  run cmd_ui_job_worker token setup
+  assert_success
+  assert_equal "$(jq -r .ok "$T/saved")" true
+  assert_equal "$(jq -r .ok "$T/dismissed")" true
+  assert_equal "$(cat "$T/times")" $'100\n110\n120'
+  assert_equal "$(jq -r .reply.step "$S/panel-result-setup.json")" 7
+}
+
+@test "ui job: a follow-up colliding with a settings save retries two seconds later" {
+  # Use the real setup operation lock, with a fake save holding it at 110.
+  cat >"$LANAI_BIN/lanai" <<'SH'
+#!/usr/bin/env bash
+source "$LANAI_TEST_REPO/lib/lanai.sh"
+printf '%s\n' "$*" >>"$T/calls"
+printf '%s\n' "$(cat "$T/now")" >>"$T/times"
+if [[ $* == 'setup --follow 6 inv' ]] && ! lanai_flock; then
+  emit false "" "$LANAI_BUSY." "" '{"reason":"busy"}'
+  exit 1
+fi
+n=$(cat "$T/count"); echo "$((n+1))" >"$T/count"
+if ((n == 0)); then echo '{"ok":true,"step":"6"}'
+else echo '{"ok":true,"step":"6","questions":["share","scale"]}'; fi
+SH
+  export LANAI_TEST_REPO=$REPO
+  eval "$(declare -f ui_sleep | sed '1s/ui_sleep/fixture_sleep/')"
+  ui_sleep() {
+    fixture_sleep "$1"
+    if (( $(ui_now) == 110 )); then
+      exec {SAVE_FD}>"$S/lock"; flock "$SAVE_FD"
+    elif (( $(ui_now) == 112 )); then
+      (lanai_flock() { :; }; cmd_settings 8 4) >"$T/save-reply"
+      exec {SAVE_FD}>&-
+    fi
+    jq -ce 'select(.reply.ok == true and .ended == null)' "$S/panel-result-setup.json" >>"$T/waits"
+  }
+  run cmd_ui_job_worker token setup
+  assert_success
+  assert_equal "$(cat "$T/times")" $'100\n110\n112'
+  assert_equal "$(cat "$T/calls")" $'setup\nsetup --follow 6 inv\nsetup --follow 6 inv'
+  assert_equal "$(jq -r .ok "$T/save-reply")" true
+  assert_equal "$(jq -c .reply.questions "$S/panel-result-setup.json")" '["share","scale"]'
 }

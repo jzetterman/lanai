@@ -11,7 +11,7 @@ cmd_notice_seen() {
   fi
   umask 077
   if ! lanai_flock; then
-    emit false "" "$LANAI_BUSY." "try again when it finishes"
+    emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
     return 1
   fi
   s=$(state_dir)
@@ -51,7 +51,7 @@ cmd_settings() {
   fi
   if (($#)); then
     if ! lanai_flock; then
-      emit false "" "$LANAI_BUSY." "try again when it finishes"
+      emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
       return 1
     fi
     # Read again under the operation lock: setup may have seeded settings.
@@ -93,7 +93,7 @@ panel_group() {
 }
 
 # Small clock seams let fixtures check cadence without waiting ten seconds.
-ui_timestamp() { printf '%s\n' "$EPOCHREALTIME"; }
+ui_timestamp() { local LC_ALL=C; printf '%s\n' "$EPOCHREALTIME"; }
 ui_now() { printf '%s\n' "$EPOCHSECONDS"; }
 ui_sleep() { sleep "$1"; }
 unit_invocation() { systemctl --user show -p InvocationID --value "$LANAI_UNIT" 2>/dev/null || true; }
@@ -192,7 +192,7 @@ ui_setup_next() {
 # Internal worker: publish started after locking, then following, then ended
 # before releasing. Refused launches leave the owner's record and log untouched.
 cmd_ui_job_worker() {
-  local token=${1:-} command=${2:-} group args s fd out started inv at
+  local token=${1:-} command=${2:-} group args s fd out started inv at reply
   [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore)$ ]] || {
     emit false "" "Invalid panel job." ""; return 2;
   }
@@ -209,10 +209,18 @@ cmd_ui_job_worker() {
     # Lingering keeps the user manager alive after logout. Never let an old
     # setup worker enter a call that could boot Windows outside its session.
     if [[ $command == setup ]] && ! systemctl --user is-active --quiet graphical-session.target; then
-      out=${out:-'{"ok":true,"follow_stopped":true}'}
+      out=${out:-'{"ok":false,"reason":"session"}'}
       break
     fi
-    out=$(ui_call "$s/panel-job.log" "$command" "$@")
+    reply=$(ui_call "$s/panel-job.log" "$command" "$@")
+    # A direct settings save or notice dismissal briefly owns the operation
+    # lock. Keep the last wait visible and retry the guarded follow-up.
+    if [[ $command == setup && ${1:-} == --follow ]] &&
+      jq -e '.ok == false and .reason == "busy"' <<<"$reply" >/dev/null; then
+      ui_sleep 2
+      continue
+    fi
+    out=$reply
     inv=$(unit_invocation) at=$(ui_now)
     panel_result_write "$group" "$(ui_record "$token" "$command" "$args" "$started" "$inv" "$out" null)"
     if [[ $command != setup ]] || ! jq -e '.ok == true and

@@ -6,6 +6,8 @@
 panel_words() {
   jq -r --arg c "$1" '
     def reasons: {
+      busy:"Lanai is busy with another task. Try again in a moment.",
+      session:"Lanai can run setup only while you are signed in to the desktop.",
       settings:"Lanai could not read its settings. Check the settings file.",
       layout:"The Windows install is not supported or is incomplete. Check the install before continuing.",
       restore:"A restore did not finish. Finish the unfinished restore before starting Windows.",
@@ -98,9 +100,19 @@ cmd_panel() {
         words=$(panel_words "$(jq -r '.command' <<<"$doc")" "$(jq -c .reply <<<"$doc")")
       fi
     fi
+    if [[ $group == setup ]] && jq -e --argjson p "$plan" '
+      .reply.ok == false and
+      ((.reply.step != null and .reply.step != $p.step) or
+       (.reply.reason != null and .reply.reason == $p.reason))' <<<"$doc" >/dev/null; then
+      words=''
+    fi
     if jq -e '.held == false' <<<"$records" >/dev/null &&
       jq -e 'has("started") and (has("ended") | not)' <<<"$doc" >/dev/null; then
-      words="The operation was interrupted. Continue setup or retry the operation."
+      case $(jq -r .command <<<"$doc") in
+        snapshot) words="The snapshot did not finish. Try again." ;;
+        restore) words="The restore did not finish. Finish the unfinished restore before starting Windows." ;;
+        *) words="Setup was interrupted. Continue setup to try again." ;;
+      esac
     fi
     results=$(jq -nc --argjson r "$results" --arg g "$group" --arg w "$words" '$r + {($g):$w}')
   done
@@ -110,9 +122,9 @@ cmd_panel() {
   if snapshots=$(cmd_snapshots 2>/dev/null) && jq -e '.ok' <<<"$snapshots" >/dev/null; then
     snapshots=$(jq -c '{names:(.snapshots | map(split("/")[-1])),error:"",line:(if (.snapshots|length) == 0 then "No snapshots yet." else "Restoring replaces Windows. Anything saved since the snapshot is lost. Stop Windows in both VMs before restoring." end)}' <<<"$snapshots")
   else snapshots='{"names":[],"error":"Lanai could not read the snapshot list. Check the settings and logs."}'; fi
-  logs=$(jq -nc --arg vm "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$LANAI_UNIT" \
-    --arg client "$run/client.log" --arg job "$s/panel-job.log" --arg command "$s/panel-run.log" \
-    '{vm:"Session service logs: lanai-vm",client:$client,job:$job,command:$command}')
+  logs=$(jq -nc --arg client "${run:+$run/client.log}" --arg job "$s/panel-job.log" --arg command "$s/panel-run.log" \
+    '{vm:"Windows VM log: in your system journal (lanai-vm)",job:$job,command:$command} +
+     (if $client == "" then {} else {client:$client} end)')
   jq -nc --argjson st "$status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
     --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
     --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" '
@@ -137,7 +149,7 @@ cmd_panel() {
     {ok:true,state:$st.state,active:$st.active,label:$w[0],headline:$w[1],cause:$w[2],next:$w[3],
      pending_ack:(if $seen then $token else "" end),
      notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:$snaps,
-     busy:{active:$busy,line:(if $rec.held and $job.reply and $job.command == "setup" then "Checking Windows. You can close this panel."
+     busy:{active:$busy,line:(if $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
        elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes."}[$job.command] // "Starting the operation.") else "" end)},
      result:($r + {launch:(if $launchFailed then "The operation did not start. Check the panel job log, then try again." else "" end)}),
      setup:{show:($p.finished|not),finished:$p.finished,step:$p.step,questions:$p.questions,
@@ -148,7 +160,7 @@ cmd_panel() {
          "3":"Before the first boot, take a snapshot so you can undo changes, or make a backup and continue without one.",
          "3a":"Continue setup to prepare the Windows install.",
          "4":"Continue setup to prepare the Windows window. This may take several minutes.",
-         "5":(if $p.action == "setup-wait" then "In Windows, open Lanai\u0027s setup drive and run setup.cmd. Windows shuts down by itself when it finishes. Let that shutdown finish; Shut down from this panel does not count."
+         "5":(if $p.action == "setup-wait" then "In Windows, open Lanai\u0027s setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Don\u0027t use Shut down here during this step."
            elif ($p.choices|length)>0 then "The setup boot did not finish. Choose the screen to use for another setup boot."
            elif $st.active then "Shut Windows down before continuing setup."
            else "Continue setup to install the drivers in Windows." end),
@@ -164,12 +176,13 @@ cmd_panel() {
        cancel:button(true;true;"Cancel"),
        dismiss_notice:button(($st.notice != null);true;"Dismiss notice"),
        continue_setup:button($interruptedSetup or (($p.choices|length)==0 and ($p.questions|length)==0 and $p.step != "3");
-         ($busy|not) and $available and ($st.restore_pending|not);(if $p.finished then "Run setup again" else "Continue setup" end)),
+         ($busy|not) and $available and ($st.restore_pending|not) and (($p.finished|not) or $off);(if $p.finished then "Run setup again" else "Continue setup" end)) +
+         {hint:(if $p.finished and ($off|not) then "Shut Windows down to run setup again." else "" end)},
        install:button($p.step == "2";($busy|not);"Install in a terminal"),
        setup_snapshot:button($p.step == "3";$idle and ($busy|not);"Take a snapshot"),
        skip_snapshot:button($p.step == "3";$idle and ($busy|not);"Continue without a snapshot"),
-       window:(button($p.finished or ($p.choices|length)>0;$idle and ($busy|not);"Set up in QEMU\u0027s screen") +
-         {hint:"Use this if the Windows window is blank or the display driver needs repair."}),
+       window:(button($p.finished or ($p.choices|length)>0;$idle and ($busy|not);"Set up in a basic window") +
+         {hint:"Use a basic window if the Windows window is blank or the display driver needs repair."}),
        no_window:(button($p.finished or ($p.choices|length)>0;$idle and ($busy|not);"Set up in the Windows window") +
          {hint:"Use this if the Windows display driver already works."}),
        answer_yes:button(($p.questions|length)>0;($busy|not);"Yes"),
@@ -183,9 +196,11 @@ cmd_panel() {
     if $st.restore_pending then .cause="A restore did not finish, so Windows cannot start." |
       .next=(if $available then "Click Finish the unfinished restore when Windows is stopped." else "Stop the other VM, then finish the unfinished restore." end) else . end |
     if $st.force_stop then .next="Wait, or use Force stop below if you accept losing unsaved work." else . end |
-    if $facts | contains("LanaiHelpersMissing=") then .warning="Some background services stopped. Shut Windows down and start it again." else . end |
-    if $facts | contains("LanaiClient=timeout") then .warning += " The Windows window did not open in time. Try Open window again." else . end |
-    if $facts | contains("LanaiDriverOld=") then .warning += " The Windows display driver needs an update. Shut down and continue setup." else . end'
+    .warning = ([
+      if $facts | contains("LanaiHelpersMissing=") then "Some background services stopped. Shut Windows down and start it again." else empty end,
+      if $facts | contains("LanaiClient=timeout") then "The Windows window did not open in time. Try Open window again." else empty end,
+      if $st.state != "version-mismatch" and ($facts | contains("LanaiDriverOld=")) then "The Windows display driver needs an update. Shut down and continue setup." else empty end
+    ] | join(" "))'
   # shellcheck disable=SC2034
   LANAI_EMITTED=1
 }

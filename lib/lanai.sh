@@ -1133,7 +1133,7 @@ boot_vm() {
   local setup=$1 window=${2:-auto} step6=${3:-false} reason scale step s dir media="" last="" next="wait for Windows to start"
   local message="Windows is starting." network=true
   if ! lanai_flock; then
-    emit false "" "$LANAI_BUSY." "try again when it finishes"
+    emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
     return 1
   fi
   if ! reason=$(preflight); then
@@ -1515,7 +1515,7 @@ cmd_force_stop() {
 cmd_snapshot() {
   local out rc=0 dir name
   if ! lanai_flock; then
-    emit false "" "$LANAI_BUSY." "try again when it finishes"
+    emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
     return 1
   fi
   out=$(snapshot_create) || rc=$?
@@ -1552,7 +1552,7 @@ cmd_snapshots() {
 cmd_restore() {
   local out
   if ! lanai_flock; then
-    emit false "" "$LANAI_BUSY." "try again when it finishes"
+    emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
     return 1
   fi
   if ! out=$(snapshot_restore "${1:-}"); then

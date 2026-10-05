@@ -46,6 +46,35 @@ ended() {
   [[ ${1:-clean} != forced ]] || : >"$S/forced"
 }
 
+# Compare the decision with the observable action/reply, not just its step.
+assert_plan_agreement() {
+  local plan=$1 reply=$2 action step
+  case $reply in
+    build) action=build; step=4 ;;
+    setup-boot) action="setup-boot"; step=5 ;;
+    normal-boot) action="normal-boot"; step=6 ;;
+    *)
+      step=$(jq -r .step <<<"$reply")
+      assert_equal "$(jq -r '.reason // ""' <<<"$reply")" "$(jq -r .reason <<<"$plan")"
+      case $step in
+        1) action=problem ;;
+        2) action=packages ;;
+        3) action=snapshot ;;
+        3a) action=base ;;
+        5)
+          if jq -e '.ok' <<<"$reply" >/dev/null; then action="setup-wait"
+          elif jq -e '(.choices // [] | length) > 0' <<<"$reply" >/dev/null; then action=choices
+          else action=problem; fi ;;
+        6)
+          if jq -e '.reason != null' <<<"$reply" >/dev/null; then action=problem
+          else action=$(jq -r '.test_action // "wait"' <<<"$reply"); fi ;;
+        7) action="done" ;;
+      esac ;;
+  esac
+  assert_equal "$step" "$(jq -r .step <<<"$plan")"
+  assert_equal "$action" "$(jq -r .action <<<"$plan")"
+}
+
 @test "panel: every status state has plain words and the full view" {
   local fixture_facts expected
   for expected in not-installed setup-needed stopped starting running stopping in-use version-mismatch failed; do
@@ -78,7 +107,7 @@ ended() {
   assert_equal "$(jq -r .buttons.continue_setup.label <<<"$output")" 'Run setup again'
   assert_equal "$(jq -c .setup.choices <<<"$output")" '["--no-window","--window"]'
   assert_equal "$(jq -r .buttons.no_window.label <<<"$output")" 'Set up in the Windows window'
-  assert_equal "$(jq -r .buttons.window.label <<<"$output")" "Set up in QEMU's screen"
+  assert_equal "$(jq -r .buttons.window.label <<<"$output")" 'Set up in a basic window'
   run jq -e 'all(.buttons.no_window, .buttons.window; .show and .enable and (.hint | length > 0))' <<<"$output"
   assert_success
 }
@@ -116,10 +145,9 @@ ended() {
       [[ $markers != consumed ]] || record_previous_run >/dev/null
       planned=$(setup_plan "$(shared_facts)")
       # Only replace the active checks: all step selection remains real.
-      setup_step6() { setup_reply true 6 waiting ''; }
+      setup_step6() { setup_reply true 6 waiting '' '{"test_action":"checks"}'; }
       acted=$(setup_resume auto false '' '') || true
-      case $acted in build) acted=4 ;; setup-boot) acted=5 ;; normal-boot) acted=6 ;; *) acted=$(jq -r .step <<<"$acted") ;; esac
-      assert_equal "$acted" "$(jq -r .step <<<"$planned")"
+      assert_plan_agreement "$planned" "$acted"
       [[ $fixture != explicit ]] || assert_equal "$(jq -r .finished <<<"$planned")" false
     done
   done
@@ -235,6 +263,7 @@ ended() {
   panel_result_write snapshots '{"command":"restore","ended":1,"reply":{"ok":false}}'
   run cmd_panel
   assert_output --partial 'could not restore'
+  state '{"snapshot":"declined","step5":false}'
   panel_result_write setup '{"command":"setup","ended":1,"reply":{"ok":false,"step":"5","reason":"idd-missing"}}'
   run cmd_panel
   assert_output --partial 'display driver'
@@ -257,7 +286,7 @@ ended() {
 
 @test "panel words: every reason and command branch uses structured keys, never CLI prose" {
   local reason command text
-  for reason in settings layout restore share container manager active record no-media nostart incomplete guest-boot idd-missing mismatch agents answers client snapshot-unsupported invalid-reply; do
+  for reason in busy session settings layout restore share container manager active record no-media nostart incomplete guest-boot idd-missing mismatch agents answers client snapshot-unsupported invalid-reply; do
     text=$(panel_words setup "$(jq -nc --arg r "$reason" '{ok:false,step:"1",reason:$r,message:"UNTRUSTED",next:"UNTRUSTED"}')")
     assert [ -n "$text" ]
     refute [ "$text" = 'Setup could not finish. Check the logs, then continue setup.' ]
@@ -351,6 +380,7 @@ ended() {
   assert_equal "$(jq -r .setup.step <<<"$output")" 3
   assert_equal "$(jq -r .buttons.window.show <<<"$output")" false
   assert_output --partial 'restored'
+  assert_equal "$(jq -r .result.setup <<<"$output")" ''
 }
 
 @test "panel records: newest outstanding record owns progress, pending tokens do not time out after launch" {
@@ -450,7 +480,7 @@ ended() {
       layout_check() { return 0; }
       container_fact() { echo none; }
       host_packages_missing() { :; }
-      setup_step6() { setup_reply true 6 waiting ''; }
+      setup_step6() { setup_reply true 6 waiting '' '{"test_action":"checks"}'; }
       case $fixture in
         packages) host_packages_missing() { echo pkg; } ;;
         base) : >"$STORE/windows.base" ;;
@@ -468,7 +498,7 @@ ended() {
       [[ $marker != consumed ]] || record_previous_run >/dev/null
       plan=$(setup_plan "$(shared_facts)")
       acted=$(setup_resume auto false '' '') || true
-      assert_equal "$(jq -r .step <<<"$acted")" "$(jq -r .step <<<"$plan")"
+      assert_plan_agreement "$plan" "$acted"
     done
   done
 }
@@ -756,4 +786,73 @@ ended() {
   wait "$reader"
   assert_equal "$(jq -r .held "$T/reader-one")" false
   assert_equal "$(jq -r .held "$T/reader-two")" false
+}
+
+@test "panel: finished setup can run again only while Windows is off" {
+  state '{"snapshot":"declined","done":true}'
+  ST=active
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .buttons.continue_setup.enable <<<"$output")" false
+  assert_equal "$(jq -r .buttons.continue_setup.hint <<<"$output")" 'Shut Windows down to run setup again.'
+  ST=inactive
+  run cmd_panel
+  assert_equal "$(jq -r .buttons.continue_setup.enable <<<"$output")" true
+  assert_equal "$(jq -r .buttons.continue_setup.hint <<<"$output")" ''
+}
+
+@test "panel: setup results follow their step, keep stepless failures and suppress repeated reasons" {
+  state '{"snapshot":"declined","step5":false}'
+  panel_result_write setup '{"command":"setup","ended":1,"reply":{"ok":false,"step":"5","reason":"incomplete"}}'
+  run cmd_panel
+  assert_equal "$(jq -r .result.setup <<<"$output")" ''
+  panel_result_write setup '{"command":"setup","ended":1,"reply":{"ok":false,"reason":"busy"}}'
+  state '{}'
+  run cmd_panel
+  assert_equal "$(jq -r .result.setup <<<"$output")" 'Lanai is busy with another task. Try again in a moment.'
+  panel_result_write setup '{"command":"setup","ended":2,"reply":{"ok":true,"step":"3a"}}'
+  run cmd_panel
+  assert_equal "$(jq -r .result.setup <<<"$output")" ''
+}
+
+@test "panel: interruption words match the group operation" {
+  local command group expected
+  for command in snapshot restore setup; do
+    group=$(panel_group "$command")
+    panel_result_write "$group" "$(jq -nc --arg c "$command" '{command:$c,started:1}')"
+    run cmd_panel
+    case $command in
+      snapshot) expected='The snapshot did not finish. Try again.' ;;
+      restore) expected='The restore did not finish. Finish the unfinished restore before starting Windows.' ;;
+      setup) expected='Setup was interrupted. Continue setup to try again.' ;;
+    esac
+    assert_equal "$(jq -r --arg g "$group" '.result[$g]' <<<"$output")" "$expected"
+  done
+}
+
+@test "panel: step 5 waits name the automatic shutdown and subsequent checks" {
+  local fd
+  ST=active
+  state '{"snapshot":"declined"}'
+  echo '{"setup":true}' >"$S/boot.json"
+  panel_result_write setup '{"command":"setup","started":1,"reply":{"ok":true,"step":"5"}}'
+  exec {fd}>"$S/panel-job.lock"; flock "$fd"
+  run cmd_panel
+  assert_equal "$(jq -r .busy.line <<<"$output")" 'Waiting for Windows to finish setup. You can close this panel.'
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" "In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Don't use Shut down here during this step."
+  exec {fd}>&-
+}
+
+@test "panel: warnings have no leading space and mismatch already explains the old driver" {
+  status_facts() { printf 'ActiveState=active\nLanaiClient=timeout\nLanaiDriverOld=old\nLanaiVersion=mismatch\n'; }
+  run cmd_panel
+  assert_equal "$(jq -r .warning <<<"$output")" 'The Windows window did not open in time. Try Open window again.'
+}
+
+@test "panel: logs name the journal and omit an unavailable client path" {
+  run_dir() { return 1; }
+  run cmd_panel
+  assert_equal "$(jq -r .logs.vm <<<"$output")" 'Windows VM log: in your system journal (lanai-vm)'
+  run jq -e '.logs | has("client") | not' <<<"$output"
+  assert_success
 }

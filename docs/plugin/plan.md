@@ -1266,8 +1266,8 @@ exists and the plan is at step 6 (step5 true, the unit active, not a setup boot)
 "no" answer that sends setup back to step 5 hides them. Step 6's other verdicts
 (waiting, back to step 5) need QMP and the guest agent, so they come from the setup
 job's own result, not from `setup_plan`. A bats test pins that `setup_plan` and
-`setup_resume` agree on the step for every fixture, both with the markers still on
-disk (as the view sees them) and consumed (as setup sees them), including a panel
+`setup_resume` agree on the step, action and JSON reply reason for every fixture,
+both with the markers still on disk (as the view sees them) and consumed (as setup sees them), including a panel
 Shut down during the setup boot (a clean guest shutdown with a matching stop request
 gives the display choices, and the setup job stops following).
 
@@ -1290,8 +1290,11 @@ step 5 needs the same ended run completing step 5; step 6 needs the same active
 invocation with no matching stop request. A changed expectation returns an inert
 `follow_stopped` reply, so a stop between the worker probe and setup cannot boot
 Windows again.
-It writes the setup group's record after every call and ends on any reply that is not
-a wait, on a failure, or when the expected state does not come. So setup runs at most
+A busy operation-lock reply to a follow-up retries after two seconds, keeping the
+last wait visible; setup rechecks the same expectation under its lock on each retry.
+It writes the setup group's record after every completed setup call and ends on any
+reply that is not a wait, on a failure other than busy contention, or when the
+expected state does not come. So setup runs at most
 every 10 s, never two at a time, never after a failure, keyed on step and state, and
 it keeps going with the panel closed. Open, notice dismissal and settings saves do
 not stop it; Shut down and Force stop end it through the expected-state check. The
@@ -1325,12 +1328,14 @@ launch refused by `flock -w 1` writes no record (so it cannot overwrite the runn
 job's); the pending token then times out. `ui-run` writes its record when its command
 ends, with the unit's `InvocationID` read at that moment, and its stderr goes to
 `panel-run.log` (the long jobs' go to `panel-job.log`). A result shows only when it
-says something the state and `setup_plan` cannot: an `ok: false` failure (until the
-next action in its group), start's no-network message (while that run is active), the
-snapshot success text spec 7 requires, and a restore's outcome (both until the next
+says something the state and `setup_plan` cannot: an `ok: false` failure (for setup,
+only while its reply step matches the current plan; otherwise until the next action
+in its group), start's no-network message (while that run is active), the snapshot
+success text spec 7 requires, and a restore's outcome (both until the next
 action in their group). Offers, waits and other successes map to nothing in the words
 table, because the state already shows them; a stepless failure (the lock busy, the
-user manager unreachable) stays until the next action in its group.
+user manager unreachable) stays until the next action in its group. A setup result
+with the same reason as the current plan is hidden to avoid repeated guidance.
 
 **The QML.** It polls `lanai panel` every 2 s while its own panel is open, and every
 15 s otherwise (the tooltip), whatever the state; only the bar whose panel is open
@@ -1383,10 +1388,14 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   folder space before continuing; it is distinct from the silent snapshot offer.
   Snapshot success keeps its location, growth and file-manager deletion guidance.
   Offers, successful waits
-  and ordinary successes produce no result text. Failures persist in their group;
+  and ordinary successes produce no result text. Setup failures with a step show
+  only at the current plan's step; duplicate plan reasons are hidden. Stepless
+  failures and other groups' failures persist until the next action in their group;
   start's network warning requires the same active invocation; snapshot and restore
   outcomes persist until another action in that group. Settings/list read errors
-  are separate data, and warnings use status's structured details.
+  are separate data, and warnings use status's structured details, joined without
+  leading spaces or a repeated driver warning during a version mismatch. Logs
+  name the Windows VM journal and omit the client path when runtime is unavailable.
 - **Shared facts:** `shared_facts` supplies layout, storage, container, unit state,
   `Result`, invocation and restore pending. Status and setup each gather once.
   Container detection scans cgroups and command lines with bash builtins and is
@@ -1402,22 +1411,28 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   with the build. Step 6 writes its question marker, RESET events retire it, and
   VM startup clears it. A negative answer hides the questions by returning to
   step 5. Plan/resume agreement tests cover both present and consumed markers,
-  early and active phases, and a panel-requested shutdown.
+  early and active phases, and a panel-requested shutdown, comparing steps,
+  actions and JSON reply reasons.
 - **Following jobs:** the setup worker owns all follow-up calls. Two-second checks
   require the expected unit/invocation state; follow-ups carry only
-  `--follow <step> <invocation>` and are at least ten seconds apart. Setup
+  `--follow <step> <invocation>`; completed setup calls are at least ten seconds
+  apart, with busy lock attempts retried after two seconds. Setup
   rechecks that expectation under its operation lock before bookkeeping or any
   action; stale expectations return an inert reply, covering the stop race
   between the worker probe and setup's fact gather. A clean automatic setup
   shutdown advances once; a deactivating unit keeps the worker waiting until
   inactive or failed, before it evaluates the ended run. Panel shutdown,
   force stop, invocation changes, failures and terminal replies end
-  following. Step 6 also checks matching stop requests. Long jobs run through
+  following. Busy follow-ups retry after two seconds without replacing the wait;
+  settings saves and notice dismissal do not end step 6 checks. Step 6 also checks
+  matching stop requests. Long jobs run through
   `systemd-run --user --collect` in `session.slice`, with
   `PartOf=graphical-session.target` and `After=graphical-session.target`, and
   hold `panel-job.lock`. The setup worker checks that target is active before
   every setup call and during waits; logout ends following even with lingering
-  enabled. Closing the panel or reloading the shell does not end them. Client-mode setup
+  enabled. A first call outside the desktop session records a visible failure.
+  Result timestamps use a local C locale so decimal commas cannot break JSON.
+  Closing the panel or reloading the shell does not end them. Client-mode setup
   boots start the selected client themselves; step 6 starts the pinned client.
 - **Records:** `ui-run` records direct actions when they end, with the current
   invocation and stderr in `panel-run.log`. `ui-job` serializes setup, snapshot
@@ -1461,14 +1476,22 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   signal, so real keyboard edits survive polls; reopening loads current settings,
   and a successful Save resets the fields to the submitted values. Failed saves
   keep the edits. On a finished install, Run setup again reveals the backend's two
-  display choices and their hints; each launches an explicit `setup --no-window`
+  display choices and their hints, only while Windows is off. While Windows runs,
+  the disabled button says to shut it down first. After an interrupted re-run,
+  Run setup again also reveals the choices first. Each choice launches an explicit
+  `setup --no-window`
   or `setup --window` job, bypassing the finished shortcut. Only that reveal is
   transient; reopening clears it, and the backend still enables each choice.
+  Basic-window and step 5 guidance use plain words, including the automatic
+  shutdown and restart for checks. Progress distinguishes setup completion from
+  checking Windows; interruption words name setup, snapshots or restore.
   The widget retains its L-in-a-monitor glyph, shell-owned popout and primary-click
   start/open behavior. Force stop and restore both require a second click.
 - **Documentation:** README describes autonomous setup, current guidance,
   snapshot refreshes, result logs and the Qt 6 renderer test. CLAUDE's layout now
-  names the view, transport and per-group records. CI no longer installs Node for
+  names the view, transport and per-group records, and `test/qml-lint` resolves
+  imports against the installed shell types with a temporary local `qs` mapping.
+  CI no longer installs Node for
   the deleted JavaScript test.
 - **Interpretations:** setup samples the shared facts immediately after taking
   its lock, before consuming markers and following storage, to guard those writes
@@ -1479,7 +1502,7 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   `ComponentBehavior: Bound`; Qt 6 lint is authoritative, since this machine's
   legacy `/usr/bin/qmllint` (1.0) exits silently on that pragma. No other amendment
   departures are intended.
-- **Validation:** tests were added before implementation. All 65 tests in
+- **Validation:** tests were added before implementation. All 75 tests in
   `test/panel.bats`, `test/panel-jobs.bats`, `test/panel-qml.bats` and `test/ui.bats`
   pass. The QML test loads the real files with inert shell/Process types and checks
   both monitors' polling cadence, refresh races, direct and detached literal
@@ -1489,13 +1512,22 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   tested across both monitors before one replaces the other's group record.
   Worker tests check the graphical-session unit properties, refusal outside
   the session, logout during a wait and after its probe, and step 5 waiting
-  through deactivation before checking the ended run. The setup regression also
+  through deactivation before checking the ended run, plus saves and notice
+  dismissal during step 6 and a busy follow-up retry after two seconds. Tests
+  also pin setup result currency, duplicate-reason suppression, warning spacing,
+  journal labels, missing runtime paths and the local C timestamp guard (no comma
+  locale is installed here). The QML checks the disabled re-run button's hint.
+  This follow-up ran 142 passing tests: those 75, all 22 guest tests, 23 selected
+  client tests and 22 selected spike tests. The unchanged spike live-flock test
+  still fails at line 190; without Bats' timeout it reports the assertion normally.
+  With the timeout it loses its result line during cleanup. The setup regression also
   checks both failed snapshot-decision writes (taken and declined) and both
-  explicit displays after finished setup. Socket-free selections also pass in
+  explicit displays after finished setup. The earlier socket-free selections also
+  passed in
   `test/lanai.bats`, `test/checks.bats`, `test/vm.bats`,
   `test/client.bats`, `test/setup.bats`, `test/lifecycle.bats`,
   `test/proof-kit.bats`, `test/lanai-copy.bats` and `test/snapshot.bats`; all of
-  `test/guest.bats` passes. The socket-free selection totals 387 passes, three
+  `test/guest.bats` passed. That earlier socket-free selection totaled 387 passes, three
   filesystem skips and one failure: 44 of 45 selected `spike/test/lgtest.bats`
   tests pass, but its unchanged live-flock test does not find the held lock in
   `/proc/locks` here (line 190). Qt 6 `qmllint` passes

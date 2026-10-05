@@ -216,7 +216,7 @@ setup_guest() {
   case $rc in
     0) ;;
     3)
-      emit false "" "$LANAI_BUSY." "try again when it finishes"
+      emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
       return 1
       ;;
     4)
@@ -481,7 +481,7 @@ setup_plan() {
 setup_resume() {
   local window=$1 nosnap=$2 share=$3 scale=$4 follow_step=${5:-} follow_inv=${6:-} requested="" s facts plan st dir verdict="" action step reason want missing details next
   local -a list=()
-  if ! lanai_flock; then emit false "" "$LANAI_BUSY." "try again when it finishes"; return 1; fi
+  if ! lanai_flock; then emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'; return 1; fi
   facts=$(shared_facts)
   st=$(sed -n 's/^ActiveState=//p' <<<"$facts")
   dir=$(sed -n 's/^LanaiStorage=//p' <<<"$facts")
