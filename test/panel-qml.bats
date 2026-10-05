@@ -17,7 +17,8 @@ pragma Singleton
 import QtQuick
 QtObject {
   property var lastCommand: []
-  function execDetached(args) { lastCommand = args }
+  property int launchCount: 0
+  function execDetached(args) { lastCommand = args; launchCount++ }
 }
 QML
   cat >"$T/qml/imports/TestIo/qmldir" <<'QML'
@@ -272,6 +273,11 @@ TestCase {
       choice.clicked()
       compare(Quickshell.lastCommand[1], 'ui-job')
       compare(Quickshell.lastCommand.slice(3).join(' '), i === 0 ? 'setup --no-window' : 'setup --window')
+      var poll = process(model, 'timeout')
+      var reply = model.view
+      reply.ok = true; reply.pending_ack = model.pendingToken
+      poll.complete(JSON.stringify(reply), 0)
+      compare(model.pendingToken, '')
       panel.destroy(); wait(1)
     }
   }
@@ -300,6 +306,56 @@ TestCase {
     var poll = process(model, 'timeout')
     compare(poll.command.slice(-3)[0], '--pending')
     compare(poll.command.slice(-2)[0], model.pendingToken)
+  }
+  function test_two_rapid_long_job_clicks_keep_the_first_launch() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    var count = Quickshell.launchCount
+    model.run(['setup'], true)
+    var firstToken = model.pendingToken
+    var firstAt = model.pendingAt
+    model.run(['snapshot'], true)
+    compare(Quickshell.launchCount, count + 1)
+    compare(model.pendingToken, firstToken)
+    compare(model.pendingAt, firstAt)
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'setup')
+  }
+  function test_short_action_preserves_a_failed_launch_until_the_next_long_job() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    model.run(['setup'], true)
+    var firstToken = model.pendingToken
+    model.pendingAt -= 11
+    var firstAt = model.pendingAt
+    ready(model)
+    model.run(['open'], false)
+    compare(model.pendingToken, firstToken)
+    compare(model.pendingAt, firstAt)
+    var action = process(model, model.cli)
+    action.complete('{"ok":true}', 0)
+    var poll = process(model, 'timeout')
+    compare(poll.command.slice(-2)[0], firstToken)
+    model.run(['snapshot'], true)
+    verify(model.pendingToken !== firstToken)
+    compare(Quickshell.lastCommand[2], model.pendingToken)
+  }
+  function test_snapshot_advice_is_beside_the_step_three_controls() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    var advice = 'This filesystem cannot make an instant snapshot. Make a backup before continuing without a snapshot.'
+    model.view = {buttons:{setup_snapshot:{show:true,enable:true,label:'Take a snapshot'},skip_snapshot:{show:true,enable:true,label:'Continue without a snapshot'}},
+      setup:{show:true,finished:false,step:'3'},settings:{},snapshots:{names:[]},result:{snapshots:advice},logs:{}}
+    var panel = createTemporaryObject(panelComponent, tests, {model:model,opened:true})
+    wait(1)
+    var control = objects(panel, function(o) { return o.control === 'setup_snapshot' })[0]
+    var notes = objects(panel, function(o) { return o.text === advice && o.visible })
+    var siblings = Array.from(control.parent.parent.children)
+    verify(notes.some(function(o) { return siblings.indexOf(o) === siblings.indexOf(control.parent) + 1 }))
+    model.view = {buttons:{continue_setup:{show:true,enable:true,label:'Run setup again'}},setup:{show:false,finished:true},settings:{},snapshots:{names:[]},result:{snapshots:advice},logs:{}}
+    wait(1)
+    compare(objects(panel, function(o) { return o.text === advice && o.visible }).length, 1)
+    verify(objects(panel, function(o) { return o.text === 'Setup' && o.visible }).length > 0)
+    panel.destroy(); wait(1)
   }
   function test_both_monitors_acknowledge_launches_before_record_replacement() {
     var first = createTemporaryObject(modelComponent, tests)

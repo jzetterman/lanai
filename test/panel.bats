@@ -128,7 +128,7 @@ assert_plan_agreement() {
 @test "setup plan: steps and acting resume agree before and after marker consumption" {
   local fixture markers planned acted
   for markers in present consumed; do
-    for fixture in offer build boot clean panel forced nostart normalnostart normal "done" explicit; do
+    for fixture in offer build boot clean panel forced nostart normalnostart normal failed-setup failed-normal "done" explicit; do
       rm -f "$S/"{running,started,forced,last-shutdown,stop-requested,boot.json}
       ST=inactive RESULT=success
       state '{"snapshot":"declined"}'
@@ -137,6 +137,11 @@ assert_plan_agreement() {
         offer) state '{}' ;;
         clean|panel|forced|nostart) state '{"snapshot":"declined","step5":false}'; ended "$fixture"
           [[ $fixture != nostart ]] || rm "$S/started" ;;
+        failed-setup|failed-normal)
+          ST=failed RESULT=exit-code
+          state '{"snapshot":"declined","step5":false}'
+          [[ $fixture != failed-normal ]] || state '{"snapshot":"declined","step5":true}'
+          ended; rm "$S/last-shutdown" ;;
         normal) state '{"snapshot":"declined","step5":true}' ;;
         normalnostart) state '{"snapshot":"declined","step5":true}'; echo inv >"$S/running" ;;
         done) state '{"snapshot":"declined","done":true}' ;;
@@ -349,7 +354,7 @@ assert_plan_agreement() {
 @test "panel: setup problem guidance comes from the current plan and completed setup survives in-use" {
   share_check() { return 1; }
   run cmd_panel
-  assert_output --partial 'shared Windows folder is missing'
+  assert_output --partial 'a real folder you own, not a link'
   state '{"done":true}'
   container_fact() { echo running; }
   run cmd_panel
@@ -475,8 +480,8 @@ assert_plan_agreement() {
 @test "setup plan and resume: agreement for early and active steps in both marker states" {
   local fixture marker plan acted
   for marker in present consumed; do
-    for fixture in packages base active-setup checks questions starting wrong-boot share layout restore done-container done-share; do
-      ST=inactive
+    for fixture in packages base active-setup checks questions starting wrong-boot share layout restore done-container done-share failed-setup failed-normal; do
+      ST=inactive RESULT=success
       state '{"snapshot":"declined"}'
       echo base >"$STORE/windows.base"
       rm -f "$S/"{running,started,forced,last-shutdown,stop-requested,boot.json,restore-in-progress} "$RUN/step6-asked"
@@ -486,6 +491,11 @@ assert_plan_agreement() {
       host_packages_missing() { :; }
       setup_step6() { setup_reply true 6 waiting '' '{"test_action":"checks"}'; }
       case $fixture in
+        failed-setup|failed-normal)
+          ST=failed RESULT=exit-code
+          state '{"snapshot":"declined","step5":false}'
+          [[ $fixture != failed-normal ]] || state '{"snapshot":"declined","step5":true}'
+          ended; rm "$S/last-shutdown" ;;
         packages) host_packages_missing() { echo pkg; } ;;
         base) : >"$STORE/windows.base" ;;
         active-setup) ST=active; echo '{"setup":true}' >"$S/boot.json" ;;
@@ -906,7 +916,8 @@ assert_plan_agreement() {
   assert_equal "$(jq -r .reason <<<"$output")" missing
   run cmd_panel
   assert_success
-  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'No Windows install was found. Install Windows with Omarchy, then continue setup.'
+  assert_equal "$(jq -c .setup.lines <<<"$output")" '[]'
+  assert_equal "$(jq -r .next <<<"$output")" 'Install Windows with Omarchy, then continue setup.'
 }
 
 @test "panel: logs and reply guidance use the same names" {
@@ -938,14 +949,16 @@ assert_plan_agreement() {
   assert_equal "$(jq -r '.buttons.restore_confirm.labels.school' <<<"$output")" 'Restore school and replace Windows'
 }
 
-@test "panel: Continue setup is disabled for step 5 active and no-media problems" {
-  local reason
+@test "panel: Continue setup is disabled for active and no-media problems at every step" {
+  local reason step
+  for step in 1 5 6; do
   for reason in active no-media; do
-    setup_plan() { jq -nc --arg reason "$reason" '{step:"5",finished:false,action:"problem",reason:$reason,choices:[],questions:[]}'; }
+    setup_plan() { jq -nc --arg reason "$reason" --arg step "$step" '{step:$step,finished:false,action:"problem",reason:$reason,choices:[],questions:[]}'; }
     run cmd_panel
     assert_success
     assert_equal "$(jq -r .buttons.continue_setup.show <<<"$output")" true
     assert_equal "$(jq -r .buttons.continue_setup.enable <<<"$output")" false
+  done
   done
 }
 
@@ -956,4 +969,30 @@ assert_plan_agreement() {
   assert_equal "$(jq -r .setup.step <<<"$output")" 6
   assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Click Continue setup so Lanai can check Windows.'
   assert_equal "$(jq -r .buttons.continue_setup.enable <<<"$output")" true
+}
+
+@test "panel: stopping step 6 waits for shutdown before Continue setup" {
+  state '{"snapshot":"declined","step5":true}'
+  ST=deactivating
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .state <<<"$output")" stopping
+  assert_equal "$(jq -r .setup.step <<<"$output")" 6
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Wait for Windows to shut down, then click Continue setup.'
+  assert_equal "$(jq -r .buttons.continue_setup.enable <<<"$output")" false
+}
+
+@test "panel words: shared folder guidance explains its ownership and link rules" {
+  run panel_words setup '{"ok":false,"reason":"share"}'
+  assert_success
+  assert_output 'Lanai needs a folder named Windows in your home folder. It must be a real folder you own, not a link. Create or fix it, then continue setup.'
+}
+
+@test "panel: missing install guidance appears only in the top block" {
+  layout_check() { return 2; }
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .state <<<"$output")" not-installed
+  assert_equal "$(jq -c .setup.lines <<<"$output")" '[]'
+  assert_equal "$(jq -r .next <<<"$output")" 'Install Windows with Omarchy, then continue setup.'
 }

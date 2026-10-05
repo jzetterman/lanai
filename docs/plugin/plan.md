@@ -1348,7 +1348,9 @@ every command through `ui-run` or `ui-job`. Besides moment-to-moment input that
 decides nothing on its own (the selected answers, unsaved settings edits, an armed
 second-click confirmation for the forced stop or a restore, whose controls and labels
 come from the view), it keeps one value: the token and time of a long job it launched
-(`--pending <token> <epoch>`), passed to `lanai panel` until the next click. If no
+(`--pending <token> <epoch>`), passed to `lanai panel` until its record appears
+or the next long job starts. Long-job clicks within the first 10 s of a pending
+launch are ignored; short actions preserve the pending token and time. If no
 started record with that token appears within 10 s, the view reports the launch as
 failed (with the job log path). `SetupCalls.js` goes away.
 
@@ -1389,6 +1391,10 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   A failed step 3 write carries `reason: record` and tells the user to check home
   folder space before continuing; it is distinct from the silent snapshot offer.
   Snapshot success keeps its location, growth and file-manager deletion guidance.
+  Snapshot outcomes also show below the step 3 snapshot controls. The Setup
+  header shows whenever Continue setup shows. Missing-install guidance appears
+  only in the top block when the plan repeats that state. Shared-folder advice
+  explains that Windows must be a real folder in the home folder, owned by the user.
   Offers, successful waits
   and ordinary successes produce no result text. Setup failures with a step show
   only at the current plan's step; duplicate plan reasons are hidden. Stepless
@@ -1404,8 +1410,10 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   outcome cannot keep asking for setup after setup finishes again.
   Step 5 and 6 waiting words require a setup job holding `panel-job.lock`;
   without one they ask the user to click Continue setup. The step 5 drive
-  instructions still require the setup boot. Continue setup is disabled at
-  step 5 for `no-media` and `active`, whose next step is shutdown.
+  instructions still require the setup boot. While step 6 is stopping, its line
+  asks the user to wait for shutdown, then click Continue setup; the button stays
+  disabled until shutdown ends. Continue setup is disabled for `no-media` and
+  `active` at every step, whose next step is shutdown.
   Restore labels include the snapshot name before "and replace Windows".
   Armed Run setup again shows "Choose how Windows should show during setup."
   and a Cancel button that clears the armed state.
@@ -1428,7 +1436,10 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   VM startup clears it. A negative answer hides the questions by returning to
   step 5. Plan/resume agreement tests cover both present and consumed markers,
   early and active phases, and a panel-requested shutdown, comparing steps,
-  actions and JSON reply reasons.
+  actions and JSON reply reasons. Both agreement tests include runs that started
+  then failed with `Result=exit-code`, with `step5` true and false. Resume passes
+  its consumed verdict, using `none` for empty output, into planning; the same
+  effective verdict decides whether Windows never started.
 - **Following jobs:** the setup worker owns all follow-up calls. Two-second checks
   require the expected unit/invocation state; follow-ups carry only
   `--follow <step> <invocation>`; completed setup calls are at least ten seconds
@@ -1468,7 +1479,10 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   reports a launch failure. The view returns `pending_ack` when that token's
   record appears; its bar clears the pending token, so a later action from
   another bar replacing the group's record cannot revive a launch failure.
-  Backend and QML tests cover both monitors' launch/acknowledgment sequence.
+  Pending long-job clicks within ten seconds are ignored. Short actions preserve
+  the pending token and time, including a launch failure; the next long job replaces
+  them. Backend and QML tests cover rapid clicks, short actions after a failed
+  launch and both monitors' launch/acknowledgment sequence.
   High-resolution start times select the newest
   outstanding record when an older interrupted record belongs to another group.
   The old `panel-job.json` and `ui-job-status` path is removed.

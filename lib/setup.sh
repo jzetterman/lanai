@@ -413,12 +413,13 @@ setup_decision() {
 # by panel/resume so the container and layout are read only once per call.
 setup_plan() {
   local facts=${1:-$(shared_facts)} window=${2:-auto} nosnap=${3:-false} prior=${4:-}
-  local line doc run stopped=false verdict st dir problem missing snapshot step5
+  local line doc run stopped=false verdict v st dir problem missing snapshot step5
   local -A f=()
   while IFS= read -r line; do [[ $line != *=* ]] || f[${line%%=*}]=${line#*=}; done <<<"$facts"
   st=${f[ActiveState]:-unknown} dir=${f[LanaiStorage]:-}
   [[ $st != inactive && $st != failed ]] || stopped=true
   verdict=$(run_verdict)
+  v=${prior:-$(jq -r .verdict <<<"$verdict")}
   doc=$(jq -c 'select(type == "object")' "$(setup_file)" 2>/dev/null) || doc='{}'
   if ! jq -e --arg d "$dir" '.location == $d' <<<"$doc" >/dev/null; then doc='{}'
   elif $stopped && jq -e '.completes_step5' <<<"$verdict" >/dev/null; then
@@ -467,8 +468,7 @@ setup_plan() {
   fi
   if [[ $window != auto ]]; then setup_decision 5 setup-boot; return; fi
   if [[ ($step5 == true || $step5 == false) &&
-    ($(jq -r .verdict <<<"$verdict") == nostart || $prior == nostart ||
-    ($st == failed && ${f[Result]:-} == exit-code && $(jq -r .verdict <<<"$verdict") == none)) ]]; then
+    ($v == nostart || ($st == failed && ${f[Result]:-} == exit-code && $v == none)) ]]; then
     if [[ $step5 == true ]]; then setup_decision 6 problem nostart
     else setup_decision 5 choices nostart '{"choices":["--window","--no-window"]}'; fi
   elif [[ $step5 == true ]]; then setup_decision 6 normal-boot
@@ -512,6 +512,7 @@ setup_resume() {
   fi
   if [[ $st == inactive || $st == failed ]]; then
     verdict=$(record_previous_run)
+    verdict=${verdict:-none}
     if [[ -n $dir && $(sed -n 's/^LanaiProblemReason=//p' <<<"$facts") == '' ]]; then
       setup_follow "$dir" checked || {
         setup_reply false 1 "Lanai cannot record its setup state." "" '{"reason":"record"}'; return 1;

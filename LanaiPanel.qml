@@ -112,7 +112,7 @@ Panel {
           Note { text: root.model.view.result.vm || "" }
 
           PanelSeparator { foreground: root.foreground }
-          PanelSectionHeader { visible: root.model.view.setup.show === true || root.setupAgainArmed; text: "Setup"; foreground: root.foreground; fontFamily: root.fontFamily }
+          PanelSectionHeader { visible: root.model.view.setup.show === true || root.setupAgainArmed || root.model.control("continue_setup").show; text: "Setup"; foreground: root.foreground; fontFamily: root.fontFamily }
           Repeater {
             model: root.model.view.setup.lines || []
             delegate: Note { required property string modelData; text: modelData; visible: root.model.view.setup.show === true }
@@ -129,6 +129,7 @@ Panel {
             Action { control: "setup_snapshot"; onClicked: root.model.run(["snapshot"], true) }
             Action { control: "skip_snapshot"; onClicked: root.model.run(["setup", "--no-snapshot"], true) }
           }
+          Note { text: root.model.control("setup_snapshot").show ? root.model.view.result.snapshots || "" : "" }
           Note { text: root.model.control("continue_setup").hint || "" }
           Note { text: root.model.view.setup.again_line || ""; visible: root.setupAgainArmed }
           Column {

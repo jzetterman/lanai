@@ -13,7 +13,7 @@ panel_words() {
       missing:"No Windows install was found. Install Windows with Omarchy, then continue setup.",
       layout:"The Windows install is not supported or is incomplete. Check the install before continuing.",
       restore:"A restore did not finish. Finish the unfinished restore before starting Windows.",
-      share:"The shared Windows folder is missing or cannot be used. Create it before continuing.",
+      share:"Lanai needs a folder named Windows in your home folder. It must be a real folder you own, not a link. Create or fix it, then continue setup.",
       container:"Windows is in use by another VM. Stop it before continuing here.",
       manager:"Lanai cannot reach your session services. Check the " + log + " and try again.",
       active:"Shut Windows down before continuing setup.",
@@ -159,7 +159,8 @@ cmd_panel() {
        choices:(if $p.finished then ["--no-window","--window"] else $p.choices end),
        again_line:"Choose how Windows should show during setup.",
        share_question:"Does Explorer show the files from your Linux Windows folder?",scale_question:"Does text in Windows look the right size?",
-       lines:([if $problem_line != "" then $problem_line else {"1":"Check the Windows install and the shared Windows folder before continuing.",
+       lines:([if $st.state == "not-installed" and ($p.reason == "missing" or $p.reason == "layout") then empty
+         elif $problem_line != "" then $problem_line else {"1":"Check the Windows install and the shared Windows folder before continuing.",
          "2":"Click Install in a terminal, complete installation there, then continue setup.",
          "3":"Before the first boot, take a snapshot so you can undo changes, or make a backup and continue without one.",
          "3a":"Continue setup to prepare the Windows install.",
@@ -169,7 +170,8 @@ cmd_panel() {
            elif ($p.choices|length)>0 then "The setup boot did not finish. Choose the screen to use for another setup boot."
            elif $st.active then "Shut Windows down before continuing setup."
            else "Continue setup to install the drivers in Windows." end),
-         "6":(if ($p.questions|length)>0 then "In Windows, check the shared drive in Explorer and the text size, then send both answers."
+         "6":(if $st.state == "stopping" then "Wait for Windows to shut down, then click Continue setup."
+           elif ($p.questions|length)>0 then "In Windows, check the shared drive in Explorer and the text size, then send both answers."
            elif $setupJob then "Windows is starting or being checked."
            else "Click Continue setup so Lanai can check Windows." end),
          "7":"Setup is finished."}[$p.step] end])},
@@ -182,7 +184,7 @@ cmd_panel() {
        dismiss_notice:button(($st.notice != null);true;"Dismiss notice"),
        continue_setup:button($interruptedSetup or (($p.choices|length)==0 and ($p.questions|length)==0 and $p.step != "3");
          ($busy|not) and $available and ($st.restore_pending|not) and (($p.finished|not) or $off) and
-         ($p.step != "5" or ($p.reason != "no-media" and $p.reason != "active"));(if $p.finished then "Run setup again" else "Continue setup" end)) +
+         $p.reason != "no-media" and $p.reason != "active" and ($p.step != "6" or $st.state != "stopping");(if $p.finished then "Run setup again" else "Continue setup" end)) +
          {hint:(if $p.finished and ($off|not) then "Shut Windows down to run setup again." else "" end)},
        install:button($p.step == "2";($busy|not);"Install in a terminal"),
        setup_snapshot:button($p.step == "3";$idle and ($busy|not);"Take a snapshot"),

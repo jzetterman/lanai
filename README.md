@@ -75,7 +75,8 @@ Accept the snapshot offer before the first boot, or make a backup and explicitly
 continue without a snapshot. A snapshot shares disk blocks, takes little space
 initially and grows as Windows changes. The panel reports its path and explains
 how to delete the snapshot folder. The list updates after each snapshot or restore
-job, and whenever the panel refreshes.
+job, and whenever the panel refreshes. If the filesystem cannot make a snapshot,
+the setup offer explains that you need a backup before continuing without one.
 Snapshot and restore jobs show a note while they run. You can close the panel
 during a snapshot. Keep Windows off until a restore finishes. Lanai blocks Start
 while a restore is unfinished; use **Finish the unfinished restore** to resume it.
@@ -101,6 +102,7 @@ setup is finished only when Lanai has recorded its completion for this disk.
 A failed or interrupted operation asks you to continue or retry. Click **Continue setup**
 to go on. After a shell restart, that button checks where setup stands.
 If Windows is running without the setup drive, shut it down before continuing.
+During the final checks, wait for any shutdown to finish before continuing setup.
 To run setup again after it finishes, shut Windows down and click **Run setup again**.
 Choose how Windows should show during setup, or click **Cancel** to return.
 A restore's success note stays until the next snapshot action; the Setup section
@@ -290,20 +292,9 @@ sudo, or opens a window: curl, cmake, pacman, sudo, omarchy, systemd-run and hyp
 are stand-ins. Lint with
 `shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
 docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
-docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga`.
+docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga test/qml-lint`.
 
-Use Qt 6's linter for the shell's QML types. From the repository root, provide
-the shell's `qs` import namespace and lint all three files:
-
-```sh
-mkdir -p .btrfs-test/qml-imports
-ln -s /usr/share/omarchy/shell .btrfs-test/qml-imports/qs
-TMPDIR="$PWD/.btrfs-test" /usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell \
-  -I "$PWD/.btrfs-test/qml-imports" -I /usr/lib/qt6/qml \
-  Widget.qml LanaiModel.qml LanaiPanel.qml
-rm .btrfs-test/qml-imports/qs
-rmdir .btrfs-test/qml-imports
-```
+Run `test/qml-lint`.
 
 Panel fixtures in `test/panel.bats`,
 `test/panel-jobs.bats` and `test/ui.bats` use a fake CLI and host facts without
@@ -315,7 +306,9 @@ while its own panel is open, and every fifteen seconds otherwise. Direct actions
 are recorded by `lanai ui-run`; setup, snapshots and restores run in session units
 through `lanai ui-job`, with diagnostics in Lanai’s state directory as
 `panel-run.log` and `panel-job.log`. The panel labels these as the button actions
-log and the setup, snapshot and restore log. The Windows window log has its own
+log and the setup, snapshot and restore log. Rapid repeated clicks keep the first
+launch pending. Other controls preserve a failed launch notice until the next
+setup, snapshot or restore starts. The Windows window log has its own
 path; the Windows VM log is in your user journal, under lanai-vm.
 
 Lanai is MIT licensed; see [LICENSE](LICENSE).

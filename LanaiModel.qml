@@ -33,10 +33,12 @@ Item {
   // Commands use literal argv and no deadline. Long work starts a session unit.
   function run(args, longJob) {
     if (actionProcess.running) return
+    var now = Math.floor(Date.now() / 1000)
+    if (longJob && pendingToken && now - pendingAt < 10) return
     var clickToken = token()
-    pendingToken = longJob ? clickToken : ""
-    pendingAt = Math.floor(Date.now() / 1000)
     if (longJob) {
+      pendingToken = clickToken
+      pendingAt = now
       Quickshell.execDetached([cli, "ui-job", clickToken].concat(args))
       refresh(true)
     } else {
