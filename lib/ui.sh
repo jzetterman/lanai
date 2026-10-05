@@ -70,64 +70,149 @@ cmd_settings() {
     "$(jq -nc --argjson m "$mem" --argjson c "$cores" '{memory_gib:$m, cores:$c}')"
 }
 
-# Atomically publish the single panel job's progress or completion.
-panel_job_write() {
+# Atomic result per group; no temporary file is shared between callers.
+panel_result_write() {
   local f tmp
-  f=$(state_dir)/panel-job.json
+  f=$(state_dir)/panel-result-$1.json
+  mkdir -p -- "${f%/*}" || return 1
   tmp=$(mktemp "$f.XXXXXX") || return 1
-  if ! printf '%s\n' "$1" >"$tmp" || ! mv -f -- "$tmp" "$f"; then
-    rm -f -- "$tmp"
-    return 1
+  if ! printf '%s\n' "$2" >"$tmp" || ! mv -f -- "$tmp" "$f"; then
+    rm -f -- "$tmp"; return 1
   fi
 }
 
-# ui-job <token> setup|snapshot|restore [args]: launched with execDetached.
-# This lock survives panel unloading and serializes jobs across all monitors.
-cmd_ui_job() {
-  local token=${1:-} command=${2:-} s out args rc=0 fd
-  if [[ ! $token =~ ^[A-Za-z0-9-]+$ || ! $command =~ ^(setup|snapshot|restore)$ ]]; then
-    emit false "" "Invalid panel job." ""
-    return 2
+# Map only the commands the panel offers to their result group.
+panel_group() {
+  case $1 in
+    start|open|stop|force-stop|notice-seen) echo vm ;;
+    setup|setup-host) echo setup ;;
+    settings) echo settings ;;
+    snapshot|restore) echo snapshots ;;
+    *) return 1 ;;
+  esac
+}
+
+# Small clock seams let fixtures check cadence without waiting ten seconds.
+ui_timestamp() { printf '%s\n' "$EPOCHREALTIME"; }
+ui_now() { printf '%s\n' "$EPOCHSECONDS"; }
+ui_sleep() { sleep "$1"; }
+unit_invocation() { systemctl --user show -p InvocationID --value "$LANAI_UNIT" 2>/dev/null || true; }
+
+# Run a literal command and validate its one JSON reply, logging only stderr.
+ui_call() {
+  local log=$1 out rc=0
+  shift
+  out=$("$LANAI_BIN/lanai" "$@" 2>>"$log") || rc=$?
+  if ! jq -se 'length == 1 and (.[0] | type == "object" and (.ok | type == "boolean"))' <<<"$out" >/dev/null 2>&1; then
+    out=$(jq -nc --argjson rc "$rc" '{ok:false,reason:"invalid-reply",exit:$rc}')
   fi
+  printf '%s\n' "$out"
+}
+
+# Emit the record with the launch arguments; subsequent setup calls are bare.
+ui_record() {
+  local token=$1 command=$2 args=$3 started=$4 invocation=$5 reply=$6 ended=$7
+  jq -nc --arg t "$token" --arg c "$command" --argjson a "$args" --argjson s "$started" \
+    --arg i "$invocation" --argjson r "$reply" --argjson e "$ended" \
+    '{token:$t,command:$c,args:$a,invocation:$i,started:$s} +
+     (if $r == null then {} else {reply:$r} end) + (if $e == null then {} else {ended:$e} end)'
+}
+
+# ui-run has no deadline. Its record uses the invocation at command completion.
+cmd_ui_run() {
+  local token=${1:-} command=${2:-} group args started out s
+  [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(start|open|stop|force-stop|notice-seen|settings|setup-host)$ ]] || {
+    emit false "" "Invalid panel command." ""; return 2;
+  }
+  shift 2
+  group=$(panel_group "$command") args=$(jq -nc '$ARGS.positional' --args -- "$@") started=$(ui_timestamp)
+  umask 077
+  s=$(state_dir); mkdir -p -- "$s"
+  : >"$s/panel-run.log"
+  out=$(ui_call "$s/panel-run.log" "$command" "$@")
+  panel_result_write "$group" "$(ui_record "$token" "$command" "$args" "$started" "$(unit_invocation)" "$out" "$(ui_timestamp)")"
+  jq -c --arg c "$command" '. + {panel_requested: (($c == "start" or $c == "open") and (.ok == false or .last_run == "forced"))}' <<<"$out"
+  # shellcheck disable=SC2034
+  LANAI_EMITTED=1
+}
+
+# Launch the worker in a session unit, independent of the shell/plugin lifetime.
+cmd_ui_job() {
+  local token=${1:-} command=${2:-} v s
+  local -a env=()
+  [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore)$ ]] || {
+    emit false "" "Invalid panel job." ""; return 2;
+  }
+  umask 077
+  s=$(state_dir); mkdir -p -- "$s"
+  for v in WAYLAND_DISPLAY XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME XDG_CACHE_HOME; do
+    [[ -z ${!v:-} ]] || env+=("--setenv=$v=${!v}")
+  done
+  if ! systemd-run --user --collect --quiet --unit="lanai-panel-$token" \
+    --description="Lanai panel operation" --slice=session.slice --expand-environment=no \
+    "${env[@]}" -- "$LANAI_BIN/lanai" ui-job-worker "$@" >>"$s/panel-job.log" 2>&1; then
+    emit false "" "Lanai could not start the panel job." "see the panel job log"; return 1
+  fi
+  emit true "" "Panel job launched." ""
+}
+
+# Wait only for this reply's expected next state; all checks are two seconds apart.
+# A clean step 5 completion and step 6 retries both retain ten-second spacing.
+ui_setup_next() {
+  local reply=$1 invocation=$2 at=$3 st verdict requested="" s
+  s=$(state_dir)
+  while :; do
+    ui_sleep 2
+    st=$(unit_state) || return 1
+    case $(jq -r .step <<<"$reply") in
+      5)
+        case $st in
+          inactive|failed)
+            verdict=$(run_verdict)
+            jq -e --arg i "$invocation" '.completes_step5 and .invocation == $i' <<<"$verdict" >/dev/null || return 1
+            (( $(ui_now) - at < 10 )) || return 0 ;;
+          active|activating|reloading)
+            [[ $(unit_invocation) == "$invocation" ]] || return 1 ;;
+          *) return 1 ;;
+        esac ;;
+      6)
+        [[ $st == active || $st == activating || $st == reloading ]] || return 1
+        [[ $(unit_invocation) == "$invocation" ]] || return 1
+        requested=""
+        [[ ! -f $s/stop-requested ]] || read -r requested _ <"$s/stop-requested" || true
+        [[ $requested != "$invocation" ]] || return 1
+        (( $(ui_now) - at < 10 )) || return 0 ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+# Internal worker: publish started after locking, then following, then ended
+# before releasing. Refused launches leave the owner's record and log untouched.
+cmd_ui_job_worker() {
+  local token=${1:-} command=${2:-} group args s fd out started inv at
+  [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore)$ ]] || {
+    emit false "" "Invalid panel job." ""; return 2;
+  }
   shift 2
   umask 077
-  args=$(jq -nc '$ARGS.positional' --args -- "$@")
-  s=$(state_dir)
-  mkdir -p -- "$s"
+  s=$(state_dir); mkdir -p -- "$s"
   exec {fd}>>"$s/panel-job.lock"
-  if ! flock -n "$fd"; then
-    emit false "" "A panel job is already running." "wait for it to finish"
-    return 1
-  fi
-  panel_job_write "$(jq -nc --arg t "$token" --arg c "$command" --argjson a "$args" '{token:$t, command:$c, args:$a, active:true}')"
-  out=$("$LANAI_BIN/lanai" "$command" "$@" 2>"$s/panel-job.log") || rc=$?
-  if ! jq -se 'length == 1 and (.[0] | type == "object" and (.ok | type == "boolean"))' <<<"$out" >/dev/null 2>&1; then
-    out=$(jq -nc --arg m "Lanai gave no valid reply (exit $rc)." \
-      --arg n "see $s/panel-job.log, then retry" '{ok:false, message:$m, next:$n}')
-  fi
-  panel_job_write "$(jq -nc --arg t "$token" --arg c "$command" --argjson r "$out" --argjson a "$args" \
-    '{token:$t, command:$c, args:$a, active:false, reply:$r}')"
+  if ! flock -w 1 "$fd"; then emit false "" "A panel job is already running." ""; return 1; fi
+  group=$(panel_group "$command") args=$(jq -nc '$ARGS.positional' --args -- "$@") started=$(ui_timestamp)
+  inv=$(unit_invocation)
+  panel_result_write "$group" "$(ui_record "$token" "$command" "$args" "$started" "$inv" null null)"
+  : >"$s/panel-job.log"
+  while :; do
+    out=$(ui_call "$s/panel-job.log" "$command" "$@")
+    inv=$(unit_invocation) at=$(ui_now)
+    panel_result_write "$group" "$(ui_record "$token" "$command" "$args" "$started" "$inv" "$out" null)"
+    if [[ $command != setup ]] || ! jq -e '.ok == true and
+      (.step == "5" or (.step == "6" and ((.questions // []) | length) == 0))' <<<"$out" >/dev/null; then break; fi
+    ui_setup_next "$out" "$inv" "$at" || break
+    set --
+  done
+  panel_result_write "$group" "$(ui_record "$token" "$command" "$args" "$started" "$inv" "$out" "$(ui_timestamp)")"
+  exec {fd}>&-
   emit true "" "Panel job finished." ""
-}
-
-# ui-job-status: bounded, read-only polling; a free lock detects a dead worker.
-cmd_ui_job_status() {
-  local s doc fd
-  s=$(state_dir)
-  if [[ ! -f $s/panel-job.json ]]; then
-    emit true "" "No panel job." "" '{"active":false}'
-    return
-  fi
-  doc=$(jq -ce 'select(type == "object")' "$s/panel-job.json") || return 1
-  if [[ $(jq -r '.active' <<<"$doc") == true ]]; then
-    exec {fd}>>"$s/panel-job.lock"
-    if flock -n "$fd"; then
-      # The worker may have finished after our first read, before releasing its lock.
-      doc=$(jq -ce 'select(type == "object")' "$s/panel-job.json") || return 1
-      if [[ $(jq -r '.active' <<<"$doc") == true ]]; then
-        doc=$(jq -c '. + {active:false, reply:{ok:false, message:"The operation was interrupted.", next:"try again; setup and restore can resume"}}' <<<"$doc")
-      fi
-    fi
-  fi
-  emit true "" "Panel job status." "" "$doc"
 }

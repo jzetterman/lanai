@@ -12,13 +12,17 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   `lanai-vm-helper`, the client unit's `lanai-client-exec`, and `lanai-setup-host`,
   which installs the host packages in a terminal), `Widget.qml` (the bar glyph),
   `LanaiPanel.qml` (setup, VM controls, settings and recovery), `LanaiModel.qml`
-  (polling and detached jobs), `SetupCalls.js` (shared setup retry clock), `lib/` (`client.sh` holds the
+  (panel polling and literal command transport), `lib/` (`panel.sh` holds the
+  read-only panel view and words, `client.sh` holds the
   Looking Glass client code, `setup.sh` the setup flow and setup media, `pins.sh`
-  the pinned downloads, `ui.sh` the settings command and detached panel jobs),
+  the pinned downloads, `ui.sh` the settings command, per-group result records
+  and session-unit panel jobs),
   `systemd/` (the VM unit template), `guest/` (what runs in
   Windows: `setup.cmd`, `lanai-lock.cmd`, `lanai-scale.ps1`) and `test/` (bats; fake
   QMP and guest agent servers and trimmed client logs in `test/fixtures/`).
   `docs/plugin/proof-kit/` holds the phase 1 proof scripts.
+- QML lint: `/usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell <file>` (`/usr/bin/qmllint` is the
+  older Qt 5 linter and rejects Qt 6 syntax).
 - Tests: `bats test spike/test`; btrfs tests read `LANAI_TEST_BTRFS_DIR` (the ignored
   `.btrfs-test/` works). CI runs the same in an Arch container
   (`.github/workflows/test.yml`).

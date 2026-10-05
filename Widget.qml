@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import qs.Commons
 import qs.Ui
@@ -19,8 +20,8 @@ BarWidget {
 
   // A QEMU setup window has no Looking Glass display yet; use the panel instead.
   function primaryClick() {
-    if (model.canStart) model.run(["start"], true)
-    else if (model.canOpen && !model.busy) model.run(["open"], true)
+    if (model.control("start").enable) model.run(["start"], false)
+    else if (model.control("open").enable) model.run(["open"], false)
     else panel.open()
   }
 
@@ -47,7 +48,10 @@ BarWidget {
             textFormat: Text.PlainText
             color: parent.border.color
             font.family: button.fontFamily
+            // Shell style groups expose their fields dynamically.
+            // qmllint disable missing-property
             font.pixelSize: Style.bar.iconFont * 0.7
+            // qmllint enable missing-property
           }
         }
         Rectangle {
@@ -57,9 +61,11 @@ BarWidget {
         }
       }
     }
+    // qmllint disable missing-property
     slotSize: Style.bar.statusSlot
+    // qmllint enable missing-property
     tooltipText: model.tooltip
-    active: model.status.active === true
+    active: model.view.active === true
     activeFocusOnTab: true
     Keys.onReturnPressed: root.primaryClick()
     Keys.onSpacePressed: root.primaryClick()

@@ -75,7 +75,7 @@ Accept the snapshot offer before the first boot, or make a backup and explicitly
 continue without a snapshot. A snapshot shares disk blocks, takes little space
 initially and grows as Windows changes. The panel reports its path and explains
 how to delete the snapshot folder. The list updates after each snapshot or restore
-job. **List snapshots** also refreshes it.
+job, and whenever the panel refreshes.
 Snapshot and restore jobs show a note while they run. You can close the panel
 during a snapshot. Keep Windows off until a restore finishes. Lanai blocks Start
 while a restore is unfinished; use **Finish the unfinished restore** to resume it.
@@ -94,10 +94,10 @@ This PC and check for a drive with the files from Linux's `~/Windows` folder.
 Answer that question and whether text looks the right size. If a setup boot stopped unfinished,
 the panel offers **Set up in QEMU's screen** until the Lanai display driver is installed,
 or **Set up in the Windows window** afterward. Open window is hidden while QEMU's
-setup window is in use. Reopening the panel watches setup that is still running;
-it does not resume setup from a result left by an earlier session. The panel says
+setup window is in use. Setup keeps checking while the panel is closed or the shell restarts.
+Reopening the panel shows the current step and any running operation. The panel says
 setup is finished only when Lanai has recorded its completion for this disk.
-If Lanai stops checking automatically, the panel says so. Click **Continue setup**
+A failed or interrupted operation asks you to continue or retry. Click **Continue setup**
 to go on. After a shell restart, that button checks where setup stands.
 
 ## Daily use
@@ -286,8 +286,28 @@ are stand-ins. Lint with
 docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
 docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga`.
 
-Lint each QML file with `/usr/bin/qmllint -I /usr/share/omarchy/shell -I /usr/lib/qt6/qml
-Widget.qml LanaiModel.qml LanaiPanel.qml SetupCalls.js`. Panel settings/job tests use a fake CLI,
-without sockets or a VM.
+Use Qt 6's linter for the shell's QML types. From the repository root, provide
+the shell's `qs` import namespace and lint all three files:
+
+```sh
+mkdir -p .btrfs-test/qml-imports
+ln -s /usr/share/omarchy/shell .btrfs-test/qml-imports/qs
+TMPDIR="$PWD/.btrfs-test" /usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell \
+  -I "$PWD/.btrfs-test/qml-imports" -I /usr/lib/qt6/qml \
+  Widget.qml LanaiModel.qml LanaiPanel.qml
+rm .btrfs-test/qml-imports/qs
+rmdir .btrfs-test/qml-imports
+```
+
+Panel fixtures in `test/panel.bats`,
+`test/panel-jobs.bats` and `test/ui.bats` use a fake CLI and host facts without
+sockets or a VM. `test/panel-qml.bats` runs the real renderer in Qt 6 with inert
+shell and Process types when Qt 6’s test runner is available. It never starts the
+Omarchy shell. `lanai panel` supplies the complete view, including settings,
+snapshot names and plain-language results; the QML polls every two seconds only
+while its own panel is open, and every fifteen seconds otherwise. Direct actions
+are recorded by `lanai ui-run`; setup, snapshots and restores run in session units
+through `lanai ui-job`, with diagnostics in Lanai’s state directory as
+`panel-run.log` and `panel-job.log`.
 
 Lanai is MIT licensed; see [LICENSE](LICENSE).

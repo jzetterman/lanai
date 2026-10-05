@@ -25,7 +25,7 @@ jobs:
     steps:
       - name: Install packages
         run: >-
-          pacman -Syu --noconfirm bats bats-assert bats-support shellcheck ffmpeg jq nodejs
+          pacman -Syu --noconfirm bats bats-assert bats-support shellcheck ffmpeg jq
           socat e2fsprogs btrfs-progs diffutils qemu-system-x86 qemu-img python
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -24,6 +24,8 @@ source "$LANAI_LIB/client.sh"
 source "$LANAI_LIB/setup.sh"
 # shellcheck source-path=SCRIPTDIR source=ui.sh
 source "$LANAI_LIB/ui.sh"
+# shellcheck source-path=SCRIPTDIR source=panel.sh
+source "$LANAI_LIB/panel.sh"
 
 # --- output ---
 
@@ -578,8 +580,11 @@ share_check() {
 # Return 0 when process <pid> is in a docker container's cgroup: a systemd
 # docker-<id>.scope or a cgroupfs /docker/<id> path. LANAI_PROC swaps /proc.
 in_docker_cgroup() {
-  grep -qE '(^|/)docker-[0-9a-f]+\.scope(/|$)|(^|/)docker/[0-9a-f]+(/|$)' \
-    "${LANAI_PROC:-/proc}/$1/cgroup" 2>/dev/null
+  local line
+  while IFS= read -r line; do
+    [[ $line =~ (^|/)docker-[0-9a-f]+\.scope(/|$) || $line =~ (^|/)docker/[0-9a-f]+(/|$) ]] && return 0
+  done 2>/dev/null <"${LANAI_PROC:-/proc}/$1/cgroup"
+  return 1
 }
 
 # Print the pid of a QEMU running in a Docker container and return 0; return
@@ -761,13 +766,57 @@ helper_alive() {
   stat=$(<"$proc/stat")
   stat=${stat##*) }
   [[ ${stat:0:1} != [ZX] ]] || return 1
-  grep -qE "/${LANAI_UNIT//./\\.}\$" "$proc/cgroup" 2>/dev/null
+  local line
+  while IFS= read -r line; do
+    [[ $line == */"$LANAI_UNIT" ]] && return 0
+  done 2>/dev/null <"$proc/cgroup"
+  return 1
 }
 
 # Return 0 when the last boot asked for QEMU's window (boot.json): a setup
 # boot on a guest without the IDD. Meaningful only while the unit runs.
 boot_window() {
   jq -e '.window == true' "$(state_dir)/boot.json" >/dev/null 2>&1
+}
+
+# Scan cgroups once with builtins; running takes precedence over preparing.
+container_fact() {
+  local f pid arg first preparing=false
+  for f in "${LANAI_PROC:-/proc}"/[0-9]*/cmdline; do
+    pid=${f%/cmdline}; pid=${pid##*/}
+    in_docker_cgroup "$pid" || continue
+    first=true
+    while IFS= read -r -d '' arg; do
+      if $first && [[ ${arg##*/} == qemu-system-x86_64 ]]; then echo running; return; fi
+      first=false
+      [[ $arg != /run/entry.sh ]] || preparing=true
+    done 2>/dev/null <"$f"
+  done
+  if $preparing; then echo preparing; else echo none; fi
+}
+
+# The shared, read-only host facts. An active unit owns the disk lock.
+shared_facts() {
+  local show st=unknown has_state=false line dir="" rc=0 problem="" reason="" container=none
+  show=$(systemctl --user show "$LANAI_UNIT" -p ActiveState -p SubState -p Result \
+    -p InvocationID -p ExecMainStatus 2>/dev/null) || show=ActiveState=unknown
+  while IFS= read -r line; do
+    if [[ $line == ActiveState=* ]]; then st=${line#*=}; has_state=true; fi
+  done <<<"$show"
+  # Keep the value-only unit-state query as a fallback when the property
+  # response omits ActiveState. Never treat an absent state as a stopped VM.
+  if ! $has_state; then
+    st=$(unit_state) || st=unknown
+    show+=$'\n'"ActiveState=$st"
+  fi
+  if ! dir=$(storage_dir 2>/dev/null); then reason=settings
+  else problem=$(layout_check "$dir") || rc=$?; fi
+  [[ $rc == 0 ]] || reason=layout
+  case $st in active|activating|deactivating|reloading) ;; *) container=$(container_fact) ;; esac
+  printf '%s\n' "$show" "LanaiStorage=$dir" "LanaiProblem=${problem//$'\n'/; }" \
+    "LanaiProblemReason=$reason" "LanaiContainer=$container"
+  if ((rc == 2)); then echo LanaiInstall=none; else echo LanaiInstall=present; fi
+  if restore_pending >/dev/null; then echo LanaiRestorePending=true; else echo LanaiRestorePending=false; fi
 }
 
 # Print the facts lanai status maps to a state, as Key=Value lines: the
@@ -782,29 +831,15 @@ boot_window() {
 # build. QMP is asked on qmp-cli.sock, in one short session. It also
 # records the guest version the client log names (guest_version_set).
 status_facts() {
-  local show active inv dir rc s run out name missing="" rinv at version=unknown old="" first=""
-  show=$(systemctl --user show "$LANAI_UNIT" -p ActiveState -p SubState -p Result \
-    -p InvocationID -p ExecMainStatus 2>/dev/null) || show=ActiveState=unknown
+  local show active inv s run out name missing="" rinv at version=unknown old="" first=""
+  show=${1:-$(shared_facts)}
   printf '%s\n' "$show"
   active=$(sed -n 's/^ActiveState=//p' <<<"$show")
   inv=$(sed -n 's/^InvocationID=//p' <<<"$show")
   s=$(state_dir)
-  rc=0
-  if dir=$(storage_dir 2>/dev/null); then
-    layout_check "$dir" >/dev/null || rc=$?
-  fi
-  if ((rc == 2)); then echo LanaiInstall=none; else echo LanaiInstall=present; fi
   if setup_done; then echo LanaiSetup=done; else echo LanaiSetup=needed; fi
-  if container_running >/dev/null; then
-    echo LanaiContainer=running
-  elif container_preparing; then
-    echo LanaiContainer=preparing
-  else
-    echo LanaiContainer=none
-  fi
   [[ ! -e $s/forced ]] || echo LanaiForced=yes
   [[ ! -f $s/last-run ]] || echo "LanaiLastRun=$(<"$s/last-run")"
-  if restore_pending >/dev/null; then echo LanaiRestorePending=true; fi
   if [[ $active == active || $active == reloading ]] && boot_window; then
     echo LanaiWindow=true
   fi
@@ -1386,6 +1421,13 @@ setup_command() {
         ;;
       setup-boot)
         out=$(setup_guest "$window") || rc=$?
+        if ((rc == 0)) && [[ $(jq -r '.window' <<<"$out") == false ]]; then
+          local client
+          if ! client=$(build_select) || ! client_start "$client" >&2; then
+            setup_reply false 5 "Lanai could not open the Windows window." "see the client log" '{"reason":"client"}'
+            return 1
+          fi
+        fi
         setup_with_step 5 "In Windows, open Lanai's setup drive and run setup.cmd; Windows shuts down by itself when it finishes." <<<"$out" ||
           return 1
         return "$rc"
@@ -1393,7 +1435,10 @@ setup_command() {
       normal-boot)
         out=$(boot_vm false auto true) || rc=$?
         # Step 6 checks the IDD with the pinned client, not build_select's.
-        ((rc != 0)) || client_start "$(pinned_client)" >&2 || true
+        if ((rc == 0)) && ! client_start "$(pinned_client)" >&2; then
+          setup_reply false 6 "Lanai could not open the Windows window." "see the client log" '{"reason":"client"}'
+          return 1
+        fi
         setup_with_step 6 "Lanai checks each part once it has booted; run setup again in a moment." <<<"$out" ||
           return 1
         return "$rc"
@@ -1460,7 +1505,7 @@ cmd_snapshot() {
   if ((rc == 3)); then
     dir=$(storage_dir) || dir="the storage location"
     emit false "" "$out Lanai cannot make an instant snapshot on this filesystem." \
-      "make a backup of $dir before Lanai's first boot"
+      "make a backup of $dir before Lanai's first boot" '{ "reason":"snapshot-unsupported" }'
     return 1
   elif ((rc != 0)); then
     emit false "" "$out" ""
@@ -1476,7 +1521,7 @@ cmd_snapshot() {
 cmd_snapshots() {
   local dir list count noun=snapshots
   dir=$(storage_dir) || return 1
-  list=$(snapshot_list "$dir" | jq -R . | jq -s -c .)
+  list=$(snapshot_list "$dir" | jq -R . | jq -s -c .) || return 1
   count=$(jq -r 'length' <<<"$list")
   ((count != 1)) || noun=snapshot
   emit true "" "$count $noun" "" "{\"snapshots\": $list}"
