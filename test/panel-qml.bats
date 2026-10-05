@@ -278,6 +278,34 @@ TestCase {
     compare(poll.command.slice(-3)[0], '--pending')
     compare(poll.command.slice(-2)[0], model.pendingToken)
   }
+  function test_both_monitors_acknowledge_launches_before_record_replacement() {
+    var first = createTemporaryObject(modelComponent, tests)
+    var second = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(first); ready(second)
+    first.run(['setup', '--window'], true)
+    var firstToken = first.pendingToken
+    var firstPoll = process(first, 'timeout')
+    firstPoll.complete(JSON.stringify({ok:true,pending_ack:firstToken,buttons:{}}), 0)
+    compare(first.pendingToken, '')
+    second.run(['setup', '--no-window'], true)
+    var secondToken = second.pendingToken
+    var secondPoll = process(second, 'timeout')
+    // Seeing another bar's record does not acknowledge this launch.
+    secondPoll.complete(JSON.stringify({ok:true,pending_ack:firstToken,buttons:{}}), 0)
+    compare(second.pendingToken, secondToken)
+    second.refresh()
+    secondPoll.complete(JSON.stringify({ok:true,pending_ack:secondToken,buttons:{}}), 0)
+    compare(second.pendingToken, '')
+    // The group's record now belongs to the second launch. Neither monitor
+    // keeps asking whether its acknowledged token is still on disk.
+    first.refresh(); second.refresh()
+    compare(firstPoll.command.indexOf('--pending'), -1)
+    compare(secondPoll.command.indexOf('--pending'), -1)
+    firstPoll.complete(JSON.stringify({ok:true,pending_ack:'',buttons:{}}), 0)
+    secondPoll.complete(JSON.stringify({ok:true,pending_ack:'',buttons:{}}), 0)
+    compare(first.pendingToken, '')
+    compare(second.pendingToken, '')
+  }
   function test_force_stop_two_clicks() {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)

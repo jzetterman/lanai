@@ -364,6 +364,34 @@ ended() {
   exec {fd}>&-
 }
 
+@test "panel records: each monitor acknowledges its launch before another replaces the group record" {
+  local first=monitor-first second=monitor-second at
+  at=$((EPOCHSECONDS - 11))
+  run cmd_panel --pending "$first" "$at"
+  assert_success
+  assert_equal "$(jq -r .pending_ack <<<"$output")" ''
+  assert_output --partial 'did not start'
+  panel_result_write setup '{"token":"monitor-first","command":"setup","started":1,"ended":2,"reply":{"ok":true,"step":"7"}}'
+  run cmd_panel --pending "$first" "$at"
+  assert_success
+  assert_equal "$(jq -r .pending_ack <<<"$output")" "$first"
+  refute_output --partial 'did not start'
+  # The renderer clears this monitor's pending token on acknowledgment.
+  first=$(jq -r --arg t "$first" 'if .pending_ack == $t then "" else $t end' <<<"$output")
+  panel_result_write setup '{"token":"monitor-second","command":"setup","started":3,"ended":4,"reply":{"ok":true,"step":"7"}}'
+  run cmd_panel --pending "$second" "$at"
+  assert_success
+  assert_equal "$(jq -r .pending_ack <<<"$output")" "$second"
+  refute_output --partial 'did not start'
+  assert_equal "$first" ''
+  run cmd_panel
+  assert_success
+  refute_output --partial 'did not start'
+  # An unrelated launch still needs its own record; no blanket acknowledgment.
+  run cmd_panel --pending never "$at"
+  assert_output --partial 'did not start'
+}
+
 @test "client stamp: read-only stamp check does not execute binary and pruning removes stamps with builds" {
   unset -f build_stamp_current
   # Restore just the real function, keeping all fixtures isolated.
@@ -592,6 +620,9 @@ ended() {
 
 @test "client stamp: an installed unstamped client takes a quick build check before setup continues" {
   source "$REPO/lib/client.sh"
+  # Sourcing lib/client.sh again replaces setup()'s package stub with the real
+  # check, which depends on the host's packages (CI lacks them).
+  host_packages_missing() { :; }
   local d
   d=$(client_builds)/$LG_BUILD
   mkdir -p "$d/bin"
@@ -654,6 +685,7 @@ ended() {
   unit_invocation() { echo "$INV"; }
   ui_sleep() { :; }
   ui_now() { echo 110; }
+  systemctl() { [[ $* == '--user is-active --quiet graphical-session.target' ]]; }
   ui_setup_next '{"ok":true,"step":"6"}' inv 100
   # The unit exits between the worker deciding and setup taking its lock.
   ST=inactive

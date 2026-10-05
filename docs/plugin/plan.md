@@ -1409,10 +1409,15 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   rechecks that expectation under its operation lock before bookkeeping or any
   action; stale expectations return an inert reply, covering the stop race
   between the worker probe and setup's fact gather. A clean automatic setup
-  shutdown advances once, while panel shutdown, force stop, invocation changes, failures and terminal replies end
+  shutdown advances once; a deactivating unit keeps the worker waiting until
+  inactive or failed, before it evaluates the ended run. Panel shutdown,
+  force stop, invocation changes, failures and terminal replies end
   following. Step 6 also checks matching stop requests. Long jobs run through
-  `systemd-run --user --collect` in `session.slice` and hold `panel-job.lock`.
-  Closing the panel or reloading the shell does not end them. Client-mode setup
+  `systemd-run --user --collect` in `session.slice`, with
+  `PartOf=graphical-session.target` and `After=graphical-session.target`, and
+  hold `panel-job.lock`. The setup worker checks that target is active before
+  every setup call and during waits; logout ends following even with lingering
+  enabled. Closing the panel or reloading the shell does not end them. Client-mode setup
   boots start the selected client themselves; step 6 starts the pinned client.
 - **Records:** `ui-run` records direct actions when they end, with the current
   invocation and stderr in `panel-run.log`. `ui-job` serializes setup, snapshot
@@ -1424,7 +1429,11 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   throughout the reads. Concurrent bars do not report each other as workers;
   unfinished records without a held lock become interrupted. Interrupted setup
   always offers Continue setup. A pending token with no record after ten seconds
-  reports a launch failure. High-resolution start times select the newest
+  reports a launch failure. The view returns `pending_ack` when that token's
+  record appears; its bar clears the pending token, so a later action from
+  another bar replacing the group's record cannot revive a launch failure.
+  Backend and QML tests cover both monitors' launch/acknowledgment sequence.
+  High-resolution start times select the newest
   outstanding record when an older interrupted record belongs to another group.
   The old `panel-job.json` and `ui-job-status` path is removed.
 - **Runtime updates:** the stable runtime revision combines `LANAI_VERSION`
@@ -1470,13 +1479,17 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   `ComponentBehavior: Bound`; Qt 6 lint is authoritative, since this machine's
   legacy `/usr/bin/qmllint` (1.0) exits silently on that pragma. No other amendment
   departures are intended.
-- **Validation:** tests were added before implementation. All 54 tests in
+- **Validation:** tests were added before implementation. All 65 tests in
   `test/panel.bats`, `test/panel-jobs.bats`, `test/panel-qml.bats` and `test/ui.bats`
   pass. The QML test loads the real files with inert shell/Process types and checks
   both monitors' polling cadence, refresh races, direct and detached literal
   arguments, launch tracking, settings edits with a real Qt SpinBox and keyboard
   input across polls, failed/successful saves and reopen, both repair display
-  choices with their hints, and both confirmations. The setup regression also
+  choices with their hints, and both confirmations. Launch acknowledgment is
+  tested across both monitors before one replaces the other's group record.
+  Worker tests check the graphical-session unit properties, refusal outside
+  the session, logout during a wait and after its probe, and step 5 waiting
+  through deactivation before checking the ended run. The setup regression also
   checks both failed snapshot-decision writes (taken and declined) and both
   explicit displays after finished setup. Socket-free selections also pass in
   `test/lanai.bats`, `test/checks.bats`, `test/vm.bats`,

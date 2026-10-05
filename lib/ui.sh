@@ -150,6 +150,7 @@ cmd_ui_job() {
   done
   if ! systemd-run --user --collect --quiet --unit="lanai-panel-$token" \
     --description="Lanai panel operation" --slice=session.slice --expand-environment=no \
+    -p PartOf=graphical-session.target -p After=graphical-session.target \
     "${env[@]}" -- "$LANAI_BIN/lanai" ui-job-worker "$@" >>"$s/panel-job.log" 2>&1; then
     emit false "" "Lanai could not start the panel job." "see the panel job log"; return 1
   fi
@@ -163,6 +164,7 @@ ui_setup_next() {
   s=$(state_dir)
   while :; do
     ui_sleep 2
+    systemctl --user is-active --quiet graphical-session.target || return 1
     st=$(unit_state) || return 1
     case $(jq -r .step <<<"$reply") in
       5)
@@ -171,7 +173,7 @@ ui_setup_next() {
             verdict=$(run_verdict)
             jq -e --arg i "$invocation" '.completes_step5 and .invocation == $i' <<<"$verdict" >/dev/null || return 1
             (( $(ui_now) - at < 10 )) || return 0 ;;
-          active|activating|reloading)
+          active|activating|reloading|deactivating)
             [[ $(unit_invocation) == "$invocation" ]] || return 1 ;;
           *) return 1 ;;
         esac ;;
@@ -204,6 +206,12 @@ cmd_ui_job_worker() {
   panel_result_write "$group" "$(ui_record "$token" "$command" "$args" "$started" "$inv" null null)"
   : >"$s/panel-job.log"
   while :; do
+    # Lingering keeps the user manager alive after logout. Never let an old
+    # setup worker enter a call that could boot Windows outside its session.
+    if [[ $command == setup ]] && ! systemctl --user is-active --quiet graphical-session.target; then
+      out=${out:-'{"ok":true,"follow_stopped":true}'}
+      break
+    fi
     out=$(ui_call "$s/panel-job.log" "$command" "$@")
     inv=$(unit_invocation) at=$(ui_now)
     panel_result_write "$group" "$(ui_record "$token" "$command" "$args" "$started" "$inv" "$out" null)"

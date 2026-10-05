@@ -13,6 +13,12 @@ setup() {
   echo 100 >"$T/now"
   echo 0 >"$T/count"
   echo active >"$T/unit"
+  echo active >"$T/session"
+  systemctl() {
+    printf '%s\n' "$*" >>"$T/systemctl.calls"
+    [[ $* == '--user is-active --quiet graphical-session.target' ]] || return 1
+    [[ $(cat "$T/session") == active ]]
+  }
   ui_timestamp() { ui_now; }
   ui_now() { cat "$T/now"; }
   ui_sleep() {
@@ -51,7 +57,61 @@ SH
   assert_output --partial -- '--user'
   assert_output --partial -- '--collect'
   assert_output --partial -- '--slice=session.slice'
+  assert_output --partial $'-p\nPartOf=graphical-session.target'
+  assert_output --partial $'-p\nAfter=graphical-session.target'
   assert_output --partial $'ui-job-worker\nlaunch\nsetup\n--window'
+}
+
+@test "ui job: setup never starts outside the graphical session" {
+  echo inactive >"$T/session"
+  run cmd_ui_job_worker token setup --window
+  assert_success
+  assert_equal "$(cat "$T/count")" 0
+  assert [ ! -e "$T/calls" ]
+  assert [ -n "$(jq -r '.ended // empty' "$S/panel-result-setup.json")" ]
+  run cat "$T/systemctl.calls"
+  assert_output --partial '--user is-active --quiet graphical-session.target'
+}
+
+@test "ui job: logout during a wait ends following even with a live VM" {
+  export MODE=step6
+  ui_sleep() {
+    echo "$(( $(ui_now) + $1 ))" >"$T/now"
+    echo inactive >"$T/session"
+  }
+  run cmd_ui_job_worker token setup
+  assert_success
+  assert_equal "$(cat "$T/count")" 1
+  assert_equal "$(cat "$T/unit")" active
+  assert [ -n "$(jq -r '.ended // empty' "$S/panel-result-setup.json")" ]
+}
+
+@test "ui job: logout after the wait probe prevents the next setup call" {
+  export MODE=step6
+  ui_setup_next() { echo inactive >"$T/session"; }
+  run cmd_ui_job_worker token setup
+  assert_success
+  assert_equal "$(cat "$T/count")" 1
+  assert_equal "$(grep -c 'is-active' "$T/systemctl.calls")" 2
+}
+
+@test "ui job: step 5 waits through ExecStop before evaluating the ended run" {
+  export MODE=step5
+  eval "$(declare -f ui_sleep | sed '1s/ui_sleep/fixture_sleep/')"
+  ui_sleep() {
+    fixture_sleep "$1"
+    if (( $(ui_now) < 112 )); then echo deactivating >"$T/unit"; fi
+  }
+  eval "$(declare -f run_verdict | sed '1s/run_verdict/fixture_verdict/')"
+  run_verdict() {
+    printf '%s\n' "$(unit_state)" >>"$T/verdict-states"
+    fixture_verdict
+  }
+  run cmd_ui_job_worker token setup --window
+  assert_success
+  assert_equal "$(cat "$T/calls")" $'setup --window\nsetup --follow 5 inv'
+  assert_equal "$(cat "$T/times")" $'100\n112'
+  assert_equal "$(cat "$T/verdict-states")" inactive
 }
 
 @test "ui job: step 5 follows clean shutdown once with guarded setup and ten second spacing" {

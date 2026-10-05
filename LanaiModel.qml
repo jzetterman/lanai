@@ -68,6 +68,7 @@ Item {
       try {
         var reply = JSON.parse(panelOutput.text)
         if (code !== 0 || reply.ok !== true) throw new Error("unreadable view")
+        if (reply.pending_ack === root.pendingToken) root.pendingToken = ""
         root.view = reply
       } catch (_) {
         root.view = {label: "Unavailable", headline: "Lanai could not check Windows", cause: "The status check did not finish or its reply could not be read.", next: "Try again in a few seconds, then check the logs if it continues.", buttons: {}, setup: {}, result: {}, settings: {}, snapshots: {names: []}, logs: {}}

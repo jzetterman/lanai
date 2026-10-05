@@ -135,6 +135,7 @@ cmd_panel() {
     ($st.active|not) as $off | ($st.state != "in-use") as $available |
     ($off and $available and ($st.restore_pending|not)) as $idle |
     {ok:true,state:$st.state,active:$st.active,label:$w[0],headline:$w[1],cause:$w[2],next:$w[3],
+     pending_ack:(if $seen then $token else "" end),
      notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:$snaps,
      busy:{active:$busy,line:(if $rec.held and $job.reply and $job.command == "setup" then "Checking Windows. You can close this panel."
        elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes."}[$job.command] // "Starting the operation.") else "" end)},
