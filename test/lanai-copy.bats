@@ -442,3 +442,61 @@ EOF
   assert [ ! -e "$T/fs/dst.partial" ]
   vm_can_open "$T/fs/src/data.img"
 }
+
+@test "generic manifest: hashes the image beyond the adoption prefix for lanai-copy" {
+  local before after
+  mkdir "$T/tree"
+  truncate -s 1M "$T/tree/data.img"
+  printf LANAI | dd of="$T/tree/data.img" conv=notrunc status=none
+  before=$(tree_manifest "$T/tree")
+  printf changed | dd of="$T/tree/data.img" bs=1 seek=900000 conv=notrunc status=none
+  after=$(tree_manifest "$T/tree")
+  assert [ "$before" != "$after" ]
+  assert_equal "$(awk '{print $3}' <<<"$after")" "$(sha256sum <"$T/tree/data.img" | cut -d ' ' -f1)"
+}
+
+@test "ficlone new: real EXDEV signals root fallback and an existing destination keeps its inode" {
+  btrfs_tmp
+  head -c 1M /dev/urandom >"$B/source"
+  [[ $(stat -f -c %T "$T") != btrfs ]] || skip "temp and fixture folders are both btrfs"
+  run python3 "$REPO/lib/ficlone.py" --new "$B/source" "$T/new.img"
+  assert_equal "$status" 3
+  echo contender >"$B/destination"
+  local inode
+  inode=$(stat -c %i "$B/destination")
+  run python3 "$REPO/lib/ficlone.py" --new "$B/source" "$B/destination"
+  assert_failure
+  assert_equal "$(stat -c %i "$B/destination")" "$inode"
+  assert_equal "$(<"$B/destination")" contender
+}
+
+@test "ficlone new: only EXDEV and EINVAL allow another snapshot root" {
+  btrfs_tmp
+  head -c 1M /dev/urandom >"$B/source"
+  local error expected
+  for error in EXDEV EINVAL ENOSPC EIO; do
+    rm -f "$B/destination"
+    expected=1
+    [[ $error != EXDEV && $error != EINVAL ]] || expected=3
+    run python3 - "$REPO/lib/ficlone.py" "$B/source" "$B/destination" "$error" <<'PY'
+import errno
+import importlib.util
+import sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("ficlone", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+actual_ioctl = module.fcntl.ioctl
+
+def failing_clone(fd, request, *args):
+    if request == module.FICLONE:
+        raise OSError(getattr(errno, sys.argv[4]), "clone error fixture")
+    return actual_ioctl(fd, request, *args)
+
+module.fcntl.ioctl = failing_clone
+sys.exit(module.main([sys.argv[1], "--new", sys.argv[2], sys.argv[3]]))
+PY
+    assert_equal "$status" "$expected"
+    assert_output --partial "clone error fixture"
+  done
+}

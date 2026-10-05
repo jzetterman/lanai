@@ -26,7 +26,7 @@ jobs:
       - name: Install packages
         run: >-
           pacman -Syu --noconfirm bats bats-assert bats-support shellcheck ffmpeg jq
-          socat e2fsprogs btrfs-progs diffutils qemu-system-x86 qemu-img python
+          socat e2fsprogs btrfs-progs diffutils qemu-system-x86 qemu-img python strace
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -41,7 +41,7 @@ jobs:
           mount -o loop /tmp/btrfs.img /mnt/btrfs
           install -d -o tester /mnt/btrfs/lanai-test
           runuser -u tester -- env HOME=/home/tester XDG_RUNTIME_DIR=/tmp/run-tester \
-            LANAI_TEST_BTRFS_DIR=/mnt/btrfs/lanai-test BATS_TEST_TIMEOUT=120 bats test spike/test
+            LANAI_TEST_BTRFS_DIR=/mnt/btrfs/lanai-test LANAI_REQUIRE_BTRFS=1 BATS_TEST_TIMEOUT=120 bats test spike/test
       - name: shellcheck
         run: >-
           shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash

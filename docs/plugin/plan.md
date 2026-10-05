@@ -1711,6 +1711,22 @@ The orchestrator runs the gate; delegates run no review stage.
 
 ### As built (2026-10-05)
 
+- **Phase B, snapshot and restore:** FIEMAP gates btrfs images and proves equal
+  shared maps before and after the one image hash, with a final map after restore
+  FICLONE. Small files are verified before replacement; deleted disks publish the
+  locked inode with renameat2 no-replace and install boot files before hashing,
+  using John's approved req 7 exception. CLI and panel operations publish phases,
+  byte progress and owner under the operation lock; QML renders the percentage.
+  Real normal, NOCOW, compressed, mixed and UNWRITTEN mutation fixtures cover the
+  proof, plus sparse pagination, recovery and publication races. CI requires btrfs
+  and strace; the read-budget test includes concurrent panel polls. Deviation:
+  this PID namespace hides /proc/locks entries after external flock exits even
+  while the lock remains held. In that case the reader checks the matching
+  owner's kernel FLOCK entry in /proc/<pid>/fdinfo, without probing the lock.
+  The existing read-only extent census gains map timing and JSON output; no
+  duplicate script was needed. Local strace measurement skips when unavailable;
+  John's rehearsal-image timing and container-start check remain manual proofs.
+
 - **During setup:** Start and Open hide only before setup has finished for the
   current storage location or while a setup boot or final check boot is active.
   Working installs keep their daily controls beside pending build, driver and

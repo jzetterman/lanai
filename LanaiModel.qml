@@ -7,7 +7,7 @@ Item {
   id: root
   property bool panelOpen: false
   readonly property string cli: decodeURIComponent(Qt.resolvedUrl("bin/lanai").toString().replace(/^file:\/\//, ""))
-  property var view: ({label: "Checking", headline: "Checking Windows", buttons: {}, setup: {}, result: {}, settings: {}, snapshots: {names: []}, logs: {}})
+  property var view: ({label: "Checking", headline: "Checking Windows", progress: null, buttons: {}, setup: {}, result: {}, settings: {}, snapshots: {names: []}, logs: {}})
   property string pendingToken: ""
   property double pendingAt: 0
   property bool refreshAgain: false
@@ -73,7 +73,7 @@ Item {
         if (reply.pending_ack === root.pendingToken) root.pendingToken = ""
         root.view = reply
       } catch (_) {
-        root.view = {label: "Unavailable", headline: "Lanai could not check Windows", cause: "The status check did not finish or its reply could not be read.", next: "Try again in a few seconds, then check the logs if it continues.", buttons: {}, setup: {}, result: {}, settings: {}, snapshots: {names: []}, logs: {}}
+        root.view = {label: "Unavailable", headline: "Lanai could not check Windows", cause: "The status check did not finish or its reply could not be read.", next: "Try again in a few seconds, then check the logs if it continues.", progress: null, buttons: {}, setup: {}, result: {}, settings: {}, snapshots: {names: []}, logs: {}}
       }
     }
   }

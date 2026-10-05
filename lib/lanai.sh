@@ -152,6 +152,22 @@ disk_locked() {
     END { exit !found }' "$locks"
 }
 
+# The operation lock can be held by external flock even after that helper exits.
+# Match the inode and mount device; never compare its recorded pid with an owner.
+image_lock_held() {
+  local path dev ino maj min
+  path=$(state_dir)/lock
+  [[ -f $path ]] || return 1
+  ino=$(stat -c %i -- "$path") || return 1
+  dev=$(mount_dev "$path") || return 1
+  IFS=: read -r maj min <<<"$dev"
+  dev=$(printf '%02x:%02x' "$maj" "$min")
+  awk -v want="$dev:$ino" '$2 == "FLOCK" {for (i=1;i<=NF;i++) if ($i == want) found=1}
+    END {exit !found}' /proc/locks && return 0
+  # A PID namespace may hide an exited external flock creator's record.
+  [[ $(python3 "$LANAI_LIB/image-proof.py" activity "$path" "$(state_dir)/image-progress.json") != null ]]
+}
+
 # --- adoption checks and settings (plan phase 3) ---
 
 # Print the path of Lanai's settings file.
@@ -471,7 +487,7 @@ layout_check() {
       problems+=("data.img is missing or empty; dockur would install Windows on a new disk")
   elif (($(stat -c %s -- "$dir/data.img") < 102400)); then
     problems+=("data.img is smaller than 100 KB, so it is not a Windows disk")
-  else
+  elif [[ ${2:-} != structural ]]; then
     # dockur's hasData: a disk whose first 100 KiB are zero counts as blank.
     # cmp: 0 = all zero, 1 = data; anything else (cmp missing, the disk
     # unreadable) fails closed.
@@ -810,7 +826,10 @@ shared_facts() {
     show+=$'\n'"ActiveState=$st"
   fi
   if ! dir=$(storage_dir 2>/dev/null); then reason=settings
-  else problem=$(layout_check "$dir") || rc=$?; fi
+  else
+    if image_lock_held; then problem=$(layout_check "$dir" structural) || rc=$?
+    else problem=$(layout_check "$dir") || rc=$?; fi
+  fi
   case $rc in 0) ;; 2) reason=missing ;; *) reason=layout ;; esac
   case $st in active|activating|deactivating|reloading) ;; *) container=$(container_fact) ;; esac
   printf '%s\n' "$show" "LanaiStorage=$dir" "LanaiProblem=${problem//$'\n'/; }" \
@@ -1519,7 +1538,7 @@ cmd_snapshot() {
     emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
     return 1
   fi
-  out=$(snapshot_create) || rc=$?
+  out=$(image_operation snapshot snapshot_create) || rc=$?
   if ((rc == 3)); then
     dir=$(storage_dir) || dir="the storage location"
     emit false "" "$out Lanai cannot make an instant snapshot on this filesystem." \
@@ -1551,12 +1570,17 @@ cmd_snapshots() {
 # setup starts again at step 1 (setup_reset): the disk may predate any
 # Lanai boot, and setup is safe to rerun on a later one.
 cmd_restore() {
-  local out
+  local out rc=0 dir
   if ! lanai_flock; then
     emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
     return 1
   fi
-  if ! out=$(snapshot_restore "${1:-}"); then
+  out=$(image_operation restore snapshot_restore "${1:-}") || rc=$?
+  if ((rc == 3)); then
+    dir=$(storage_dir) || dir="the storage location"
+    emit false "" "$out" "make a backup of $dir" '{"reason":"snapshot-unsupported"}'
+    return 1
+  elif ((rc != 0)); then
     emit false "" "$out" ""
     return 1
   fi

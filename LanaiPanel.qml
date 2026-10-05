@@ -223,6 +223,18 @@ Panel {
             PanelSectionHeader { text: "Snapshots"; foreground: root.foreground; fontFamily: root.fontFamily }
             Note { text: root.model.view.snapshots.line || "" }
             Note { text: root.model.view.snapshots.error || "" }
+            QQC.ProgressBar {
+              objectName: "imageProgress"
+              width: parent.width
+              visible: root.model.view.progress != null
+              from: 0
+              to: 100
+              value: root.model.view.progress ? root.model.view.progress.percent : 0
+            }
+            Note {
+              objectName: "imageProgressText"
+              text: root.model.view.progress ? root.model.view.progress.label + " — " + root.model.view.progress.percent + "%" : ""
+            }
             Flow {
               width: parent.width
               spacing: Style.space(6)

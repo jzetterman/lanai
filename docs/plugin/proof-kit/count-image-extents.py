@@ -13,9 +13,11 @@ the output in docs/plugin/proofs.md. Agents never run it on ~/.windows.
 import collections
 import ctypes
 import fcntl
+import json
 import os
 import struct
 import sys
+import time
 
 FS_IOC_FIEMAP = 0xC020660B
 FS_IOC_GETFLAGS = 0x80086601
@@ -31,7 +33,7 @@ FLAGS = {
     0x800: "unwritten", 0x1000: "merged", 0x2000: "shared",
 }
 # Flags that say nothing about how the data is stored.
-IGNORED = 0x1 | 0x1000 | 0x2000
+IGNORED = 0x1 | 0x2000
 
 
 def fs_type(path):
@@ -79,6 +81,9 @@ def name(flags):
 
 
 def main(argv):
+    as_json = len(argv) == 3 and argv[1] == "--json"
+    if as_json:
+        argv = [argv[0], argv[2]]
     if len(argv) != 2:
         print("usage: count-image-extents.py <image>", file=sys.stderr)
         return 2
@@ -89,11 +94,18 @@ def main(argv):
         counts = collections.Counter()
         sizes = collections.Counter()
         shared = 0
+        started = time.monotonic()
         for _, _, length, flags in extents(fd):
             key = name(flags)
             counts[key] += 1
             sizes[key] += length
             shared += length if flags & 0x2000 else 0
+        elapsed = time.monotonic() - started
+        if as_json:
+            print(json.dumps({"size": size, "classes": dict(counts), "bytes": dict(sizes),
+                              "nocow": nocow(fd), "map_seconds": elapsed}))
+            return 0
+        print(f"map time: {elapsed:.6f} seconds")
         print(f"file: {argv[1]}")
         print(f"filesystem: {'btrfs' if kind == BTRFS_MAGIC else hex(kind)}")
         print(f"nocow: {nocow(fd)}")

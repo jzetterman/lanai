@@ -58,7 +58,7 @@ plain_cp() {
 reflink=0
 for a; do if [[ $a == --reflink=always ]]; then reflink=1; else args+=("$a"); fi; done
 src=${args[-2]} dst=${args[-1]}
-if [[ -e $T/probe-lock && ( ${src##*/} == data.img || ${dst##*/} == .lanai-restore.* ) ]]; then
+if [[ -e $T/probe-lock && ( ${dst} == *.partial/* || ${dst##*/} == .lanai-restore.* ) ]]; then
   rc=0
   timeout 2 qemu-system-x86_64 -S -nodefaults -display none -machine q35,accel=tcg \
     -drive "file=$STORE/data.img,format=raw,if=none,id=d" -device virtio-scsi-pci \
@@ -106,12 +106,15 @@ take_snapshot() {
 # --- refusals, on any filesystem ---
 
 @test "snapshot and restore refuse while Lanai's VM runs, changing nothing" {
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   take_snapshot
-  echo changed >"$T/win/windows.vars"
+  echo changed >"$B/win/windows.vars"
   local before
-  before=$(tree_manifest "$T/win")
+  before=$(tree_manifest "$B/win")
   echo active >"$T/unit-state"
   lanai_run snapshot
   assert_failure
@@ -120,16 +123,19 @@ take_snapshot() {
   assert_failure
   assert_equal "$(field message)" "Windows is running under Lanai. Shut it down first."
   assert [ ! -e "$S/restore-in-progress" ]
-  assert_equal "$(tree_manifest "$T/win")" "$before"
+  assert_equal "$(tree_manifest "$B/win")" "$before"
 }
 
 @test "snapshot and restore refuse while the container VM runs or prepares, changing nothing" {
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   take_snapshot
-  echo changed >"$T/win/windows.vars"
+  echo changed >"$B/win/windows.vars"
   local before
-  before=$(tree_manifest "$T/win")
+  before=$(tree_manifest "$B/win")
   fake_proc 700 "$DOCKER_SCOPE" /usr/bin/qemu-system-x86_64
   lanai_run snapshot
   assert_failure
@@ -148,7 +154,7 @@ take_snapshot() {
   lanai_run restore "$NAME"
   assert_failure
   assert [ ! -e "$S/restore-in-progress" ]
-  assert_equal "$(tree_manifest "$T/win")" "$before"
+  assert_equal "$(tree_manifest "$B/win")" "$before"
 }
 
 @test "snapshot refuses when the user manager does not answer" {
@@ -207,55 +213,55 @@ take_snapshot() {
 }
 
 @test "snapshot and restore hold the disk lock while they copy, then release it" {
-  need_no_reflink
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   : >"$T/probe-lock"
   take_snapshot
   # During the copy no VM could open the disk; afterwards one can.
-  assert_equal "$(<"$T/vm-open")" 1
-  vm_can_open "$T/win/data.img" || fail "the lock outlived the snapshot"
+  run sort -u "$T/vm-open"
+  assert_output 1
+  vm_can_open "$B/win/data.img" || fail "the lock outlived the snapshot"
   # The snapshot still matches its source, and names it.
-  assert_equal "$(<"$SNAP/COMPLETE")" "$(tree_manifest "$T/win")"
-  assert_equal "$(<"$SNAP/SOURCE")" "$T/win"
-  # Restore: the other files go first, under the lock; FICLONE needs a
-  # reflink filesystem, so here the restore stops there, unfinished, and
-  # says the snapshot is intact.
+  assert_equal "$(<"$SNAP/COMPLETE")" "$(tree_manifest "$B/win")"
+  assert_equal "$(<"$SNAP/SOURCE")" "$B/win"
+  # Restore clones and verifies temporary files under the same disk lock.
   : >"$T/vm-open"
-  echo changed >"$T/win/windows.vars"
+  echo changed >"$B/win/windows.vars"
   lanai_run restore "$NAME"
-  assert_failure
-  run field message
-  assert_output --partial "run lanai restore again"
-  assert_output --partial "the snapshot is intact"
-  assert [ -e "$S/restore-in-progress" ]
+  assert_success
+  assert [ ! -e "$S/restore-in-progress" ]
   [[ -s $T/vm-open ]] || fail "the restore copied nothing"
   run sort -u "$T/vm-open"
   assert_output 1
-  vm_can_open "$T/win/data.img" || fail "the lock outlived the restore"
+  vm_can_open "$B/win/data.img" || fail "the lock outlived the restore"
 }
 
 @test "restore: the clone step's own reason reaches the user, with the next step" {
-  need_no_reflink
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   take_snapshot
-  echo changed >"$T/win/windows.vars"
+  echo changed >"$B/win/windows.vars"
   local msg
   # Stand-ins for ficlone.py's refusals and its errno message.
   for msg in "ficlone.py: a and b differ in NOCOW; nothing was changed" "ficlone.py: a is empty" \
     "ficlone.py: cannot clone a onto b (No space left on device); the snapshot is intact: run lanai restore again, or restore another snapshot"; do
-    shim python3 "echo '$msg' >&2; exit 1"
+    shim python3 'if [[ $1 == */ficlone.py ]]; then cat "$T/clone-error" >&2; exit 1; fi
+exec /usr/bin/python3 "$@"'
+    printf '%s\n' "$msg" >"$T/clone-error"
     lanai_run restore "$NAME"
     assert_failure
     run field message
-    # The detail stays, without a false "nothing was changed" (other files
-    # were already replaced), and with the next step exactly once.
+    # Clone failures occur before replacement, so the detail and clean refusal stay.
     msg=${msg#ficlone.py: }
     assert_output --partial "${msg%; nothing was changed}"
-    refute_output --partial "nothing was changed"
-    [[ $(grep -o "run lanai restore again" <<<"$output" | wc -l) == 1 ]] ||
-      fail "not one next step: $output"
+    assert_output --partial "Nothing was changed"
+    assert [ ! -e "$S/restore-in-progress" ]
   done
 }
 
@@ -275,11 +281,13 @@ exec /usr/bin/sha256sum "$@"'
 }
 
 @test "restore: holds the disk lock while it hashes the snapshot" {
-  need_no_reflink
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   take_snapshot
-  echo changed >"$T/win/windows.vars"
+  echo changed >"$B/win/windows.vars"
   hash_probes_the_lock
   : >"$T/probe-hash"
   lanai_run restore "$NAME"
@@ -287,16 +295,19 @@ exec /usr/bin/sha256sum "$@"'
   [[ -s $T/hash-open ]] || fail "the restore hashed nothing"
   run sort -u "$T/hash-open"
   assert_output 1
-  vm_can_open "$T/win/data.img" || fail "the lock outlived the restore"
+  vm_can_open "$B/win/data.img" || fail "the lock outlived the restore"
 }
 
 @test "restore: a damaged snapshot is refused under the lock, then the lock is released" {
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   take_snapshot
-  echo changed >"$T/win/windows.vars"
+  echo changed >"$B/win/windows.vars"
   local before
-  before=$(tree_manifest "$T/win")
+  before=$(tree_manifest "$B/win")
   flip_byte "$SNAP/windows.vars"
   hash_probes_the_lock
   : >"$T/probe-hash"
@@ -307,9 +318,9 @@ exec /usr/bin/sha256sum "$@"'
   assert_output --partial "damaged"
   run sort -u "$T/hash-open"
   assert_output 1
-  vm_can_open "$T/win/data.img" || fail "the lock outlived the refusal"
+  vm_can_open "$B/win/data.img" || fail "the lock outlived the refusal"
   assert [ ! -e "$S/restore-in-progress" ]
-  assert_equal "$(tree_manifest "$T/win")" "$before"
+  assert_equal "$(tree_manifest "$B/win")" "$before"
 }
 
 @test "snapshot: refuses a storage folder that fails the adoption checks" {
@@ -324,8 +335,11 @@ exec /usr/bin/sha256sum "$@"'
 }
 
 @test "snapshot: flushes the whole filesystem before the rename and again after, before it reports" {
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   shim sync 'echo "$*" >>"$T/sync.calls"; exec /usr/bin/sync "$@"'
   take_snapshot
   local root=${SNAP%/*}
@@ -341,11 +355,14 @@ exec /usr/bin/sha256sum "$@"'
 }
 
 @test "restore: marks itself before it recreates a deleted disk, and keeps the mark when the lock fails" {
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   take_snapshot
-  rm "$T/win/data.img"
-  # Another VM grabs the disk the moment it is back.
+  rm "$B/win/data.img"
+  # The lock on the temporary inode fails before publication.
   shim qemu-io 'echo "qemu-io: Failed to get \"write\" lock" >&2; exit 1'
   lanai_run restore "$NAME"
   assert_failure
@@ -353,7 +370,7 @@ exec /usr/bin/sha256sum "$@"'
   assert_output --partial "did not finish"
   assert_output --partial "run lanai restore again"
   refute_output --partial "nothing was changed"
-  assert [ -f "$T/win/data.img" ]
+  assert [ ! -e "$B/win/data.img" ]
   assert [ -e "$S/restore-in-progress" ]
   run preflight
   assert_failure
@@ -361,8 +378,11 @@ exec /usr/bin/sha256sum "$@"'
 }
 
 @test "snapshot: a copy that does not match its source is removed, and the lock released" {
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   echo "*.partial/windows.mac" >"$T/damage"
   lanai_run snapshot
   assert_failure
@@ -370,17 +390,20 @@ exec /usr/bin/sha256sum "$@"'
   assert_output --partial "nothing was kept"
   run find "$XDG_DATA_HOME/lanai/snapshots" -mindepth 1
   assert_output ""
-  vm_can_open "$T/win/data.img" || fail "the lock outlived the failed snapshot"
+  vm_can_open "$B/win/data.img" || fail "the lock outlived the failed snapshot"
 }
 
 @test "restore: refuses a storage folder that holds anything but an install" {
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   take_snapshot
   # Lanai's storage now points at a folder with someone's own files.
   mkdir -p "$T/docs/precious"
   echo keep >"$T/docs/precious/doc.txt"
-  cp "$T/win/windows.vars" "$T/docs/"
+  cp "$B/win/windows.vars" "$T/docs/"
   point_at "$T/docs"
   lanai_run restore "$NAME"
   assert_failure
@@ -388,33 +411,36 @@ exec /usr/bin/sha256sum "$@"'
   assert [ -f "$T/docs/windows.vars" ]
   assert [ ! -e "$S/restore-in-progress" ]
   # An install with one foreign file or folder is refused too, untouched.
-  point_at "$T/win"
-  echo mine >"$T/win/notes.txt"
+  point_at "$B/win"
+  echo mine >"$B/win/notes.txt"
   lanai_run restore "$NAME"
   assert_failure
   run field message
   assert_output --partial "notes.txt"
-  assert_equal "$(<"$T/win/notes.txt")" mine
-  rm "$T/win/notes.txt"
-  mkdir "$T/win/tmp"
+  assert_equal "$(<"$B/win/notes.txt")" mine
+  rm "$B/win/notes.txt"
+  mkdir "$B/win/tmp"
   lanai_run restore "$NAME"
   assert_failure
-  assert [ -d "$T/win/tmp" ]
+  assert [ -d "$B/win/tmp" ]
 }
 
 @test "restore: refuses a symlinked data.img and a storage folder that does not exist" {
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   take_snapshot
-  mv "$T/win/data.img" "$T/elsewhere.img"
-  ln -s "$T/elsewhere.img" "$T/win/data.img"
-  echo changed >"$T/win/windows.vars"
+  mv "$B/win/data.img" "$T/elsewhere.img"
+  ln -s "$T/elsewhere.img" "$B/win/data.img"
+  echo changed >"$B/win/windows.vars"
   lanai_run restore "$NAME"
   assert_failure
   run field message
   assert_output --partial "data.img (not a regular file)"
-  assert [ -L "$T/win/data.img" ]
-  assert_equal "$(<"$T/win/windows.vars")" changed
+  assert [ -L "$B/win/data.img" ]
+  assert_equal "$(<"$B/win/windows.vars")" changed
   assert [ ! -e "$S/restore-in-progress" ]
   point_at "$T/gone"
   lanai_run restore "$NAME"
@@ -423,8 +449,11 @@ exec /usr/bin/sha256sum "$@"'
 }
 
 @test "snapshot: records its source, and another storage location never sees it" {
-  use_install "$T/win"
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
   plain_cp
+  : >"$T/real-reflink"
   take_snapshot
   use_install "$T/other"
   lanai_run snapshots
@@ -434,11 +463,11 @@ exec /usr/bin/sha256sum "$@"'
   run field message
   assert_output --partial "no complete snapshot"
   # An unfinished restore of the first location does not resume on this one.
-  mark_restore "$SNAP" "$T/win"
+  mark_restore "$SNAP" "$B/win"
   lanai_run restore
   assert_failure
   run field message
-  assert_output --partial "was for $T/win"
+  assert_output --partial "was for $B/win"
   assert_equal "$(tree_manifest "$T/other")" "$(tree_manifest "$SNAP" | grep -vE ' (COMPLETE|SOURCE)$')"
 }
 
@@ -611,7 +640,7 @@ exec /usr/bin/sha256sum "$@"'
   assert_equal "$(dirname "$SNAP")" "$B/win.lanai-snapshots"
 }
 
-@test "snapshot: only a complete snapshot counts; this location's leftovers are removed" {
+@test "snapshot: only a complete snapshot counts; old partial folders are not swept" {
   btrfs_tmp
   export XDG_DATA_HOME=$B/data
   use_install "$B/win"
@@ -630,8 +659,8 @@ exec /usr/bin/sha256sum "$@"'
   lanai_run restore 20260103T000000Z
   assert_failure
   take_snapshot
-  assert [ ! -e "$root/20260101T000000Z.partial" ]
-  assert [ ! -e "$root/20260102T000000Z.partial" ]
+  assert [ -e "$root/20260101T000000Z.partial" ]
+  assert [ -e "$root/20260102T000000Z.partial" ]
   assert [ -e "$root/20260104T000000Z.partial" ]
   lanai_run snapshots
   assert_equal "$(jq -r '.snapshots | length' <<<"$JSON")" 1
@@ -750,7 +779,7 @@ damage() {
   assert [ ! -e "$S/restore-in-progress" ]
 }
 
-@test "restore: a result that does not match the snapshot keeps the marker, and start refuses" {
+@test "restore: a damaged temporary small file refuses before replacement and can retry" {
   btrfs_tmp
   export XDG_DATA_HOME=$B/data
   use_install "$B/win"
@@ -758,18 +787,16 @@ damage() {
   damage "$B/win" 2M
   plain_cp
   : >"$T/real-reflink"
+  : >"$T/real-reflink"
   echo "$B/win/.lanai-restore.windows.vars" >"$T/damage"
   lanai_run restore "$NAME"
   assert_failure
   run field message
-  assert_output --partial "run lanai restore again"
-  assert [ -e "$S/restore-in-progress" ]
-  run preflight
-  assert_failure
-  assert_output --partial "a restore did not finish"
+  assert_output --partial "damaged"
+  assert [ ! -e "$S/restore-in-progress" ]
   # Without the damage, the rerun finishes.
   rm "$T/damage"
-  lanai_run restore
+  lanai_run restore "$NAME"
   assert_success
 }
 
@@ -780,6 +807,7 @@ damage() {
   take_snapshot
   damage "$B/win" 2M
   plain_cp
+  : >"$T/real-reflink"
   : >"$T/real-reflink"
   echo "$B/win/notes.txt" >"$T/plant"
   lanai_run restore "$NAME"
@@ -851,7 +879,7 @@ damage() {
   local -a order
   before=$(tree_manifest "$B/win")
   take_snapshot
-  # Restore order: every other file by name, then data.img last.
+  # Resume accepts interruptions left by either restore order, including old versions.
   mapfile -t order < <(find "$SNAP" -mindepth 1 -maxdepth 1 ! -name COMPLETE ! -name SOURCE \
     ! -name data.img -printf '%P\n' | LC_ALL=C sort)
   order+=(data.img)
@@ -895,4 +923,403 @@ damage() {
   assert_output --partial "did not finish"
   lanai_run restore "$NAME"
   assert_success
+}
+
+# Phase B hooks run inside the helper with its image descriptors still open.
+# Every mutation restores size and mtime; only shared storage proves the bytes.
+proof_mode() {
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
+  rm "$B/win/data.img"
+  : >"$B/win/data.img"
+  case $1 in
+    normal) chattr +m "$B/win/data.img" ;;
+    nocow) chattr +C "$B/win/data.img" ;;
+    compressed|mixed) chattr +c "$B/win/data.img" ;;
+  esac
+  if [[ $1 == normal || $1 == nocow ]]; then
+    head -c 2M /dev/urandom >>"$B/win/data.img"
+  else
+    # Compressible nonzero blocks, followed by a plain random region for mixed.
+    python3 -c 'import sys; sys.stdout.buffer.write(b"X" * 2097152)' >>"$B/win/data.img"
+    [[ $1 != mixed ]] || head -c 1M /dev/urandom >>"$B/win/data.img"
+  fi
+  fallocate -z -o 524288 -l 262144 "$B/win/data.img"
+  sync -f "$B/win"
+  local counts
+  counts=$(python3 "$REPO/docs/plugin/proof-kit/count-image-extents.py" --json "$B/win/data.img")
+  assert [ "$(jq '.classes.unwritten // 0' <<<"$counts")" -gt 0 ]
+  case $1 in
+    normal|nocow) assert_equal "$(jq '.classes.encoded // 0' <<<"$counts")" 0 ;;
+    compressed) assert [ "$(jq '.classes.encoded // 0' <<<"$counts")" -gt 0 ] ;;
+    mixed)
+      assert [ "$(jq '.classes.encoded // 0' <<<"$counts")" -gt 0 ]
+      assert [ "$(jq '.classes.plain // 0' <<<"$counts")" -gt 0 ] ;;
+  esac
+  [[ $1 != nocow ]] || has_nocow "$B/win/data.img"
+}
+
+mutation_hook() {
+  cat >"$T/mutate" <<'PY'
+#!/usr/bin/env python3
+import os
+import sys
+path = sys.argv[int(os.environ.get("MUTATE_FILE", "2"))]
+st = os.stat(path)
+with open(path, "r+b") as f:
+    f.seek(int(os.environ.get("MUTATE_OFFSET", "0")))
+    f.write(b"changed block" * 256)
+    f.flush()
+    os.fsync(f.fileno())
+os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+PY
+  chmod +x "$T/mutate"
+}
+
+proof_mutations() {
+  proof_mode "$1"
+  mutation_hook
+  local hook offset target
+  for hook in LANAI_TEST_IMAGE_AFTER_MAP LANAI_TEST_IMAGE_AFTER_HASH; do
+    for offset in 0 524288; do
+      for target in 1 2; do
+        export MUTATE_FILE=$target MUTATE_OFFSET=$offset
+        export "$hook=$T/mutate"
+        lanai_run snapshot
+        assert_failure
+        assert_output --partial "nothing was kept"
+        assert [ ! -e "$S/image-progress.json" ]
+        unset "$hook"
+        sleep 1
+      done
+    done
+  done
+  take_snapshot
+  for hook in LANAI_TEST_IMAGE_AFTER_MAP LANAI_TEST_IMAGE_AFTER_HASH LANAI_TEST_IMAGE_AFTER_INSTALL; do
+    for offset in 0 524288; do
+      export MUTATE_FILE=2 MUTATE_OFFSET=$offset
+      export "$hook=$T/mutate"
+      lanai_run restore "$NAME"
+      assert_failure
+      assert_output --partial "changed"
+      unset "$hook"
+      if [[ $hook == LANAI_TEST_IMAGE_AFTER_INSTALL ]]; then
+        assert [ -e "$S/restore-in-progress" ]
+      else
+        assert [ ! -e "$S/restore-in-progress" ]
+      fi
+      lanai_run restore "$NAME"
+      assert_success
+    done
+  done
+}
+
+@test "proof: normal btrfs mutations reject snapshot and restore including unwritten blocks" { proof_mutations normal; }
+@test "proof: NOCOW btrfs mutations reject snapshot and restore including unwritten blocks" { proof_mutations nocow; }
+@test "proof: compressed btrfs mutations reject snapshot and restore including unwritten blocks" { proof_mutations compressed; }
+@test "proof: mixed btrfs mutations reject snapshot and restore including unwritten blocks" { proof_mutations mixed; }
+
+@test "proof: a plain copy is never accepted as a successful proof" {
+  proof_mode normal
+  cp --reflink=never "$B/win/data.img" "$B/plain.img"
+  run python3 "$REPO/lib/image-proof.py" prove "$B/win/data.img" "$B/plain.img" "$B/map.json" adopt
+  assert_failure
+  assert_output --partial "shared storage does not match"
+}
+
+@test "proof: sparse maps pass and an unsupported image creates no partial folder" {
+  proof_mode normal
+  truncate -s 8M "$B/win/data.img"
+  take_snapshot
+  lanai_run restore "$NAME"
+  assert_success
+  use_install "$T/win"
+  lanai_run snapshot
+  assert_failure
+  assert_equal "$(field reason)" snapshot-unsupported
+  assert [ ! -e "$T/win.lanai-snapshots" ]
+}
+
+@test "proof: snapshot mutations after cloning are caught even when the hashed clone matches COMPLETE" {
+  local mode hook offset
+  for mode in normal nocow compressed mixed; do
+    proof_mode "$mode"
+    take_snapshot
+    reflink_file "$SNAP/data.img" "$B/pristine.img"
+    mutation_hook
+    for hook in LANAI_TEST_IMAGE_AFTER_MAP LANAI_TEST_IMAGE_AFTER_HASH; do
+      for offset in 0 524288; do
+        export MUTATE_FILE=1 MUTATE_OFFSET=$offset
+        export "$hook=$T/mutate"
+        lanai_run restore "$NAME"
+        assert_failure
+        assert_output --partial "changed"
+        assert [ ! -e "$S/restore-in-progress" ]
+        unset "$hook"
+        rm "$SNAP/data.img"
+        reflink_file "$B/pristine.img" "$SNAP/data.img"
+      done
+    done
+    rm -rf "$B"
+    B=''
+  done
+}
+
+@test "proof: deleted disk is locked and verified boot files exist before the one image read" {
+  proof_mode normal
+  take_snapshot
+  rm "$B/win/data.img" "$B/win/windows.boot"
+  cat >"$T/deleted-hook" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ -f ${2%/*}/windows.boot && -f ${2%/*}/windows.rom ]]
+# A mock container's installation check sees an existing install; a fixture
+# QEMU uses its ordinary disk-open path and must fail on the locked inode.
+if timeout 2 qemu-system-x86_64 -S -nodefaults -display none -machine q35,accel=tcg \
+  -drive "file=$2,format=raw,if=none,id=d" -device virtio-scsi-pci -device scsi-hd,drive=d \
+  </dev/null 3>&- 2>"$T/deleted-lock"; then exit 1; fi
+rg -q 'Failed to get.*lock' "$T/deleted-lock"
+: >"$T/deleted-probed"
+SH
+  chmod +x "$T/deleted-hook"
+  export LANAI_TEST_IMAGE_AFTER_MAP=$T/deleted-hook
+  lanai_run restore "$NAME"
+  assert_success
+  assert [ -f "$T/deleted-probed" ]
+  assert [ ! -e "$S/restore-in-progress" ]
+}
+
+@test "proof: no-replace publication preserves a contender's disk inode and keeps recovery blocked" {
+  proof_mode normal
+  take_snapshot
+  rm "$B/win/data.img"
+  shim python3 'if [[ $2 == publish ]]; then
+  echo contender >"${@: -1}"
+  stat -c %i "${@: -1}" >"$T/contender-inode"
+fi
+exec /usr/bin/python3 "$@"'
+  lanai_run restore "$NAME"
+  assert_failure
+  assert_output --partial "File exists"
+  assert_equal "$(stat -c %i "$B/win/data.img")" "$(<"$T/contender-inode")"
+  assert_equal "$(<"$B/win/data.img")" contender
+  assert [ -e "$S/restore-in-progress" ]
+}
+
+@test "proof: resume discards a stale temporary inode with the wrong NOCOW attribute" {
+  proof_mode nocow
+  take_snapshot
+  mark_restore "$SNAP" "$B/win"
+  : >"$B/win/.lanai-restore.data.img"
+  chattr -C "$B/win/.lanai-restore.data.img"
+  echo stale >"$B/win/.lanai-restore.data.img"
+  lanai_run restore
+  assert_success
+  has_nocow "$B/win/data.img"
+  assert [ ! -e "$B/win/.lanai-restore.data.img" ]
+}
+
+@test "proof: existing destination extent classes do not gate an otherwise provable restore" {
+  proof_mode normal
+  take_snapshot
+  # A tiny inline destination is unprovable by itself, but is wholly replaced.
+  rm "$B/win/data.img"
+  printf short >"$B/win/data.img"
+  sync -f "$B/win"
+  run python3 "$REPO/lib/image-proof.py" gate "$B/win/data.img"
+  assert_failure
+  assert_output --partial "unprovable"
+  local ino
+  ino=$(stat -c %i "$B/win/data.img")
+  lanai_run restore "$NAME"
+  assert_success
+  assert_equal "$(stat -c %i "$B/win/data.img")" "$ino"
+}
+
+@test "proof: gate refusals and FIEMAP errors create neither a marker nor a partial snapshot" {
+  proof_mode normal
+  take_snapshot
+  # Simulate an ioctl error, not a successful proof, through the actual CLI.
+  shim python3 'if [[ $1 == */image-proof.py && $2 == gate ]]; then
+  echo "image-proof: FIEMAP ioctl failed" >&2; exit 1
+fi
+exec /usr/bin/python3 "$@"'
+  lanai_run restore "$NAME"
+  assert_failure
+  assert_output --partial "FIEMAP ioctl failed"
+  assert [ ! -e "$S/restore-in-progress" ]
+  lanai_run snapshot
+  assert_failure
+  run find "${SNAP%/*}" -name '*.partial'
+  assert_output ""
+}
+
+@test "proof: snapshot root fallback occurs only for EXDEV and EINVAL and removes partial folders" {
+  proof_mode normal
+  local rc
+  for rc in 3 1; do
+    export CLONE_RC=$rc
+    shim python3 'if [[ $1 == */ficlone.py && $2 == --new && ${@: -1} == "$XDG_DATA_HOME"/* ]]; then
+  echo "clone errno fixture" >&2; exit "$CLONE_RC"
+fi
+exec /usr/bin/python3 "$@"'
+    lanai_run snapshot
+    if ((rc == 3)); then
+      assert_success
+      assert_equal "$(dirname "$(field snapshot)")" "$B/win.lanai-snapshots"
+    else
+      assert_failure
+      assert_output --partial "nothing was kept"
+    fi
+    run find "$B/data/lanai/snapshots" -mindepth 1
+    assert_output ""
+  done
+}
+
+@test "proof: each small temporary file is hashed before any rename" {
+  proof_mode normal
+  take_snapshot
+  plain_cp
+  : >"$T/real-reflink"
+  local name before
+  before=$(tree_manifest "$B/win")
+  for name in windows.base windows.mac windows.rom windows.vars windows.ver; do
+    echo "$B/win/.lanai-restore.$name" >"$T/damage"
+    lanai_run restore "$NAME"
+    assert_failure
+    assert_output --partial "damaged"
+    assert_equal "$(tree_manifest "$B/win")" "$before"
+    assert [ ! -e "$S/restore-in-progress" ]
+  done
+}
+
+@test "proof: interruption keeps the restore marker and removes operation progress" {
+  proof_mode normal
+  take_snapshot
+  cat >"$T/interrupt" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+kill -TERM "$LANAI_IMAGE_OWNER"
+SH
+  chmod +x "$T/interrupt"
+  export LANAI_TEST_IMAGE_AFTER_MAP=$T/interrupt
+  lanai_run restore "$NAME"
+  assert_failure
+  assert [ -e "$S/restore-in-progress" ]
+  assert [ ! -e "$S/image-progress.json" ]
+  unset LANAI_TEST_IMAGE_AFTER_MAP
+  lanai_run restore
+  assert_success
+}
+
+@test "proof: strace single image read budget includes concurrent panel polls for CLI snapshot and restore" {
+  if ! command -v strace >/dev/null; then
+    [[ ${LANAI_REQUIRE_BTRFS:-0} != 1 ]] || fail "CI requires strace for the image read budget"
+    skip "strace unavailable; CI requires the measurement"
+  fi
+  proof_mode normal
+  export TRACE_REPO=$REPO
+  cat >"$T/hold-map" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+: >"$T/map-ready"
+for ((n=0;n<300;n++)); do
+  [[ ! -f $T/map-release ]] || exit 0
+  sleep 0.1
+done
+exit 1
+SH
+  chmod +x "$T/hold-map"
+  cat >"$T/trace-operation" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$TRACE_REPO/bin/lanai" "$@" >"$T/traced-reply" &
+job=$!
+for ((n=0;n<300;n++)); do
+  [[ ! -f $T/map-ready ]] || break
+  sleep 0.1
+done
+[[ -f $T/map-ready ]]
+for ((p=0;p<3;p++)); do
+  "$TRACE_REPO/bin/lanai" panel >"$T/poll.$p"
+  jq -e '.busy.active and .progress != null' "$T/poll.$p" >/dev/null
+done
+: >"$T/map-release"
+wait "$job"
+SH
+  local image_size small operation counts
+  image_size=$(stat -c %s "$B/win/data.img")
+  small=$(find "$B/win" -type f ! -name data.img -printf '%s\n' | awk '{s+=$1} END {print s}')
+  export LANAI_TEST_IMAGE_AFTER_MAP=$T/hold-map
+  for operation in snapshot restore; do
+    rm -f "$T/map-ready" "$T/map-release"
+    if [[ $operation == snapshot ]]; then
+      run strace -f -yy -o "$T/reads.trace" -e trace=read,pread64,readv,preadv,preadv2,mmap,sendfile,splice,copy_file_range \
+        bash "$T/trace-operation" snapshot
+      assert_success
+      NAME=$(jq -r .name "$T/traced-reply")
+    else
+      run strace -f -yy -o "$T/reads.trace" -e trace=read,pread64,readv,preadv,preadv2,mmap,sendfile,splice,copy_file_range \
+        bash "$T/trace-operation" restore "$NAME"
+      assert_success
+    fi
+    run python3 "$REPO/test/fixtures/image-read-budget.py" "$T/reads.trace" "$image_size" "$small" 3
+    assert_success
+    counts=$output
+    printf '# %s bytes read: %s\n' "$operation" "$counts" >&3
+    assert [ ! -e "$S/image-progress.json" ]
+  done
+}
+
+@test "proof: replacing the read path after its map refuses completion" {
+  proof_mode normal
+  cat >"$T/replace" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cp --reflink=always "$2" "$2.changed"
+mv -f -T "$2.changed" "$2"
+SH
+  chmod +x "$T/replace"
+  export LANAI_TEST_IMAGE_AFTER_MAP=$T/replace
+  lanai_run snapshot
+  assert_failure
+  assert_output --partial "path changed"
+  assert_output --partial "nothing was kept"
+}
+
+@test "proof: FIEMAP pagination covers more than one batch and preserves sparse holes" {
+  proof_mode normal
+  python3 - "$B/win/data.img" <<'PY'
+import os
+import sys
+with open(sys.argv[1], "wb") as f:
+    for n in range(1100):
+        f.seek(n * 8192)
+        f.write(b"a" * 4096)
+    f.flush()
+    os.fsync(f.fileno())
+PY
+  local counts
+  counts=$(python3 "$REPO/docs/plugin/proof-kit/count-image-extents.py" --json "$B/win/data.img")
+  assert [ "$(jq '.classes.plain' <<<"$counts")" -gt 1024 ]
+  take_snapshot
+  lanai_run restore "$NAME"
+  assert_success
+}
+
+@test "proof: interrupted snapshot removes its partial folder and progress" {
+  proof_mode normal
+  cat >"$T/interrupt-snapshot" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+kill -TERM "$LANAI_IMAGE_OWNER"
+SH
+  chmod +x "$T/interrupt-snapshot"
+  export LANAI_TEST_IMAGE_AFTER_MAP=$T/interrupt-snapshot
+  lanai_run snapshot
+  assert_failure
+  assert [ ! -e "$S/image-progress.json" ]
+  run find "$B/data/lanai/snapshots" -mindepth 1
+  assert_output ""
 }

@@ -77,12 +77,22 @@ initially and grows as Windows changes. The panel reports its path and explains
 how to delete the snapshot folder. The list updates after each snapshot or restore
 job, and whenever the panel refreshes. If the filesystem cannot make a snapshot,
 the setup offer explains that you need a backup before continuing without one.
-Snapshot and restore jobs show a note while they run. You can close the panel
-during a snapshot. Keep Windows off until a restore finishes. Lanai blocks Start
+Snapshot and restore show their phase and a progress bar with a percentage,
+also when you open the panel partway through or start from the CLI. You can close
+the panel during a snapshot. Keep Windows off until a restore finishes. Lanai blocks Start
 while a restore is unfinished; use **Finish the unfinished restore** to resume it.
 It tries the Lanai data directory's `snapshots/`, then
 `<storage>.lanai-snapshots/` on the storage filesystem. Both VMs must be stopped for
 snapshot or restore. A restore requires running Lanai setup again.
+Each operation clones first and reads the image once, then proves its shared
+btrfs extents stayed unchanged. Plain, compressed, NOCOW and preallocated
+unwritten extents are supported; other filesystems or unprovable extent classes
+fall back to backup advice. This detects ordinary writes and interruptions;
+deliberate re-cloning or reference juggling by another process running as your
+user is outside the proof, including substitution of compressed extent slices.
+An existing disk keeps its locked inode during restore. If dockur already deleted
+the disk, Lanai publishes its locked clone and verified boot files before reading
+it; a failed proof leaves recovery unfinished and prevents Start.
 
 In the setup window, open Lanai's setup drive in Explorer and run `setup.cmd`. Approve
 the administrator prompt as the same Windows user; approval as a different account
