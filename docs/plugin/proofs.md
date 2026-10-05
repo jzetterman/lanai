@@ -859,6 +859,29 @@ then `omarchy plugin enable`), with Lanai's settings on the test copy.
   color the Setup section when the user must act. Both went into the plan amendment
   ("During setup").
 
+## Extent classes of the test copy (2026-10-05)
+
+Before phase B of the scale, progress and clicks amendment, John ran
+`docs/plugin/proof-kit/count-image-extents.py` on the test copy's
+`/home/john/lanai-proofs/lanai-setup-test/data.img`, with its Windows shut down.
+The script reads the extent map only.
+
+```text
+filesystem: btrfs
+nocow: True
+size: 274877906944 bytes
+shared: 56003497984 bytes
+class                        extents               bytes
+plain                         318266         55666053120
+unwritten                       2133           337444864
+provable classes only: yes
+```
+
+Result: every extent is in a class phase B proves. The image is NOCOW, so it has no
+compressed extents. It has about 320k extents, so the map read takes many FIEMAP
+batches; phase B times it and shows it under "checking". Its one hash pass reads
+about 56 GB of allocated data (the rest of the 256 GiB is holes).
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with
