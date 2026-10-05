@@ -13,10 +13,11 @@
   call takes the scale as a number of steps relative to the monitor's
   recommended scale, and applies at once, without a sign-out. The setting is
   per user, so the script runs as the signed-in user; it needs no admin rights.
-  A sign-in task runs it at every sign-in (plan phase 6).
-
-  First draft: plan phase 1, proof 1, checks that it works. Each run appends
-  to %LOCALAPPDATA%\Lanai\lanai-scale.log.
+  A sign-in task keeps the absolute target at sign-in and every 2 seconds until
+  sign-out, including after a resize changes the recommended step. Windows caps
+  it at its allowed maximum; the target recovers when that range grows. Manual
+  changes in Windows Settings are reverted for both fixed and monitor choices.
+  Actual changes and distinct errors go to %LOCALAPPDATA%\Lanai\lanai-scale.log.
 
 .PARAMETER Scale
   Use this percentage instead of the SMBIOS string. For testing.
@@ -48,6 +49,61 @@ function Write-Log([string]$Message) {
 function StepName([int]$i) {
     if ($i -lt 0 -or $i -ge $Steps.Count) { return 'unknown' }
     return "$($Steps[$i])%"
+}
+
+# Pure absolute-step decision, reevaluated from each current DPI range. Never
+# mutate Want: a cap at a small resolution must recover when the window grows.
+function ScaleDecision([int]$Want, [int]$MinRel, [int]$CurrentRel, [int]$MaxRel) {
+    $recommended = - $MinRel
+    $maxIdx = [math]::Min($recommended + $MaxRel, $Steps.Count - 1)
+    if ($recommended -lt 0 -or $maxIdx -lt 0 -or $Want -lt 0 -or $Want -ge $Steps.Count) {
+        throw 'Invalid Windows scale range or target'
+    }
+    $target = [math]::Min($Want, $maxIdx)
+    $current = $recommended + $CurrentRel
+    return [pscustomobject][ordered]@{
+        recommended = $recommended; current = $current; target = $target
+        relative = $target - $recommended; change = $current -ne $target
+    }
+}
+
+# Query paths and the range on every poll: the IDD can attach late and Windows
+# can change its recommendation after the resolution has settled. An unchanged
+# poll is silent; identical errors are logged only once until a healthy poll.
+function Update-DisplayScale([int]$Want) {
+    try {
+        $paths = [LanaiDisplay]::ActivePaths()
+        $chosen = @()
+        foreach ($p in $paths) {
+            $t = [LanaiDisplay]::GetTargetName($p)
+            if ("$($t.monitorFriendlyDeviceName) $($t.monitorDevicePath)" -match 'Looking|LGIDD') { $chosen += , $p }
+        }
+        if ($chosen.Count -eq 0 -and $paths.Count -eq 1) { $chosen = @($paths[0]) }
+        if ($chosen.Count -ne 1) { throw "Found $($chosen.Count) Looking Glass displays among $($paths.Count); expected one" }
+        $path = $chosen[0]
+        $resolution = [LanaiDisplay]::Resolution($path)
+        $d = [LanaiDisplay]::GetScale($path)
+        $decision = ScaleDecision $Want $d.minScaleRel $d.curScaleRel $d.maxScaleRel
+        if ($decision.change) {
+            $t = [LanaiDisplay]::GetTargetName($path)
+            Write-Log "Display: name '$($t.monitorFriendlyDeviceName)', path '$($t.monitorDevicePath)', resolution $resolution"
+            Write-Log ("Raw minScaleRel {0}, curScaleRel {1}, maxScaleRel {2}" -f `
+                $d.minScaleRel, $d.curScaleRel, $d.maxScaleRel)
+            Write-Log ("Recommended {0}, current {1}, allowed {2} to {3}; target {4}, applying {5}" -f `
+                (StepName $decision.recommended), (StepName $decision.current), (StepName 0),
+                (StepName ([math]::Min($decision.recommended + $d.maxScaleRel, $Steps.Count - 1))),
+                (StepName $Want), (StepName $decision.target))
+            [LanaiDisplay]::SetScale($path, $decision.relative)
+            $after = [LanaiDisplay]::GetScale($path)
+            Write-Log "Scale is now $(StepName (- $after.minScaleRel + $after.curScaleRel))."
+        }
+        $script:LastScaleError = ''
+    }
+    catch {
+        $message = $_.Exception.Message
+        if ($message -ne $script:LastScaleError) { Write-Log "Error: $message" }
+        $script:LastScaleError = $message
+    }
 }
 
 # The display configuration API from user32.dll. DPI_GET and DPI_SET use
@@ -128,7 +184,9 @@ public static class LanaiDisplay {
     [DllImport("user32.dll")]
     public static extern int DisplayConfigSetDeviceInfo(ref DpiSet request);
 
-    // Return the active display paths.
+    private static ModeInfo[] currentModes;
+
+    // Return fresh active paths and source modes on every poll.
     public static PathInfo[] ActivePaths() {
         uint numPaths, numModes;
         int rc = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, out numPaths, out numModes);
@@ -137,8 +195,18 @@ public static class LanaiDisplay {
         ModeInfo[] modes = new ModeInfo[numModes];
         rc = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, ref numPaths, paths, ref numModes, modes, IntPtr.Zero);
         if (rc != 0) throw new Exception("QueryDisplayConfig failed: " + rc);
+        currentModes = modes;
         Array.Resize(ref paths, (int)numPaths);
         return paths;
+    }
+
+    // DISPLAYCONFIG_SOURCE_MODE begins with width and height in the union.
+    public static string Resolution(PathInfo path) {
+        uint idx = path.sourceInfo.modeInfoIdx;
+        if (currentModes == null || idx >= currentModes.Length || currentModes[idx].infoType != 1)
+            throw new Exception("No active source resolution");
+        byte[] data = currentModes[idx].data;
+        return BitConverter.ToUInt32(data, 0) + "x" + BitConverter.ToUInt32(data, 4);
     }
 
     // Return the monitor name and device path of a path's target.
@@ -194,40 +262,13 @@ try {
     $want = [array]::IndexOf($Steps, $Scale)
     if ($want -lt 0) { throw "Scale $Scale is not a Windows scale step ($($Steps -join ', '))" }
 
-    # Pick the Looking Glass monitor. Every target is logged, so proof 1
-    # records the IDD's monitor name. With one active display (the normal
-    # case: QEMU's own display is off), that display is the one.
-    $paths = [LanaiDisplay]::ActivePaths()
-    $chosen = @()
-    foreach ($p in $paths) {
-        $t = [LanaiDisplay]::GetTargetName($p)
-        Write-Log "Display: name '$($t.monitorFriendlyDeviceName)', path '$($t.monitorDevicePath)'"
-        if ("$($t.monitorFriendlyDeviceName) $($t.monitorDevicePath)" -match 'Looking|LGIDD') { $chosen += , $p }
+    # A task with an Interactive logon token ends with the user's session.
+    # IgnoreNew prevents duplicates and its zero execution limit permits >72 h.
+    $script:LastScaleError = ''
+    while ($true) {
+        Update-DisplayScale $want
+        Start-Sleep -Seconds 2
     }
-    if ($chosen.Count -eq 0 -and $paths.Count -eq 1) { $chosen = @($paths[0]) }
-    if ($chosen.Count -ne 1) { throw "Found $($chosen.Count) Looking Glass displays among $($paths.Count); expected one" }
-    $path = $chosen[0]
-
-    # minScaleRel is the lowest step (100%) relative to the recommended one,
-    # so the recommended step's index is -minScaleRel.
-    $d = [LanaiDisplay]::GetScale($path)
-    $recommended = - $d.minScaleRel
-    # The highest step Windows allows here, as an index into $Steps (Windows
-    # may report more steps than this list holds).
-    $maxIdx = [math]::Min($recommended + $d.maxScaleRel, $Steps.Count - 1)
-    Write-Log ("Raw minScaleRel {0}, curScaleRel {1}, maxScaleRel {2}" -f `
-            $d.minScaleRel, $d.curScaleRel, $d.maxScaleRel)
-    Write-Log ("Recommended {0}, current {1}, allowed {2} to {3}; want {4}%" -f `
-            (StepName $recommended), (StepName ($recommended + $d.curScaleRel)),
-            (StepName 0), (StepName $maxIdx), $Scale)
-    if ($want -gt $maxIdx) {
-        Write-Log "Windows allows at most $(StepName $maxIdx) at this resolution; using that."
-        $want = $maxIdx
-    }
-    $rel = $want - $recommended
-    [LanaiDisplay]::SetScale($path, $rel)
-    $after = [LanaiDisplay]::GetScale($path)
-    Write-Log "Scale is now $(StepName ($recommended + $after.curScaleRel))."
 }
 catch {
     Write-Log "Error: $($_.Exception.Message)"

@@ -567,6 +567,57 @@ assert_both_refuse() {
   assert_equal "$(jq -r .scale "$S/boot.json")" 100
 }
 
+@test "lanai start scale: every fixed step boots without querying a monitor" {
+  ready
+  shim hyprctl 'echo queried >>"$T/monitor-query"; exit 1'
+  local value
+  for value in 100 125 150 175 200 225 250 300 350 400 450 500; do
+    jq --argjson v "$value" '.windows_scale=$v' "$(settings_file)" >"$T/settings"
+    mv "$T/settings" "$(settings_file)"
+    lanai_run start
+    assert_success
+    assert_equal "$(jq -r .scale "$S/boot.json")" "$value"
+  done
+  assert [ ! -e "$T/monitor-query" ]
+}
+
+@test "lanai start scale: explicit auto samples the monitor with ties down and fallback" {
+  ready
+  jq '.windows_scale="auto"' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  local pair
+  for pair in 1:100 1.25:125 1.5:150 1.75:175 2:200 2.25:225 2.5:250 3:300 3.5:350 4:400 4.5:450 5:500 \
+    1.125:100 1.375:125 1.625:150 1.875:175 2.125:200 2.375:225 2.75:250 3.25:300 3.75:350 4.25:400 4.75:450 \
+    1.1249:100 1.1251:125 1.3749:125 1.3751:150 1.6249:150 1.6251:175 1.8749:175 1.8751:200 \
+    2.1249:200 2.1251:225 2.3749:225 2.3751:250 2.7499:250 2.7501:300 3.2499:300 3.2501:350 \
+    3.7499:350 3.7501:400 4.2499:400 4.2501:450 4.7499:450 4.7501:500 \
+    2.51:250 2.6:250 2.6667:250 2.9:300 2.99:300 0:100 0.5:100 0.9999:100 5.0001:500 6:500 10:500; do
+    shim hyprctl "echo '[{\"focused\":true,\"scale\":${pair%%:*}}]'"
+    lanai_run start
+    assert_success
+    assert_equal "$(jq -r .scale "$S/boot.json")" "${pair#*:}"
+  done
+  shim hyprctl 'exit 1'
+  lanai_run start
+  assert_success
+  assert_equal "$(jq -r .scale "$S/boot.json")" 100
+}
+
+@test "lanai start scale: invalid persisted types and values refuse before starting" {
+  ready
+  local value
+  for value in null true false '"125"' '"AUTO"' '{}' '[]' 99 126 275 550 125.5; do
+    jq --argjson v "$value" '.windows_scale=$v' "$(settings_file)" >"$T/settings"
+    mv "$T/settings" "$(settings_file)"
+    lanai_run start
+    assert_failure
+    assert_equal "$(field ok)" false
+    assert_output --partial scale
+    refute_started
+    assert [ ! -e "$S/boot.json" ]
+  done
+}
+
 @test "boot_vm true: a snapshot decision allows setup mode before setup is done" {
   ready
   setup_patch '{"done": null}'

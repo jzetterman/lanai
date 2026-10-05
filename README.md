@@ -131,9 +131,12 @@ it. Right-click opens the panel. Panel controls support Tab, Shift+Tab, Enter an
 Space; Escape closes it. The tooltip includes warnings and forced-stop notices.
 If starting or opening fails, the glyph opens the panel to explain why. It also
 opens the panel when a start reports that the previous run was forced to stop.
-Settings accept whole numbers: 1–512 GiB and 1–64 cores,
-and apply at the next start. Reopening the panel discards unsaved settings edits.
-The CLI equivalent is `bin/lanai settings <GiB> <cores>`.
+Settings accept whole numbers: 1–512 GiB and 1–64 cores. Windows scale is
+“Match my monitor” (the default) or a fixed percentage: 100–250 in steps of 25,
+then 300–500 in steps of 50. All three apply at the next start. Reopening the
+panel discards unsaved settings edits.
+The CLI equivalent is `bin/lanai settings <GiB> <cores> [auto|percentage]`.
+Omitting the third argument preserves the scale choice.
 
 Shut down is available while Windows starts and shuts down. It asks Windows to
 shut down cleanly and returns immediately. If Windows ignores the request while
@@ -145,7 +148,18 @@ read the panel's cause, next step and named logs. Stop Lanai before using
 
 Omarchy's Super shortcuts and Ctrl+Alt+Del do **not** reach Windows; use Windows'
 onscreen menus. The shared folder is `~/Windows` on Linux and the virtiofs drive in
-Windows Explorer. Display scale follows the focused monitor at the next VM start.
+Windows Explorer.
+
+“Match my monitor” resolves to the Windows step nearest the focused monitor's
+scale at VM start, with ties rounded down and 100% when no monitor can be read.
+A fixed step skips that monitor check. Both choices resolve to one target at boot.
+The guest keeps that target as the window resizes, caps it at Windows' limit for
+the current resolution, and restores it when the window grows. This is Windows'
+display scale, separate from its “Text size” setting. The guest checks every 2 s
+and reverts manual scale changes in Windows Settings within 2 s for both choices.
+Existing users must click **Run setup again** after this update to install the
+persistent scale script and its task. John's resize, cap/recovery and attachment
+checks on a rehearsal copy remain pending.
 Host locking, suspend and session shutdown are covered by the
 [phase 8 checks](docs/plugin/plan.md#phase-8-acceptance), which remain pending.
 

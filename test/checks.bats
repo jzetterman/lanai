@@ -1007,6 +1007,26 @@ assert_steps() {
 
 # --- dockur_version ---
 
+@test "vm_windows_scale: validates JSON types without conflating absent and null" {
+  mkdir -p "$(dirname "$(settings_file)")"
+  local value
+  for value in '"auto"' 100 125 150 175 200 225 250 300 350 400 450 500; do
+    printf '{"windows_scale":%s}\n' "$value" >"$(settings_file)"
+    run vm_windows_scale
+    assert_success
+    assert_equal "$output" "$(jq -r .windows_scale "$(settings_file)")"
+  done
+  printf '{}\n' >"$(settings_file)"
+  run vm_windows_scale
+  assert_success
+  assert_output auto
+  for value in null true false '"125"' '"AUTO"' '{}' '[]' 99 126 275 550 125.5; do
+    printf '{"windows_scale":%s}\n' "$value" >"$(settings_file)"
+    run vm_windows_scale
+    assert_failure
+  done
+}
+
 @test "dockur_version: the image's version label, asked without a prompt" {
   shim docker 'printf "%s\n" "$@" >"'"$T"'/docker.args"; [ -t 0 ] && echo tty >>"'"$T"'/docker.args"; echo 6.05'
   PATH=$T/shims:$PATH run dockur_version

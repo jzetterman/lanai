@@ -1711,6 +1711,24 @@ The orchestrator runs the gate; delegates run no review stage.
 
 ### As built (2026-10-05)
 
+- **Display scale (amendment Phase A):** Settings now read and save
+  `windows_scale` as `"auto"` or a validated Windows step; old two-argument saves
+  preserve it and other keys. Boot validates the setting and resolves a fixed
+  step without querying a monitor, or uses the existing nearest-step rule and
+  100% fallback. Bash supplies the panel's labeled choices, and QML preserves
+  unsaved scale edits through polls and failed saves, accepts the successful save
+  reply and resets on reopen. The guest recomputes the relative offset from the
+  current display path, resolution and DPI range every 2 s, sets only actual
+  changes, caps and recovers, retries late attachment and suppresses repeated
+  errors. Its sign-in task has no execution limit and ignores duplicate starts.
+  README documents rerunning setup, next-start choices and manual Windows scale
+  changes reverting within 2 s. Tests were written first, including PowerShell
+  AST decision and late-display fixtures run locally with pwsh. All 14 new Bats
+  cases and the added QML test function pass. The full suite planned 640 cases:
+  582 passed, 56 socket-fixture failures, one locale skip and one spike live-flock
+  case with no result. Unix socket bind is denied by this agent sandbox. QML lint,
+  the full ShellCheck command and `git diff --check` pass. No plan deviation;
+  John's Windows checks and proof log on a rehearsal copy remain pending.
 - **During setup:** Start and Open hide only before setup has finished for the
   current storage location or while a setup boot or final check boot is active.
   Working installs keep their daily controls beside pending build, driver and
