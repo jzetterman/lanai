@@ -1593,8 +1593,9 @@ the same proof holds.
   Clone each small file to `.lanai-restore.<name>`, hash that temporary file
   against COMPLETE, then rename it after the image proof. Drop the separate byte
   check; restore reads each small file once. The marker must precede the storage
-  temporary files. With an existing disk, a clean verification refusal removes
-  the temporary files and any newly created marker; preserve an
+  temporary files. With an existing disk, any failure before the first install
+  file is replaced (a clone error such as EXDEV, or a failed verification) is a
+  clean refusal: it removes the temporary files and any newly created marker; preserve an
   older unfinished marker.
   Interruption keeps the marker. After proof, clone the verified temporary file
   onto data.img with `ficlone.py`, keeping QEMU's locked inode. Compare the final
@@ -1629,7 +1630,8 @@ the same proof holds.
   proof and flush succeed. "Held" means a FLOCK entry for `<state>/lock`'s dev:ino
   in `/proc/locks`; use `lib/lanai.sh`'s existing device and inode parser near
   line 140. "Owner" means the progress file's pid is alive and has `<state>/lock`
-  open, checked with `readlink /proc/<pid>/fd/*`. `lanai_flock` runs external
+  open, checked by comparing each `/proc/<pid>/fd/*` target's device and inode
+  (`stat -L`) with `<state>/lock`'s, so a symlinked state folder still matches. `lanai_flock` runs external
   `flock -n "$fd"`, so `/proc/locks` names the short-lived flock process, not the
   holder. Do not compare that pid with the progress owner. `lanai panel` requires
   both checks, then returns `progress: {label,percent}` or null. Never probe with
@@ -1655,7 +1657,7 @@ the same proof holds.
   the measurement there. CI keeps its privileged container's loop-mounted
   btrfs folder (`LANAI_TEST_BTRFS_DIR`, `.github/workflows/test.yml`) and adds
   strace to its packages. CI also sets `LANAI_REQUIRE_BTRFS=1`, which makes
-  `btrfs_dir` in `test/helpers.bash` fail instead of skip when the folder is
+  `btrfs_tmp` in `test/helpers.bash` fail instead of skip when the folder is
   missing or not btrfs. Local runs keep skipping without it. Skip locally if
   unavailable and report the skip.
   This observes reads outside the helper and cannot hide a second pass in page
@@ -1687,8 +1689,9 @@ Start, Open and Shut down controls in place.
   This is stricter than dailyControls' `setup_done` for a stopped VM, on purpose.
   A right click on a working install with a pending update step opens the panel;
   its Start still works. Bash supplies a tooltip line naming "Right click" and
-  the action; `LanaiModel.qml` includes that line. Widget left click, Enter,
-  Space and the Menu key toggle the panel in every state. Right click dispatches
+  the action; `LanaiModel.qml` includes that line. Widget left click, Enter (Return and keypad
+  Enter, `Keys.onReturnPressed` and `Keys.onEnterPressed`), Space and the Menu key
+  toggle the panel in every state. Right click dispatches
   the supplied start/open action through `ui-run`, or opens the panel. It never
   decides from status or control enablement. Keep command-side guards for
   changes since the last poll.
@@ -2088,3 +2091,4 @@ The orchestrator runs the gate; delegates run no review stage.
 | plan amendment (scale, progress, clicks) | a (gpt-6.1-sol) | 3 (full, cap) | 0 findings. Stage a clean |
 | plan amendment (scale, progress, clicks) | b single (opus-5.5) | 1 (full) | 4 should-fix, 6 nits, 0 refuted; all integrated (by Codex): a restore onto a deleted disk installs and locks the clone before hashing; provability defined by statfs and extent classes, with mixed plain and compressed extents (Omarchy mounts compress=zstd) and a fixture each; a one-extent probe with no write; a hook for restore's final map compare; threat model covers deliberate re-cloning in any mode; strace also rejects mmap/sendfile/splice/copy_file_range and polls start after the lock; the progress lock is read from /proc/locks; a resumed restore re-clones a stale temp; invalid windows_scale refuses boot like memory/cores, label "Windows scale"; right click uses $p.finished on purpose, Menu key toggles |
 | plan amendment (scale, progress, clicks) | b single (opus-5.5) | 2 (full) | 1 blocker, 2 should-fix, 8 nits, 0 refuted; all integrated (by Codex): unwritten (preallocated) extents count as provable, since dockur's detect-zeroes and discard make them (verified), with zero-range fixtures and a read-only extent count John runs on the rehearsal copy first; the existing disk needs only btrfs and a NOCOW match; the progress owner is the pid holding the lock file open (/proc/locks names the short-lived flock process, verified); no probe, the real clone falls back to the next root; the deleted-disk clone is locked before it appears; small files cloned then hashed once; no separate SHARED check; right-click open needs no idle lock; pwsh tests skip in CI (AUR only); README covers both scale choices; ctypes statfs/renameat2, FIEMAP batching, map timing, helpers.bash |
+| plan amendment (scale, progress, clicks) | b single (opus-5.5) | 3 (full, cap) | 1 should-fix, 4 nits, 0 refuted; nits integrated by Claude: any failure before the first install file is replaced is a clean refusal (a clone error included); the progress owner compares device and inode, not a path; the helper is `btrfs_tmp`; keypad Enter handled too. The should-fix (the deleted-disk restore changes storage before the hash, against req 7's literal "before anything changes", and dockur's cleanup ignores the disk lock) waits for John |
