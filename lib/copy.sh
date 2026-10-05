@@ -40,15 +40,28 @@ has_nocow() {
   [[ ${a%% *} == *C* ]]
 }
 
+# Clone the regular file <src> to <dst> with cp --reflink=always, so the
+# copy shares its data blocks and costs no space. btrfs refuses to clone
+# between a NOCOW and a COW file, so <dst> is created (or emptied) and given
+# <src>'s NOCOW attribute, or has an inherited one removed, first. Keeps the
+# mode and file times. Fails, with cp's own error on stderr, when the two
+# are not on one filesystem that supports reflinks or the copy fails.
+reflink_file() {
+  : >"$2" || return 1
+  if has_nocow "$1"; then
+    chattr +C -- "$2" || return 1
+  elif has_nocow "$2"; then
+    chattr -C -- "$2" || return 1
+  fi
+  cp --reflink=always --preserve=mode,timestamps -- "$1" "$2"
+}
+
 # Copy the tree <src> into <dst>, an empty folder the caller made (so the
 # caller knows the folder is its own and may remove it on failure). Each file
-# is cloned with cp --reflink=always, so the copy shares its data blocks with
-# the source and costs no space. btrfs refuses to clone between a NOCOW and a
-# COW file, so each file is created empty and given the source's NOCOW
-# attribute (or has an inherited one removed) before the clone. Modes and
-# file times are kept; <dst> gets <src>'s mode. Folder modes are set after
-# their contents, so read-only folders copy too. Fails on a symlink or special
-# file, and when the two are not on one filesystem that supports reflinks.
+# is cloned with reflink_file. Modes and file times are kept; <dst> gets
+# <src>'s mode. Folder modes are set after their contents, so read-only
+# folders copy too. Fails on a symlink or special file, and when the two are
+# not on one filesystem that supports reflinks.
 reflink_tree() (
   set -o pipefail
   src=$1 dst=$2
@@ -71,13 +84,7 @@ reflink_tree() (
         mkdir -- "$d" || exit 1
         continue
       fi
-      : >"$d" || exit 1
-      if has_nocow "$s"; then
-        chattr +C -- "$d" || exit 1
-      elif has_nocow "$d"; then
-        chattr -C -- "$d" || exit 1
-      fi
-      cp --reflink=always --preserve=mode,timestamps -- "$s" "$d" || {
+      reflink_file "$s" "$d" || {
         echo "lanai: cannot reflink $s: source and destination must be on the same btrfs or XFS filesystem" >&2
         exit 1
       }

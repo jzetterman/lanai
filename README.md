@@ -33,7 +33,7 @@ Out of v1: GPU passthrough, and a dedicated partition or NVMe for Windows.
 Lanai is an Omarchy bar plugin (id `io.github.jzetterman.lanai`) that runs your
 `omarchy-windows-vm` Windows install in plain QEMU, as your user, and shows it in a
 Looking Glass window. The plugin sits at the repository root: `manifest.json`, `bin/`,
-`lib/`, `guest/` and `test/`. It is under construction; see the
+`lib/`, `systemd/`, `guest/` and `test/`. It is under construction; see the
 [plan](docs/plugin/plan.md).
 
 These sections are filled in phase 7:
@@ -47,13 +47,22 @@ These sections are filled in phase 7:
 - Shutdown time at reboot
 - Other Windows plugins
 
+Guest setup adds HostFission's signing certificate to the machine's Trusted
+Publishers to avoid the Looking Glass driver's publisher prompt. Windows then
+accepts any driver HostFission signs without asking. During removal, remove
+HostFission's certificate using `certlm.msc`, under Trusted Publishers.
+
 ## Tests
 
 Run `bats test spike/test`. Tests that need btrfs read `LANAI_TEST_BTRFS_DIR` (for
 example `LANAI_TEST_BTRFS_DIR=$PWD/.btrfs-test`, which git ignores) and skip when it is
-unset or not on btrfs. Lint with
+unset or not on btrfs; CI runs them on a loop-mounted btrfs image. No test boots Windows
+or talks to your systemd user manager; QEMU runs only paused (TCG) on 1 MiB scratch
+disks for the lock tests. No test downloads or builds the Looking Glass client, runs
+sudo, or opens a window: curl, cmake, pacman, sudo, omarchy, systemd-run and hyprctl
+are stand-ins. Lint with
 `shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
 docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
-docs/plugin/proof-kit/proof-unit-stop`.
+docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga`.
 
 Lanai is MIT licensed; see [LICENSE](LICENSE).

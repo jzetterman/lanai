@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# lanai-vm-stop: ExecStop of lanai-vm.service. Asks Windows to shut down over
+# QMP when QEMU still runs, waits for it, then waits briefly for this run's
+# shutdown record. See vm_stop in lib/vm.sh.
+set -euo pipefail
+
+# shellcheck source-path=SCRIPTDIR source=../lib/lanai.sh
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib/lanai.sh"
+vm_stop

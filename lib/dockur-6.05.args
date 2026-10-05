@@ -1,0 +1,54 @@
+# QEMU arguments of Lanai's VM: dockur 6.05's command line as the spike captured
+# it (spike/test/fixtures/dockur-cmdline.txt), one argument per line. Lines
+# that start with # and blank lines are skipped. vm_args (lib/vm.sh) fills
+# @CORES@, @MEMORY@, @STORAGE@ and @MAC@ and adds Lanai's own devices. Left
+# out on purpose: the container's display, VNC, HMP monitor, pid file, serial
+# monitor and tap network (plan: Architecture, VM hardware).
+-nodefaults
+-machine
+type=q35,smm=off,graphics=off,vmport=off,dump-guest-core=off,hpet=off,accel=kvm
+-enable-kvm
+-global
+kvm-pit.lost_tick_policy=discard
+-cpu
+host,kvm=on,l3-cache=on,+hypervisor,migratable=no,-vmx,+invtsc,arch_capabilities=off,hv_passthrough,-hv-evmcs
+-smp
+@CORES@,sockets=1,dies=1,cores=@CORES@,threads=1
+-m
+@MEMORY@G
+-name
+Lanai,process=lanai
+-smbios
+type=1,serial=SystemSerialNumber
+-device
+qemu-xhci,id=xhci,p2=7,p3=7
+-device
+usb-tablet
+-device
+virtio-net-pci,id=net0,netdev=hostnet0,romfile=,mac=@MAC@
+-drive
+file=@STORAGE@/data.img,id=data3,format=raw,cache=none,aio=native,discard=unmap,detect-zeroes=on,if=none
+-device
+virtio-scsi-pci,id=data3,bus=pcie.0,addr=0xa,iothread=io2,hotplug=off
+-device
+scsi-hd,drive=data3,bus=data3.0,channel=0,scsi-id=0,lun=0,rotation_rate=1,bootindex=3
+-object
+iothread,id=io2
+-rtc
+base=localtime
+-global
+ICH9-LPC.disable_s3=1
+-global
+ICH9-LPC.disable_s4=1
+-drive
+file=@STORAGE@/windows.rom,if=pflash,unit=0,format=raw,readonly=on
+-drive
+file=@STORAGE@/windows.vars,if=pflash,unit=1,format=raw
+-object
+rng-random,id=objrng0,filename=/dev/urandom
+-device
+virtio-rng-pci,rng=objrng0,id=rng0,bus=pcie.0
+-fw_cfg
+name=opt/org.tianocore/UninstallMemAttrProtocol,string=y
+-rtc
+base=localtime,clock=host,driftfix=slew

@@ -96,6 +96,14 @@ f 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 sub/a"
 
 # --- lock_disk / unlock_disk ---
 
+@test "reflink_file: a failed clone shows cp's own error" {
+  printf x >"$T/src"
+  shim cp 'echo "cp: No space left on device" >&2; exit 1'
+  PATH=$T/shims:$PATH run reflink_file "$T/src" "$T/dst"
+  assert_failure
+  assert_output --partial "No space left on device"
+}
+
 @test "lock_disk: blocks a VM from opening the disk until unlock_disk" {
   truncate -s 1M "$T/d.img"
   vm_can_open "$T/d.img"

@@ -39,37 +39,6 @@ write_compose() {
   done
 }
 
-# Build a finished omarchy-windows-vm install at <dir>: a 1 MiB data.img with
-# data in its first bytes, firmware, variables, MAC, boot marker, base, ver.
-make_install() {
-  mkdir -p "$1"
-  truncate -s 1M "$1/data.img"
-  printf 'LANAI' | dd of="$1/data.img" conv=notrunc status=none
-  echo rom >"$1/windows.rom"
-  echo vars >"$1/windows.vars"
-  echo 02:4B:81:73:3C:96 >"$1/windows.mac"
-  : >"$1/windows.boot"
-  echo win11x64.iso >"$1/windows.base"
-  echo 6.05 >"$1/windows.ver"
-}
-
-# Write a fake /proc entry: fake_proc <pid> <cgroup path> <argv...>.
-fake_proc() {
-  local pid=$1 cg=$2
-  shift 2
-  mkdir -p "$T/proc/$pid"
-  printf '%s\0' "$@" >"$T/proc/$pid/cmdline"
-  printf '0::%s\n' "$cg" >"$T/proc/$pid/cgroup"
-}
-
-# Put an executable shim <name> with body <script> first on PATH.
-shim() {
-  printf '#!/usr/bin/env bash\n%s\n' "$2" >"$T/shims/$1"
-  chmod +x "$T/shims/$1"
-}
-
-DOCKER_SCOPE=/system.slice/docker-4f1c2d3e4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff.scope
-
 # --- storage_dir ---
 
 @test "storage_dir: defaults to ~/.windows" {
