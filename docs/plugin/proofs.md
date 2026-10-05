@@ -839,6 +839,26 @@ no other prompt. Windows shut down by itself; step 6's automatic checks passed
 on the first poll; John answered yes to both questions, and setup reported step
 7. Pass: one prompt in total, as spec req 7 requires.
 
+## Phase 7 panel run (2026-10-05)
+
+John installed the `plugin/phase7` build (c48e683) into Omarchy's bar from the branch
+(`git clone -b plugin/phase7 ... ~/.config/omarchy/plugins/io.github.jzetterman.lanai`,
+then `omarchy plugin enable`), with Lanai's settings on the test copy.
+- The copy was already set up (the second hands-on run), so the panel showed step 4:
+  the client had no build stamp yet. Continue setup ran the quick check, wrote the
+  stamp without rebuilding, and setup reported finished.
+- Then, from the panel: Shut down, restore of snapshot `20261004T230202Z` ("The
+  snapshot was restored."), and Continue setup from step 1. The setup boot opened in
+  QEMU's basic window; John ran setup.cmd and approved the one prompt; Windows shut
+  down by itself; the setup job started it again with no click, opened the Looking
+  Glass window, and ran step 6's checks ("Checking Windows. You can close this
+  panel."). The two questions appeared; John answered yes to both; setup reported
+  finished.
+- John's feedback: during setup, hide controls the user can trip over (he clicked
+  Open window before setup needed it; it opened the Looking Glass window early), and
+  color the Setup section when the user must act. Both went into the plan amendment
+  ("During setup").
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

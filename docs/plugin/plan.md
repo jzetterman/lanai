@@ -1339,6 +1339,26 @@ table, because the state already shows them; a stepless failure (the lock busy, 
 user manager unreachable) stays until the next action in its group. A setup result
 with the same reason as the current plan is hidden to avoid repeated guidance.
 
+**During setup** (John, 2026-10-05, after the first panel test): while setup is not
+finished, the view hides controls the user can trip over, and draws the eye to what
+needs them.
+- Start Windows and Open window are hidden: setup starts Windows and opens the right
+  window itself. If the Looking Glass window was closed during a setup boot or step
+  6's boot, the Setup section offers "Reopen the Windows window" instead.
+- The Snapshots section is hidden while setup boots or checks Windows (the unit is
+  active); it shows again when Windows is off, so step 3's offer and recovery
+  restores still work.
+- Shut down stays during the setup boot (it is the way out if setup.cmd hangs, and
+  the forced stop needs it), but asks for a second click with "Shutting down now
+  stops setup. You'll choose how to continue."
+- Settings stay: they apply at the next start.
+- `setup.attention` is true when the user must act (an action such as Continue
+  setup, the snapshot offer, the display choices, running setup.cmd, the step 6
+  questions, or a failure) and false while Lanai works by itself; the QML then draws
+  the Setup section with the theme's accent color (border and a light background),
+  so it follows the user's Omarchy theme.
+Once setup is finished, every control shows as before. Tests cover each rule.
+
 **The QML.** It polls `lanai panel` every 2 s while its own panel is open, and every
 15 s otherwise (the tooltip), whatever the state; only the bar whose panel is open
 polls fast. It has a 10 s deadline, skips a tick while a call runs, and an
