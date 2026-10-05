@@ -1164,7 +1164,7 @@ setup_worker() {
           run cmd_panel
           assert_success
           local expected=false
-          if [[ $boot != finished && ($ST == active || $ST == reloading || $ST == activating) && $client == closed && $window == false ]]; then expected=true; fi
+          if [[ $boot != finished && $ST == active && $client == closed && $window == false ]]; then expected=true; fi
           if [[ $(jq -r .buttons.reopen_window.show <<<"$output") != "$expected" ]]; then echo "$boot / $ST / $client / $window" >&3; fi
           assert_equal "$(jq -r .buttons.reopen_window.show <<<"$output")" "$expected"
           assert_equal "$(jq -r .buttons.reopen_window.enable <<<"$output")" "$expected"
@@ -1247,6 +1247,19 @@ setup_worker() {
       assert_equal "$(jq -r .buttons.restore_snapshot.show <<<"$output")" "$expected"
       assert_equal "$(jq -r .buttons.restore_confirm.show <<<"$output")" "$expected"
     done
+  done
+  # A working install with a pending update keeps Snapshots on ordinary boots.
+  state '{"snapshot":"declined","done":true}'
+  build_stamp_current() { return 1; }
+  echo '{"setup":false,"window":false}' >"$S/boot.json"
+  for ST in activating active reloading deactivating; do
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .setup.finished <<<"$output")" false
+    assert_equal "$(jq -r .snapshots.show <<<"$output")" true
+    assert_equal "$(jq -r .buttons.take_snapshot.show <<<"$output")" true
+    assert_equal "$(jq -r .buttons.restore_snapshot.show <<<"$output")" true
+    assert_equal "$(jq -r .buttons.restore_confirm.show <<<"$output")" true
   done
   state '{"snapshot":"declined"}'
   status_facts() { printf 'ActiveState=%s\nLanaiRestorePending=true\n' "$ST"; }

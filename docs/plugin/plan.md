@@ -1449,11 +1449,14 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   an ordinary start clears it. A completed round stops treating that boot as a
   final check boot, even if an update becomes pending while Windows stays running.
   Setup offers Reopen the Windows window only while the usual window controls are
-  hidden, a client-mode boot is active, the client is not running, and shutdown is
-  not in progress, including after a step 6 failure or no answer rolls back to step 5.
+  hidden, a client-mode boot's unit is active (not activating or reloading), the
+  client is not running, and shutdown is not in progress, including after a step 6
+  failure or no answer rolls back to step 5.
   Boot flags also cover activation before status reports the display.
   Reopen uses `ui-run open`. `snapshots.show` and its control descriptors hide
-  the section only during unfinished setup with an active unit; settings stay.
+  the section only when the usual controls are hidden with an active unit;
+  working installs keep Snapshots during ordinary boots with a pending update.
+  Settings stay.
   Shut down during the setup boot supplies a confirmation control and the warning
   “Shutting down now stops setup. You'll choose how to continue.” The second click
   uses `ui-run stop`; Cancel, closing the panel or a view that no longer needs
@@ -1462,22 +1465,27 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   be armed. Both setup client starts accept a window already opened by Reopen.
   Step 5 says "Use Shut down only if setup.cmd stops responding."
   `setup.attention` marks user actions, setup failures, interrupted work, a failed
-  launch and a closed client window. It clears during automatic work, startup
-  before the setup drive is available, and shutdown waits regardless of the reason.
+  launch and a closed client window. It clears during automatic work and shutdown
+  waits regardless of the reason. A setup boot needs attention once QEMU reports
+  running, even if the setup drive is not yet available.
   Regression tests cover rollback with a closed client and all step 6 rollback
   reasons during unit deactivation, requested shutdown and guest shutdown.
   Guidance follows the visible controls, including the cause in the top block.
   QML keeps Setup's inset constant and uses an accent border and the shell's
   `Style.selectedAccentFill`, falling back to `Util.alpha(Color.accent, 0.10)`,
-  following shell theme changes. Finished setup retains its usual controls and has no attention highlight.
+  following shell theme changes. Finished setup retains its usual controls and has
+  no attention highlight. An empty Setup section hides its padding too.
   A pending launch with no record now supplies progress without indexing a missing
-  command. Nine new Bats cases cover every setup step, worker and idle attention,
+  command. Nineteen new Bats cases cover every setup step, worker and idle attention,
   both boot displays and client states, section visibility, confirmation and finished
   controls. The inert QML test also covers confirmation, cancellation and resets,
-  daily shutdown, Reopen transport, section visibility and live theme colors.
-  Validation for this addition and its follow-up fixes: `bats test/panel.bats
-  test/panel-jobs.bats test/panel-qml.bats test/ui.bats` passes 105 cases with one
-  comma-locale skip; the renderer runs 15 QML test functions. `test/qml-lint` passes all three QML
+  daily shutdown, Reopen transport, section visibility, empty Setup content and
+  live theme colors.
+  Earlier validation for this addition: `bats test/panel.bats test/panel-jobs.bats
+  test/panel-qml.bats test/ui.bats` runs 105 cases with one comma-locale skip.
+  These review fixes pass 89 cases in `test/panel.bats`, `test/panel-qml.bats` and
+  `test/ui.bats`, with one comma-locale skip; the renderer runs 16 QML test functions.
+  `test/qml-lint` passes all three QML
   files, and the complete project ShellCheck command including both fake servers
   and `test/qml-lint` passes. Tests were written first and failed before the changes.
   Scratch stayed under `.btrfs-test/` and was removed. No VM, real units, shell,
@@ -1812,3 +1820,5 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
 | diff (phase 7, panel view) | a (gpt-6.1-sol) | 4 (full, the rerun on the final diff, approved by John) | 1 P2, 1 P3, 0 refuted, 0 downgraded to nit; both confirmed and integrated (fix by Codex): a failed snapshot-choice save could vanish once the plan moved past step 3 (now stepless); its retry text named a hidden button. Both stages are at their caps; John decides whether to accept or run one more round |
 | diff (phase 7, panel view) | John | 2026-10-05 | John accepted the gate with round 4's fixes unreviewed, both stages at their caps. Next: the hands-on test in the bar on the test copy |
 | diff (phase 7, during setup) | a (gpt-6.1-sol) | 1 (full) | 2 P2, 0 refuted, 0 downgraded to nit; both confirmed and integrated (fixes by Codex): Reopen vanished after a step 6 rollback; the accent stayed on while Windows shut down |
+| diff (phase 7, during setup) | b single (opus-5.5) | 1 (full; single by John's Claude-usage rule) | 1 should-fix, 1 test gap, 6 nits, 0 refuted, 0 downgraded to nit; integrated (fixes by Codex) except one accepted nit: Start and Open hid on a working install with a pending update step (spec 8); untested client timeout warnings; one Cancel at a time; no confirm once a stop is under way; setup accepts a window already open; constant Setup inset; step 5 copy. Accepted: the highlight lights before the setup drive is visible (no guest signal before setup) |
+| diff (phase 7, during setup) | b single (opus-5.5) | 2 (full; single by John's Claude-usage rule) | 0 should-fix, 7 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex, the log rows by Claude): Snapshots stay for a working install with a pending update; Reopen only on an active unit; truthful attention note; a guard comment; no empty Setup band on a finished install; test counts; these log rows. Stage closed clean |

@@ -123,6 +123,13 @@ Panel {
           Rectangle {
             id: setupSection
             objectName: "setupSection"
+            visible: root.model.view.setup.show === true || root.setupAgainArmed
+              || root.model.control("continue_setup").show || root.model.control("reopen_window").show
+              || root.model.control("install").show || root.model.control("setup_snapshot").show
+              || root.model.control("skip_snapshot").show || root.model.control("send_answers").show
+              || (!root.model.view.setup.finished && (root.model.control("window").show || root.model.control("no_window").show))
+              || (root.model.control("continue_setup").hint || "") !== ""
+              || (root.model.view.result.setup || "") !== ""
             width: parent.width
             implicitHeight: setupColumn.implicitHeight + 2 * setupColumn.y
             color: root.model.view.setup.attention === true

@@ -494,6 +494,31 @@ TestCase {
     verify(objects(panel, function(o) { return o.text === 'Snapshots' && o.visible }).length > 0)
     panel.destroy(); wait(1)
   }
+  function test_empty_setup_section_hides_and_returns_with_content() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    function view(buttons, result) {
+      return {buttons:buttons,setup:{show:false,finished:true},settings:{},snapshots:{names:[]},result:result,logs:{}}
+    }
+    model.view = view({}, {})
+    var panel = createTemporaryObject(panelComponent, tests, {model:model,opened:true})
+    wait(1)
+    var section = objects(panel, function(o) { return o.objectName === 'setupSection' })[0]
+    verify(section !== undefined)
+    compare(section.visible, false)
+    model.view = view({continue_setup:{show:true,enable:true,label:'Run setup again'}}, {})
+    wait(1)
+    compare(section.visible, true)
+    verify(objects(section, function(o) { return o.text === 'Run setup again' && o.visible }).length > 0)
+    model.view = view({}, {})
+    wait(1)
+    compare(section.visible, false)
+    model.view = view({}, {setup:'Setup was interrupted. Continue setup to try again.'})
+    wait(1)
+    compare(section.visible, true)
+    verify(objects(section, function(o) { return o.text === model.view.result.setup && o.visible }).length > 0)
+    panel.destroy(); wait(1)
+  }
   function test_force_stop_two_clicks() {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)

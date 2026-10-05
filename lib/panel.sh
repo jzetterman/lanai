@@ -168,11 +168,12 @@ cmd_panel() {
     ($token != "" and ($seen|not) and $now - $at >= 10) as $launchFailed |
     ($st.active|not) as $off | ($st.state != "in-use") as $available |
     ($off and $available and ($st.restore_pending|not)) as $idle |
-    ($p.finished or $off) as $snapshotsShow |
     ($st.setup_done == true and ($p.finished or ($st.active and ($setupBoot or $checksBoot)|not))) as $dailyControls |
+    ($off or $dailyControls) as $snapshotsShow |
+    ($facts | split("\n") | index("ActiveState=active") != null) as $unitActive |
     (($p.finished|not) and $st.active and $setupBoot and $st.state != "stopping" and
       ($stopRequested|not)) as $confirmStop |
-    (($p.finished|not) and ($dailyControls|not) and $st.active and ($basicWindow|not) and
+    (($p.finished|not) and ($dailyControls|not) and $unitActive and ($basicWindow|not) and
       ($client|not) and $st.state != "stopping") as $reopen |
     {ok:true,state:$st.state,active:$st.active,label:$w[0],headline:$w[1],cause:$w[2],next:$w[3],
      pending_ack:(if $seen then $token else "" end),
@@ -236,6 +237,7 @@ cmd_panel() {
        save_settings:button(true;$settings.error == "";"Save settings")}} |
     if ($dailyControls|not) and ($st.state == "stopped" or $st.state == "running") then
       .next="Follow the Setup section below." |
+      # Guard only: stopped implies setup_done and an off unit, so daily controls normally show.
       if $st.state == "stopped" then .cause="Lanai setup has not finished for this Windows install." else . end
     else . end |
     if $st.restore_pending then .cause="A restore did not finish, so Windows cannot start." |
