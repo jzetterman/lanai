@@ -27,7 +27,9 @@ panel_words() {
       "invalid-reply":"Lanai did not give a readable reply. Check the panel log and try again."
     };
     if .ok == false then
-      if .reason and (reasons[.reason] != null) then reasons[.reason]
+      if $c == "setup" and .step == "3" and .reason == "record" then
+        "Lanai could not save the snapshot choice. Check that your home folder has free space, then click Continue setup."
+      elif .reason and (reasons[.reason] != null) then reasons[.reason]
       elif $c == "setup" and .step == "2" and .missing then ""
       elif $c == "setup" and .step == "3" and .reason == null then ""
       else ({start:"Windows could not start. Check the logs and try again.",
@@ -137,7 +139,8 @@ cmd_panel() {
      busy:{active:$busy,line:(if $rec.held and $job.reply and $job.command == "setup" then "Checking Windows. You can close this panel."
        elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes."}[$job.command] // "Starting the operation.") else "" end)},
      result:($r + {launch:(if $launchFailed then "The operation did not start. Check the panel job log, then try again." else "" end)}),
-     setup:{show:($p.finished|not),finished:$p.finished,step:$p.step,questions:$p.questions,choices:$p.choices,
+     setup:{show:($p.finished|not),finished:$p.finished,step:$p.step,questions:$p.questions,
+       choices:(if $p.finished then ["--no-window","--window"] else $p.choices end),
        share_question:"Does Explorer show the files from your Linux Windows folder?",scale_question:"Does text in Windows look the right size?",
        lines:([if $problem_line != "" then $problem_line else {"1":"Check the Windows install and the shared Windows folder before continuing.",
          "2":"Click Install in a terminal, complete installation there, then continue setup.",
@@ -164,8 +167,10 @@ cmd_panel() {
        install:button($p.step == "2";($busy|not);"Install in a terminal"),
        setup_snapshot:button($p.step == "3";$idle and ($busy|not);"Take a snapshot"),
        skip_snapshot:button($p.step == "3";$idle and ($busy|not);"Continue without a snapshot"),
-       window:button(($p.choices|length)>0;$idle and ($busy|not);"Set up in QEMU\u0027s screen"),
-       no_window:button(($p.choices|length)>0;$idle and ($busy|not);"Set up in the Windows window"),
+       window:(button($p.finished or ($p.choices|length)>0;$idle and ($busy|not);"Set up in QEMU\u0027s screen") +
+         {hint:"Use this if the Windows window is blank or the display driver needs repair."}),
+       no_window:(button($p.finished or ($p.choices|length)>0;$idle and ($busy|not);"Set up in the Windows window") +
+         {hint:"Use this if the Windows display driver already works."}),
        answer_yes:button(($p.questions|length)>0;($busy|not);"Yes"),
        answer_no:button(($p.questions|length)>0;($busy|not);"No"),
        send_answers:button(($p.questions|length)>0;($busy|not) and $st.active;"Send answers"),

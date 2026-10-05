@@ -1372,8 +1372,11 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   acts and ignores `setup-reply.json`; status's existing `guest_version_note` is
   its sole permitted write. Status and reply tables supply plain text rather than
   CLI messages. Structured `reason` codes distinguish step 1 problems,
-  back-to-step-5 failures and unsupported snapshots. Snapshot success keeps its
-  location, growth and file-manager deletion guidance. Offers, successful waits
+  back-to-step-5 failures, failed snapshot-choice writes and unsupported snapshots.
+  A failed step 3 write carries `reason: record` and tells the user to check home
+  folder space before continuing; it is distinct from the silent snapshot offer.
+  Snapshot success keeps its location, growth and file-manager deletion guidance.
+  Offers, successful waits
   and ordinary successes produce no result text. Failures persist in their group;
   start's network warning requires the same active invocation; snapshot and restore
   outcomes persist until another action in that group. Settings/list read errors
@@ -1422,8 +1425,15 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   checks remain possible even if launch stalls. QML retains transient answers,
   unsaved settings, second-click confirmations and the pending token/time, with
   transport state only for serializing reads/actions. It renders plain text and
-  backend control descriptors; `SetupCalls.js` and its test are deleted. The
-  widget retains its L-in-a-monitor glyph, shell-owned popout and primary-click
+  backend control descriptors; `SetupCalls.js` and its test are deleted. Settings
+  fields freeze their transient input on the SpinBox's `valueModified`
+  signal, so real keyboard edits survive polls; reopening loads current settings,
+  and a successful Save resets the fields to the submitted values. Failed saves
+  keep the edits. On a finished install, Run setup again reveals the backend's two
+  display choices and their hints; each launches an explicit `setup --no-window`
+  or `setup --window` job, bypassing the finished shortcut. Only that reveal is
+  transient; reopening clears it, and the backend still enables each choice.
+  The widget retains its L-in-a-monitor glyph, shell-owned popout and primary-click
   start/open behavior. Force stop and restore both require a second click.
 - **Documentation:** README describes autonomous setup, current guidance,
   snapshot refreshes, result logs and the Qt 6 renderer test. CLAUDE's layout now
@@ -1438,17 +1448,25 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   `ComponentBehavior: Bound`; Qt 6 lint is authoritative, since this machine's
   legacy `/usr/bin/qmllint` (1.0) exits silently on that pragma. No other amendment
   departures are intended.
-- **Validation:** tests were added before implementation. All 49 tests in
+- **Validation:** tests were added before implementation. All 54 tests in
   `test/panel.bats`, `test/panel-jobs.bats`, `test/panel-qml.bats` and `test/ui.bats`
   pass. The QML test loads the real files with inert shell/Process types and checks
   both monitors' polling cadence, refresh races, direct and detached literal
-  arguments, launch tracking, settings edits, and both confirmations. Socket-free
-  selections also pass in `test/lanai.bats`, `test/checks.bats`, `test/vm.bats`,
+  arguments, launch tracking, settings edits with a real Qt SpinBox and keyboard
+  input across polls, failed/successful saves and reopen, both repair display
+  choices with their hints, and both confirmations. The setup regression also
+  checks both failed snapshot-decision writes (taken and declined) and both
+  explicit displays after finished setup. Socket-free selections also pass in
+  `test/lanai.bats`, `test/checks.bats`, `test/vm.bats`,
   `test/client.bats`, `test/setup.bats`, `test/lifecycle.bats`,
-  `test/proof-kit.bats`, `test/lanai-copy.bats`, `test/snapshot.bats` and
-  `spike/test/lgtest.bats`; all of `test/guest.bats` passes. Qt 6 `qmllint` passes
-  all three QML files with the installed shell imports, and the complete project
-  ShellCheck command passes. Socket-dependent tests could not run in this sandbox;
+  `test/proof-kit.bats`, `test/lanai-copy.bats` and `test/snapshot.bats`; all of
+  `test/guest.bats` passes. The socket-free selection totals 387 passes, three
+  filesystem skips and one failure: 44 of 45 selected `spike/test/lgtest.bats`
+  tests pass, but its unchanged live-flock test does not find the held lock in
+  `/proc/locks` here (line 190). Qt 6 `qmllint` passes
+  all three QML files with the installed shell imports (a repository-local `qs`
+  import mapping supplies the installed shell's namespace), and the complete
+  project ShellCheck command passes. Socket-dependent tests could not run in this sandbox;
   paused-QEMU and compose-reading tests were excluded by the task constraints.
   Scratch stayed in the repository and was removed. No VM, real units, Omarchy
   shell, plugin installation, review stage or commit ran.

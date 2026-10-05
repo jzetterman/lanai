@@ -12,6 +12,7 @@ Item {
   property double pendingAt: 0
   property bool refreshAgain: false
   signal panelRequested()
+  signal settingsSaved(int memoryGib, int cores)
   readonly property string tooltip: ["Lanai", view.label, view.headline, view.cause, view.next, view.notice, view.warning].filter(function(s) { return !!s }).join("\n")
 
   function control(name) { return view.buttons[name] || {show: false, enable: false, label: ""} }
@@ -77,9 +78,12 @@ Item {
   Process {
     id: actionProcess
     stdout: StdioCollector { id: actionOutput; waitForEnd: true }
-    onExited: function() {
+    onExited: function(code) {
       try {
-        if (JSON.parse(actionOutput.text).panel_requested === true) root.panelRequested()
+        var reply = JSON.parse(actionOutput.text)
+        if (reply.panel_requested === true) root.panelRequested()
+        if (code === 0 && reply.ok === true && actionProcess.command[3] === "settings")
+          root.settingsSaved(Number(actionProcess.command[4]), Number(actionProcess.command[5]))
       } catch (_) { root.panelRequested() }
       root.refresh(true)
     }

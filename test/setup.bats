@@ -806,6 +806,7 @@ exec /usr/bin/mv "$@"'
     assert_equal "$(field ok)" false
     assert_equal "$(field step)" 3
     assert_equal "$(field message)" "Lanai cannot record its setup state."
+    assert_equal "$(field reason)" record
     assert_equal "$(field next)" "run setup again"
     assert_equal "$(jq -r '.snapshot // "unset"' "$S/setup.json")" unset
     assert [ ! -e "$T/build-called" ]

@@ -68,6 +68,32 @@ ended() {
   done
 }
 
+@test "panel: finished setup offers both repair displays with labels and hints" {
+  state '{"snapshot":"declined","done":true}'
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .setup.finished <<<"$output")" true
+  assert_equal "$(jq -r .buttons.continue_setup.label <<<"$output")" 'Run setup again'
+  assert_equal "$(jq -c .setup.choices <<<"$output")" '["--no-window","--window"]'
+  assert_equal "$(jq -r .buttons.no_window.label <<<"$output")" 'Set up in the Windows window'
+  assert_equal "$(jq -r .buttons.window.label <<<"$output")" "Set up in QEMU's screen"
+  run jq -e 'all(.buttons.no_window, .buttons.window; .show and .enable and (.hint | length > 0))' <<<"$output"
+  assert_success
+}
+
+@test "panel words: failed snapshot decision is actionable while the offer stays silent" {
+  run panel_words setup '{"ok":false,"step":"3","reason":"record","message":"UNTRUSTED"}'
+  assert_success
+  assert_output 'Lanai could not save the snapshot choice. Check that your home folder has free space, then click Continue setup.'
+  state '{}'
+  panel_result_write setup '{"command":"setup","ended":1,"reply":{"ok":false,"step":"3","reason":"record"}}'
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .result.setup <<<"$output")" 'Lanai could not save the snapshot choice. Check that your home folder has free space, then click Continue setup.'
+  run panel_words setup '{"ok":false,"step":"3"}'
+  assert_output ''
+}
+
 @test "setup plan: steps and acting resume agree before and after marker consumption" {
   local fixture markers planned acted
   for markers in present consumed; do

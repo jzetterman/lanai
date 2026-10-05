@@ -101,6 +101,7 @@ Item {
 QML
   cat >"$T/qml/imports/TestUi/NumberField.qml" <<'QML'
 import QtQuick
+import QtQuick.Controls as QQC
 Item {
   property alias field: spin
   property string label
@@ -109,7 +110,16 @@ Item {
   property int value
   property color foreground
   property string fontFamily
-  Item { id: spin; property int value: parent.value }
+  implicitWidth: 120
+  implicitHeight: 40
+  QQC.SpinBox {
+    id: spin
+    anchors.fill: parent
+    from: parent.from
+    to: parent.to
+    value: parent.value
+    editable: true
+  }
 }
 QML
   echo 'import QtQuick; Text { property color foreground; property string fontFamily }' >"$T/qml/imports/TestUi/PanelSectionHeader.qml"
@@ -122,6 +132,9 @@ TestCase {
   id: tests
   name: "PanelRenderer"
   when: windowShown
+  visible: true
+  width: 800
+  height: 800
   Component { id: modelComponent; LanaiModel {} }
   Component { id: panelComponent; LanaiPanel {} }
   function objects(item, predicate) {
@@ -174,17 +187,83 @@ TestCase {
   function test_unsaved_settings_survive_polls_and_reset_on_reopen() {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)
+    function view(memory, cores) {
+      return {buttons:{save_settings:{show:true,enable:true,label:'Save settings'}},setup:{},settings:{memory_gib:memory,cores:cores},snapshots:{names:[]},result:{},logs:{}}
+    }
+    model.view = view(8, 4)
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     panel.open()
-    model.view = {buttons:{},setup:{},settings:{memory_gib:8,cores:4},snapshots:{names:[]},result:{},logs:{}}
     var memory = objects(panel, function(o) { return o.label === "Memory (GiB)" })[0]
+    var cores = objects(panel, function(o) { return o.label === "CPU cores" })[0]
     compare(memory.field.value, 8)
-    memory.field.value = 9
-    model.view = {buttons:{},setup:{},settings:{memory_gib:16,cores:4},snapshots:{names:[]},result:{},logs:{}}
+    memory.field.forceActiveFocus()
+    keyClick(Qt.Key_Up)
     compare(memory.field.value, 9)
+    cores.field.forceActiveFocus()
+    keyClick(Qt.Key_Down)
+    compare(cores.field.value, 3)
+    model.view = view(16, 8)
+    compare(memory.field.value, 9)
+    compare(cores.field.value, 3)
+    model.view = view(32, 16)
+    compare(memory.field.value, 9)
+    compare(cores.field.value, 3)
+    var save = objects(panel, function(o) { return o.control === 'save_settings' })[0]
+    save.clicked()
+    var action = objects(model, function(o) { return o.command && o.command[1] === 'ui-run' })[0]
+    compare(action.command.slice(3).join(' '), 'settings 9 3')
+    action.complete('{"ok":false}', 0)
+    model.view = view(16, 8)
+    compare(memory.field.value, 9)
+    compare(cores.field.value, 3)
+    save.clicked()
+    memory.field.forceActiveFocus()
+    keyClick(Qt.Key_Up)
+    cores.field.forceActiveFocus()
+    keyClick(Qt.Key_Up)
+    compare(memory.field.value, 10)
+    compare(cores.field.value, 4)
+    action.complete('{"ok":true,"memory_gib":9,"cores":3}', 0)
+    compare(memory.field.value, 9)
+    compare(cores.field.value, 3)
     panel.close(); panel.open()
     compare(memory.field.value, 16)
+    compare(cores.field.value, 8)
     panel.destroy(); wait(1)
+  }
+  function test_finished_setup_reveals_both_display_choices_without_a_bare_job() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    model.view = {buttons:{continue_setup:{show:true,enable:true,label:'Run setup again'},
+      no_window:{show:true,enable:true,label:'Set up in the Windows window',hint:'Use this if the Windows display driver already works.'},
+      window:{show:true,enable:true,label:"Set up in QEMU's screen",hint:'Use this if the Windows window is blank or the display driver needs repair.'}},
+      setup:{finished:true,show:false,choices:['--no-window','--window']},settings:{},snapshots:{names:[]},result:{},logs:{}}
+    for (var i = 0; i < 2; i++) {
+      var panel = createTemporaryObject(panelComponent, tests, {model:model})
+      panel.open()
+      var again = objects(panel, function(o) { return o.control === 'continue_setup' })[0]
+      var client = objects(panel, function(o) { return o.control === 'no_window' })[0]
+      var screen = objects(panel, function(o) { return o.control === 'window' })[0]
+      verify(again.visible)
+      verify(!client.visible)
+      verify(!screen.visible)
+      Quickshell.lastCommand = []
+      again.clicked()
+      compare(Quickshell.lastCommand.length, 0)
+      verify(client.visible)
+      verify(screen.visible)
+      verify(objects(panel, function(o) { return o.text === model.control('no_window').hint && o.visible }).length > 0)
+      verify(objects(panel, function(o) { return o.text === model.control('window').hint && o.visible }).length > 0)
+      panel.close(); panel.open()
+      verify(!client.visible)
+      verify(!screen.visible)
+      again.clicked()
+      var choice = i === 0 ? client : screen
+      choice.clicked()
+      compare(Quickshell.lastCommand[1], 'ui-job')
+      compare(Quickshell.lastCommand.slice(3).join(' '), i === 0 ? 'setup --no-window' : 'setup --window')
+      panel.destroy(); wait(1)
+    }
   }
   function test_long_job_pending_and_no_deadline() {
     var model = createTemporaryObject(modelComponent, tests)

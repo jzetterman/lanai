@@ -16,6 +16,9 @@ Panel {
   property string restoreArmed: ""
   property string shareAnswer: ""
   property string scaleAnswer: ""
+  property bool setupAgainArmed: false
+  property int memoryInput: root.model.view.settings.memory_gib || 1
+  property int coresInput: root.model.view.settings.cores || 1
   // The shell supplies bar/theme fields dynamically on QObject groups.
   // qmllint disable missing-property
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -24,9 +27,9 @@ Panel {
 
   onOpenedChanged: {
     if (opened) {
-      memoryField.field.value = Qt.binding(function() { return root.model.view.settings.memory_gib || 1 })
-      coresField.field.value = Qt.binding(function() { return root.model.view.settings.cores || 1 })
-    } else { forceArmed = false; restoreArmed = "" }
+      memoryInput = Qt.binding(function() { return root.model.view.settings.memory_gib || 1 })
+      coresInput = Qt.binding(function() { return root.model.view.settings.cores || 1 })
+    } else { forceArmed = false; restoreArmed = ""; setupAgainArmed = false }
   }
   Connections {
     target: root.model
@@ -34,7 +37,21 @@ Panel {
       if (!root.model.control("force_stop").show) root.forceArmed = false
       if (!root.model.control("restore_snapshot").enable) root.restoreArmed = ""
       if (!root.model.control("send_answers").show) { root.shareAnswer = ""; root.scaleAnswer = "" }
+      if (!root.model.view.setup.finished) root.setupAgainArmed = false
     }
+    function onSettingsSaved(memoryGib: int, cores: int) {
+      root.memoryInput = memoryGib
+      root.coresInput = cores
+    }
+  }
+  // SpinBox edits keep its value binding. Freeze the input that feeds it instead.
+  Connections {
+    target: memoryField.field
+    function onValueModified() { root.memoryInput = memoryField.field.value }
+  }
+  Connections {
+    target: coresField.field
+    function onValueModified() { root.coresInput = coresField.field.value }
   }
 
   // Keep the keyboard-focused control visible on small screens.
@@ -95,7 +112,7 @@ Panel {
           Note { text: root.model.view.result.vm || "" }
 
           PanelSeparator { foreground: root.foreground }
-          PanelSectionHeader { visible: root.model.view.setup.show === true; text: "Setup"; foreground: root.foreground; fontFamily: root.fontFamily }
+          PanelSectionHeader { visible: root.model.view.setup.show === true || root.setupAgainArmed; text: "Setup"; foreground: root.foreground; fontFamily: root.fontFamily }
           Repeater {
             model: root.model.view.setup.lines || []
             delegate: Note { required property string modelData; text: modelData; visible: root.model.view.setup.show === true }
@@ -103,12 +120,23 @@ Panel {
           Flow {
             width: parent.width
             spacing: Style.space(6)
-            Action { control: "continue_setup"; onClicked: root.model.run(["setup"], true) }
+            Action { control: "continue_setup"; visible: descriptor.show && !root.setupAgainArmed; onClicked: {
+                if (root.model.view.setup.finished) root.setupAgainArmed = true
+                else root.model.run(["setup"], true)
+              }
+            }
             Action { control: "install"; onClicked: root.model.run(["setup-host"], false) }
             Action { control: "setup_snapshot"; onClicked: root.model.run(["snapshot"], true) }
             Action { control: "skip_snapshot"; onClicked: root.model.run(["setup", "--no-snapshot"], true) }
-            Action { control: "window"; onClicked: root.model.run(["setup", "--window"], true) }
+          }
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: !root.model.view.setup.finished || root.setupAgainArmed
             Action { control: "no_window"; onClicked: root.model.run(["setup", "--no-window"], true) }
+            Note { text: root.model.control("no_window").show ? root.model.control("no_window").hint || "" : "" }
+            Action { control: "window"; onClicked: root.model.run(["setup", "--window"], true) }
+            Note { text: root.model.control("window").show ? root.model.control("window").hint || "" : "" }
           }
           Column {
             width: parent.width
@@ -143,8 +171,8 @@ Panel {
           Flow {
             width: parent.width
             spacing: Style.space(12)
-            NumberField { id: memoryField; label: "Memory (GiB)"; from: 1; to: 512; value: root.model.view.settings.memory_gib || 1; enabled: root.model.control("save_settings").enable; foreground: root.foreground; fontFamily: root.fontFamily }
-            NumberField { id: coresField; label: "CPU cores"; from: 1; to: 64; value: root.model.view.settings.cores || 1; enabled: root.model.control("save_settings").enable; foreground: root.foreground; fontFamily: root.fontFamily }
+            NumberField { id: memoryField; label: "Memory (GiB)"; from: 1; to: 512; value: root.memoryInput; enabled: root.model.control("save_settings").enable; foreground: root.foreground; fontFamily: root.fontFamily }
+            NumberField { id: coresField; label: "CPU cores"; from: 1; to: 64; value: root.coresInput; enabled: root.model.control("save_settings").enable; foreground: root.foreground; fontFamily: root.fontFamily }
             Action { control: "save_settings"; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value)], false) }
           }
           Note { text: root.model.view.result.settings || "" }

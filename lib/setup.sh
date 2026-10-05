@@ -499,7 +499,7 @@ setup_resume() {
     [[ -z $(setup_get snapshot) ]]; then
     want=taken
     [[ $nosnap != true || -n $(snapshot_list "$dir") ]] || want=declined
-    setup_set snapshot "\"$want\"" || { setup_reply false 3 "Lanai cannot record its setup state." "run setup again"; return 1; }
+    setup_set snapshot "\"$want\"" || { setup_reply false 3 "Lanai cannot record its setup state." "run setup again" '{"reason":"record"}'; return 1; }
   fi
   case $action in
     done) setup_reply true 7 "Lanai setup is finished." "start Windows" ;;
