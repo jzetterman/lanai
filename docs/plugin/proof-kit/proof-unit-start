@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# ExecStart of the throwaway lanai-proof.service (proof 4). Starts, in the
+# unit's own cgroup, a shutdown delay inhibitor whose watcher stops this unit
+# when logind announces a reboot or power-off. Then it becomes the proof VM's
+# QEMU (with QMP on $XDG_RUNTIME_DIR/lanai-proof/qmp.sock), so QEMU is the
+# unit's main process.
+set -euo pipefail
+
+KIT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)
+
+systemd-inhibit --what=shutdown --mode=delay --who=lanai-proof \
+  --why="Shutting Windows down cleanly" "$KIT/proof-vm" shutdown-watch &
+exec "$KIT/proof-vm" run "${PROOF_COPY:?PROOF_COPY is not set}"

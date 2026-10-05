@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# lanai-copy <src> <dst>: make a full, verified reflink copy of a stopped
+# omarchy-windows-vm storage folder, for rehearsals and proofs
+# (docs/plugin/plan.md, "Test copies"). It holds QEMU's write lock on
+# <src>/data.img for the whole run, so it refuses while a VM uses the disk and
+# no VM can start during the copy. It builds <dst>.partial, checks its file
+# list, sizes and SHA-256 against <src> under the lock, then renames it. A
+# symlinked <src> is copied from its target. It never removes anything it did
+# not create: an existing <dst>.partial is refused.
+set -euo pipefail
+
+LIB=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib" && pwd)
+# shellcheck source-path=SCRIPTDIR source=../lib/copy.sh
+source "$LIB/copy.sh"
+
+# Print an error and exit. The EXIT trap cleans up.
+die() {
+  printf 'lanai-copy: %s\n' "$*" >&2
+  exit 1
+}
+
+main() {
+  if (($# != 2)); then
+    echo "usage: lanai-copy <src> <dst>" >&2
+    exit 2
+  fi
+  local src dst=${2%/} n rsrc rdst rpart
+  # The real folder, so find and reflink_tree see files, not a symlink.
+  src=$(realpath -e -- "$1" 2>/dev/null) && [[ -d $src ]] || die "$1 is not a folder"
+  [[ -f $src/data.img && ! -L $src/data.img ]] || die "$1 has no data.img"
+  # Global, so the EXIT trap can still see it.
+  part=$dst.partial
+  [[ ! -e $dst && ! -L $dst ]] || die "$dst already exists"
+  [[ ! -e $part && ! -L $part ]] || die "$part already exists; move it away first"
+  rsrc=$src/ rdst=$(realpath -m -- "$dst")/ rpart=$(realpath -m -- "$part")/
+  case $rdst in "$rsrc"*) die "$dst is inside $1" ;; esac
+  case $rpart in "$rsrc"*) die "$part is inside $1" ;; esac
+  case $rsrc in "$rpart"* | "$rdst"*) die "$1 is inside $dst or $part" ;; esac
+
+  lock_disk "$src/data.img" ||
+    die "cannot lock $1/data.img ($LANAI_LOCK_ERROR): stop the VM that uses $1, then try again"
+  created=0
+  # The copy may hold read-only folders, so make it writable before removing.
+  trap '((created)) && { chmod -R u+w -- "$part"; rm -rf -- "$part"; }; unlock_disk' EXIT
+  # mkdir fails if the folder appeared since the check, so it is ours.
+  mkdir -- "$part" || die "cannot create $part"
+  # shellcheck disable=SC2034 # read by the EXIT trap
+  created=1
+  reflink_tree "$src" "$part" || die "copy failed"
+  n=$(tree_manifest "$src") || die "cannot read $src"
+  [[ $n == "$(tree_manifest "$part")" ]] || die "the copy does not match $src"
+  mv -T -- "$part" "$dst"
+  unlock_disk
+  trap - EXIT
+  echo "copied $src to $dst; verified $(wc -l <<<"$n") entries by size and SHA-256"
+}
+
+main "$@"

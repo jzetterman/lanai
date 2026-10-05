@@ -1,2 +1,4 @@
 # Spike artifacts: downloads, client build, VM disk copies and runtime state
 /spike/work/
+# btrfs scratch for tests (LANAI_TEST_BTRFS_DIR)
+/.btrfs-test/
