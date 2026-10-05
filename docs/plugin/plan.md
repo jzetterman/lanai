@@ -1290,10 +1290,12 @@ step 5 needs the same ended run completing step 5; step 6 needs the same active
 invocation with no matching stop request. A changed expectation returns an inert
 `follow_stopped` reply, so a stop between the worker probe and setup cannot boot
 Windows again.
-A busy operation-lock reply to a follow-up retries after two seconds, keeping the
-last wait visible; setup rechecks the same expectation under its lock on each retry.
+A busy reply from setup resume's own operation lock retries after two seconds,
+keeping the last wait visible; setup rechecks the same expectation under its lock
+on each retry. A busy reply from the later boot lock ends following, since the
+resume may already have consumed the run markers.
 It writes the setup group's record after every completed setup call and ends on any
-reply that is not a wait, on a failure other than busy contention, or when the
+reply that is not a wait, on any failure except this initial-lock contention, or when the
 expected state does not come. So setup runs at most
 every 10 s, never two at a time, never after a failure, keyed on step and state, and
 it keeps going with the panel closed. Open, notice dismissal and settings saves do
@@ -1395,9 +1397,23 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   outcomes persist until another action in that group. Settings/list read errors
   are separate data, and warnings use status's structured details, joined without
   leading spaces or a repeated driver warning during a version mismatch. Logs
-  name the Windows VM journal and omit the client path when runtime is unavailable.
+  name each file: Windows window log, setup/snapshot/restore log, and button actions
+  log. The VM log points to the user journal under `lanai-vm`; an unavailable
+  runtime omits the Windows window log. Reply words use those same names.
+  Restore success says only "The snapshot was restored.", so its persistent
+  outcome cannot keep asking for setup after setup finishes again.
+  Step 5 and 6 waiting words require a setup job holding `panel-job.lock`;
+  without one they ask the user to click Continue setup. The step 5 drive
+  instructions still require the setup boot. Continue setup is disabled at
+  step 5 for `no-media` and `active`, whose next step is shutdown.
+  Restore labels include the snapshot name before "and replace Windows".
+  Armed Run setup again shows "Choose how Windows should show during setup."
+  and a Cancel button that clears the armed state.
 - **Shared facts:** `shared_facts` supplies layout, storage, container, unit state,
-  `Result`, invocation and restore pending. Status and setup each gather once.
+  `Result`, invocation and restore pending. A layout result of 2 gets reason
+  `missing` and tells the user to install Windows with Omarchy before setup;
+  an incomplete or unsupported install keeps reason `layout`.
+  Status and setup each gather once.
   Container detection scans cgroups and command lines with bash builtins and is
   skipped for an active unit. The gatherer makes no QMP call or write. The complete
   view uses status's one bounded QMP session and never executes a client binary.
@@ -1416,22 +1432,26 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
 - **Following jobs:** the setup worker owns all follow-up calls. Two-second checks
   require the expected unit/invocation state; follow-ups carry only
   `--follow <step> <invocation>`; completed setup calls are at least ten seconds
-  apart, with busy lock attempts retried after two seconds. Setup
+  apart, with busy setup-resume lock attempts retried after two seconds. Setup
   rechecks that expectation under its operation lock before bookkeeping or any
   action; stale expectations return an inert reply, covering the stop race
   between the worker probe and setup's fact gather. A clean automatic setup
   shutdown advances once; a deactivating unit keeps the worker waiting until
   inactive or failed, before it evaluates the ended run. Panel shutdown,
   force stop, invocation changes, failures and terminal replies end
-  following. Busy follow-ups retry after two seconds without replacing the wait;
-  settings saves and notice dismissal do not end step 6 checks. Step 6 also checks
-  matching stop requests. Long jobs run through
+  following. Only a busy reply from setup resume's initial lock, marked
+  `follow_retry: true`, retries after two seconds without replacing the wait.
+  A later `boot_vm` lock refusal ends following and exposes Continue setup:
+  a step 5 resume has already consumed the run markers by then, so replaying
+  its guard would stop without retrying the boot. Settings saves and notice
+  dismissal do not end step 6 checks. Step 6 also checks matching stop requests. Long jobs run through
   `systemd-run --user --collect` in `session.slice`, with
   `PartOf=graphical-session.target` and `After=graphical-session.target`, and
   hold `panel-job.lock`. The setup worker checks that target is active before
   every setup call and during waits; logout ends following even with lingering
   enabled. A first call outside the desktop session records a visible failure.
   Result timestamps use a local C locale so decimal commas cannot break JSON.
+  The locale test skips when no comma-decimal locale is installed.
   Closing the panel or reloading the shell does not end them. Client-mode setup
   boots start the selected client themselves; step 6 starts the pinned client.
 - **Records:** `ui-run` records direct actions when they end, with the current
@@ -1439,8 +1459,9 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   and restore, and atomically writes one `panel-result-<group>.json` for each of
   vm, setup, settings and snapshots. It publishes started, following and ended
   records, writing the final record before releasing its lock. Refused workers
-  leave the owner's record untouched. The view probes the existing lock read-only
-  with a shared lock before reading records and keeps a successful probe
+  leave the owner's record untouched and append their refusal to `panel-job.log`,
+  so the launch-failure log contains the reason. The view probes the existing
+  lock read-only with a shared lock before reading records and keeps a successful probe
   throughout the reads. Concurrent bars do not report each other as workers;
   unfinished records without a held lock become interrupted. Interrupted setup
   always offers Continue setup. A pending token with no record after ten seconds

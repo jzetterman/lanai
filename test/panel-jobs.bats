@@ -150,10 +150,12 @@ SH
 @test "ui job: final record precedes unlock and contention never overwrites it" {
   local fd
   panel_result_write setup '{"token":"owner"}'
+  printf 'owner log\n' >"$S/panel-job.log"
   exec {fd}>"$S/panel-job.lock"; flock "$fd"
   run cmd_ui_job_worker refused setup
   assert_failure
   assert_equal "$(jq -r .token "$S/panel-result-setup.json")" owner
+  assert_equal "$(cat "$S/panel-job.log")" $'owner log\nA panel job is already running.'
   exec {fd}>&-
   panel_result_write() {
     if [[ $(jq -r '.ended // empty' <<<"$2") != '' ]]; then
@@ -246,7 +248,7 @@ source "$LANAI_TEST_REPO/lib/lanai.sh"
 printf '%s\n' "$*" >>"$T/calls"
 printf '%s\n' "$(cat "$T/now")" >>"$T/times"
 if [[ $* == 'setup --follow 6 inv' ]] && ! lanai_flock; then
-  emit false "" "$LANAI_BUSY." "" '{"reason":"busy"}'
+  setup_resume auto false "" "" 6 inv
   exit 1
 fi
 n=$(cat "$T/count"); echo "$((n+1))" >"$T/count"
@@ -271,4 +273,39 @@ SH
   assert_equal "$(cat "$T/calls")" $'setup\nsetup --follow 6 inv\nsetup --follow 6 inv'
   assert_equal "$(jq -r .ok "$T/save-reply")" true
   assert_equal "$(jq -c .reply.questions "$S/panel-result-setup.json")" '["share","scale"]'
+}
+
+@test "ui job: boot lock refusal after step 5 bookkeeping ends following with the busy result" {
+  # Real setup consumes the clean shutdown before boot_vm takes its own lock.
+  # Refuse that second lock; no boot action or real unit can be reached.
+  echo inv >"$S/running"; echo inv >"$S/started"
+  echo '{"invocation":"inv","guest":true}' >"$S/last-shutdown"
+  echo '{"setup":true}' >"$S/boot.json"
+  jq -nc --arg location "$T/storage" '{location:$location,snapshot:"declined",step5:false}' >"$S/setup.json"
+  mkdir -p "$T/storage"; echo base >"$T/storage/windows.base"
+  cat >"$LANAI_BIN/lanai" <<'SH'
+#!/usr/bin/env bash
+source "$LANAI_TEST_REPO/lib/lanai.sh"
+n=$(cat "$T/count"); echo "$((n+1))" >"$T/count"
+if ((n == 0)); then echo '{"ok":true,"step":"5"}'; exit; fi
+if ((n > 1)); then echo '{"ok":true,"follow_stopped":true}'; exit; fi
+shared_facts() { printf 'ActiveState=inactive\nLanaiStorage=%s/storage\n' "$T"; }
+share_check() { :; }
+host_packages_missing() { :; }
+build_stamp_current() { :; }
+guest_version_behind() { :; }
+setup_follow() { :; }
+lanai_flock() { [[ ! -e $T/resume-locked ]] && touch "$T/resume-locked"; }
+setup_command "${@:2}"
+SH
+  export LANAI_TEST_REPO=$REPO
+  ui_setup_next() { :; }
+  run cmd_ui_job_worker token setup
+  assert_success
+  assert_equal "$(cat "$T/count")" 2
+  assert_equal "$(jq -r .step5 "$S/setup.json")" true
+  assert [ ! -e "$S/running" ]
+  assert_equal "$(jq -r .reply.reason "$S/panel-result-setup.json")" busy
+  assert_equal "$(jq -r .reply.step "$S/panel-result-setup.json")" 6
+  assert [ -n "$(jq -r '.ended // empty' "$S/panel-result-setup.json")" ]
 }

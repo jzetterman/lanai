@@ -259,7 +259,11 @@ assert_plan_agreement() {
   assert_output --partial 'file manager'
   panel_result_write snapshots '{"command":"restore","ended":1,"reply":{"ok":true}}'
   run cmd_panel
-  assert_output --partial 'restored'
+  assert_equal "$(jq -r .result.snapshots <<<"$output")" 'The snapshot was restored.'
+  state '{"snapshot":"declined","done":true}'
+  run cmd_panel
+  assert_equal "$(jq -r .setup.finished <<<"$output")" true
+  assert_equal "$(jq -r .result.snapshots <<<"$output")" 'The snapshot was restored.'
   panel_result_write snapshots '{"command":"restore","ended":1,"reply":{"ok":false}}'
   run cmd_panel
   assert_output --partial 'could not restore'
@@ -286,10 +290,10 @@ assert_plan_agreement() {
 
 @test "panel words: every reason and command branch uses structured keys, never CLI prose" {
   local reason command text
-  for reason in busy session settings layout restore share container manager active record no-media nostart incomplete guest-boot idd-missing mismatch agents answers client snapshot-unsupported invalid-reply; do
+  for reason in busy session settings layout missing restore share container manager active record no-media nostart incomplete guest-boot idd-missing mismatch agents answers client snapshot-unsupported invalid-reply; do
     text=$(panel_words setup "$(jq -nc --arg r "$reason" '{ok:false,step:"1",reason:$r,message:"UNTRUSTED",next:"UNTRUSTED"}')")
     assert [ -n "$text" ]
-    refute [ "$text" = 'Setup could not finish. Check the logs, then continue setup.' ]
+    refute [ "$text" = 'Setup could not finish. Check the setup log, then continue setup.' ]
     refute [ "$text" = UNTRUSTED ]
   done
   for command in start open stop force-stop notice-seen settings setup-host setup snapshot restore; do
@@ -852,7 +856,104 @@ assert_plan_agreement() {
 @test "panel: logs name the journal and omit an unavailable client path" {
   run_dir() { return 1; }
   run cmd_panel
-  assert_equal "$(jq -r .logs.vm <<<"$output")" 'Windows VM log: in your system journal (lanai-vm)'
+  assert_equal "$(jq -r .logs.vm <<<"$output")" 'Windows VM log: in your user journal, under lanai-vm'
   run jq -e '.logs | has("client") | not' <<<"$output"
   assert_success
+}
+
+@test "panel: setup wait guidance requires the held setup job, not just an active VM" {
+  local fixture fd expected step
+  for step in 5 6; do
+    for fixture in cli failed-client failed-check retired-questions interrupted other-job following; do
+      ST=active
+      rm -f "$S/panel-result-setup.json" "$S/panel-result-snapshots.json" "$RUN/step6-asked"
+      state '{"snapshot":"declined","step5":true}'
+      if [[ $step == 5 ]]; then echo '{"setup":true}' >"$S/boot.json"
+      else echo '{"setup":false}' >"$S/boot.json"; fi
+      case $fixture in
+        failed-client) panel_result_write setup "$(jq -nc --arg step "$step" '{command:"setup",started:1,ended:2,reply:{ok:false,step:$step,reason:"client"}}')" ;;
+        failed-check) panel_result_write setup "$(jq -nc --arg step "$step" '{command:"setup",started:1,ended:2,reply:{ok:false,step:$step}}')" ;;
+        retired-questions) panel_result_write setup '{"command":"setup","started":1,"ended":2,"reply":{"ok":true,"step":"6","questions":["share","scale"]}}' ;;
+        interrupted) panel_result_write setup "$(jq -nc --arg step "$step" '{command:"setup",started:1,reply:{ok:true,step:$step}}')" ;;
+        other-job) panel_result_write snapshots '{"command":"snapshot","started":3}'; exec {fd}>"$S/panel-job.lock"; flock "$fd" ;;
+        following) panel_result_write setup "$(jq -nc --arg step "$step" '{command:"setup",started:1,reply:{ok:true,step:$step}}')"; exec {fd}>"$S/panel-job.lock"; flock "$fd" ;;
+      esac
+      run cmd_panel
+      assert_success
+      if [[ $step == 5 ]]; then
+        expected="In Windows, open Lanai's setup drive and run setup.cmd. Then click Continue setup so Lanai can restart Windows and check it when setup.cmd finishes."
+        [[ $fixture != following ]] || expected="In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Don't use Shut down here during this step."
+      else
+        expected='Click Continue setup so Lanai can check Windows.'
+        [[ $fixture != following ]] || expected='Windows is starting or being checked.'
+      fi
+      assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" "$expected"
+      if [[ $fixture == other-job || $fixture == following ]]; then exec {fd}>&-; fi
+    done
+  done
+}
+
+@test "shared facts: no install has its own reason and setup words" {
+  layout_check() { return 2; }
+  local facts plan
+  facts=$(shared_facts)
+  assert [ "$facts" != '' ]
+  assert_equal "$(sed -n 's/^LanaiProblemReason=//p' <<<"$facts")" missing
+  plan=$(setup_plan "$facts")
+  assert_equal "$(jq -r .reason <<<"$plan")" missing
+  run setup_resume auto false '' ''
+  assert_failure
+  assert_equal "$(jq -r .reason <<<"$output")" missing
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'No Windows install was found. Install Windows with Omarchy, then continue setup.'
+}
+
+@test "panel: logs and reply guidance use the same names" {
+  run cmd_panel
+  assert_equal "$(jq -r .logs.client <<<"$output")" "Windows window log: $RUN/client.log"
+  assert_equal "$(jq -r .logs.job <<<"$output")" "Setup, snapshot and restore log: $S/panel-job.log"
+  assert_equal "$(jq -r .logs.command <<<"$output")" "Button actions log: $S/panel-run.log"
+  run panel_words setup '{"ok":false,"reason":"client"}'
+  assert_output 'The Windows window could not open. Check the Windows window log and try again.'
+  run panel_words setup '{"ok":false}'
+  assert_output 'Setup could not finish. Check the setup log, then continue setup.'
+  run panel_words snapshot '{"ok":false}'
+  assert_output 'Lanai could not take the snapshot. Check the snapshot log and try again.'
+  run panel_words restore '{"ok":false}'
+  assert_output 'Lanai could not restore the snapshot. Check the restore log before trying again.'
+  run cmd_panel --pending never "$((EPOCHSECONDS - 11))"
+  assert_equal "$(jq -r .result.launch <<<"$output")" 'The operation did not start. Check the setup, snapshot and restore log, then try again.'
+}
+
+@test "panel: repair prompt and named restore labels come from the backend" {
+  state '{"snapshot":"declined","done":true}'
+  snapshot_list() { printf '%s\n' "$T/holiday" "$T/school"; }
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .setup.again_line <<<"$output")" 'Choose how Windows should show during setup.'
+  assert_equal "$(jq -r .buttons.cancel.label <<<"$output")" Cancel
+  assert_equal "$(jq -r '.buttons.restore_snapshot.labels.holiday' <<<"$output")" 'Restore snapshot holiday'
+  assert_equal "$(jq -r '.buttons.restore_confirm.labels.holiday' <<<"$output")" 'Restore holiday and replace Windows'
+  assert_equal "$(jq -r '.buttons.restore_confirm.labels.school' <<<"$output")" 'Restore school and replace Windows'
+}
+
+@test "panel: Continue setup is disabled for step 5 active and no-media problems" {
+  local reason
+  for reason in active no-media; do
+    setup_plan() { jq -nc --arg reason "$reason" '{step:"5",finished:false,action:"problem",reason:$reason,choices:[],questions:[]}'; }
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .buttons.continue_setup.show <<<"$output")" true
+    assert_equal "$(jq -r .buttons.continue_setup.enable <<<"$output")" false
+  done
+}
+
+@test "panel: stopped step 6 without a setup worker asks for Continue setup" {
+  state '{"snapshot":"declined","step5":true}'
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .setup.step <<<"$output")" 6
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Click Continue setup so Lanai can check Windows.'
+  assert_equal "$(jq -r .buttons.continue_setup.enable <<<"$output")" true
 }

@@ -130,6 +130,7 @@ Panel {
             Action { control: "skip_snapshot"; onClicked: root.model.run(["setup", "--no-snapshot"], true) }
           }
           Note { text: root.model.control("continue_setup").hint || "" }
+          Note { text: root.model.view.setup.again_line || ""; visible: root.setupAgainArmed }
           Column {
             width: parent.width
             spacing: Style.space(6)
@@ -163,6 +164,7 @@ Panel {
               onClicked: root.model.run(["setup", "--share-ok", root.shareAnswer, "--scale-ok", root.scaleAnswer], true)
             }
           }
+          Action { control: "cancel"; visible: root.setupAgainArmed && descriptor.show; onClicked: root.setupAgainArmed = false }
           Note { text: root.model.view.result.setup || "" }
 
           PanelSeparator { foreground: root.foreground }
@@ -193,7 +195,7 @@ Panel {
             delegate: Action {
               required property string modelData
               control: root.restoreArmed === modelData ? "restore_confirm" : "restore_snapshot"
-              text: descriptor.label + " " + modelData
+              text: (descriptor.labels || {})[modelData] || descriptor.label
               onClicked: {
                 if (root.restoreArmed === modelData) { root.restoreArmed = ""; root.model.run(["restore", modelData], true) }
                 else root.restoreArmed = modelData

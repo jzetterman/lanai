@@ -190,7 +190,8 @@ ui_setup_next() {
 }
 
 # Internal worker: publish started after locking, then following, then ended
-# before releasing. Refused launches leave the owner's record and log untouched.
+# before releasing. Refused launches leave the owner's record untouched and append
+# their reason to the job log, so a pending launch failure has a diagnostic.
 cmd_ui_job_worker() {
   local token=${1:-} command=${2:-} group args s fd out started inv at reply
   [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore)$ ]] || {
@@ -200,7 +201,11 @@ cmd_ui_job_worker() {
   umask 077
   s=$(state_dir); mkdir -p -- "$s"
   exec {fd}>>"$s/panel-job.lock"
-  if ! flock -w 1 "$fd"; then emit false "" "A panel job is already running." ""; return 1; fi
+  if ! flock -w 1 "$fd"; then
+    printf '%s\n' "A panel job is already running." >>"$s/panel-job.log"
+    emit false "" "A panel job is already running." ""
+    return 1
+  fi
   group=$(panel_group "$command") args=$(jq -nc '$ARGS.positional' --args -- "$@") started=$(ui_timestamp)
   inv=$(unit_invocation)
   panel_result_write "$group" "$(ui_record "$token" "$command" "$args" "$started" "$inv" null null)"
@@ -213,10 +218,10 @@ cmd_ui_job_worker() {
       break
     fi
     reply=$(ui_call "$s/panel-job.log" "$command" "$@")
-    # A direct settings save or notice dismissal briefly owns the operation
-    # lock. Keep the last wait visible and retry the guarded follow-up.
+    # Retry only setup_resume's lock refusal before it consumes run markers.
+    # A later boot lock refusal ends following and leaves Continue setup visible.
     if [[ $command == setup && ${1:-} == --follow ]] &&
-      jq -e '.ok == false and .reason == "busy"' <<<"$reply" >/dev/null; then
+      jq -e '.ok == false and .reason == "busy" and .follow_retry == true' <<<"$reply" >/dev/null; then
       ui_sleep 2
       continue
     fi

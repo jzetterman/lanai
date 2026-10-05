@@ -811,7 +811,7 @@ shared_facts() {
   fi
   if ! dir=$(storage_dir 2>/dev/null); then reason=settings
   else problem=$(layout_check "$dir") || rc=$?; fi
-  [[ $rc == 0 ]] || reason=layout
+  case $rc in 0) ;; 2) reason=missing ;; *) reason=layout ;; esac
   case $st in active|activating|deactivating|reloading) ;; *) container=$(container_fact) ;; esac
   printf '%s\n' "$show" "LanaiStorage=$dir" "LanaiProblem=${problem//$'\n'/; }" \
     "LanaiProblemReason=$reason" "LanaiContainer=$container"

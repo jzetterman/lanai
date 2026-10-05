@@ -236,8 +236,9 @@ TestCase {
     wait(1); ready(model)
     model.view = {buttons:{continue_setup:{show:true,enable:true,label:'Run setup again'},
       no_window:{show:true,enable:true,label:'Set up in the Windows window',hint:'Use this if the Windows display driver already works.'},
+      cancel:{show:true,enable:true,label:'Cancel'},
       window:{show:true,enable:true,label:"Set up in a basic window",hint:'Use a basic window if the Windows window is blank or the display driver needs repair.'}},
-      setup:{finished:true,show:false,choices:['--no-window','--window']},settings:{},snapshots:{names:[]},result:{},logs:{}}
+      setup:{finished:true,show:false,again_line:'Choose how Windows should show during setup.',choices:['--no-window','--window']},settings:{},snapshots:{names:[]},result:{},logs:{}}
     for (var i = 0; i < 2; i++) {
       var panel = createTemporaryObject(panelComponent, tests, {model:model})
       panel.open()
@@ -252,6 +253,15 @@ TestCase {
       compare(Quickshell.lastCommand.length, 0)
       verify(client.visible)
       verify(screen.visible)
+      verify(objects(panel, function(o) { return o.text === model.view.setup.again_line && o.visible }).length > 0)
+      var cancel = objects(panel, function(o) { return o.control === 'cancel' && o.visible })[0]
+      verify(cancel !== undefined)
+      cancel.clicked()
+      compare(panel.setupAgainArmed, false)
+      verify(again.visible)
+      verify(!client.visible)
+      compare(Quickshell.lastCommand.length, 0)
+      again.clicked()
       verify(objects(panel, function(o) { return o.text === model.control('no_window').hint && o.visible }).length > 0)
       verify(objects(panel, function(o) { return o.text === model.control('window').hint && o.visible }).length > 0)
       panel.close(); panel.open()
@@ -340,13 +350,15 @@ TestCase {
   function test_restore_and_controls() {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)
-    model.view = {buttons:{restore_snapshot:{show:true,enable:true,label:'Restore'},restore_confirm:{show:true,enable:true,label:'Confirm'}},setup:{},settings:{},snapshots:{names:['snapshot']},result:{},logs:{}}
+    model.view = {buttons:{restore_snapshot:{show:true,enable:true,label:'Restore',labels:{snapshot:'Restore snapshot snapshot'}},restore_confirm:{show:true,enable:true,label:'Confirm',labels:{snapshot:'Restore snapshot and replace Windows'}}},setup:{},settings:{},snapshots:{names:['snapshot']},result:{},logs:{}}
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     wait(1)
     var restore = objects(panel, function(o) { return o.control === 'restore_snapshot' })[0]
+    compare(restore.text, 'Restore snapshot snapshot')
     restore.clicked()
     compare(panel.restoreArmed, 'snapshot')
     compare(restore.control, 'restore_confirm')
+    compare(restore.text, 'Restore snapshot and replace Windows')
     restore.clicked()
     compare(Quickshell.lastCommand[1], 'ui-job')
     compare(Quickshell.lastCommand.slice(3).join(' '), 'restore snapshot')

@@ -88,17 +88,23 @@ the administrator prompt as the same Windows user; approval as a different accou
 is refused. The setup drive must stay **read-only**: do not attach writable setup
 media or substitute files written by Windows. Setup shuts Windows down when the guest
 install finishes. Let that shutdown finish; Shut down from the panel does not count.
-The panel continues setup after Windows shuts down. If Windows stops during the
-final checks, click **Continue setup** to start it again. In File Explorer, select
+When a setup operation is running, the panel continues setup after Windows shuts
+down. Otherwise, click **Continue setup** when the setup script finishes. If Windows
+stops during the final checks, click **Continue setup** to start it again. In File Explorer, select
 This PC and check for a drive with the files from Linux's `~/Windows` folder.
 Answer that question and whether text looks the right size. If a setup boot stopped unfinished,
-the panel offers **Set up in QEMU's screen** until the Lanai display driver is installed,
+the panel offers **Set up in a basic window** until the Lanai display driver is installed,
 or **Set up in the Windows window** afterward. Open window is hidden while QEMU's
 setup window is in use. Setup keeps checking while the panel is closed or the shell restarts.
 Reopening the panel shows the current step and any running operation. The panel says
 setup is finished only when Lanai has recorded its completion for this disk.
 A failed or interrupted operation asks you to continue or retry. Click **Continue setup**
 to go on. After a shell restart, that button checks where setup stands.
+If Windows is running without the setup drive, shut it down before continuing.
+To run setup again after it finishes, shut Windows down and click **Run setup again**.
+Choose how Windows should show during setup, or click **Cancel** to return.
+A restore's success note stays until the next snapshot action; the Setup section
+shows whether setup still needs to finish.
 
 ## Daily use
 
@@ -117,7 +123,7 @@ shut down cleanly and returns immediately. If Windows ignores the request while
 starting, click Shut down again. After two minutes from
 the first request, the panel offers Force stop, followed by a separate confirming click.
 Unsaved work is lost on a forced stop. If the display fails or builds mismatch,
-read the panel's cause, next step and log path. Stop Lanai before using
+read the panel's cause, next step and named logs. Stop Lanai before using
 `omarchy-windows-vm` through RDP or its web console as the fallback.
 
 Omarchy's Super shortcuts and Ctrl+Alt+Del do **not** reach Windows; use Windows'
@@ -308,6 +314,8 @@ snapshot names and plain-language results; the QML polls every two seconds only
 while its own panel is open, and every fifteen seconds otherwise. Direct actions
 are recorded by `lanai ui-run`; setup, snapshots and restores run in session units
 through `lanai ui-job`, with diagnostics in Lanai’s state directory as
-`panel-run.log` and `panel-job.log`.
+`panel-run.log` and `panel-job.log`. The panel labels these as the button actions
+log and the setup, snapshot and restore log. The Windows window log has its own
+path; the Windows VM log is in your user journal, under lanai-vm.
 
 Lanai is MIT licensed; see [LICENSE](LICENSE).

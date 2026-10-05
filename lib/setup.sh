@@ -481,7 +481,12 @@ setup_plan() {
 setup_resume() {
   local window=$1 nosnap=$2 share=$3 scale=$4 follow_step=${5:-} follow_inv=${6:-} requested="" s facts plan st dir verdict="" action step reason want missing details next
   local -a list=()
-  if ! lanai_flock; then emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'; return 1; fi
+  # Only this lock refusal is safe to retry with the same follow-up guard:
+  # no bookkeeping has run yet. A later boot lock refusal must end following.
+  if ! lanai_flock; then
+    emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy","follow_retry":true}'
+    return 1
+  fi
   facts=$(shared_facts)
   st=$(sed -n 's/^ActiveState=//p' <<<"$facts")
   dir=$(sed -n 's/^LanaiStorage=//p' <<<"$facts")
@@ -549,6 +554,7 @@ setup_resume() {
       # CLI and panel each have their own copy, keyed on the same reason.
       case $reason in
         settings) want="Lanai cannot read its settings file." ;;
+        missing) want="No Windows install was found." ;;
         layout) want=$(sed -n 's/^LanaiProblem=//p' <<<"$facts") ;;
         restore) want="A restore did not finish." ;;
         share) want=$(jq -r .problem <<<"$plan") ;;

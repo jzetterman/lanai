@@ -218,20 +218,15 @@ CHILD
   while IFS= read -r candidate; do
     if [[ $(LC_ALL=$candidate locale decimal_point) == ',' ]]; then comma_locale=$candidate; break; fi
   done < <(locale -a)
-  if [[ -n $comma_locale ]]; then
-    LC_ALL=$comma_locale LC_NUMERIC=$comma_locale run bash -c '
-      source "$1/lib/ui.sh"
-      before=$LC_ALL
-      value=$(ui_timestamp)
-      jq -ne --argjson t "$value" "\$t > 0"
-      [[ $LC_ALL == "$before" ]]
-    ' _ "$REPO"
-    assert_success
-  else
-    # Hosts without a comma locale still verify the local formatting guard.
-    run declare -f ui_timestamp
-    assert_output --partial 'local LC_ALL=C'
-  fi
+  [[ -n $comma_locale ]] || skip "No comma-decimal locale is installed"
+  LC_ALL=$comma_locale LC_NUMERIC=$comma_locale run bash -c '
+    source "$1/lib/ui.sh"
+    before=$LC_ALL
+    value=$(ui_timestamp)
+    jq -ne --argjson t "$value" "\$t > 0"
+    [[ $LC_ALL == "$before" ]]
+  ' _ "$REPO"
+  assert_success
 }
 
 @test "busy lock: every operation reports its structured reason" {
