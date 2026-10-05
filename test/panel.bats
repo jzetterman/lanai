@@ -1147,13 +1147,13 @@ setup_worker() {
   assert_equal "$(jq -r .setup.attention <<<"$output")" true
 }
 
-@test "panel: reopen belongs only to a closed client in either setup boot, never a basic window or shutdown" {
+@test "panel: reopen follows the unfinished running boot, never a basic window or shutdown" {
   local boot client window
-  for boot in setup checks other finished; do
+  for boot in setup checks normal finished; do
     case $boot in
       setup) state '{"snapshot":"declined","step5":false}'; echo '{"setup":true}' >"$S/boot.json" ;;
       checks) state '{"snapshot":"declined","step5":true}'; echo '{"setup":false}' >"$S/boot.json" ;;
-      other) state '{"snapshot":"declined"}'; echo '{"setup":false}' >"$S/boot.json" ;;
+      normal) state '{"snapshot":"declined"}'; echo '{"setup":false}' >"$S/boot.json" ;;
       finished) state '{"snapshot":"declined","done":true}'; echo '{"setup":false}' >"$S/boot.json" ;;
     esac
     for ST in inactive active activating reloading deactivating; do
@@ -1164,7 +1164,7 @@ setup_worker() {
           run cmd_panel
           assert_success
           local expected=false
-          if [[ ($boot == setup || $boot == checks) && ($ST == active || $ST == reloading || $ST == activating) && $client == closed && $window == false ]]; then expected=true; fi
+          if [[ $boot != finished && ($ST == active || $ST == reloading || $ST == activating) && $client == closed && $window == false ]]; then expected=true; fi
           if [[ $(jq -r .buttons.reopen_window.show <<<"$output") != "$expected" ]]; then echo "$boot / $ST / $client / $window" >&3; fi
           assert_equal "$(jq -r .buttons.reopen_window.show <<<"$output")" "$expected"
           assert_equal "$(jq -r .buttons.reopen_window.enable <<<"$output")" "$expected"
@@ -1172,6 +1172,63 @@ setup_worker() {
         done
       done
     done
+  done
+}
+
+@test "panel: step 6 rollback keeps Reopen available when its normal boot's client closes" {
+  local reason client
+  ST=active
+  echo '{"setup":false,"window":false}' >"$S/boot.json"
+  for reason in answers agents; do
+    state '{"snapshot":"declined","step5":true}'
+    : >"$RUN/step6-asked"
+    setup_back5 "$reason" 'The final check failed.' >/dev/null
+    for client in running closed; do
+      client_active() { [[ $client == running ]]; }
+      run cmd_panel
+      assert_success
+      assert_equal "$(jq -r .setup.step <<<"$output")" 5
+      assert_equal "$(jq -r '.setup.questions | length' <<<"$output")" 0
+      assert_output --partial 'Shut Windows down, then continue setup to attach the setup drive.'
+      assert_equal "$(jq -r '.buttons.start.show or .buttons.open.show or .buttons.continue_setup.enable' <<<"$output")" false
+      assert_equal "$(jq -r .buttons.reopen_window.show <<<"$output")" "$([[ $client == closed ]] && echo true || echo false)"
+      assert_equal "$(jq -r .buttons.reopen_window.enable <<<"$output")" "$([[ $client == closed ]] && echo true || echo false)"
+    done
+  done
+}
+
+@test "panel: rollback shutdown clears setup attention despite its reason, failure reply and failed launch" {
+  local reason shutdown reply
+  echo '{"setup":false,"window":false}' >"$S/boot.json"
+  client_active() { return 1; }
+  for reason in guest-boot idd-missing mismatch agents answers; do
+    ST=active
+    state '{"snapshot":"declined","step5":true}'
+    reply=$(setup_back5 "$reason" 'The final check failed.')
+    panel_result_write setup "$(jq -nc --argjson r "$reply" '{command:"setup",ended:1,reply:$r}')"
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .setup.attention <<<"$output")" true
+    for shutdown in deactivating requested guest; do
+      ST=active
+      qmp_call() { printf '{"return":{"status":"running"}}\n'; }
+      case $shutdown in
+        deactivating) ST=deactivating ;;
+        requested) printf 'inv %s\n' "$EPOCHSECONDS" >"$S/stop-requested" ;;
+        guest) qmp_call() { printf '{"return":{"status":"shutdown"}}\n'; } ;;
+      esac
+      run cmd_panel --pending missing "$((EPOCHSECONDS - 11))"
+      assert_success
+      assert_equal "$(jq -r .state <<<"$output")" stopping
+      assert_equal "$(jq -r .setup.step <<<"$output")" 5
+      assert_output --partial 'Shut Windows down, then continue setup to attach the setup drive.'
+      assert [ -n "$(jq -r .result.setup <<<"$output")" ]
+      assert [ -n "$(jq -r .result.launch <<<"$output")" ]
+      assert_equal "$(jq -r .setup.attention <<<"$output")" false
+      assert_equal "$(jq -r .buttons.reopen_window.show <<<"$output")" false
+      rm -f "$S/stop-requested"
+    done
+    qmp_call() { printf '{"return":{"status":"running"}}\n'; }
   done
 }
 

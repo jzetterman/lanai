@@ -166,7 +166,7 @@ cmd_panel() {
     ($p.finished or $off) as $snapshotsShow |
     (($p.finished|not) and $st.active and $setupBoot) as $confirmStop |
     (($p.finished|not) and $st.active and ($basicWindow|not) and
-      ($setupBoot or $p.step == "6") and ($client|not) and $st.state != "stopping") as $reopen |
+      ($client|not) and $st.state != "stopping") as $reopen |
     {ok:true,state:$st.state,active:$st.active,label:$w[0],headline:$w[1],cause:$w[2],next:$w[3],
      pending_ack:(if $seen then $token else "" end),
      notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
@@ -174,10 +174,9 @@ cmd_panel() {
        elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes."}[$job.command // ""] // "Starting the operation.") else "" end)},
      result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot and restore log, then try again." else "" end)}),
      setup:{show:($p.finished|not),finished:$p.finished,
-       attention:(($p.finished|not) and ($p.reason != "" or $r.setup != "" or $launchFailed or
+       attention:(($p.finished|not) and $st.state != "stopping" and ($p.reason != "" or $r.setup != "" or $launchFailed or
          ($p.step == "3" and $rec.records.snapshots.reply.ok == false) or $st.state == "failed" or
-         $reopen or ($st.state != "stopping" and
-           (($setupBoot and $st.state != "starting") or ($p.questions|length)>0 or ($busy|not))))),step:$p.step,questions:$p.questions,
+         $reopen or ($setupBoot and $st.state != "starting") or ($p.questions|length)>0 or ($busy|not))),step:$p.step,questions:$p.questions,
        choices:(if $p.finished then ["--no-window","--window"] else $p.choices end),
        again_line:"Choose how Windows should show during setup.",
        share_question:"Does Explorer show the files from your Linux Windows folder?",scale_question:"Does text in Windows look the right size?",

@@ -1343,8 +1343,10 @@ with the same reason as the current plan is hidden to avoid repeated guidance.
 finished, the view hides controls the user can trip over, and draws the eye to what
 needs them.
 - Start Windows and Open window are hidden: setup starts Windows and opens the right
-  window itself. If the Looking Glass window was closed during a setup boot or step
-  6's boot, the Setup section offers "Reopen the Windows window" instead.
+  window itself. If the Looking Glass window was closed during a client-mode setup
+  boot or a normal boot before setup finishes, the Setup section offers "Reopen the
+  Windows window" instead, including after step 6 rolls back to step 5. It is hidden
+  for QEMU's basic window and while Windows shuts down.
 - The Snapshots section is hidden while setup boots or checks Windows (the unit is
   active); it shows again when Windows is off, so step 3's offer and recovery
   restores still work.
@@ -1354,7 +1356,8 @@ needs them.
 - Settings stay: they apply at the next start.
 - `setup.attention` is true when the user must act (an action such as Continue
   setup, the snapshot offer, the display choices, running setup.cmd, the step 6
-  questions, or a failure) and false while Lanai works by itself; the QML then draws
+  questions, or a failure) and false while Lanai works by itself, including every
+  shutdown wait regardless of the setup reason; the QML then draws
   the Setup section with the theme's accent color (border and a light background),
   so it follows the user's Omarchy theme.
 Once setup is finished, every control shows as before. Tests cover each rule.
@@ -1434,7 +1437,8 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
 
 - **During setup:** the view hides Start and Open until `setup_plan` is finished.
   Setup offers Reopen the Windows window only while a client-mode setup boot or
-  step 6 boot is active, the client is not running, and shutdown is not in progress.
+  normal boot is active, the client is not running, and shutdown is not in progress,
+  including after a step 6 failure or no answer rolls back to step 5.
   Boot flags also cover activation before status reports the display.
   Reopen uses `ui-run open`. `snapshots.show` and its control descriptors hide
   the section only during unfinished setup with an active unit; settings stay.
@@ -1444,8 +1448,11 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   confirmation clears it.
   `setup.attention` marks user actions, setup failures, interrupted work, a failed
   launch and a closed client window. It clears during automatic work, startup
-  before the setup drive is available, and shutdown waits. Guidance during setup
-  points to Setup and its Reopen control rather than hidden Start or Open controls.
+  before the setup drive is available, and shutdown waits regardless of the reason.
+  Regression tests cover rollback with a closed client and all step 6 rollback
+  reasons during unit deactivation, requested shutdown and guest shutdown.
+  Guidance during setup points to Setup and its Reopen control rather than hidden
+  Start or Open controls.
   QML wraps Setup in a border using `Color.accent` and a light background
   using `Util.alpha(Color.accent, 0.10)`, following shell theme changes. Finished
   setup retains its usual controls and has no attention highlight.
