@@ -1607,12 +1607,18 @@ the same proof holds.
   so data.img holds the disk lock the moment it appears. Publish with ctypes
   `renameat2(RENAME_NOREPLACE)`. Never use `mv -n` or `mv -f -T`: dockur may have
   created a disk in the meantime. Lock failure stops before publication; drop
-  the branch for locking failure after publication. Record equal maps, hash and
-  prove data.img in place against COMPLETE and the saved maps, then replace other
-  files. Never replace this locked inode later. A failed proof keeps the marker;
+  the branch for locking failure after publication. Before publishing, clone each
+  small file to `.lanai-restore.<name>` and hash it against COMPLETE (a second or
+  less). Right after publishing data.img, rename those verified small files into
+  place, so dockur's start check finds an existing install and does not run its
+  cleanup, which deletes disk files whatever their locks. Only then record equal
+  maps, hash and prove data.img in place against COMPLETE and the saved maps.
+  Never replace this locked inode later. A test starts a fake container check
+  during the image hash and asserts it finds `windows.boot`. A failed proof keeps the marker;
   the disk was already gone, so nothing is lost. This path changes storage before
   the hash. It is a deliberate exception to req 7's "before anything changes",
-  justified by its disk-lock clause: the disk was already gone. Keep the marker
+  justified by its disk-lock clause: the disk was already gone. John approved it
+  on 2026-10-05 (spec review log). Keep the marker
   if publication or locking fails too. On success, clear the marker and reset
   setup only after completion.
   Preserve today's messages' intent, including damage before replacement and
@@ -2092,3 +2098,4 @@ The orchestrator runs the gate; delegates run no review stage.
 | plan amendment (scale, progress, clicks) | b single (opus-5.5) | 1 (full) | 4 should-fix, 6 nits, 0 refuted; all integrated (by Codex): a restore onto a deleted disk installs and locks the clone before hashing; provability defined by statfs and extent classes, with mixed plain and compressed extents (Omarchy mounts compress=zstd) and a fixture each; a one-extent probe with no write; a hook for restore's final map compare; threat model covers deliberate re-cloning in any mode; strace also rejects mmap/sendfile/splice/copy_file_range and polls start after the lock; the progress lock is read from /proc/locks; a resumed restore re-clones a stale temp; invalid windows_scale refuses boot like memory/cores, label "Windows scale"; right click uses $p.finished on purpose, Menu key toggles |
 | plan amendment (scale, progress, clicks) | b single (opus-5.5) | 2 (full) | 1 blocker, 2 should-fix, 8 nits, 0 refuted; all integrated (by Codex): unwritten (preallocated) extents count as provable, since dockur's detect-zeroes and discard make them (verified), with zero-range fixtures and a read-only extent count John runs on the rehearsal copy first; the existing disk needs only btrfs and a NOCOW match; the progress owner is the pid holding the lock file open (/proc/locks names the short-lived flock process, verified); no probe, the real clone falls back to the next root; the deleted-disk clone is locked before it appears; small files cloned then hashed once; no separate SHARED check; right-click open needs no idle lock; pwsh tests skip in CI (AUR only); README covers both scale choices; ctypes statfs/renameat2, FIEMAP batching, map timing, helpers.bash |
 | plan amendment (scale, progress, clicks) | b single (opus-5.5) | 3 (full, cap) | 1 should-fix, 4 nits, 0 refuted; nits integrated by Claude: any failure before the first install file is replaced is a clean refusal (a clone error included); the progress owner compares device and inode, not a path; the helper is `btrfs_tmp`; keypad Enter handled too. The should-fix (the deleted-disk restore changes storage before the hash, against req 7's literal "before anything changes", and dockur's cleanup ignores the disk lock) waits for John |
+| plan amendment (scale, progress, clicks) | John | 2026-10-05 | John chose option 1 for round 3's should-fix: on a deleted disk, publish and lock data.img, then put back the verified small files at once, then hash; the exception to req 7's "before anything changes" is logged in the spec. Gate closed |
