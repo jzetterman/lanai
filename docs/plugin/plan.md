@@ -1177,6 +1177,64 @@ reviews look hard at the panel's wording, layout and states.
   stop, as can any Windows security screen left open (such as a UAC prompt); and how to
   turn the lock back on.
 
+### Amendment: the panel view (John, 2026-10-05)
+
+Why: four Opus rounds and two Codex rounds of the phase 7 diff gate each found new
+should-fix bugs in the same place: `LanaiModel.qml` and `LanaiPanel.qml` decide what
+to tell the user by merging cached setup replies, the job file and status reads,
+about 400 lines of QML with no test in the repo. Each fix added conditions, and the
+next round found a new clash. This amendment moves every decision into bash, where
+bats tests can cover it, and makes the QML a renderer.
+
+- `lanai panel` (new, `lib/panel.sh`) prints one JSON object, the view. It reads, in
+  one call and with no side effects: what `lanai status` computes (`status_facts`
+  and `status_map`), `setup.json`, `setup-reply.json`, the panel job file
+  (`panel-job.json`, from `lib/ui.sh`) and `last-run`. It fits the 10 s deadline (the
+  same QMP budget as status). The view holds:
+  - `label`, `headline`, `cause`, `next`: the state in plain words, why, and the
+    next step, written for a user who is not an engineer (no CLI text, no internal
+    codes);
+  - `notice`, `warning`: the forced-stop notice and status warnings, plain text;
+  - `busy`: whether a job runs, and the one line to show while it does
+    (click-started jobs and automatic waits get different lines);
+  - `buttons`: for every control the panel has (start, open, stop, force stop,
+    dismiss notice, continue setup, install in a terminal, take snapshot, skip
+    snapshot, the two display choices, send answers, finish restore, take or list or
+    restore snapshots, save settings), `show` and `enable`, plus the label where it
+    varies;
+  - `setup`: whether the section shows, `finished`, the current step, the lines to
+    show, and the step 6 questions or the step 5 display choices when they apply;
+  - `result`: the last action's outcome to show beside the control that ran it,
+    rewritten for the panel (a successful restore reads "Restore finished. Windows
+    now matches the snapshot.");
+  - `auto`: true only when the panel should call `lanai setup` by itself now (the
+    "For phase 7" rule: after an ok:true wait reply, by step and status, never by
+    text, never after a failure, not while a job runs).
+- Freshness has one rule, in one place: `lanai panel` computes status in the same
+  call, so status always wins. It uses `setup-reply.json` only when that reply is
+  newer than the last state change it describes (the run markers, `setup.json`) and
+  agrees with the current status; otherwise it derives the setup lines from status
+  and `setup.json` alone. The panel QML caches nothing about setup or jobs.
+- The QML (`LanaiModel.qml`, `LanaiPanel.qml`, `Widget.qml`) polls `lanai panel`
+  (2 s while the panel is open or a job or boot is in flight, 15 s otherwise; a 10 s
+  deadline; a tick is skipped while a call runs, and an action asks for exactly one
+  fresh call after it ends). It renders the view's fields as plain text
+  (`Text.PlainText`), shows and enables controls from `buttons`, and runs commands
+  only through the existing paths (`lanai start|stop|open|notice-seen|settings`
+  directly; `setup`, `snapshot`, `restore` detached through `ui-job`). When `auto`
+  is true it launches `lanai setup` detached once and waits for the next view.
+  `SetupCalls.js` goes away; its rule lives in bash.
+- The widget's tooltip and the panel use the same `label`, `headline` and `next`.
+- Tests: bats tests for `lanai panel` over fixture status replies, setup.json,
+  setup-reply.json, job files and last-run, covering every state `status_map` can
+  return, every setup step (including step 5 during and after the setup boot, step
+  6 waiting, questions, display choices, a back-to-step-5 failure), job running and
+  interrupted, a pending restore (stopped, setup-needed, in-use), a restore success
+  and failure, the forced-stop notice, a stale reply that status contradicts, and
+  `auto` true only in its allowed cases. The open phase 7 findings (gate rounds
+  b 1-4, a 4) become test cases where they concern a decision. QML stays small enough
+  to read in one sitting; `qmllint` must pass.
+
 ### As built (2026-10-04)
 
 - `Widget.qml` follows the shell's BarWidget/BarIconButton contract and forwards
@@ -1436,3 +1494,4 @@ reviews look hard at the panel's wording, layout and states.
 | diff (phase 7) | b single (opus-5.5) | 2 (full) | 10 should-fix, 10 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex). It reversed round 1's "disable Shut down while starting", which left no way to stop a boot whose agent never answers. Others: invisible disabled state, no progress for long jobs, a wrong "Setup is finished" (new `setup_done` in status), stale status overwriting an action, unfinished restore not blocking Start, copy rewrites; the SetupCalls safety test now runs in CI (nodejs) |
 | diff (phase 7) | b single (opus-5.5) | 3 (full, cap) | 8 should-fix, 8 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): silent glyph failures and missing tooltip notices; a false "start Windows" with a restore pending; a lost launch-timeout error; Help during normal setup steps; repeated and flashing setup notes; CLI hints in results; a README snapshot-deletion contradiction; `notice-seen` without the lock. Stage closed at the cap; John approved the stage a rerun on the final diff |
 | diff (phase 7) | a (gpt-6.1-sol) | 4 (full, the rerun on the final diff, approved by John) | 3 P2, 0 refuted, 0 downgraded to nit; all confirmed (one reproduced headless) and integrated (fixes by Codex): routine polls discarded every slow status read; a cached step 7 reply outlived a restore; restore failure advice ignored `restore_pending`. Above nit, so stage b and stage a run again; stage b is at its cap, so John decides |
+| diff (phase 7) | b single (opus-5.5) | 4 (full, John's extra round) | 6 should-fix, 4 nits, 0 refuted, 0 downgraded to nit; all confirmed, none integrated: the step 5 note during step 6's boot, guidance from status read before the newest reply, a successful restore saying "try again", contradictory unfinished-restore hints, "Setup is finished" over a driver update, no checked-in test for the model. Claude diagnosed the pattern (every round finds new clashes in the QML's decisions) and John chose to move every decision into bash (`lanai panel`, amendment above); the round's findings become its test cases |
