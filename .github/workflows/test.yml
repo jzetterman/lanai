@@ -1,7 +1,11 @@
 # Runs the bats suites and shellcheck in an Arch container. bats runs as an
-# unprivileged user, so the tests of unreadable files run too. Tests that
-# need btrfs skip here (LANAI_TEST_BTRFS_DIR is unset); the lock tests run
-# QEMU under TCG with -S, so they need no KVM.
+# unprivileged user, so the tests of unreadable files run too. The reflink
+# tests run on a loop-mounted btrfs image (LANAI_TEST_BTRFS_DIR), which is
+# why the container is privileged: acceptable only because GitHub-hosted
+# runners are throwaway VMs; never run this job on a self-hosted runner. The
+# lock tests run QEMU under TCG with -S, so they need no KVM. --init gives
+# the container a PID 1 that reaps orphans, as systemd does on a desktop;
+# BATS_TEST_TIMEOUT makes a hung test fail with its name.
 name: test
 
 on:
@@ -14,13 +18,15 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    container:
+      image: archlinux:latest
+      options: --privileged --init
     timeout-minutes: 20
     steps:
       - name: Install packages
         run: >-
           pacman -Syu --noconfirm bats bats-assert bats-support shellcheck ffmpeg jq
-          socat e2fsprogs diffutils qemu-system-x86 qemu-img
+          socat e2fsprogs btrfs-progs diffutils qemu-system-x86 qemu-img python
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -29,10 +35,15 @@ jobs:
           useradd -m tester
           chown -R tester .
           install -d -m 700 -o tester /tmp/run-tester
+          truncate -s 1G /tmp/btrfs.img
+          mkfs.btrfs -q /tmp/btrfs.img
+          mkdir -p /mnt/btrfs
+          mount -o loop /tmp/btrfs.img /mnt/btrfs
+          install -d -o tester /mnt/btrfs/lanai-test
           runuser -u tester -- env HOME=/home/tester XDG_RUNTIME_DIR=/tmp/run-tester \
-            bats test spike/test
+            LANAI_TEST_BTRFS_DIR=/mnt/btrfs/lanai-test BATS_TEST_TIMEOUT=120 bats test spike/test
       - name: shellcheck
         run: >-
           shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash
           spike/test/*.bats docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
-          docs/plugin/proof-kit/proof-unit-stop
+          docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga

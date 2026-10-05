@@ -1,6 +1,8 @@
-# Pinned downloads (spec req 26). Every file Lanai fetches itself is checked
-# against its SHA-256 here before use. Draft from phase 1 (docs/plugin/proofs.md);
-# phase 5 uses the Looking Glass pins, phase 6 the guest pins.
+# Pinned downloads (spec req 26): the one source for every file Lanai
+# fetches itself, each checked against its SHA-256 here before use. Values
+# from phase 1 (docs/plugin/proofs.md, "Pinned downloads"). lanai
+# build-client uses the Looking Glass source; lanai setup-guest the IDD and
+# the guest files (guest_pins in lib/setup.sh); the proof kit all of them.
 # Source this file; it defines variables only.
 # shellcheck shell=bash disable=SC2034
 
@@ -12,6 +14,11 @@ LG_SOURCE_URL=https://looking-glass.io/artifact/$LG_BUILD/source
 LG_SOURCE_SHA=e396d923172ff3e6e88a1c6906a0e5e87a298ddb5a18aa4d8cb4da37e78ce250
 LG_IDD_URL=https://looking-glass.io/artifact/$LG_BUILD/idd
 LG_IDD_SHA=34daa6ddb403c1f503fb2ace94360159818fda1795fc5c2be5cec1f4391d5d57
+# The submodule folders of that build's tree (the tarball has no
+# .gitmodules). lanai build-client refuses a tree where any is missing or
+# empty. Update with the pin.
+LG_SUBMODULES=(repos/LGMP repos/LGProtocol repos/PureSpice repos/gui repos/nanosvg
+  repos/wayland-protocols)
 
 # SPICE guest agent (clipboard and input helpers), from the spike.
 VDAGENT_VERSION=0.10.0

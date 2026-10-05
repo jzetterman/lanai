@@ -1,0 +1,16 @@
+# Lanai's VM unit (docs/plugin/plan.md, Architecture). `lanai start` installs
+# it into ~/.config/systemd/user/, filled in with the runtime copy's bin
+# folder and the XDG folders the CLI uses. It has no install section: only
+# Lanai starts it, and it stops with the graphical session.
+[Unit]
+Description=Lanai Windows VM
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=exec
+Slice=session.slice
+Environment=@ENV@
+ExecStart=@BIN@/lanai-vm-exec
+ExecStop=@BIN@/lanai-vm-stop
+TimeoutStopSec=2min

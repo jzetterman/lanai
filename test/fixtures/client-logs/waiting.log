@@ -1,0 +1,9 @@
+00:00:00.000 [I]              main.c:4303 | main                           | Looking Glass (B7-826-236efcb1)
+00:00:00.000 [I]              main.c:4304 | main                           | Locking Method: Atomic
+00:00:00.061 [I]           ivshmem.c:137  | ivshmemOpenDev                 | KVMFR Device     : /run/user/1000/lgtest/ivshmem
+00:00:00.061 [I]              main.c:3645 | lg_run                         | Using Transport: lgmp
+00:00:00.061 [I]              main.c:3674 | lg_run                         | Using Video: LGMP
+00:00:00.155 [I]               egl.c:1188 | egl_renderStartup              | Version : OpenGL ES 3.2 NVIDIA 615.71.09
+00:00:00.211 [I]              main.c:3960 | lg_run                         | ================================================================================
+00:00:00.211 [I]              main.c:3961 | lg_run                         | The transport source is not available
+00:00:00.211 [I]              main.c:3962 | lg_run                         | Waiting for the source to start...

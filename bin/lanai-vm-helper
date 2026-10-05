@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# lanai-vm-helper <helper>: one of the background helpers lanai-vm-exec
+# supervises inside lanai-vm.service.
+#   shutdown-watch  stop the unit when the host starts a reboot or power-off
+#                   (runs under systemd-inhibit --mode=delay)
+#   sleep-watch     set the Windows clock after the host resumes
+#   event-log       record QEMU's SHUTDOWN events for the next start
+set -euo pipefail
+
+# shellcheck source-path=SCRIPTDIR source=../lib/lanai.sh
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../lib/lanai.sh"
+case ${1:-} in
+  shutdown-watch) shutdown_watch ;;
+  sleep-watch) sleep_watch ;;
+  event-log) event_log ;;
+  *)
+    echo "usage: lanai-vm-helper shutdown-watch|sleep-watch|event-log" >&2
+    exit 2
+    ;;
+esac

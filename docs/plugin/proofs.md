@@ -1,10 +1,12 @@
-# Phase 1 proofs: runbook and results
+# Lanai proofs: runbook and results
 
-Plan: [plan.md](plan.md), "Phase 1". Spec: [spec.md](spec.md).
+Plan: [plan.md](plan.md), "Phase 1" and "Phase 6". Spec: [spec.md](spec.md).
 
-These four proofs settle the riskiest unknowns before the VM work builds on them. You run
-all of them by hand. Each proof runs on a full reflink copy of `~/.windows`, never on
-`~/.windows` itself. If a proof fails, stop and record why. Phase 4 (VM lifecycle) waits.
+Proofs 1 to 4 (phase 1) settled the riskiest unknowns before the VM work built on them.
+Proof 5 is phase 6's lock proof, which runs before the rest of phase 6. You run all of
+them by hand. Each proof runs on a full reflink copy of `~/.windows`, never on
+`~/.windows` itself. If a proof fails, stop and record why. The work that depends on it
+waits: phase 4 (VM lifecycle) for proofs 1 to 4, and the rest of phase 6 for proof 5.
 
 Record every time with its timezone, for example `2026-09-28 14:00 EDT`. Paste command
 output into the Result sections as it printed.
@@ -17,6 +19,7 @@ output into the Result sections as it printed.
 | `docs/plugin/proof-kit/proof-vm` | Builds and runs the proof VM from the spike's `vm_args` and the captured `omarchy-windows-vm` command line (`spike/test/fixtures/dockur-cmdline.txt`), plus each proof's devices. Refuses `~/.windows`, and refuses a copy that holds a symlink, a hard link, or a file that is the live one. `proof-vm help` lists its commands. `proof-vm args <copy> [options]` prints the QEMU line without starting anything. |
 | `docs/plugin/proof-kit/lanai-proof.service`, `proof-unit-start`, `proof-unit-stop` | Proof 4's throwaway unit and its start and stop scripts. |
 | `guest/lanai-scale.ps1` | Proof 1's scale script (first draft). |
+| `guest/lanai-lock.cmd` | Proof 5's script: turns off locking inside Windows. `setup.cmd` will run the same file. |
 | `lib/pins.sh` | The pinned downloads below. |
 
 The proof VM differs from the spike VM in three ways. Its name is `lanai-proof`. It has
@@ -49,7 +52,7 @@ copies the verified SPICE agent into the setup disk; it never reuses the spike's
    the runbook uses in a small file, so every terminal can load them:
 
    ```sh
-   cd ~/Development/github/jzetterman/windows-on-omarchy
+   cd ~/Development/github/jzetterman/lanai
    git switch plugin/v1
    mkdir -p ~/lanai-proofs    # scratch; must be on the same btrfs filesystem as ~/.windows
    printf 'R=%q\nK=%q\nS=%q\n' "$PWD" "$PWD/docs/plugin/proof-kit" ~/lanai-proofs \
@@ -488,6 +491,353 @@ present at first reply`. QEMU creates the QMP chardev before the memory backends
 (`object_create_early` leaves `memory-backend-*` for later) and runs non-OOB QMP
 commands only from its main loop, after every backend exists. The greeting may come
 earlier, so only a command reply counts.
+
+## Proof 5: Windows lock off (phase 6)
+
+Plan: [plan.md](plan.md), "Phase 6", the lock proof. Spec: requirement 7 and row 7b.
+
+Proof 4 found that a locked Windows drops the ACPI power button. `system_powerdown` did
+nothing, and systemd killed QEMU at its stop timeout. So setup turns off every way
+Windows can lock (spec requirement 7), with `guest/lanai-lock.cmd`. This proof runs the
+real script on the test copy. First it shows that each lock path does lock Windows
+before the script (the positive controls). Then it shows that after the script and one
+restart, none of them does, and a stop from the host ends in a clean shutdown.
+
+The copy already has the Looking Glass IDD, so QEMU's own window stays black. Do every
+step in the Looking Glass client. The proof runs on `$S/lanai-proof`, never on
+`~/.windows`.
+
+"Locked" below means Windows shows the lock screen or the sign-in screen, and wants the
+password.
+
+Before you start:
+
+1. Run `source ~/lanai-proofs/env`. Switch the main checkout to the branch
+   `plugin/phase6`, which holds this section and `guest/lanai-lock.cmd`:
+
+   ```sh
+   git -C "$R" fetch origin
+   git -C "$R" switch plugin/phase6
+   ```
+
+   To keep `$R` on another branch instead, point `K` at a checkout of `plugin/phase6`,
+   and keep the spike's client from `$R`. The env file sets `K` back, so run both lines
+   after every `source ~/lanai-proofs/env`:
+
+   ```sh
+   K=<path to a checkout of plugin/phase6>/docs/plugin/proof-kit
+   export PROOF_CLIENT=$R/spike/work/build/looking-glass-client
+   ```
+
+2. Refresh the setup disk, so it holds `lanai-lock.cmd`: `"$K/proof-vm" media "$S/kit"`.
+   It ends with `media ready`.
+3. Stop the container VM with `omarchy-windows-vm stop`.
+4. Have the Windows password at hand. Most controls end at the sign-in screen.
+
+Start the VM and the client:
+
+```sh
+"$K/proof-vm" run "$S/lanai-proof" --setup "$S/kit/setup"   # terminal 1
+"$K/proof-vm" client                                         # terminal 2
+```
+
+`client` waits up to 60 s for QEMU to answer a command on `qmp.sock`, disconnects, then
+starts the client. A Windows restart keeps QEMU running. If the client window closes
+during a restart, run `"$K/proof-vm" client` again. In Explorer, note the setup USB
+drive's letter. The steps below call it `E:`.
+
+Two key presses go in over QMP, from terminal 3. `qmp.sock` serves one client at a
+time, and `client` has already let go of it. Each command holds the connection open for
+1 s, because QEMU drops requests still queued when the client disconnects. Each prints
+QEMU's greeting, then `{"return": {}}` twice. Check for both.
+
+Windows key + L:
+
+```sh
+{ printf '%s\n' '{"execute":"qmp_capabilities"}' \
+    '{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"meta_l"},{"type":"qcode","data":"l"}]}}'
+  sleep 1; } | socat - "UNIX-CONNECT:$XDG_RUNTIME_DIR/lanai-proof/qmp.sock"
+```
+
+Ctrl+Alt+Del:
+
+```sh
+{ printf '%s\n' '{"execute":"qmp_capabilities"}' \
+    '{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"ctrl"},{"type":"qcode","data":"alt"},{"type":"qcode","data":"delete"}]}}'
+  sleep 1; } | socat - "UNIX-CONNECT:$XDG_RUNTIME_DIR/lanai-proof/qmp.sock"
+```
+
+The starting state. In Command Prompt, record the output of:
+
+```bat
+reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v EnableLUA
+reg query HKLM\SOFTWARE\Microsoft\Enrollments /s /v ProviderID
+reg query HKLM\SOFTWARE\Microsoft\Enrollments /s /v DiscoveryServiceFullURL
+reg query HKLM\SOFTWARE\Microsoft\Enrollments /s /v UPN
+```
+
+`EnableLUA` is `0x0` when dockur's unattended install turned UAC off: every Command
+Prompt of the signed-in administrator then runs with full rights, and "Run as
+administrator" changes nothing. Do not count on it: John's install shows `0x1` (UAC on;
+see the result below), so spec requirement 7's one administrator prompt stands for
+installs with UAC on; the UAC-off case is with John. The `Enrollments` queries show the real data for the
+MDM check. Stock Windows 11 has built-in subkeys with a `ProviderID`, so the script
+counts an enrollment only by a non-empty `DiscoveryServiceFullURL` or `UPN`. Expect
+none of those on this copy.
+
+Step 1, the positive controls. Run each one on its own. After each one that locks, sign
+back in before the next.
+
+1. Lock in Start: Start, your user icon, Lock.
+2. Lock in Ctrl+Alt+Del: send Ctrl+Alt+Del with the command above, then choose Lock.
+3. Windows key + L: send it with the command above. It is a control, not a warm-up.
+4. The call apps use: in Command Prompt, run `rundll32 user32.dll,LockWorkStation`.
+5. Switch user: from Start, your user icon, or from the Ctrl+Alt+Del screen.
+6. The secure screen saver alone: Settings, Personalization, Lock screen, Screen saver.
+   Choose a screen saver (Blank works), set Wait to 1 minute, tick "On resume, display
+   logon screen", and choose OK. Keep your hands off the client window for 2 minutes.
+   The screen saver starts. Move the mouse: Windows must be locked. Sign in, then set
+   the screen saver back to (None) and choose OK.
+7. The inactivity limit alone. In an elevated Command Prompt (Start, type `cmd`, Run as
+   administrator):
+
+   ```bat
+   reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v InactivityTimeoutSecs /t REG_DWORD /d 60 /f
+   ```
+
+   Restart Windows (Start, Power, Restart). Sign in if Windows asks. Keep your hands off
+   for 2 minutes: Windows must be locked.
+
+If a control does not lock, fix the control before step 2: find out why, and try again.
+For the screen saver and the inactivity limit, first run `powercfg /requests`. A
+request under DISPLAY (a video or a presentation app, for example) blocks both; close
+what holds it. A path with no working control counts as unproven.
+
+Then set up a user's earlier lock settings: turn the 1-minute secure screen saver back
+on, as in control 6. `InactivityTimeoutSecs` is still 60 from control 7. From here on,
+Windows locks after each idle minute until step 2; sign in each time.
+
+Step 2, run the script:
+
+1. The refusal, from a restricted prompt. With UAC off, a normal prompt has full
+   rights, so open one without them: in Command Prompt, run
+   `runas /trustlevel:0x20000 cmd`. In the new window, run
+   `whoami /groups | findstr S-1-5-32-544`. The Administrators group must show "Group
+   used for deny only". If it does, run `E:\lanai-lock.cmd`, then `echo %errorlevel%`.
+   It must print that it needs administrator rights, then `1`, and change nothing.
+   Close that window. If the group is not deny-only, record that and skip this check;
+   phase 8's different-account test covers the refusal.
+2. From an elevated Command Prompt, run `E:\lanai-lock.cmd`, then `echo %errorlevel%`.
+   It must print `lanai-lock: locking inside Windows is off.`, then `0`. This copy is
+   not in a domain or MDM, so no policy warning may appear.
+3. Restart Windows. Some values load only at sign-in.
+
+Step 3, nothing locks. Leave the settings as the script left them. Do not open the
+screen saver dialog: saving it can write `ScreenSaverIsSecure` back.
+
+1. In Command Prompt:
+
+   ```bat
+   reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System /v DisableLockWorkstation
+   reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v HideFastUserSwitching
+   reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v InactivityTimeoutSecs
+   reg query "HKCU\Control Panel\Desktop" /v ScreenSaveTimeOut
+   reg query "HKCU\Control Panel\Desktop" /v ScreenSaverIsSecure
+   ```
+
+   Expect `0x1`, `0x1`, an error (the value is gone), `60` and `0`.
+2. Repeat controls 1 to 5 from step 1. None may lock Windows. Record what each one
+   shows: Lock and Switch user should be gone from Start and the Ctrl+Alt+Del screen.
+   Leave the Ctrl+Alt+Del screen with Cancel.
+3. Keep your hands off the client window for 3 minutes or more. The screen saver starts
+   after 1 minute. Move the mouse: the desktop must come back, not the sign-in screen.
+4. In PowerShell:
+
+   ```powershell
+   powercfg /a
+   Get-PnpDevice -Class Bluetooth
+   ```
+
+   `powercfg /a` must show no Standby (S1, S2, S3 or S0 Low Power Idle), Hibernate or
+   Hybrid Sleep as available. `Get-PnpDevice` must list no device; an error that
+   nothing matches is fine. If either finds one, stop here and record it. The script
+   leaves sign-in on wake and Dynamic Lock alone because neither can fire in this VM,
+   and spec row 7b needs both unable to fire.
+5. An extra control, recorded but not part of the pass: in Command Prompt, run
+   `tsdiscon`. Record whether it leaves the session at the sign-in screen. If it does,
+   sign back in.
+
+Step 4, the domain and MDM warning. In an elevated Command Prompt:
+
+```bat
+set LANAI_FAKE_MANAGED=1
+E:\lanai-lock.cmd
+```
+
+It must print the policy warning: `lanai-lock: this Windows is joined to a domain or
+enrolled in MDM.`, then that a policy may turn the lock back on and shutdowns may end in
+a forced stop. `setup.cmd` elevates itself, which drops the caller's environment, so the
+variable works only when set in the elevated prompt that runs the script. Close that
+prompt.
+
+Step 5, stop from the host:
+
+`stop` sends `system_powerdown` once and waits up to 300 s. Lanai waits only 2 minutes
+(`TimeoutStopSec=2min`) and sends the press again every 10 s. So time each stop: `sent
+system_powerdown` and `QEMU exited` both carry a UTC time.
+
+1. Keep your hands off the client window until the screen saver (no longer secure)
+   shows. Then, in terminal 3, run `"$K/proof-vm" stop`. It must print `QEMU exited`
+   within 120 s of `sent system_powerdown`. After `system_powerdown`, QEMU exits only
+   when Windows powers off.
+2. Start the VM and the client again, and wait for the desktop. Open the Ctrl+Alt+Del
+   screen with the command above and leave it open. Run `"$K/proof-vm" stop`. Record
+   the result either way, with the time from `sent system_powerdown` to `QEMU exited`.
+   Note that this sends one press, where Lanai would send one every 10 s. If Windows
+   ignores the stop, `stop` gives up after 300 s with `still runs after 300 s`. Then
+   choose Cancel on that screen and run `"$K/proof-vm" stop` again.
+
+What failure looks like: a path in step 3 still locks Windows, a `reg query` result
+differs, Windows asks for the password after the idle wait, or step 5.1 takes more than
+120 s or ends with `still runs after 300 s`. If any lock path survives, stop and record
+it. The rest of phase 6 waits.
+
+Pass: in step 1, every control locked Windows. Step 2.2 (the elevated run) exited 0 and
+printed no policy warning. Where step 2.1 ran, the refusal exited 1. In step 3, none of
+the controls locked, the `reg query` results match, Windows stayed unlocked through 3
+minutes of idle, and there is no sleep state and no Bluetooth device. Step 4 printed the
+warning. Step 5.1 printed `QEMU exited` within 120 s of `sent system_powerdown`. Step
+5.2 is recorded, clean or not; if not, the README names it (row 7b).
+
+### Result
+
+- Date and time: 2026-10-01, 16:43 to 18:53 EDT (20:43 to 22:53 UTC).
+- Branch and commit of the kit's checkout: `plugin/phase6` at a6bbc1f, used through
+  `K=<worktree>/docs/plugin/proof-kit` and `PROOF_CLIENT=$R/spike/work/build/looking-glass-client`.
+- Starting state, `EnableLUA`: `0x1`. UAC is on in John's install, so the runbook's
+  expectation of `0x0` (taken from dockur's stock unattend file) does not hold for every
+  dockur install. Spec requirement 7's one administrator prompt stands.
+- Starting state, `Enrollments` queries: `ProviderID` found 3 built-in subkeys ("Deploy
+  Authority", "Cloud Authority", "Local Authority"); `DiscoveryServiceFullURL` and `UPN`
+  found 0. The first version of the MDM check (ProviderID alone) would have warned on
+  this unmanaged copy; the shipped check does not.
+- Step 1, before the script (all locked, sign-in needed after each):
+  - Lock in Start: locked.
+  - Lock in Ctrl+Alt+Del (sent over QMP at 20:51:22 UTC): locked.
+  - Windows key + L (QMP, 20:51:47 UTC, both `{"return": {}}` lines): locked.
+  - `rundll32 user32.dll,LockWorkStation`: locked.
+  - Switch user: not in Start with one account; offered on the Ctrl+Alt+Del screen, and
+    it left the session at the sign-in screen.
+  - Secure screen saver at 1 minute: locked.
+  - `InactivityTimeoutSecs` 60, after a restart: locked.
+- Step 2.1, refusal: UAC is on, so a normal Command Prompt has a filtered token and
+  replaced the `runas /trustlevel` check. Output `lanai-lock: needs administrator rights.
+  Run it from an elevated Command Prompt.`, error level `1`. (A first attempt ran in an
+  elevated prompt by mistake and applied the settings, as it should there.)
+- Step 2.2, elevated: `lanai-lock: locking inside Windows is off.`, error level `0`, no
+  policy warning.
+- Step 3, `reg query` output, after a restart: `DisableLockWorkstation` `0x1`,
+  `HideFastUserSwitching` `0x1`, `InactivityTimeoutSecs` not found, `ScreenSaveTimeOut`
+  `60`, `ScreenSaverIsSecure` `0`.
+- Step 3, after the script (none locked):
+  - Lock in Start: gone. Switch user: gone.
+  - Lock in Ctrl+Alt+Del (QMP, 21:18:47 UTC): Lock and Switch user both gone.
+  - Windows key + L (QMP, 21:18:58 and 21:19:30 UTC): stayed at the desktop.
+  - `rundll32 user32.dll,LockWorkStation`: stayed at the desktop.
+- Step 3, idle: 15 minutes idle, still at the desktop. No screen saver ran: after
+  control 6 the screen saver had been set back to (None), and choosing Blank again in
+  Settings never wrote `SCRNSAVE.EXE` (still absent at the end). So the idle check proved
+  the inactivity lock gone, and the screen saver check was done directly:
+  `scrnsave.scr /s` started the Blank screen saver, and a key press returned to the
+  desktop with no password. Before that, the user's earlier secure screen saver was set
+  again and `lanai-lock.cmd` rerun (error level `0`, `ScreenSaverIsSecure` back to `0`).
+- Step 3, `powercfg /a`: S1, S2, S3, S0 Low Power Idle, Hibernate, Hybrid Sleep and Fast
+  Startup all "not available" (firmware does not support them).
+- Step 3, `Get-PnpDevice -Class Bluetooth`: "No Win32_PnPEntity objects found".
+- Step 3, extra, `tsdiscon`: the Looking Glass screen went black and the session needed
+  a sign-in (done from QEMU's screen). The script does not block it, and the spec does
+  not require it. Whether Windows drops the power button in that state is not tested.
+- Step 4, the warning as printed: `lanai-lock: locking inside Windows is off.` then
+  `lanai-lock: this Windows is joined to a domain or enrolled in MDM. A policy` / `may
+  turn the lock back on, and Lanai's shutdowns may then end in a forced stop.`
+- Step 5.1, stop with the screen saver showing (started with a 20 s delayed
+  `scrnsave.scr /s`): `sent system_powerdown` 22:48:33.545 UTC, `QEMU exited`
+  22:48:43.554 UTC, 10 s. Clean.
+- Step 5.2, stop with the Ctrl+Alt+Del screen open (QMP at 22:52:16 UTC): `sent
+  system_powerdown` 22:52:22.184 UTC, `QEMU exited` 22:52:29.189 UTC, 7 s. Clean.
+- Pass (yes/no), and why: **yes.** Every positive control locked Windows before the
+  script, none did after it and a restart, the refusal and the elevated run returned 1
+  and 0, the registry holds the planned values, no sleep state or Bluetooth exists, the
+  MDM warning fires only when forced, and Windows shut down cleanly from the host with
+  the screen saver showing (10 s) and with the Ctrl+Alt+Del screen open (7 s).
+- Notes for later phases:
+  - The setup boot shows QEMU's own screen as well as the Looking Glass screen, and
+    Windows extends the desktop across both. The pointer then sits on QEMU's screen and
+    is invisible in Looking Glass, and QEMU's screen goes black when Windows drops it.
+    Phase 6's setup boot must show QEMU's screen only while the IDD is missing, and the
+    proof kit should separate the setup disk from QEMU's window. Windows key + P,
+    "Second screen only", fixed it in this run.
+  - Host key combinations do not reach Windows: Omarchy takes Super shortcuts, and its
+    Ctrl+Alt+Del closes all host windows. Anything Lanai or its README asks the user to
+    press with those keys needs another route (QMP send-key, or the client's own key
+    menu).
+  - The Looking Glass window closed on its own several times during the run while QEMU
+    kept running; `proof-vm client` reopened it each time. Watch for this in phase 8.
+  - Proof sessions ran the VM with dockur's 16 GiB and caused host memory pressure on
+    John's 32 GiB machine; John wants 12 GiB on his install (see the project memory).
+
+## Phase 6 hands-on setup run (2026-10-04)
+
+The first end-to-end `lanai setup` on a copy of John's install, with John at
+the keyboard. The copy: `lanai-copy ~/.windows ~/lanai-proofs/lanai-setup-test`
+(verified, 7 entries; 4 min 37 s). Lanai's settings pointed at the copy, with 12 GiB
+and 8 cores. Run from the phase 6 worktree.
+
+- Steps 1 and 2 passed. Step 3: `lanai snapshot` took the snapshot (4 min 39 s,
+  mostly hashing), then setup went on.
+- Step 5's first media build failed: in the pinned virtio-win ISO, the
+  `viofs/w11/amd64` files are hard links to `viofs/2k25/amd64`, and other viofs
+  folders link into `fwcfg`, so `bsdtar` could not unpack `viofs/w11/amd64` alone,
+  nor all of `viofs`. The ISO's folders are also read-only, which broke the
+  cleanup. Fixed: `bsdtar` unpacks `viofs/2k25/amd64` and `viofs/w11/amd64` aside
+  and keeps only w11, and cleanup makes folders writable first. The test stand-in
+  ISO now has the real layout.
+- The setup boot showed QEMU's window (no guest version record). John ran
+  `setup.cmd` from the setup drive and approved the one administrator prompt.
+- Finding: at step 8, Windows asked "Would you like to install this device
+  software? Looking Glass Display adapters, HostFission" despite the IDD
+  installer's `/S`, because HostFission's certificate is not a trusted publisher.
+  John clicked Install with "Always trust" ticked. No other driver prompted. This
+  breaks spec req 7's one prompt and the rule that nothing after the IDD needs a
+  click.
+- Windows shut down by itself. `lanai setup` recorded step 5 (`last_run`
+  clean), booted normally and opened the pinned client. Step 6's automatic
+  checks all passed on the first poll: the IDD matches `B7-826-g236efcb155`, the
+  SPICE agent's port is open, and the guest agent set the clock and refused
+  `guest-exec` (the allow-list is in force).
+- John's answers: `~/Windows` shows as the Z: drive; text scale looks right.
+  `lanai setup --share-ok yes --scale-ok yes` replied step 7, "Lanai setup is
+  finished". Status: running.
+- Silent setup from Linux (John, 2026-10-04): checked and not possible on an
+  adopted install. dockur 6.05 installs no QEMU guest agent (its first-logon
+  script installs the balloon service and the display driver), and a setup boot
+  of the restored pre-setup snapshot kept the agent port closed for over 5
+  minutes while Windows ran (it then shut down cleanly on `lanai stop`). dockur
+  enables neither SSH nor WinRM; RDP is on, but it needs the Windows password,
+  an inbound connection Lanai's VM does not allow, and still meets UAC. So the
+  one administrator prompt stays; setup.cmd now pre-trusts HostFission's
+  certificate, which removes the driver prompt. A no-touch install is a v2 idea:
+  Lanai installing Windows itself with its own unattended setup.
+
+### Second run (2026-10-04, after the trust fix)
+
+The test copy restored from the step 3 snapshot (`lanai restore`, 4 min 37 s;
+setup state reset, next step "run Lanai setup"), then `lanai setup --window`.
+Codex had confirmed the installer and the IDD catalogs share HostFission's signer.
+John ran `setup.cmd` and approved the administrator prompt: no driver prompt and
+no other prompt. Windows shut down by itself; step 6's automatic checks passed
+on the first poll; John answered yes to both questions, and setup reported step
+7. Pass: one prompt in total, as spec req 7 requires.
 
 ## After the proofs
 

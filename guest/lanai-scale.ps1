@@ -41,6 +41,15 @@ function Write-Log([string]$Message) {
     Write-Output $Message
 }
 
+# Name step <i> of $Steps, as "150%", or "unknown" when <i> is outside the
+# list. Every lookup goes through here: PowerShell wraps a negative index
+# silently (index -1 gives 500), and Windows' relative values can point
+# outside the list (proof 1 logged a blank current scale).
+function StepName([int]$i) {
+    if ($i -lt 0 -or $i -ge $Steps.Count) { return 'unknown' }
+    return "$($Steps[$i])%"
+}
+
 # The display configuration API from user32.dll. DPI_GET and DPI_SET use
 # the undocumented device info types -3 and -4, which the Settings app uses
 # for "Scale"; their scale fields count steps relative to the recommended one.
@@ -206,17 +215,19 @@ try {
     # The highest step Windows allows here, as an index into $Steps (Windows
     # may report more steps than this list holds).
     $maxIdx = [math]::Min($recommended + $d.maxScaleRel, $Steps.Count - 1)
-    Write-Log ("Recommended {0}%, current {1}%, allowed {2}% to {3}%; want {4}%" -f `
-            $Steps[$recommended], $Steps[$recommended + $d.curScaleRel],
-            $Steps[0], $Steps[$maxIdx], $Scale)
+    Write-Log ("Raw minScaleRel {0}, curScaleRel {1}, maxScaleRel {2}" -f `
+            $d.minScaleRel, $d.curScaleRel, $d.maxScaleRel)
+    Write-Log ("Recommended {0}, current {1}, allowed {2} to {3}; want {4}%" -f `
+            (StepName $recommended), (StepName ($recommended + $d.curScaleRel)),
+            (StepName 0), (StepName $maxIdx), $Scale)
     if ($want -gt $maxIdx) {
-        Write-Log "Windows allows at most $($Steps[$maxIdx])% at this resolution; using that."
+        Write-Log "Windows allows at most $(StepName $maxIdx) at this resolution; using that."
         $want = $maxIdx
     }
     $rel = $want - $recommended
     [LanaiDisplay]::SetScale($path, $rel)
     $after = [LanaiDisplay]::GetScale($path)
-    Write-Log "Scale is now $($Steps[$recommended + $after.curScaleRel])%."
+    Write-Log "Scale is now $(StepName ($recommended + $after.curScaleRel))."
 }
 catch {
     Write-Log "Error: $($_.Exception.Message)"
