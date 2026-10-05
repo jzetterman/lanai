@@ -4,6 +4,8 @@
 load helpers
 
 setup() {
+  # Match CLI pipeline errors without enabling nounset in Bats timeout traps.
+  set -o pipefail
   isolate_home
   # shellcheck source-path=SCRIPTDIR source=../lib/lanai.sh
   source "$REPO/lib/lanai.sh"
@@ -590,7 +592,6 @@ ended() {
 
 @test "client stamp: an installed unstamped client takes a quick build check before setup continues" {
   source "$REPO/lib/client.sh"
-  fetch_verified() { echo 'unexpected download' >&2; return 1; }
   local d
   d=$(client_builds)/$LG_BUILD
   mkdir -p "$d/bin"
@@ -600,8 +601,17 @@ ended() {
   run setup_plan "$(shared_facts)"
   assert_success
   assert_equal "$(jq -r .step <<<"$output")" 4
-  run build_client
+  # Keep timeout/the executable in a fresh shell, outside Bats' trap state.
+  # All paths still come from isolate_home, including HOME and TMPDIR.
+  # shellcheck disable=SC2016
+  run --separate-stderr bash -c '
+    set -euo pipefail
+    source "$1/lib/lanai.sh"
+    fetch_verified() { echo "unexpected download" >&2; return 1; }
+    build_client
+  ' _ "$REPO"
   assert_success
+  assert_output "$d/bin/looking-glass-client"
   assert_equal "$(cat "$d/build-stamp")" "$LG_BUILD"
   run setup_plan "$(shared_facts)"
   assert_success
@@ -635,4 +645,83 @@ ended() {
   after=$(find "$S" "$RUN" "$STORE" -type f -exec sha256sum {} + | sort)
   assert_equal "$before" "$after"
   assert [ ! -e "$T/client-ran" ]
+}
+
+@test "setup follow: a step 6 stop after the worker check cannot boot Windows" {
+  state '{"snapshot":"declined","step5":true}'
+  ST=active
+  unit_state() { echo "$ST"; }
+  unit_invocation() { echo "$INV"; }
+  ui_sleep() { :; }
+  ui_now() { echo 110; }
+  ui_setup_next '{"ok":true,"step":"6"}' inv 100
+  # The unit exits between the worker deciding and setup taking its lock.
+  ST=inactive
+  boot_vm() { touch "$T/booted"; echo '{"ok":true}'; }
+  client_start() { touch "$T/client-started"; }
+  run setup_command --follow 6 inv
+  assert_success
+  assert_equal "$(jq -r .follow_stopped <<<"$output")" true
+  assert [ ! -e "$T/booted" ]
+  assert [ ! -e "$T/client-started" ]
+}
+
+@test "setup follow: locked checks reject changed invocations and panel stop requests" {
+  local fixture before
+  for fixture in invocation stop consumed step5-panel; do
+    rm -f "$S/"{running,started,last-shutdown,stop-requested}
+    state '{"snapshot":"declined","step5":true}'
+    ST=active INV=inv
+    case $fixture in
+      invocation) INV=other ;;
+      stop) echo 'inv 1' >"$S/stop-requested" ;;
+      consumed) ST=inactive ;;
+      step5-panel) ST=inactive; ended panel ;;
+    esac
+    before=$(cat "$S/setup.json")
+    run setup_command --follow "$([[ $fixture == consumed || $fixture == step5-panel ]] && echo 5 || echo 6)" inv
+    assert_success
+    assert_equal "$(jq -r .follow_stopped <<<"$output")" true
+    assert_equal "$(cat "$S/setup.json")" "$before"
+    [[ $fixture != step5-panel ]] || assert [ -f "$S/running" ]
+  done
+}
+
+@test "setup follow: matching locked step 5 completion advances and active step 6 checks" {
+  state '{"snapshot":"declined","step5":false}'
+  ended clean
+  run setup_resume auto false '' '' 5 inv
+  assert_success
+  assert_output normal-boot
+  assert_equal "$(jq -r .step5 "$S/setup.json")" true
+  ST=active
+  echo '{"setup":false}' >"$S/boot.json"
+  setup_step6() { setup_reply true 6 checked '' '{"questions":["share","scale"]}'; }
+  run setup_command --follow 6 inv
+  assert_success
+  assert_equal "$(jq -c .questions <<<"$output")" '["share","scale"]'
+}
+
+@test "panel records: two concurrent readers without a worker both report no job" {
+  : >"$S/panel-job.lock"
+  # Pause reader one after it takes the real probe lock, before record reads.
+  flock() {
+    command flock "$@" || return
+    : >"$T/reader-ready"
+    local i
+    for ((i=0; i<100; i++)); do
+      [[ ! -e $T/reader-release ]] || return 0
+      sleep 0.05
+    done
+    return 1
+  }
+  (panel_records >"$T/reader-one") 3>&- &
+  local reader=$!
+  wait_for_file "$T/reader-ready"
+  unset -f flock
+  panel_records >"$T/reader-two"
+  : >"$T/reader-release"
+  wait "$reader"
+  assert_equal "$(jq -r .held "$T/reader-one")" false
+  assert_equal "$(jq -r .held "$T/reader-two")" false
 }

@@ -36,8 +36,8 @@ use.
   there with their tests.
 - **Stable runtime copy.** Setup (and every Lanai update, on the next `lanai start`
   while the VM is stopped) copies `bin/` and `lib/` into
-  `$XDG_DATA_HOME/lanai/runtime/<version>/`. The unit points there, so a plugin update
-  or removal mid-run cannot break a clean stop (req 18, 32). A refresh rewrites the unit
+  `$XDG_DATA_HOME/lanai/runtime/<version>-<content-sha256>/`. The unit points
+  there, so a plugin update or removal mid-run cannot break a clean stop (req 18, 32). A refresh rewrites the unit
   and runs `systemctl --user daemon-reload`.
 - **One VM unit, `lanai-vm.service`,** a systemd user unit installed to
   `~/.config/systemd/user/` with absolute paths filled in. `PartOf=` and
@@ -1276,14 +1276,20 @@ again. `ui-job setup` runs `lanai setup` with the click's arguments (a display c
 answers, `--no-snapshot`); while the reply is an ok:true wait (step 5, or step 6 with
 no questions; step 3a's and step 7's ok:true replies are not waits), the job checks
 every 2 s for that wait's expected next state (an activating unit counts as active)
-and then calls bare `lanai setup` again, never repeating the click's arguments (a
-repeated `--window` would start another setup boot):
+and then calls `lanai setup --follow <step> <invocation>` again, never repeating
+the click's arguments (a repeated `--window` would start another setup boot):
 - step 5: `run_verdict` says that run ended and completes step 5, and the unit is
   inactive or failed; if the run ended any other way (a panel Shut down, a forced
   stop), the job stops and the view offers the display choices;
 - step 6: the unit is still active with the same invocation and no stop request for
   it; the next call comes 10 s after the last reply; if the unit stops or changes,
   the job stops.
+The follow-up carries only its expected step and invocation. Setup revalidates
+that expectation under its own operation lock, before bookkeeping or any action:
+step 5 needs the same ended run completing step 5; step 6 needs the same active
+invocation with no matching stop request. A changed expectation returns an inert
+`follow_stopped` reply, so a stop between the worker probe and setup cannot boot
+Windows again.
 It writes the setup group's record after every call and ends on any reply that is not
 a wait, on a failure, or when the expected state does not come. So setup runs at most
 every 10 s, never two at a time, never after a failure, keyed on step and state, and
@@ -1311,7 +1317,7 @@ reply) at launch, holds `panel-job.lock` while it runs, writes each result befor
 releases the lock, and on exit writes the final record before it releases. A record
 is started (no reply), following (a reply, no end) or ended (an end). There is no
 separate job file: the running job is the started or following record whose lock is
-held. The view reads the records while holding a non-blocking probe on
+held. The view reads the records while holding a shared non-blocking probe on
 `panel-job.lock` (only for the read, well under `ui-job`'s `flock -w 1`): if it gets
 the lock, no job runs and the records are final, and a started or following record
 then reads as interrupted, with Continue setup offered; if it does not, a job runs. A
@@ -1355,8 +1361,8 @@ down shown and enabled while stopping; Force stop only when `force_stop` is true
 with its armed second click in the QML; result currency (a setup result after a
 restore, a vm result after the VM stopped, a wait reply after a Shut down ended its
 job); the step 5 transition after a clean setup shutdown started from a `--window`
-click (the follow-up call is bare); a finished install with `step5` false after a
-failed explicit display choice (not finished); a record read racing a launch and an
+click (the follow-up carries only its expected step/invocation); a finished install
+with `step5` false after a failed explicit display choice (not finished); a record read racing a launch and an
 end; every reply-to-words table entry and its
 `reason` codes; and that `setup-reply.json` is ignored. The setup job's following:
 the step 5 transition after a clean setup shutdown (one more call), a panel Shut down
@@ -1398,9 +1404,12 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   step 5. Plan/resume agreement tests cover both present and consumed markers,
   early and active phases, and a panel-requested shutdown.
 - **Following jobs:** the setup worker owns all follow-up calls. Two-second checks
-  require the expected unit/invocation state; bare follow-ups are at least ten
-  seconds apart. A clean automatic setup shutdown advances once, while panel
-  shutdown, force stop, invocation changes, failures and terminal replies end
+  require the expected unit/invocation state; follow-ups carry only
+  `--follow <step> <invocation>` and are at least ten seconds apart. Setup
+  rechecks that expectation under its operation lock before bookkeeping or any
+  action; stale expectations return an inert reply, covering the stop race
+  between the worker probe and setup's fact gather. A clean automatic setup
+  shutdown advances once, while panel shutdown, force stop, invocation changes, failures and terminal replies end
   following. Step 6 also checks matching stop requests. Long jobs run through
   `systemd-run --user --collect` in `session.slice` and hold `panel-job.lock`.
   Closing the panel or reloading the shell does not end them. Client-mode setup
@@ -1411,12 +1420,25 @@ decision. The QML stays small enough to read in one sitting; `qmllint` must pass
   vm, setup, settings and snapshots. It publishes started, following and ended
   records, writing the final record before releasing its lock. Refused workers
   leave the owner's record untouched. The view probes the existing lock read-only
-  before reading records and keeps a successful probe throughout the reads;
+  with a shared lock before reading records and keeps a successful probe
+  throughout the reads. Concurrent bars do not report each other as workers;
   unfinished records without a held lock become interrupted. Interrupted setup
   always offers Continue setup. A pending token with no record after ten seconds
   reports a launch failure. High-resolution start times select the newest
   outstanding record when an older interrupted record belongs to another group.
   The old `panel-job.json` and `ui-job-status` path is removed.
+- **Runtime updates:** the stable runtime revision combines `LANAI_VERSION`
+  with a SHA-256 of the relative filenames and contents in `bin/` and `lib/`.
+  A stopped install replaces the legacy version-only copy and reloads its unit
+  after any code change, including RESET handling and VM startup cleanup;
+  identical content reuses the copy without a reload.
+- **CI result reporting:** sourced libraries preserve the caller's shell
+  options; the CLI entry points own strict mode. `lib/ui.sh` no longer enables
+  nounset in Bats, which otherwise makes Bats 1.14.0 timeout cleanup abort on
+  `BATS_killer_pid` after a failed assertion and lose the result line. The
+  unstamped-client test isolates its build/`timeout` call in a fresh Bash process
+  with the test's HOME/XDG paths. The original CI assertion failure remains
+  unconfirmed; its result-suppression mechanism was reproduced locally.
 - **Renderer:** `LanaiModel.qml` polls only `lanai panel`, every two seconds while
   its own panel is open and every fifteen seconds otherwise, with a ten-second
   deadline. It skips routine overlapping calls and requests one fresh read after

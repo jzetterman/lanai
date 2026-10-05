@@ -54,11 +54,11 @@ SH
   assert_output --partial $'ui-job-worker\nlaunch\nsetup\n--window'
 }
 
-@test "ui job: step 5 follows clean shutdown once with bare setup and ten second spacing" {
+@test "ui job: step 5 follows clean shutdown once with guarded setup and ten second spacing" {
   export MODE=step5
   run cmd_ui_job_worker token setup --window
   assert_success
-  assert_equal "$(cat "$T/calls")" $'setup --window\nsetup'
+  assert_equal "$(cat "$T/calls")" $'setup --window\nsetup --follow 5 inv'
   assert_equal "$(cat "$T/times")" $'100\n110'
   assert_equal "$(jq -r '.ended' "$S/panel-result-setup.json")" 110
 }
@@ -75,10 +75,12 @@ SH
   for mode in step6 stop failure; do
     export MODE=$mode
     echo 100 >"$T/now"; echo 0 >"$T/count"; echo active >"$T/unit"
-    rm -f "$T/times"
+    rm -f "$T/times" "$T/calls"
     run cmd_ui_job_worker token setup
     assert_success
-    if [[ $mode == step6 ]]; then assert_equal "$(cat "$T/times")" $'100\n110\n120'
+    if [[ $mode == step6 ]]; then
+      assert_equal "$(cat "$T/calls")" $'setup\nsetup --follow 6 inv\nsetup --follow 6 inv'
+      assert_equal "$(cat "$T/times")" $'100\n110\n120'
     else assert_equal "$(cat "$T/count")" 1; fi
   done
 }

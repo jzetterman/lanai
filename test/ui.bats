@@ -182,3 +182,31 @@ EOF
     assert_equal "$(jq -r '.setup_done' <<<"$output")" true
   done
 }
+
+@test "ui library: sourcing preserves caller shell options for Bats timeout cleanup" {
+  # Entry points own strict mode; an imported library must not change Bats.
+  run bash -c '
+    set +e +u
+    set +o pipefail
+    source "$1/lib/ui.sh"
+    [[ $- != *e* && $- != *u* ]] || exit 1
+    set -o | grep -Eq "^pipefail[[:space:]]+off$"
+  ' _ "$REPO"
+  assert_success
+}
+
+@test "ui library: a failed assertion still emits its Bats result with a timeout" {
+  cat >"$T/failure-report.bats" <<'CHILD'
+#!/usr/bin/env bats
+@test "intentional reporting failure" {
+  source "$LANAI_TEST_REPO/lib/lanai.sh"
+  false
+}
+CHILD
+  # The child deliberately fails; its result must survive timeout cleanup.
+  run env LANAI_TEST_REPO="$REPO" BATS_TEST_TIMEOUT=2 bats "$T/failure-report.bats"
+  assert_failure
+  assert_output --partial 'not ok 1 intentional reporting failure'
+  refute_output --partial 'Executed 0 instead of expected 1'
+  refute_output --partial 'BATS_killer_pid: unbound variable'
+}

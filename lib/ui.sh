@@ -1,6 +1,6 @@
 # Settings and detached panel jobs. Sourced by lib/lanai.sh.
 # shellcheck shell=bash
-set -euo pipefail
+# CLI entry points own shell options; sourcing must preserve the caller.
 
 # notice-seen: acknowledge the forced-stop notice without touching run markers.
 cmd_notice_seen() {
@@ -109,7 +109,7 @@ ui_call() {
   printf '%s\n' "$out"
 }
 
-# Emit the record with the launch arguments; subsequent setup calls are bare.
+# Emit the record with the launch arguments; follow-ups carry only their guard.
 ui_record() {
   local token=$1 command=$2 args=$3 started=$4 invocation=$5 reply=$6 ended=$7
   jq -nc --arg t "$token" --arg c "$command" --argjson a "$args" --argjson s "$started" \
@@ -210,7 +210,7 @@ cmd_ui_job_worker() {
     if [[ $command != setup ]] || ! jq -e '.ok == true and
       (.step == "5" or (.step == "6" and ((.questions // []) | length) == 0))' <<<"$out" >/dev/null; then break; fi
     ui_setup_next "$out" "$inv" "$at" || break
-    set --
+    set -- --follow "$(jq -r .step <<<"$out")" "$inv"
   done
   panel_result_write "$group" "$(ui_record "$token" "$command" "$args" "$started" "$inv" "$out" "$(ui_timestamp)")"
   exec {fd}>&-

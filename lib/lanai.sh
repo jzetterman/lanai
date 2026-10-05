@@ -1073,8 +1073,18 @@ unit_render() {
   printf '%s\n' "${unit//@ENV@/"$env"}"
 }
 
+# A version alone misses unreleased updates. Hash relative names and contents
+# of every copied file; identical trees keep the same stable runtime path.
+runtime_revision() (
+  local hash
+  set -o pipefail
+  cd -- "$LANAI_LIB/.." || return 1
+  hash=$(find bin lib -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum -- | sha256sum) || return 1
+  printf '%s-%s\n' "$LANAI_VERSION" "${hash%% *}"
+)
+
 # Make sure the VM unit runs Lanai's current code from a stable copy (plan:
-# Stable runtime copy): copy bin/ and lib/ into <data>/runtime/<version>/
+# Stable runtime copy): copy bin/ and lib/ into <data>/runtime/<revision>/
 # when that copy is missing, install the unit when it differs, reload
 # systemd, and remove older copies. Every step's failure stops it. Runs only
 # while the unit is stopped (after preflight), so a plugin update or removal
@@ -1082,7 +1092,7 @@ unit_render() {
 runtime_refresh() {
   local root rt src part unit_dir unit want d
   root=$(data_dir)/runtime
-  rt=$root/$LANAI_VERSION
+  rt=$root/$(runtime_revision) || return 1
   src=$(cd -- "$LANAI_LIB/.." && pwd) || return 1
   if [[ ! -d $rt ]]; then
     part=$rt.partial
@@ -1383,9 +1393,16 @@ cmd_setup() {
 
 # The body of lanai setup: prints its one JSON reply (see cmd_setup).
 setup_command() {
-  local window=auto nosnap=false share="" scale="" out rc built=false
+  local window=auto nosnap=false share="" scale="" follow_step="" follow_inv="" out rc built=false
   while (($#)); do
     case $1 in
+      --follow)
+        if [[ ${2:-} != 5 && ${2:-} != 6 ]] || [[ ! ${3:-} =~ ^[A-Za-z0-9-]+$ ]]; then
+          emit false "" "Invalid setup follow-up." ""; return 2
+        fi
+        follow_step=$2 follow_inv=$3
+        shift 2
+        ;;
       --window) window=true ;;
       --no-window) window=false ;;
       --no-snapshot) nosnap=true ;;
@@ -1406,7 +1423,7 @@ setup_command() {
   done
   while :; do
     rc=0
-    out=$(setup_resume "$window" "$nosnap" "$share" "$scale") || rc=$?
+    out=$(setup_resume "$window" "$nosnap" "$share" "$scale" "$follow_step" "$follow_inv") || rc=$?
     case $out in
       build)
         if $built; then

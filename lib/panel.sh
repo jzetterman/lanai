@@ -57,7 +57,7 @@ panel_records() {
   s=$(state_dir)
   if [[ -f $s/panel-job.lock ]]; then
     exec {fd}<"$s/panel-job.lock"
-    if ! flock -n "$fd"; then held=true; fi
+    if ! flock -s -n "$fd"; then held=true; fi
   fi
   for group in vm setup settings snapshots; do
     doc=$(jq -ce 'select(type == "object")' "$s/panel-result-$group.json" 2>/dev/null) || doc=null

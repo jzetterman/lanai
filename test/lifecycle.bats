@@ -452,7 +452,8 @@ assert_both_refuse() {
   assert_success
   assert_equal "$(field state)" starting
   assert_equal "$(field network)" true
-  local rt=$XDG_DATA_HOME/lanai/runtime/$LANAI_VERSION
+  local rt
+  rt=$XDG_DATA_HOME/lanai/runtime/$(runtime_revision)
   assert [ -x "$rt/bin/lanai-vm-exec" ]
   assert [ -f "$rt/lib/vm.sh" ]
   assert [ -f "$rt/lib/dockur-6.05.args" ]
@@ -483,7 +484,7 @@ assert_both_refuse() {
   assert_output --partial "without a network"
 }
 
-@test "lanai start: the runtime copy is refreshed only when the version changes" {
+@test "lanai start: the runtime copy is reused for unchanged content and refreshed for a new version" {
   ready
   lanai_run start
   assert_success
@@ -495,11 +496,14 @@ assert_both_refuse() {
   # A new version: a new copy, the unit points at it, systemd reloads, and
   # the old copy goes.
   : >"$T/systemctl.calls"
+  local old_rt new_rt
+  old_rt=$XDG_DATA_HOME/lanai/runtime/$(runtime_revision)
+  new_rt=$XDG_DATA_HOME/lanai/runtime/$(LANAI_VERSION=9.9.9 runtime_revision)
   LANAI_VERSION=9.9.9 run boot_vm false
   assert_success
-  assert [ -d "$XDG_DATA_HOME/lanai/runtime/9.9.9/bin" ]
-  assert [ ! -e "$XDG_DATA_HOME/lanai/runtime/$LANAI_VERSION" ]
-  grep -q "^ExecStart=$XDG_DATA_HOME/lanai/runtime/9.9.9/bin/lanai-vm-exec$" \
+  assert [ -d "$new_rt/bin" ]
+  assert [ ! -e "$old_rt" ]
+  grep -q "^ExecStart=$new_rt/bin/lanai-vm-exec$" \
     "$XDG_CONFIG_HOME/systemd/user/lanai-vm.service" || fail "the unit still points at the old copy"
   run grep -c daemon-reload "$T/systemctl.calls"
   assert_output 1
@@ -526,12 +530,12 @@ assert_both_refuse() {
   assert_failure
   run field message
   assert_output --partial "runtime copy"
-  assert [ ! -e "$XDG_DATA_HOME/lanai/runtime/$LANAI_VERSION" ]
+  assert [ ! -e "$XDG_DATA_HOME/lanai/runtime/$(runtime_revision)" ]
   refute_started
   rm "$T/shims/cp"
   lanai_run start
   assert_success
-  assert [ -x "$XDG_DATA_HOME/lanai/runtime/$LANAI_VERSION/bin/lanai-vm-exec" ]
+  assert [ -x "$XDG_DATA_HOME/lanai/runtime/$(runtime_revision)/bin/lanai-vm-exec" ]
 }
 
 @test "lanai start: reports a forced stop from the last run, once" {
@@ -653,4 +657,31 @@ assert_both_refuse() {
   lanai_run force-stop --confirm
   assert_failure
   assert [ ! -e "$S/forced" ]
+}
+
+@test "runtime refresh: code changes replace a legacy copy without a version bump" {
+  # Copy only the runtime sources and unit template; never edit the checkout.
+  mkdir -p "$T/plugin" "$(data_dir)/runtime/$LANAI_VERSION/bin"
+  cp -R "$REPO/bin" "$REPO/lib" "$REPO/systemd" "$T/plugin/"
+  LANAI_LIB=$T/plugin/lib
+  echo legacy >"$(data_dir)/runtime/$LANAI_VERSION/bin/lanai-vm-helper"
+  run runtime_refresh
+  assert_success
+  local first second
+  first=$(runtime_revision)
+  assert [ ! -e "$(data_dir)/runtime/$LANAI_VERSION" ]
+  printf '\n# updated RESET handler\n' >>"$LANAI_LIB/vm.sh"
+  printf '\n# updated start cleanup\n' >>"$T/plugin/bin/lanai-vm-exec"
+  second=$(runtime_revision)
+  refute [ "$first" = "$second" ]
+  : >"$T/systemctl.calls"
+  run runtime_refresh
+  assert_success
+  assert [ ! -e "$(data_dir)/runtime/$first" ]
+  cmp "$LANAI_LIB/vm.sh" "$(data_dir)/runtime/$second/lib/vm.sh"
+  cmp "$T/plugin/bin/lanai-vm-exec" "$(data_dir)/runtime/$second/bin/lanai-vm-exec"
+  run cat "$XDG_CONFIG_HOME/systemd/user/$LANAI_UNIT"
+  assert_line "ExecStart=$(data_dir)/runtime/$second/bin/lanai-vm-exec"
+  run grep -c daemon-reload "$T/systemctl.calls"
+  assert_output 1
 }

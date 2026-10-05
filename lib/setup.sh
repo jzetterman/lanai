@@ -479,12 +479,32 @@ setup_plan() {
 # Lock, consume bookkeeping, follow storage, plan once, then act. Boot/build
 # actions are returned to setup_command so it can release this lock first.
 setup_resume() {
-  local window=$1 nosnap=$2 share=$3 scale=$4 facts plan st dir verdict="" action step reason want missing details next
+  local window=$1 nosnap=$2 share=$3 scale=$4 follow_step=${5:-} follow_inv=${6:-} requested="" s facts plan st dir verdict="" action step reason want missing details next
   local -a list=()
   if ! lanai_flock; then emit false "" "$LANAI_BUSY." "try again when it finishes"; return 1; fi
   facts=$(shared_facts)
   st=$(sed -n 's/^ActiveState=//p' <<<"$facts")
   dir=$(sed -n 's/^LanaiStorage=//p' <<<"$facts")
+  # The worker's probe is advisory. Recheck its expectation inside the same
+  # operation lock as the setup decision, before consuming or changing state.
+  if [[ -n $follow_step ]]; then
+    case $follow_step in
+      5)
+        if [[ $st == inactive || $st == failed ]] &&
+          jq -e --arg i "$follow_inv" '.completes_step5 and .invocation == $i' <<<"$(run_verdict)" >/dev/null; then
+          :
+        else
+          emit true "" "The setup wait ended." "" '{"follow_stopped":true}'; return 0
+        fi ;;
+      6)
+        s=$(state_dir)
+        [[ ! -f $s/stop-requested ]] || read -r requested _ <"$s/stop-requested" || true
+        if [[ $st != active && $st != activating && $st != reloading ]] ||
+          [[ $(sed -n 's/^InvocationID=//p' <<<"$facts") != "$follow_inv" || $requested == "$follow_inv" ]]; then
+          emit true "" "The setup wait ended." "" '{"follow_stopped":true}'; return 0
+        fi ;;
+    esac
+  fi
   if [[ $st == inactive || $st == failed ]]; then
     verdict=$(record_previous_run)
     if [[ -n $dir && $(sed -n 's/^LanaiProblemReason=//p' <<<"$facts") == '' ]]; then
