@@ -2120,6 +2120,10 @@ spec, plan and review gates before it is built.
   beside Install. Wanted: while packages are missing, show only Install in a terminal;
   show Continue setup once they are present (or after the terminal closes), so the
   order of the two clicks is the only one the panel offers.
+- **Rename "Continue setup" to "Windows Setup".** John's call (2026-10-06): "Continue
+  setup" reads as unclear to new users. Rename the button, and every panel line and
+  README step that tells the user to click it, in one change; decide then whether "Run
+  setup again" follows the same wording.
 
 ## Phase 8: Acceptance
 
