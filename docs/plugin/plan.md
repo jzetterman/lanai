@@ -2114,6 +2114,12 @@ spec, plan and review gates before it is built.
   running and healthy, amber when running with a problem, red when running with a major
   issue, and no color (the normal foreground) when Windows is not running. Bash decides
   the level in the panel view; the tooltip keeps the words (req 10: never color alone).
+- **Continue setup shown before the host packages are installed.** Seen by John on a
+  second machine (2026-10-06): at setup's host-package step the panel says to click
+  Install in a terminal and then Continue setup, but Continue setup already shows
+  beside Install. Wanted: while packages are missing, show only Install in a terminal;
+  show Continue setup once they are present (or after the terminal closes), so the
+  order of the two clicks is the only one the panel offers.
 
 ## Phase 8: Acceptance
 
