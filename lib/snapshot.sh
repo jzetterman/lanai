@@ -222,6 +222,8 @@ image_operation() (
   trap 'rm -f -- "$LANAI_IMAGE_PROGRESS" "$LANAI_IMAGE_MAP"; if [[ -n $LANAI_SNAPSHOT_PART ]]; then snapshot_remove "$LANAI_SNAPSHOT_PART"; fi; unlock_disk' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  # A run killed outright leaves its progress behind; never carry its counts over.
+  rm -f -- "$LANAI_IMAGE_PROGRESS"
   image_phase checking || exit 1
   "$@"
 )
@@ -445,7 +447,7 @@ snapshot_restore() {
     if ! reflink_file "$snap/$name" "$dir/.lanai-restore.$name"; then rc=1; break; fi
     sum=${sums[$name]}
     if [[ $(sha256sum <"$dir/.lanai-restore.$name" | cut -d ' ' -f1) != "$sum" ]]; then
-      reason="$snap is damaged: $name does not match its manifest"; rc=1
+      reason="The snapshot is damaged: $name does not match its manifest."; rc=1
     fi
   done
   if ((rc == 0)) && ! $existed; then

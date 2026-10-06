@@ -257,8 +257,8 @@ TestCase {
   }
   function test_widget_tooltip_includes_backend_right_click_words_and_error_fallback() {
     var p = widgetParts()
-    p.model.view = {label:'Stopped',headline:'Windows is stopped',right_click:'start',right_click_tooltip:'Right click: Start Windows.',buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
-    compare(p.button.tooltipText, 'Lanai\nStopped\nWindows is stopped\nRight click: Start Windows.')
+    p.model.view = {label:'Stopped',headline:'Windows is stopped',right_click:'start',right_click_tooltip:'Right-click: Start Windows.',buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
+    compare(p.button.tooltipText, 'Lanai\nStopped\nWindows is stopped\nRight-click: Start Windows.')
     p.model.refresh(); var poll = process(p.model, 'timeout')
     poll.complete('invalid', 1)
     p.button.pressed(Qt.RightButton)

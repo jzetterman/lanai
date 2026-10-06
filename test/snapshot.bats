@@ -974,6 +974,27 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(tree_manifest "$STORE")" "$(cat "$(data_dir)/snapshots/$GOOD/COMPLETE")"
 }
 
+@test "restore: damaged firmware after interrupted replacement names the way out and another snapshot recovers" {
+  recovery_snapshots
+  shim mv 'if [[ ${@: -2:1} == */.lanai-restore.windows.base ]]; then
+  kill -TERM "$LANAI_IMAGE_OWNER"; exit 1
+fi
+exec /usr/bin/mv "$@"'
+  lanai_run restore "$BAD"
+  assert_failure
+  assert [ -e "$S/restore-in-progress" ]
+  rm "$T/shims/mv"
+  flip_byte "$SNAP/windows.rom"
+  lanai_run restore
+  assert_failure
+  assert_output --partial 'The snapshot is damaged: windows.rom does not match its manifest.'
+  assert_output --partial 'Restore another snapshot by name.'
+  refute_output --partial "$SNAP"
+  lanai_run restore "$GOOD"
+  assert_success
+  assert [ ! -e "$S/restore-in-progress" ]
+}
+
 @test "restore: another named snapshot replaces an unfinished restore with a deleted disk" {
   recovery_snapshots
   mark_restore "$SNAP" "$STORE"
@@ -992,6 +1013,8 @@ exec /usr/bin/mv "$@"'
   lanai_run restore "$BAD"
   assert_failure
   assert_output --partial 'Nothing was changed.'
+  assert_output --partial 'Restore another snapshot by name.'
+  refute_output --partial "$SNAP"
   refute_output --partial 'snapshot is intact'
   assert [ ! -e "$S/restore-in-progress" ]
   assert [ ! -e "$STORE/.lanai-restore.data.img" ]
@@ -1020,6 +1043,19 @@ exec /usr/bin/mv "$@"'
   assert_success
   assert [ ! -e "$S/restore-in-progress" ]
   assert_equal "$(tree_manifest "$STORE")" "$(cat "$(data_dir)/snapshots/$GOOD/COMPLETE")"
+}
+
+@test "progress: a stale progress file from a killed run never carries its counts into the next run" {
+  recovery_snapshots
+  mkdir -p "$S"
+  jq -nc --argjson pid 999999 '{operation:"restore",phase:"checking",done:99,total:100,pid:$pid}' >"$S/image-progress.json"
+  shim python3 'if [[ $1 == */image-proof.py && $2 == progress && $3 == checking ]]; then
+  /usr/bin/python3 "$@" && jq -c "[.done,.total]" "$LANAI_IMAGE_PROGRESS" >>"$T/checking-counts"; exit
+fi
+exec /usr/bin/python3 "$@"'
+  lanai_run restore "$GOOD"
+  assert_success
+  assert_equal "$(head -n 1 "$T/checking-counts")" "[0,0]"
 }
 
 @test "restore: early failed checks with an older marker never claim nothing changed" {

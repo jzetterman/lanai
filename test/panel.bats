@@ -1594,9 +1594,9 @@ assert_right_click() {
   assert_equal "$(jq -r .right_click <<<"$output")" "$1"
   local words
   case $1 in
-    start) words='Right click: Start Windows.' ;;
-    open) words='Right click: Open the Windows window.' ;;
-    panel) words='Right click: Open the panel.' ;;
+    start) words='Right-click: Start Windows.' ;;
+    open) words='Right-click: Open the Windows window.' ;;
+    panel) words='Right-click: Open the panel.' ;;
   esac
   assert_equal "$(jq -r .right_click_tooltip <<<"$output")" "$words"
 }
