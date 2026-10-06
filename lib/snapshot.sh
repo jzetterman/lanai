@@ -274,14 +274,21 @@ restore_mark() {
 
 # The image proof can take minutes. Recheck each staged small file against
 # COMPLETE immediately before its rename, even if it passed the clone check.
+# sha256sum follows symlinks, so a staged file swapped for a link to the
+# snapshot's copy would pass the hash: refuse anything but a regular file,
+# before the rename and again after it.
 restore_small_file() {
-  local dir=$1 name=$2 sum=$3 actual
-  if ! actual=$(sha256sum <"$dir/.lanai-restore.$name" | cut -d ' ' -f1) ||
-    [[ $actual != "$sum" ]]; then
+  local dir=$1 name=$2 sum=$3 actual temp=$1/.lanai-restore.$2
+  if [[ -L $temp || ! -f $temp ]] ||
+    ! actual=$(sha256sum <"$temp" | cut -d ' ' -f1) || [[ $actual != "$sum" ]]; then
     echo "the temporary $name does not match its manifest"
     return 1
   fi
-  mv -f -T -- "$dir/.lanai-restore.$name" "$dir/$name"
+  mv -f -T -- "$temp" "$dir/$name" || return 1
+  if [[ -L $dir/$name || ! -f $dir/$name ]]; then
+    echo "$name is not a regular file after its rename"
+    return 1
+  fi
 }
 
 # Restore uses one image read from a fresh clone, equal maps before and after

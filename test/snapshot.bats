@@ -1189,6 +1189,39 @@ exec /usr/bin/python3 "$@"'
   assert_equal "$(dirname "$(field snapshot)")" "$B/win.lanai-snapshots"
 }
 
+@test "restore: a staged small file swapped for a symlink during the image hash is refused" {
+  proof_mode normal
+  take_snapshot
+  echo live >"$B/win/windows.vars"
+  local before
+  before=$(sha256sum <"$B/win/windows.vars")
+  cat >"$T/link-small" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+temp=${2%/*}/.lanai-restore.windows.vars
+rm -f "$temp"
+ln -s "${1%/*}/windows.vars" "$temp"
+SH
+  chmod +x "$T/link-small"
+  export LANAI_TEST_IMAGE_AFTER_HASH=$T/link-small
+  lanai_run restore "$NAME"
+  assert_failure
+  assert_output --partial "windows.vars"
+  assert [ ! -L "$B/win/windows.vars" ]
+  assert_equal "$(sha256sum <"$B/win/windows.vars")" "$before"
+  assert [ -e "$S/restore-in-progress" ]
+  unset LANAI_TEST_IMAGE_AFTER_HASH
+  # Lanai never removes a link it did not make; the user moves it out first.
+  lanai_run restore
+  assert_failure
+  assert_output --partial ".lanai-restore.windows.vars (not a regular file)"
+  rm "$B/win/.lanai-restore.windows.vars"
+  lanai_run restore
+  assert_success
+  assert [ ! -L "$B/win/windows.vars" ]
+  assert [ ! -e "$S/restore-in-progress" ]
+}
+
 @test "proof: each small temporary file is hashed before any rename" {
   proof_mode normal
   take_snapshot
