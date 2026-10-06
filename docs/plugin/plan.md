@@ -2100,6 +2100,21 @@ The orchestrator runs the gate; delegates run no review stage.
   timing/spike measurements as phase 8 items. The custom glyph remains because
   marketplace Windows plugins are not installed here.
 
+## Follow-ons after v0.1.0
+
+John's calls from the phase 7 hands-on run (2026-10-05). Each goes through the usual
+spec, plan and review gates before it is built.
+
+- **Looking Glass resize on first open.** The client sends the window size once per
+  process; a display driver restart during Windows' boot loses it, and the client's
+  `lastWindowSize` (client/src/message.c) then skips the resend. Fix: carry one small
+  pinned patch that clears it when a session starts, and file the bug upstream.
+- **Icon color by health.** Today the icon turns the shell's urgent color (red in John's
+  theme) whenever the VM runs, because `active` uses `Color.urgent`. Wanted: green when
+  running and healthy, amber when running with a problem, red when running with a major
+  issue, and no color (the normal foreground) when Windows is not running. Bash decides
+  the level in the panel view; the tooltip keeps the words (req 10: never color alone).
+
 ## Phase 8: Acceptance
 
 - Memory: before the rehearsal, the first Lanai boot on John's machine, set memory to
