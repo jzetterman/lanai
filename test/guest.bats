@@ -397,9 +397,10 @@ scale_decision() {
     if ([LanaiDisplay]::Sets -ne $sets+1 -or $Logs.Count -ne $count) { throw "one minute retry or log deduplication failed" }
     Update-DisplayScale 2
     if ([LanaiDisplay]::Sets -ne $sets+2) { throw "new target did not apply promptly" }
-    # A full log filesystem must not break the repeating task in its catch.
+    # A full log filesystem must not prevent a scale attempt or end the task.
     function Write-Log($Message) { throw "log is unavailable" }
     Update-DisplayScale 4
+    if ([LanaiDisplay]::Sets -ne $sets+3) { throw "failed log prevented SetScale" }
     function Write-Log($Message) { $script:Logs += $Message }
     Update-DisplayScale 4
     if ([LanaiDisplay]::Sets -ne $sets+3) { throw "failed log delayed a new target before SetScale was attempted" }

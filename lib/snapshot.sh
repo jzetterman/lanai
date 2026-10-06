@@ -334,15 +334,10 @@ snapshot_create() {
 }
 
 # Write the restore-in-progress marker <marker> (the snapshot, then the
-# storage location, optionally followed by verification-failed) and flush
-# it and its folder to disk before any storage
-# file changes.
+# storage location) and flush it and its folder before any storage file changes.
 restore_mark() {
   local marker=$1
-  {
-    printf '%s\n%s\n' "$2" "$3" &&
-      if [[ -n ${4:-} ]]; then printf '%s\n' "$4"; fi
-  } >"$marker.tmp" && sync -- "$marker.tmp" &&
+  printf '%s\n%s\n' "$2" "$3" >"$marker.tmp" && sync -- "$marker.tmp" &&
     mv -f -- "$marker.tmp" "$marker" && sync -- "${marker%/*}"
 }
 
@@ -368,39 +363,31 @@ restore_small_file() {
 # Restore uses one image read from a fresh clone, equal maps before and after
 # hashing, and a final map after in-place FICLONE. Small files are hashed before
 # replacement. Failures before any replacement clean up a new marker; later
-# failures keep it so recovery remains resumable. A missing disk is published
-# with its lock held before hashing (John's approved req 7 exception).
+# failures keep it so recovery can resume or use another named snapshot.
+# A missing disk is published with its lock held before hashing
+# (John's approved req 7 exception).
 snapshot_restore() {
   local want=${1:-} dir s marker snap="" msrc="" reason note="" kind size sum name rc=0 e
-  local marker_snap="" marker_status="" verification_failed=false
+  local marker_snap="" existed=false older=false changed=false image_sum temp reason_map
+  local unchanged='. Nothing was changed.'
   local -a order=() strays=()
   local -A keep=() sums=()
   dir=$(storage_dir) || return 1
   s=$(state_dir)
   marker=$s/restore-in-progress
+  [[ ! -e $marker ]] || { older=true; unchanged='. The restore is still unfinished.'; }
   if [[ -f $marker ]]; then
-    { IFS= read -r snap && IFS= read -r msrc; IFS= read -r marker_status || true; } <"$marker" || true
+    { IFS= read -r snap && IFS= read -r msrc; } <"$marker" || true
     marker_snap=$snap
     if [[ $msrc != "$dir" ]]; then
       echo "the unfinished restore ($marker) was for ${msrc:-an unknown storage location}, not $dir. Point Lanai's storage back at it, then run lanai restore again."
       return 1
-    elif [[ $marker_status == verification-failed ]]; then
-      if [[ -z $want || $want == "${snap##*/}" ]]; then
-        echo "The unfinished restore's snapshot failed verification. Restore another snapshot by name."
-        return 1
-      fi
-      snap=""
-    elif snapshot_valid "$snap" "$dir"; then
-      if [[ -n $want && $want != "${snap##*/}" ]]; then
-        echo "a restore of ${snap##*/} did not finish: run lanai restore again to finish it first"
-        return 1
-      fi
-    elif [[ -z $want ]]; then
-      echo "the unfinished restore's snapshot ($snap) is gone or damaged. Restore another snapshot by name (lanai snapshots lists them); that replaces $marker."
-      return 1
-    else
+    elif [[ -n $want && $want != "${snap##*/}" ]]; then
       note="replacing the unfinished restore of ${snap##*/} ($marker); "
       snap=""
+    elif ! snapshot_valid "$snap" "$dir"; then
+      echo "the unfinished restore's snapshot ($snap) is gone or damaged. Restore another snapshot by name; that replaces $marker."
+      return 1
     fi
   fi
   if [[ -z $snap ]]; then
@@ -417,27 +404,25 @@ snapshot_restore() {
     return 1
   fi
   if [[ ! -s $snap/data.img ]]; then
-    echo "$snap's data.img is empty, so it cannot be cloned onto the disk. Nothing was changed."
+    echo "$snap's data.img is empty, so it cannot be cloned onto the disk$unchanged"
     return 1
   fi
-  local existed=false older=false changed=false image_sum temp reason_map
-  [[ ! -e $marker ]] || older=true
   [[ ! -f $dir/data.img ]] || existed=true
   if $existed; then
     if ! lock_disk "$dir/data.img"; then
-      echo "cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it first. Nothing was changed."; return 1
+      echo "cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it first$unchanged"; return 1
     fi
   fi
   image_phase checking
   if ! reason=$(image_proof gate "$snap/data.img"); then
-    echo "${reason%.}. Nothing was changed."; return 3
+    echo "${reason%.}$unchanged"; return 3
   fi
   if $existed; then
     if ! reason=$(image_proof filesystem "$dir/data.img"); then
-      echo "${reason%.}. Nothing was changed."; return 3
+      echo "${reason%.}$unchanged"; return 3
     fi
     if [[ $(has_nocow "$snap/data.img" && echo C) != "$(has_nocow "$dir/data.img" && echo C)" ]]; then
-      echo "$dir/data.img and $snap/data.img differ in NOCOW (the C attribute). Nothing was changed."; return 1
+      echo "$dir/data.img and $snap/data.img differ in NOCOW (the C attribute)$unchanged"; return 1
     fi
   fi
   while read -r kind size sum name; do
@@ -446,7 +431,7 @@ snapshot_restore() {
     if [[ $name == data.img ]]; then image_sum=$sum; else order+=("$name"); fi
   done <"$snap/COMPLETE"
   if ! restore_mark "$marker" "$snap" "$dir"; then
-    echo "cannot write $marker; nothing was changed"; return 1
+    echo "cannot write $marker$unchanged"; return 1
   fi
   image_phase cloning
   # Never reuse an interrupted temporary inode (its NOCOW may differ).
@@ -483,7 +468,7 @@ snapshot_restore() {
     fi
   fi
   if ((rc == 0)); then
-    reason_map=$(image_proof prove "$snap/data.img" "$temp" "$LANAI_IMAGE_MAP" "$image_sum") || { reason=$reason_map; verification_failed=true; rc=1; }
+    reason_map=$(image_proof prove "$snap/data.img" "$temp" "$LANAI_IMAGE_MAP" "$image_sum") || { reason=$reason_map; rc=1; }
   fi
   if ((rc == 0)) && $existed; then
     # From here any failure keeps recovery blocked, even if FICLONE partially
@@ -521,20 +506,20 @@ snapshot_restore() {
     for name in data.img "${order[@]}"; do rm -f -- "$dir/.lanai-restore.$name"; done
     if ! $changed; then
       if $older; then
-        restore_mark "$marker" "$marker_snap" "$dir" "$marker_status" || return 1
+        restore_mark "$marker" "$marker_snap" "$dir" || return 1
       else
         rm -f -- "$marker"
         sync -- "$s"
       fi
-      echo "${reason%.}. Nothing was changed."
-    elif $verification_failed; then
-      # Size validation cannot find data damage. Persist the failed proof so a
-      # different named snapshot may replace this unfinished restore after a crash.
-      restore_mark "$marker" "$snap" "$dir" verification-failed || return 1
-      echo "The restore did not finish: ${reason%.}. Restore another snapshot by name."
-    else
-      echo "The restore did not finish: ${reason%.}. Try the restore again."
     fi
+    if [[ $reason == 'The snapshot is damaged:'* ]]; then
+      note=' Restore another snapshot by name.'
+    elif $changed || $older; then
+      note=' Try the restore again.'
+    else note=''; fi
+    if $changed || $older; then
+      echo "The restore did not finish: ${reason%.}.$note"
+    else echo "${reason%.}$unchanged$note"; fi
     return 1
   fi
   rm -f -- "$marker"

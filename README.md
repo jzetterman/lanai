@@ -80,7 +80,8 @@ the setup offer explains that you need a backup before continuing without one.
 Snapshot and restore show their phase and a progress bar with a percentage,
 also when you open the panel partway through or start from the CLI. You can close
 the panel during a snapshot. Keep Windows stopped until a restore finishes.
-Lanai blocks Start while a restore is unfinished; use **Finish the unfinished restore** to resume it.
+Lanai blocks Start while a restore is unfinished. Use **Finish the unfinished
+restore** to resume it, or restore another saved snapshot to start over.
 It tries the Lanai data directory's `snapshots/`, then
 `<storage>.lanai-snapshots/` on the storage filesystem. Both VMs must be stopped for
 snapshot or restore. Before a new snapshot, Lanai removes interrupted snapshot
@@ -95,9 +96,11 @@ deliberate re-cloning or reference juggling by another process running as your
 user is outside the proof, including substitution of compressed extent slices.
 An existing disk keeps its locked inode during restore. If dockur already deleted
 the disk, Lanai publishes its locked clone and verified boot files before reading
-it. A failed image check leaves recovery unfinished and prevents Start; choose
-another saved snapshot to recover. A failed check before the disk is put in place
-removes the temporary files and leaves Windows unchanged.
+it. An unfinished restore can be retried with the same snapshot or replaced
+with another saved snapshot. If the snapshot's image is damaged, restore another
+snapshot by name. A failed check before the disk is put
+in place removes the temporary files. Windows is unchanged only when there was
+no earlier unfinished restore.
 
 In the setup window, open Lanai's setup drive in Explorer and run `setup.cmd`. Approve
 the administrator prompt as the same Windows user; approval as a different account

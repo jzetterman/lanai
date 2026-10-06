@@ -13,7 +13,7 @@ panel_words() {
       settings:"Lanai could not read its settings. Check the settings file.",
       missing:"No Windows install was found. Install Windows with Omarchy, then continue setup.",
       layout:"The Windows install is not supported or is incomplete. Check the install before continuing.",
-      restore:"A restore did not finish. Finish the unfinished restore before starting Windows.",
+      restore:"A restore did not finish. Finish the unfinished restore or restore another snapshot before starting Windows.",
       share:"Lanai needs a folder named Windows in your home folder. It must be a real folder you own, not a link. Create or fix it, then continue setup.",
       container:"Windows is in use by another VM. Stop it before continuing here.",
       manager:"Lanai cannot reach your session services. Check the " + log + " and try again.",
@@ -28,7 +28,7 @@ panel_words() {
       agents:"The Windows agents did not answer. Shut down and set up Windows again.",
       answers:"The final checks did not pass. Shut down and set up Windows again.",
       client:"The Windows window could not open. Check the Windows window log and try again.",
-      "restore-unsupported":"The restore was refused because Lanai cannot verify an instant copy in this storage location. Nothing was changed. Choose storage that supports verified instant copies, then try again.",
+      "restore-unsupported":"The restore was refused because Lanai cannot verify an instant copy in this storage location. Choose storage that supports verified instant copies, then try again.",
       "snapshot-unsupported":"This filesystem cannot make an instant snapshot. Make a backup before continuing without a snapshot.",
       "invalid-reply":"Lanai did not give a readable reply. Check the " + log + " and try again."
     };
@@ -131,7 +131,7 @@ cmd_panel() {
       jq -e 'has("started") and (has("ended") | not)' <<<"$doc" >/dev/null; then
       case $(jq -r .command <<<"$doc") in
         snapshot) words="The snapshot did not finish. Try again." ;;
-        restore) words="The restore did not finish. Finish the unfinished restore before starting Windows." ;;
+        restore) words="The restore did not finish. Finish the unfinished restore or restore another snapshot before starting Windows." ;;
         *) words="Setup was interrupted. Continue setup to try again." ;;
       esac
     fi
@@ -189,7 +189,7 @@ cmd_panel() {
      right_click_tooltip:({start:"Right click: Start Windows.",open:"Right click: Open the Windows window.",panel:"Right click: Open the panel."}[$rightClick]),
      pending_ack:(if $seen then $token else "" end),
      progress:$progress,notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
-     busy:{active:$busy,line:(if $progress != null then (if ($progress.label | startswith("Restoring Windows:")) then "Keep Windows stopped until it finishes." else "" end) elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
+     busy:{active:$busy,line:(if $progress != null then (if ($progress.label | startswith("Restoring Windows:")) then "Keep Windows stopped until it finishes." else "You can close this panel." end) elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
        elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes."}[$job.command // ""] // "Starting the operation.") else "" end)},
      result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot and restore log, then try again." else "" end)}),
      setup:{show:($p.finished|not),finished:$p.finished,
@@ -252,7 +252,7 @@ cmd_panel() {
       if $st.state == "stopped" then .cause="Lanai setup has not finished for this Windows install." else . end
     else . end |
     if $st.restore_pending then .cause="A restore did not finish, so Windows cannot start." |
-      .next=(if $available then "Click Finish the unfinished restore when Windows is stopped." else "Stop the other VM, then finish the unfinished restore." end) else . end |
+      .next=(if $available then "When Windows is stopped, finish the unfinished restore or restore another snapshot." else "Stop the other VM, then finish the unfinished restore or restore another snapshot." end) else . end |
     if $st.force_stop then .next="Wait, or use Force stop below if you accept losing unsaved work." else . end |
     .warning = ([
       if $facts | contains("LanaiHelpersMissing=") then "Some background services stopped. Shut Windows down and start it again." else empty end,

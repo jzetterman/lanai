@@ -198,9 +198,9 @@ def activity(lock_path, progress_path):
         if not owns or not held:
             return None
         percent = min(99, doc["done"] * 99 // doc["total"]) if doc["total"] else 0
-        verb = "Taking snapshot" if doc["operation"] == "snapshot" else "Restoring Windows"
-        labels = {"cloning": "making instant copy", "checking": "checking shared storage",
-                  "hashing": "reading image", "replacing": "replacing the disk", "finishing": "finishing and saving"}
+        verb = "Taking a snapshot" if doc["operation"] == "snapshot" else "Restoring Windows"
+        labels = {"cloning": "making an instant copy", "checking": "checking the shared storage",
+                  "hashing": "reading the image", "replacing": "replacing the disk", "finishing": "finishing and saving"}
         return {"label": f'{verb}: {labels[doc["phase"]]}', "percent": percent}
     except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.SubprocessError):
         return None

@@ -1738,9 +1738,9 @@ The orchestrator runs the gate; delegates run no review stage.
   changes, caps and recovers, retries late attachment and suppresses repeated
   errors. An unchanged failing scale decision backs off to one attempt per minute
   and logs that decision once; a new display, range or target still applies at
-  once. The retry deadline starts only after the scale API is attempted, so a
-  failed log write before that attempt cannot delay a new target. A failing log
-  write inside error handling cannot end the loop. Its
+  once. Pre-attempt logs are best effort, so a failed log write cannot prevent
+  the scale API attempt. The retry deadline starts only after that attempt.
+  A failing log write inside error handling cannot end the loop. Its
   sign-in task has no execution limit and ignores duplicate starts.
   README documents rerunning setup, next-start choices and manual Windows scale
   changes reverting within 2 s. Tests were written first, including PowerShell
@@ -1756,21 +1756,30 @@ The orchestrator runs the gate; delegates run no review stage.
   new marker, preserving any older marker. Deleted
   disks publish the locked inode with renameat2 no-replace and install boot files
   before hashing, using John's approved req 7 exception, then retain fresh small-file clones for
-  final verification and replacement after the image hash. A failed image proof
-  after publication records failed verification in the marker, so a different
-  named snapshot may replace it; staged images are removed on failure. CLI and panel
+  final verification and replacement after the image hash. Any unfinished
+  restore can resume its snapshot, with no name or the same name, or start over
+  with a different valid named snapshot on either disk path. The marker records
+  only the snapshot and storage location; staged images are removed on failure.
+  Hash damage advises restoring another snapshot by name. Refusals claim nothing
+  changed only when no older marker existed and this attempt changed no install
+  file. The panel offers finishing or restoring any other snapshot and explains
+  both choices while Windows is stopped. CLI and panel
   operations publish phases, byte progress and owner under the operation lock;
   QML renders the percentage with a comma after the label, showing the label
   once and keeping "Keep Windows stopped until it finishes." visible during
-  restore. Checks are labeled before cloning starts; replacing the disk covers
+  restore and "You can close this panel." visible during a snapshot. Labels say
+  "Taking a snapshot: making an instant copy" and include the articles in the
+  checking and reading phases. Checks are labeled before cloning starts;
+  replacing the disk covers
   the in-place clone and its final map. The panel reads activity once per poll
   and reuses it for shared facts. Only validated activity from a live snapshot or restore owner skips
   the panel image read; setup's own operation lock still checks the first 100 KB
   for nonzero data. Proof and gate failures keep details in stderr and show plain
   reasons with final periods; snapshot backup advice appears once in the next
   step. Restore refusals have a separate reason and panel words explaining the
-  unsupported storage and unchanged disk. All clone and publication errors use
-  the same mapping, with details kept in the operation log. A successful proof's manifest
+  unsupported storage without claiming the disk is unchanged. All clone and
+  publication errors use the same mapping, with details kept in the operation
+  log. A successful proof's manifest
   is separate from later small-file failure reasons. Under the lock, stale
   partials matching SOURCE and dead-owner image maps are swept. SOURCE precedes
   cloning and is flushed with its directory before a clone can pin blocks;
@@ -1789,6 +1798,23 @@ The orchestrator runs the gate; delegates run no review stage.
   duplicate script was needed. Outside the sandbox the full suite passes 650 of 650 (locale and strace
   skips). Local strace measurement skips when unavailable;
   John's rehearsal-image timing and container-start check remain manual proofs.
+
+- **Unfinished restore checks (2026-10-05):** Tests first reproduced a deleted
+  disk's non-hash proof failure blocking named and unnamed retries, an
+  interrupted replacement followed by snapshot image damage hiding the way
+  out, and another named snapshot being refused with the disk still missing.
+  Recovery checks cover both disk paths, exact restored manifests and marker
+  removal. Older-marker refusals cover the image gate, destination filesystem,
+  disk lock, NOCOW, empty image and damaged small files without claiming Windows
+  was unchanged. Tests through `lanai panel` cover both recovery choices and
+  persistent snapshot progress guidance. The PowerShell log-failure fixture
+  checks the scale attempt before logging recovers. The obsolete marker-state
+  assertion and tautological awk test are removed; appended snapshot and restore
+  failure cases now sit in their behavior groups. With scratch HOME and XDG
+  folders, 77 snapshot cases, 93 panel cases and 26 guest cases pass. The
+  read-budget case skips because strace is unavailable; six QEMU lock cases
+  were excluded under the no-VM instruction. No socket tests failed. QML lint,
+  the full ShellCheck command and `git diff --check` pass.
 
 - **Checks after the confirmed findings (2026-10-05):** Tests first reproduced
   both deleted-disk damage paths, unsupported restore wording, repeated snapshot

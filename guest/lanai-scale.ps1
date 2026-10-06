@@ -95,13 +95,15 @@ function Update-DisplayScale([int]$Want) {
             if ($key -eq $script:LastScaleDecision -and $now -lt $script:NextScaleAttempt) { return }
             $newDecision = $key -ne $script:LastScaleDecision
             if ($newDecision) {
-                Write-Log "Display: name '$($t.monitorFriendlyDeviceName)', path '$($t.monitorDevicePath)', resolution $resolution"
-                Write-Log ("Raw minScaleRel {0}, curScaleRel {1}, maxScaleRel {2}" -f `
-                    $d.minScaleRel, $d.curScaleRel, $d.maxScaleRel)
-                Write-Log ("Recommended {0}, current {1}, allowed {2} to {3}; target {4}, applying {5}" -f `
-                    (StepName $decision.recommended), (StepName $decision.current), (StepName 0),
-                    (StepName ([math]::Min($decision.recommended + $d.maxScaleRel, $Steps.Count - 1))),
-                    (StepName $Want), (StepName $decision.target))
+                try {
+                    Write-Log "Display: name '$($t.monitorFriendlyDeviceName)', path '$($t.monitorDevicePath)', resolution $resolution"
+                    Write-Log ("Raw minScaleRel {0}, curScaleRel {1}, maxScaleRel {2}" -f `
+                        $d.minScaleRel, $d.curScaleRel, $d.maxScaleRel)
+                    Write-Log ("Recommended {0}, current {1}, allowed {2} to {3}; target {4}, applying {5}" -f `
+                        (StepName $decision.recommended), (StepName $decision.current), (StepName 0),
+                        (StepName ([math]::Min($decision.recommended + $d.maxScaleRel, $Steps.Count - 1))),
+                        (StepName $Want), (StepName $decision.target))
+                } catch { } # A failed log must not prevent the scale attempt.
             }
             try { [LanaiDisplay]::SetScale($path, $decision.relative) }
             finally {

@@ -909,7 +909,7 @@ assert_plan_agreement() {
     run cmd_panel
     case $command in
       snapshot) expected='The snapshot did not finish. Try again.' ;;
-      restore) expected='The restore did not finish. Finish the unfinished restore before starting Windows.' ;;
+      restore) expected='The restore did not finish. Finish the unfinished restore or restore another snapshot before starting Windows.' ;;
       setup) expected='Setup was interrupted. Continue setup to try again.' ;;
     esac
     assert_equal "$(jq -r --arg g "$group" '.result[$g]' <<<"$output")" "$expected"
@@ -1513,9 +1513,19 @@ setup_worker() {
   assert_equal "$(jq -r '.progress.percent' <<<"$output")" 24
   assert_equal "$(jq -r '.busy.active' <<<"$output")" true
   assert_equal "$(jq -r '.buttons.take_snapshot.enable' <<<"$output")" false
-  assert_equal "$(jq -r '.progress.label' <<<"$output")" "Taking snapshot: reading image"
-  assert_equal "$(jq -r '.busy.line' <<<"$output")" ""
+  assert_equal "$(jq -r '.progress.label' <<<"$output")" "Taking a snapshot: reading the image"
+  assert_equal "$(jq -r '.busy.line' <<<"$output")" "You can close this panel."
   refute_output --partial '—'
+  local phase label
+  for phase in cloning checking; do
+    jq --arg phase "$phase" '.phase=$phase' "$S/image-progress.json" >"$S/next.json"
+    mv "$S/next.json" "$S/image-progress.json"
+    lanai_run panel
+    assert_success
+    if [[ $phase == cloning ]]; then label='making an instant copy'; else label='checking the shared storage'; fi
+    assert_equal "$(jq -r '.progress.label' <<<"$output")" "Taking a snapshot: $label"
+    assert_equal "$(jq -r '.busy.line' <<<"$output")" 'You can close this panel.'
+  done
   jq '.operation="restore"' "$S/image-progress.json" >"$S/next.json"
   mv "$S/next.json" "$S/image-progress.json"
   run cmd_panel
@@ -1687,10 +1697,10 @@ assert_right_click() {
   exec {fd}>&-
 }
 
-@test "panel restore refusal: explains unsupported storage and unchanged Windows" {
+@test "panel restore refusal: explains unsupported storage and how to continue" {
   local words reply
   reply='{"ok":false,"reason":"restore-unsupported"}'
-  words='The restore was refused because Lanai cannot verify an instant copy in this storage location. Nothing was changed. Choose storage that supports verified instant copies, then try again.'
+  words='The restore was refused because Lanai cannot verify an instant copy in this storage location. Choose storage that supports verified instant copies, then try again.'
   run panel_words restore "$reply"
   assert_success
   assert_output "$words"
@@ -1701,6 +1711,44 @@ assert_right_click() {
   lanai_run panel
   assert_success
   assert_equal "$(jq -r .result.snapshots <<<"$output")" "$words"
+}
+
+@test "panel restore: unfinished recovery offers finishing or every other snapshot through lanai panel" {
+  make_install "$STORE"
+  local name snap root=$XDG_DATA_HOME/lanai/snapshots
+  for name in 20260101T000000Z 20260102T000000Z 20260103T000000Z; do
+    snap=$root/$name
+    mkdir -p "$snap"
+    cp "$STORE/"* "$snap/"
+    echo "$STORE" >"$snap/SOURCE"
+    tree_manifest "$STORE" >"$snap/COMPLETE"
+  done
+  printf '%s\n%s\n' "$root/20260101T000000Z" "$STORE" >"$S/restore-in-progress"
+  shim systemctl 'printf "ActiveState=inactive\nResult=success\nInvocationID=\n"'
+  export PATH=$T/shims:$PATH
+  lanai_run panel
+  assert_success
+  assert_equal "$(jq -r .buttons.finish_restore.enable <<<"$output")" true
+  assert_equal "$(jq -r .buttons.restore_snapshot.enable <<<"$output")" true
+  assert_equal "$(jq -r .buttons.restore_confirm.enable <<<"$output")" true
+  for name in 20260102T000000Z 20260103T000000Z; do
+    assert_equal "$(jq -r --arg n "$name" '.buttons.restore_snapshot.labels[$n]' <<<"$output")" "Restore snapshot $name"
+  done
+  assert_equal "$(jq -r .next <<<"$output")" 'When Windows is stopped, finish the unfinished restore or restore another snapshot.'
+  refute_output --partial 'lanai restore'
+  refute_output --partial '—'
+}
+
+@test "panel restore: a refusal during unfinished recovery never claims Windows was unchanged" {
+  state '{"done":true}'
+  : >"$S/restore-in-progress"
+  panel_result_write snapshots '{"command":"restore","reply":{"ok":false,"reason":"restore-unsupported","message":"Lanai cannot verify the image. The restore is still unfinished."}}'
+  shim systemctl 'printf "ActiveState=inactive\nResult=success\nInvocationID=\n"'
+  export PATH=$T/shims:$PATH
+  lanai_run panel
+  assert_success
+  refute_output --partial 'Nothing was changed.'
+  assert_output --partial 'restore another snapshot'
 }
 
 @test "panel activity: gathers once and reuses the result for the storage check" {

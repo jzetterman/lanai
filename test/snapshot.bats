@@ -103,6 +103,50 @@ take_snapshot() {
   NAME=$(field name) SNAP=$(field snapshot)
 }
 
+# Failure fixtures copy plainly and mock only the image helper, never a VM.
+snapshot_failure_fixture() {
+  use_install "$T/storage"
+  mkdir -p "$S"
+  snapshot_blocked() { return 1; }
+  lock_disk() { :; }
+  unlock_disk() { :; }
+}
+# Mock the proof only to reach later failure paths without an image read.
+mock_image_failure() {
+  shim python3 'if [[ $1 == */image-proof.py ]]; then
+  case $2 in
+    progress) exit 0 ;;
+    gate|filesystem) [[ ! -e $T/gate-error ]] || { cat "$T/gate-error" >&2; exit 1; }; exit 0 ;;
+    prove) [[ ! -e $T/proof-error ]] || { cat "$T/proof-error" >&2; exit 1; }; echo "f 1048576 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa data.img"; exit 0 ;;
+  esac
+elif [[ $1 == */ficlone.py ]]; then
+  [[ ! -e $T/clone-error ]] || exit "$(cat "$T/clone-error")"
+  /usr/bin/cp -- "${@: -2:1}" "${@: -1}"; exit
+fi
+exec /usr/bin/python3 "$@"'
+  export PATH=$T/shims:$PATH
+  reflink_file() { cp -- "$1" "$2"; }
+}
+
+# Two complete snapshots with independent hashes; restore uses the real btrfs proof.
+recovery_snapshots() {
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
+  GOOD=20260101T000000Z BAD=20260102T000000Z
+  local name snap
+  for name in "$GOOD" "$BAD"; do
+    snap=$(data_dir)/snapshots/$name
+    mkdir -p "${snap%/*}"
+    mkdir -m 700 "$snap"
+    cp --reflink=always "$STORE/"* "$snap/"
+    echo "$STORE" >"$snap/SOURCE"
+    # COMPLETE covers only install files.
+    tree_manifest "$STORE" >"$snap/COMPLETE"
+  done
+  SNAP=$(data_dir)/snapshots/$BAD
+}
+
 # --- refusals, on any filesystem ---
 
 @test "snapshot and restore refuse while Lanai's VM runs, changing nothing" {
@@ -560,6 +604,52 @@ exec /usr/bin/sha256sum "$@"'
 
 # --- ficlone.py ---
 
+@test "restore: new image clones signal EXDEV for root fallback and preserve an existing destination's inode" {
+  btrfs_tmp
+  head -c 1M /dev/urandom >"$B/source"
+  [[ $(stat -f -c %T "$T") != btrfs ]] || skip "temp and fixture folders are both btrfs"
+  run python3 "$REPO/lib/ficlone.py" --new "$B/source" "$T/new.img"
+  assert_equal "$status" 3
+  echo contender >"$B/destination"
+  local inode
+  inode=$(stat -c %i "$B/destination")
+  run python3 "$REPO/lib/ficlone.py" --new "$B/source" "$B/destination"
+  assert_failure
+  assert_equal "$(stat -c %i "$B/destination")" "$inode"
+  assert_equal "$(<"$B/destination")" contender
+}
+
+@test "restore: new image clones allow another snapshot root only for EXDEV and EINVAL" {
+  btrfs_tmp
+  head -c 1M /dev/urandom >"$B/source"
+  local error expected
+  for error in EXDEV EINVAL ENOSPC EIO; do
+    rm -f "$B/destination"
+    expected=1
+    [[ $error != EXDEV && $error != EINVAL ]] || expected=3
+    run python3 - "$REPO/lib/ficlone.py" "$B/source" "$B/destination" "$error" <<'PY'
+import errno
+import importlib.util
+import sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("ficlone", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+actual_ioctl = module.fcntl.ioctl
+
+def failing_clone(fd, request, *args):
+    if request == module.FICLONE:
+        raise OSError(getattr(errno, sys.argv[4]), "clone error fixture")
+    return actual_ioctl(fd, request, *args)
+
+module.fcntl.ioctl = failing_clone
+sys.exit(module.main([sys.argv[1], "--new", sys.argv[2], sys.argv[3]]))
+PY
+    assert_equal "$status" "$expected"
+    assert_output --partial "clone error fixture"
+  done
+}
+
 @test "ficlone.py: clones into an existing larger or smaller file in place" {
   btrfs_tmp
   local dst_size ino
@@ -608,6 +698,148 @@ exec /usr/bin/sha256sum "$@"'
 }
 
 # --- snapshot and restore on btrfs ---
+
+@test "snapshot: small-file failure after prove reports the check rather than its manifest" {
+  snapshot_failure_fixture
+  mock_image_failure
+  small_manifest() { echo 'small file read failed' >&2; return 1; }
+  run image_operation snapshot snapshot_create
+  assert_failure
+  assert_output --partial 'small-file check failed'
+  refute_output --partial 'f 1048576'
+  refute_output --partial 'aaaaaaaaaaaaaaaa'
+}
+
+@test "snapshot: gate and proof errors have plain reasons and detailed stderr" {
+  snapshot_failure_fixture
+  mock_image_failure
+  echo 'image-proof: unprovable FIEMAP extent (flags 0x201)' >"$T/gate-error"
+  run --separate-stderr image_operation snapshot snapshot_create
+  assert_failure 3
+  refute_output --partial 'image-proof:'
+  refute_output --partial 'flags 0x'
+  assert_output --partial 'cannot verify'
+  [[ $stderr == *'flags 0x201'* ]]
+}
+
+@test "snapshot: stale partial sweep matches SOURCE and runs under the lock" {
+  snapshot_failure_fixture
+  local root d
+  root=$(data_dir)/snapshots
+  mkdir -p "$root"
+  for d in 20260101T000000Z 20260102T000000Z 20260103T000000Z; do mkdir "$root/$d.partial"; done
+  echo "$STORE" >"$root/20260101T000000Z.partial/SOURCE"
+  echo elsewhere >"$root/20260102T000000Z.partial/SOURCE"
+  mock_image_failure
+  echo 3 >"$T/clone-error"
+  lanai_flock
+  run image_operation snapshot snapshot_create
+  assert_failure
+  assert [ ! -e "$root/20260101T000000Z.partial" ]
+  assert [ -e "$root/20260102T000000Z.partial" ]
+  assert [ -e "$root/20260103T000000Z.partial" ]
+}
+
+@test "snapshot: failed root attempts remove newly created empty snapshot roots" {
+  snapshot_failure_fixture
+  mock_image_failure
+  echo 3 >"$T/clone-error"
+  lanai_flock
+  run image_operation snapshot snapshot_create
+  assert_failure 3
+  assert [ ! -e "$(data_dir)/snapshots" ]
+  assert [ ! -e "$STORE.lanai-snapshots" ]
+}
+
+@test "snapshot: SOURCE is recorded and flushed before cloning can pin extents" {
+  snapshot_failure_fixture
+  mock_image_failure
+  shim sync 'printf "%s\n" "$*" >>"$T/sync.calls"'
+  shim python3 'if [[ $1 == */ficlone.py ]]; then
+  part=${@: -1}; part=${part%/*}
+  [[ $(cat "$part/SOURCE") == "$T/storage" ]] || exit 1
+  grep -qxF -- "-- $part/SOURCE" "$T/sync.calls" || exit 1
+  grep -qxF -- "-- $part" "$T/sync.calls" || exit 1
+  exit 3
+elif [[ $1 == */image-proof.py ]]; then exit 0; fi
+exec /usr/bin/python3 "$@"'
+  lanai_flock
+  run image_operation snapshot snapshot_create
+  assert_failure 3
+  assert_output --partial 'cannot make an instant copy'
+}
+
+@test "snapshot: dead image map owners are swept and live owners are kept" {
+  snapshot_failure_fixture
+  mock_image_failure
+  echo 3 >"$T/clone-error"
+  : >"$S/image-map.2147483647.json"
+  : >"$S/image-map.$BASHPID.json"
+  : >"$S/image-map.unknown.json"
+  lanai_flock
+  run image_operation snapshot snapshot_create
+  assert_failure
+  assert [ ! -e "$S/image-map.2147483647.json" ]
+  assert [ -e "$S/image-map.$BASHPID.json" ]
+  assert [ -e "$S/image-map.unknown.json" ]
+}
+
+@test "snapshot: validation rejects duplicate manifest names without a separate name cache" {
+  snapshot_failure_fixture
+  local snap record
+  snap=$(data_dir)/snapshots/20260101T000000Z
+  mkdir -p "$snap"
+  cp "$STORE/"* "$snap/"
+  echo "$STORE" >"$snap/SOURCE"
+  tree_manifest "$STORE" >"$snap/COMPLETE"
+  run snapshot_valid "$snap" "$STORE"
+  assert_success
+  record=$(head -n 1 "$snap/COMPLETE")
+  printf '%s\n' "$record" >>"$snap/COMPLETE"
+  run snapshot_valid "$snap" "$STORE"
+  assert_failure
+}
+
+@test "snapshot: proof errors keep details off the user's reason" {
+  snapshot_failure_fixture
+  mock_image_failure
+  echo 'image-proof: unprovable FIEMAP extent (flags 0x201)' >"$T/proof-error"
+  run --separate-stderr image_operation snapshot snapshot_create
+  assert_failure 1
+  assert_output --partial 'cannot verify'
+  refute_output --partial 'image-proof:'
+  refute_output --partial 'flags 0x'
+  [[ $stderr == *'flags 0x201'* ]]
+}
+
+@test "snapshot: unsupported copy gives one complete statement and one backup step" {
+  snapshot_failure_fixture
+  mock_image_failure
+  echo 'image-proof: filesystem cannot make an instant copy with a provable image here; make a backup' >"$T/gate-error"
+  run --separate-stderr cmd_snapshot
+  assert_failure
+  assert_equal "$(jq -r .message <<<"$output")" 'This storage location cannot make an instant copy with a verified image.'
+  assert_equal "$(jq -r .next <<<"$output")" "Make a backup of $STORE before the first boot."
+}
+
+@test "snapshot: image helper publication and clone failures give plain reasons and detailed stderr" {
+  snapshot_failure_fixture
+  shim python3 'if [[ $1 == */ficlone.py ]]; then
+  echo "ficlone.py: cannot clone a onto b (No space left on device); the snapshot is intact: run lanai restore again" >&2
+  exit 1
+fi
+echo "image-proof: [Errno 17] File exists" >&2
+exit 1'
+  export PATH=$T/shims:$PATH
+  run --separate-stderr image_proof publish source destination
+  assert_failure
+  assert_output 'Another disk appeared before the restore could put its disk in place.'
+  [[ $stderr == *'[Errno 17] File exists'* ]]
+  run --separate-stderr image_clone source destination
+  assert_failure
+  assert_output 'Lanai could not make an instant copy of the image.'
+  [[ $stderr == *'No space left on device'* ]]
+}
 
 @test "snapshot: a verified copy in the data folder when it can reflink there" {
   btrfs_tmp
@@ -683,6 +915,198 @@ damage() {
   echo "changed vars" >"$1/windows.vars"
   rm "$1/windows.boot"
   echo stray >"$1/setup.img"
+}
+
+@test "restore: gate refusal keeps recovery advice only in next" {
+  snapshot_failure_fixture
+  snapshot_find() { echo "$T/snapshot"; }
+  mkdir "$T/snapshot"
+  cp "$STORE/data.img" "$T/snapshot/data.img"
+  snapshot_valid() { return 0; }
+  mock_image_failure
+  echo 'image-proof: filesystem cannot make an instant copy with a provable image here; make a backup' >"$T/gate-error"
+  run --separate-stderr cmd_restore 20260101T000000Z
+  assert_failure
+  refute_output --partial 'image-proof:'
+  assert_equal "$(jq -r '.message | contains("backup")' <<<"$output")" false
+  assert_equal "$(jq -r '.next | contains("verified instant copies")' <<<"$output")" true
+}
+
+@test "restore: deleted disk retries an intact snapshot after a non-hash proof failure by name or without a name" {
+  recovery_snapshots
+  local retry
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$T/proof-failure"
+  chmod +x "$T/proof-failure"
+  for retry in named unnamed; do
+    rm "$STORE/data.img"
+    export LANAI_TEST_IMAGE_AFTER_HASH=$T/proof-failure
+    lanai_run restore "$BAD"
+    assert_failure
+    assert [ -e "$S/restore-in-progress" ]
+    refute_output --partial 'Restore another snapshot by name.'
+    unset LANAI_TEST_IMAGE_AFTER_HASH
+    if [[ $retry == named ]]; then lanai_run restore "$BAD"; else lanai_run restore; fi
+    assert_success
+    assert [ ! -e "$S/restore-in-progress" ]
+    assert_equal "$(tree_manifest "$STORE")" "$(cat "$SNAP/COMPLETE")"
+  done
+}
+
+@test "restore: a damaged snapshot after interrupted replacement names the way out and another snapshot recovers" {
+  recovery_snapshots
+  # Interrupt after the disk has been replaced, before the remaining files.
+  shim mv 'if [[ ${@: -2:1} == */.lanai-restore.windows.base ]]; then
+  kill -TERM "$LANAI_IMAGE_OWNER"; exit 1
+fi
+exec /usr/bin/mv "$@"'
+  lanai_run restore "$BAD"
+  assert_failure
+  assert [ -e "$S/restore-in-progress" ]
+  rm "$T/shims/mv"
+  flip_byte "$SNAP/data.img"
+  lanai_run restore
+  assert_failure
+  assert_output --partial 'Restore another snapshot by name.'
+  refute_output --partial 'Nothing was changed.'
+  lanai_run restore "$GOOD"
+  assert_success
+  assert [ ! -e "$S/restore-in-progress" ]
+  assert_equal "$(tree_manifest "$STORE")" "$(cat "$(data_dir)/snapshots/$GOOD/COMPLETE")"
+}
+
+@test "restore: another named snapshot replaces an unfinished restore with a deleted disk" {
+  recovery_snapshots
+  mark_restore "$SNAP" "$STORE"
+  flip_byte "$SNAP/data.img"
+  rm "$STORE/data.img"
+  lanai_run restore "$GOOD"
+  assert_success
+  assert [ ! -e "$S/restore-in-progress" ]
+  assert_equal "$(tree_manifest "$STORE")" "$(cat "$(data_dir)/snapshots/$GOOD/COMPLETE")"
+}
+
+@test "restore: deleted disk and damaged firmware refuse cleanly and a good named snapshot recovers" {
+  recovery_snapshots
+  flip_byte "$SNAP/windows.rom"
+  rm "$STORE/data.img"
+  lanai_run restore "$BAD"
+  assert_failure
+  assert_output --partial 'Nothing was changed.'
+  refute_output --partial 'snapshot is intact'
+  assert [ ! -e "$S/restore-in-progress" ]
+  assert [ ! -e "$STORE/.lanai-restore.data.img" ]
+  lanai_run restore
+  assert_failure
+  lanai_run restore "$GOOD"
+  assert_success
+  assert [ ! -e "$S/restore-in-progress" ]
+  assert_equal "$(tree_manifest "$STORE")" "$(cat "$(data_dir)/snapshots/$GOOD/COMPLETE")"
+}
+
+@test "restore: deleted disk and damaged image allow a good named snapshot" {
+  recovery_snapshots
+  flip_byte "$SNAP/data.img"
+  rm "$STORE/data.img"
+  lanai_run restore "$BAD"
+  assert_failure
+  assert_output --partial 'Restore another snapshot by name.'
+  refute_output --partial 'snapshot is intact'
+  assert [ -e "$STORE/data.img" ]
+  assert [ ! -e "$STORE/.lanai-restore.data.img" ]
+  lanai_run restore
+  assert_failure
+  assert_output --partial 'Restore another snapshot by name.'
+  lanai_run restore "$GOOD"
+  assert_success
+  assert [ ! -e "$S/restore-in-progress" ]
+  assert_equal "$(tree_manifest "$STORE")" "$(cat "$(data_dir)/snapshots/$GOOD/COMPLETE")"
+}
+
+@test "restore: early failed checks with an older marker never claim nothing changed" {
+  snapshot_failure_fixture
+  local snap failure
+  export LANAI_LOCK_ERROR=busy
+  snap=$(data_dir)/snapshots/20260101T000000Z
+  mkdir -p "$snap"
+  cp "$STORE/"* "$snap/"
+  echo "$STORE" >"$snap/SOURCE"
+  tree_manifest "$STORE" >"$snap/COMPLETE"
+  mark_restore "$snap" "$STORE"
+  image_proof() {
+    if [[ $1 == "$failure" ]]; then echo 'Lanai cannot verify the image.'; return 1; fi
+  }
+  lock_disk() { [[ $failure != lock ]]; }
+  has_nocow() { [[ $failure == nocow && $1 == "$snap/data.img" ]]; }
+  for failure in gate filesystem lock nocow empty; do
+    if [[ $failure == empty ]]; then
+      truncate -s 0 "$snap/data.img"
+      tree_manifest "$STORE" | sed 's/^f [0-9]* \([0-9a-f]*\) data.img$/f 0 \1 data.img/' >"$snap/COMPLETE"
+    fi
+    run image_operation restore snapshot_restore
+    assert_failure
+    refute_output --partial 'Nothing was changed.'
+    assert_output --partial 'The restore is still unfinished.'
+    assert_equal "$(cat "$S/restore-in-progress")" "$(printf '%s\n%s' "$snap" "$STORE")"
+  done
+}
+
+@test "restore: refusing damaged small files keeps an older marker and removes all staged files" {
+  recovery_snapshots
+  mark_restore "$SNAP" "$STORE"
+  cp "$S/restore-in-progress" "$T/old-marker"
+  flip_byte "$SNAP/windows.rom"
+  rm "$STORE/data.img"
+  lanai_run restore "$BAD"
+  assert_failure
+  refute_output --partial 'Nothing was changed.'
+  assert_equal "$(cat "$S/restore-in-progress")" "$(cat "$T/old-marker")"
+  assert_equal "$(find "$STORE" -name '.lanai-restore.*' | wc -l)" 0
+}
+
+@test "restore: unsupported copy has its own reason and complete refusal text" {
+  snapshot_failure_fixture
+  mock_image_failure
+  mkdir "$T/snapshot"
+  cp "$STORE/data.img" "$T/snapshot/data.img"
+  snapshot_find() { echo "$T/snapshot"; }
+  echo 'image-proof: unprovable FIEMAP extent (flags 0x201)' >"$T/gate-error"
+  run --separate-stderr cmd_restore 20260101T000000Z
+  assert_failure
+  assert_equal "$(jq -r .reason <<<"$output")" restore-unsupported
+  assert_equal "$(jq -r .message <<<"$output")" 'Lanai cannot verify the image in this storage location. Nothing was changed.'
+  assert_equal "$(jq -r .next <<<"$output")" 'Choose storage that supports verified instant copies, then try the restore again.'
+}
+
+@test "restore: progress, checks first and labels disk replacement through the final map" {
+  recovery_snapshots
+  shim python3 'if [[ $1 == */image-proof.py && $2 == progress ]]; then echo "$3" >>"$T/phases"; fi
+if [[ $1 == */ficlone.py && $2 != --new ]] || [[ $1 == */image-proof.py && $2 == final ]]; then
+  jq -r .phase "$LANAI_IMAGE_PROGRESS" >>"$T/replacement-phases"
+fi
+exec /usr/bin/python3 "$@"'
+  lanai_run restore "$GOOD"
+  assert_success
+  assert_equal "$(head -n 1 "$T/phases")" checking
+  assert_equal "$(cat "$T/replacement-phases")" $'replacing\nreplacing'
+}
+
+@test "restore: non-btrfs destination has a restore refusal without setup snapshot advice" {
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$T/storage"
+  need_no_reflink
+  local snap
+  snap=$(data_dir)/snapshots/20260101T000000Z
+  mkdir -p "${snap%/*}"
+  mkdir -m 700 "$snap"
+  cp "$STORE/"* "$snap/"
+  echo "$STORE" >"$snap/SOURCE"
+  tree_manifest "$STORE" >"$snap/COMPLETE"
+  lanai_run restore 20260101T000000Z
+  assert_failure
+  assert_equal "$(field reason)" restore-unsupported
+  assert_equal "$(field message)" 'This storage location cannot make an instant copy with a verified image. Nothing was changed.'
+  assert [ ! -e "$S/restore-in-progress" ]
 }
 
 @test "restore: returns the storage location to the snapshot's exact files" {
@@ -904,7 +1328,7 @@ damage() {
   done
 }
 
-@test "restore: an unfinished restore refuses another snapshot and a new snapshot" {
+@test "restore: an unfinished restore refuses an unknown snapshot and a new snapshot" {
   btrfs_tmp
   export XDG_DATA_HOME=$B/data
   use_install "$B/win"
@@ -913,7 +1337,7 @@ damage() {
   lanai_run restore 20200101T000000Z
   assert_failure
   run field message
-  assert_output --partial "did not finish"
+  assert_output --partial "no complete snapshot"
   lanai_run snapshot
   assert_failure
   run field message
@@ -1418,377 +1842,4 @@ SH
   assert [ ! -e "$S/image-progress.json" ]
   run find "$B/data/lanai/snapshots" -mindepth 1
   assert_output ""
-}
-
-# Failure fixtures copy plainly and mock only the image helper, never a VM.
-snapshot_failure_fixture() {
-  use_install "$T/storage"
-  mkdir -p "$S"
-  snapshot_blocked() { return 1; }
-  lock_disk() { :; }
-  unlock_disk() { :; }
-}
-# Mock the proof only to reach later failure paths without an image read.
-mock_image_failure() {
-  shim python3 'if [[ $1 == */image-proof.py ]]; then
-  case $2 in
-    progress) exit 0 ;;
-    gate|filesystem) [[ ! -e $T/gate-error ]] || { cat "$T/gate-error" >&2; exit 1; }; exit 0 ;;
-    prove) [[ ! -e $T/proof-error ]] || { cat "$T/proof-error" >&2; exit 1; }; echo "f 1048576 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa data.img"; exit 0 ;;
-  esac
-elif [[ $1 == */ficlone.py ]]; then
-  [[ ! -e $T/clone-error ]] || exit "$(cat "$T/clone-error")"
-  /usr/bin/cp -- "${@: -2:1}" "${@: -1}"; exit
-fi
-exec /usr/bin/python3 "$@"'
-  export PATH=$T/shims:$PATH
-  reflink_file() { cp -- "$1" "$2"; }
-}
-
-
-@test "small-file failure after prove reports the check rather than its manifest" {
-  snapshot_failure_fixture
-  mock_image_failure
-  small_manifest() { echo 'small file read failed' >&2; return 1; }
-  run image_operation snapshot snapshot_create
-  assert_failure
-  assert_output --partial 'small-file check failed'
-  refute_output --partial 'f 1048576'
-  refute_output --partial 'aaaaaaaaaaaaaaaa'
-}
-
-
-@test "gate and proof errors have plain reasons and detailed stderr" {
-  snapshot_failure_fixture
-  mock_image_failure
-  echo 'image-proof: unprovable FIEMAP extent (flags 0x201)' >"$T/gate-error"
-  run --separate-stderr image_operation snapshot snapshot_create
-  assert_failure 3
-  refute_output --partial 'image-proof:'
-  refute_output --partial 'flags 0x'
-  assert_output --partial 'cannot verify'
-  [[ $stderr == *'flags 0x201'* ]]
-}
-
-
-@test "restore gate refusal keeps recovery advice only in next" {
-  snapshot_failure_fixture
-  snapshot_find() { echo "$T/snapshot"; }
-  mkdir "$T/snapshot"
-  cp "$STORE/data.img" "$T/snapshot/data.img"
-  snapshot_valid() { return 0; }
-  mock_image_failure
-  echo 'image-proof: filesystem cannot make an instant copy with a provable image here; make a backup' >"$T/gate-error"
-  run --separate-stderr cmd_restore 20260101T000000Z
-  assert_failure
-  refute_output --partial 'image-proof:'
-  assert_equal "$(jq -r '.message | contains("backup")' <<<"$output")" false
-  assert_equal "$(jq -r '.next | contains("verified instant copies")' <<<"$output")" true
-}
-
-
-@test "stale partial sweep matches SOURCE and runs under the lock" {
-  snapshot_failure_fixture
-  local root d
-  root=$(data_dir)/snapshots
-  mkdir -p "$root"
-  for d in 20260101T000000Z 20260102T000000Z 20260103T000000Z; do mkdir "$root/$d.partial"; done
-  echo "$STORE" >"$root/20260101T000000Z.partial/SOURCE"
-  echo elsewhere >"$root/20260102T000000Z.partial/SOURCE"
-  mock_image_failure
-  echo 3 >"$T/clone-error"
-  lanai_flock
-  run image_operation snapshot snapshot_create
-  assert_failure
-  assert [ ! -e "$root/20260101T000000Z.partial" ]
-  assert [ -e "$root/20260102T000000Z.partial" ]
-  assert [ -e "$root/20260103T000000Z.partial" ]
-}
-
-
-@test "failed root attempts remove newly created empty snapshot roots" {
-  snapshot_failure_fixture
-  mock_image_failure
-  echo 3 >"$T/clone-error"
-  lanai_flock
-  run image_operation snapshot snapshot_create
-  assert_failure 3
-  assert [ ! -e "$(data_dir)/snapshots" ]
-  assert [ ! -e "$STORE.lanai-snapshots" ]
-}
-
-
-@test "SOURCE is recorded and flushed before cloning can pin extents" {
-  snapshot_failure_fixture
-  mock_image_failure
-  shim sync 'printf "%s\n" "$*" >>"$T/sync.calls"'
-  shim python3 'if [[ $1 == */ficlone.py ]]; then
-  part=${@: -1}; part=${part%/*}
-  [[ $(cat "$part/SOURCE") == "$T/storage" ]] || exit 1
-  grep -qxF -- "-- $part/SOURCE" "$T/sync.calls" || exit 1
-  grep -qxF -- "-- $part" "$T/sync.calls" || exit 1
-  exit 3
-elif [[ $1 == */image-proof.py ]]; then exit 0; fi
-exec /usr/bin/python3 "$@"'
-  lanai_flock
-  run image_operation snapshot snapshot_create
-  assert_failure 3
-  assert_output --partial 'cannot make an instant copy'
-}
-
-
-@test "dead image map owners are swept and live owners are kept" {
-  snapshot_failure_fixture
-  mock_image_failure
-  echo 3 >"$T/clone-error"
-  : >"$S/image-map.2147483647.json"
-  : >"$S/image-map.$BASHPID.json"
-  : >"$S/image-map.unknown.json"
-  lanai_flock
-  run image_operation snapshot snapshot_create
-  assert_failure
-  assert [ ! -e "$S/image-map.2147483647.json" ]
-  assert [ -e "$S/image-map.$BASHPID.json" ]
-  assert [ -e "$S/image-map.unknown.json" ]
-}
-
-
-@test "snapshot validation rejects duplicate manifest names without a separate name cache" {
-  snapshot_failure_fixture
-  local snap record
-  snap=$(data_dir)/snapshots/20260101T000000Z
-  mkdir -p "$snap"
-  cp "$STORE/"* "$snap/"
-  echo "$STORE" >"$snap/SOURCE"
-  tree_manifest "$STORE" >"$snap/COMPLETE"
-  run snapshot_valid "$snap" "$STORE"
-  assert_success
-  record=$(head -n 1 "$snap/COMPLETE")
-  printf '%s\n' "$record" >>"$snap/COMPLETE"
-  run snapshot_valid "$snap" "$STORE"
-  assert_failure
-}
-
-
-@test "proof errors keep details off the user's reason" {
-  snapshot_failure_fixture
-  mock_image_failure
-  echo 'image-proof: unprovable FIEMAP extent (flags 0x201)' >"$T/proof-error"
-  run --separate-stderr image_operation snapshot snapshot_create
-  assert_failure 1
-  assert_output --partial 'cannot verify'
-  refute_output --partial 'image-proof:'
-  refute_output --partial 'flags 0x'
-  [[ $stderr == *'flags 0x201'* ]]
-}
-
-
-@test "restore reuses parsed small-file hashes without rereading COMPLETE" {
-  snapshot_failure_fixture
-  local snap
-  snap=$(data_dir)/snapshots/20260101T000000Z
-  mkdir -p "$snap"
-  cp "$STORE/"* "$snap/"
-  echo "$STORE" >"$snap/SOURCE"
-  tree_manifest "$STORE" >"$snap/COMPLETE"
-  mock_image_failure
-  echo 'image-proof: image changed during verification' >"$T/proof-error"
-  shim awk '[[ ${@: -1} != */COMPLETE ]] || : >"$T/complete-reread"
-exec /usr/bin/awk "$@"'
-  lanai_flock
-  run image_operation restore snapshot_restore 20260101T000000Z
-  assert_failure
-  assert_output --partial 'The image changed during verification.'
-  assert [ ! -e "$T/complete-reread" ]
-}
-
-@test "ficlone new: real EXDEV signals root fallback and an existing destination keeps its inode" {
-  btrfs_tmp
-  head -c 1M /dev/urandom >"$B/source"
-  [[ $(stat -f -c %T "$T") != btrfs ]] || skip "temp and fixture folders are both btrfs"
-  run python3 "$REPO/lib/ficlone.py" --new "$B/source" "$T/new.img"
-  assert_equal "$status" 3
-  echo contender >"$B/destination"
-  local inode
-  inode=$(stat -c %i "$B/destination")
-  run python3 "$REPO/lib/ficlone.py" --new "$B/source" "$B/destination"
-  assert_failure
-  assert_equal "$(stat -c %i "$B/destination")" "$inode"
-  assert_equal "$(<"$B/destination")" contender
-}
-
-@test "ficlone new: only EXDEV and EINVAL allow another snapshot root" {
-  btrfs_tmp
-  head -c 1M /dev/urandom >"$B/source"
-  local error expected
-  for error in EXDEV EINVAL ENOSPC EIO; do
-    rm -f "$B/destination"
-    expected=1
-    [[ $error != EXDEV && $error != EINVAL ]] || expected=3
-    run python3 - "$REPO/lib/ficlone.py" "$B/source" "$B/destination" "$error" <<'PY'
-import errno
-import importlib.util
-import sys
-sys.dont_write_bytecode = True
-spec = importlib.util.spec_from_file_location("ficlone", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-actual_ioctl = module.fcntl.ioctl
-
-def failing_clone(fd, request, *args):
-    if request == module.FICLONE:
-        raise OSError(getattr(errno, sys.argv[4]), "clone error fixture")
-    return actual_ioctl(fd, request, *args)
-
-module.fcntl.ioctl = failing_clone
-sys.exit(module.main([sys.argv[1], "--new", sys.argv[2], sys.argv[3]]))
-PY
-    assert_equal "$status" "$expected"
-    assert_output --partial "clone error fixture"
-  done
-}
-
-# Two complete snapshots with independent hashes; restore uses the real btrfs proof.
-recovery_snapshots() {
-  btrfs_tmp
-  export XDG_DATA_HOME=$B/data
-  use_install "$B/win"
-  GOOD=20260101T000000Z BAD=20260102T000000Z
-  local name snap
-  for name in "$GOOD" "$BAD"; do
-    snap=$(data_dir)/snapshots/$name
-    mkdir -p "${snap%/*}"
-    mkdir -m 700 "$snap"
-    cp --reflink=always "$STORE/"* "$snap/"
-    echo "$STORE" >"$snap/SOURCE"
-    # COMPLETE covers only install files.
-    tree_manifest "$STORE" >"$snap/COMPLETE"
-  done
-  SNAP=$(data_dir)/snapshots/$BAD
-}
-
-@test "restore: deleted disk and damaged firmware refuse cleanly and a good named snapshot recovers" {
-  recovery_snapshots
-  flip_byte "$SNAP/windows.rom"
-  rm "$STORE/data.img"
-  lanai_run restore "$BAD"
-  assert_failure
-  assert_output --partial 'Nothing was changed.'
-  refute_output --partial 'snapshot is intact'
-  assert [ ! -e "$S/restore-in-progress" ]
-  assert [ ! -e "$STORE/.lanai-restore.data.img" ]
-  lanai_run restore
-  assert_failure
-  lanai_run restore "$GOOD"
-  assert_success
-  assert [ ! -e "$S/restore-in-progress" ]
-  assert_equal "$(tree_manifest "$STORE")" "$(cat "$(data_dir)/snapshots/$GOOD/COMPLETE")"
-}
-
-@test "restore: deleted disk and damaged image record failed verification and allow a good named snapshot" {
-  recovery_snapshots
-  flip_byte "$SNAP/data.img"
-  rm "$STORE/data.img"
-  lanai_run restore "$BAD"
-  assert_failure
-  assert_output --partial 'Restore another snapshot by name.'
-  refute_output --partial 'snapshot is intact'
-  assert_equal "$(sed -n '3p' "$S/restore-in-progress")" verification-failed
-  assert [ -e "$STORE/data.img" ]
-  assert [ ! -e "$STORE/.lanai-restore.data.img" ]
-  lanai_run restore
-  assert_failure
-  assert_output --partial 'Restore another snapshot by name.'
-  lanai_run restore "$GOOD"
-  assert_success
-  assert [ ! -e "$S/restore-in-progress" ]
-  assert_equal "$(tree_manifest "$STORE")" "$(cat "$(data_dir)/snapshots/$GOOD/COMPLETE")"
-}
-
-@test "restore: refusing damaged small files keeps an older marker and removes all staged files" {
-  recovery_snapshots
-  mark_restore "$SNAP" "$STORE"
-  cp "$S/restore-in-progress" "$T/old-marker"
-  flip_byte "$SNAP/windows.rom"
-  rm "$STORE/data.img"
-  lanai_run restore "$BAD"
-  assert_failure
-  assert_output --partial 'Nothing was changed.'
-  assert_equal "$(cat "$S/restore-in-progress")" "$(cat "$T/old-marker")"
-  assert_equal "$(find "$STORE" -name '.lanai-restore.*' | wc -l)" 0
-}
-
-@test "snapshot: unsupported copy gives one complete statement and one backup step" {
-  snapshot_failure_fixture
-  mock_image_failure
-  echo 'image-proof: filesystem cannot make an instant copy with a provable image here; make a backup' >"$T/gate-error"
-  run --separate-stderr cmd_snapshot
-  assert_failure
-  assert_equal "$(jq -r .message <<<"$output")" 'This storage location cannot make an instant copy with a verified image.'
-  assert_equal "$(jq -r .next <<<"$output")" "Make a backup of $STORE before the first boot."
-}
-
-@test "restore: unsupported copy has its own reason and complete refusal text" {
-  snapshot_failure_fixture
-  mock_image_failure
-  mkdir "$T/snapshot"
-  cp "$STORE/data.img" "$T/snapshot/data.img"
-  snapshot_find() { echo "$T/snapshot"; }
-  echo 'image-proof: unprovable FIEMAP extent (flags 0x201)' >"$T/gate-error"
-  run --separate-stderr cmd_restore 20260101T000000Z
-  assert_failure
-  assert_equal "$(jq -r .reason <<<"$output")" restore-unsupported
-  assert_equal "$(jq -r .message <<<"$output")" 'Lanai cannot verify the image in this storage location. Nothing was changed.'
-  assert_equal "$(jq -r .next <<<"$output")" 'Choose storage that supports verified instant copies, then try the restore again.'
-}
-
-@test "image helpers: publication and clone failures map to plain reasons with details on stderr" {
-  snapshot_failure_fixture
-  shim python3 'if [[ $1 == */ficlone.py ]]; then
-  echo "ficlone.py: cannot clone a onto b (No space left on device); the snapshot is intact: run lanai restore again" >&2
-  exit 1
-fi
-echo "image-proof: [Errno 17] File exists" >&2
-exit 1'
-  export PATH=$T/shims:$PATH
-  run --separate-stderr image_proof publish source destination
-  assert_failure
-  assert_output 'Another disk appeared before the restore could put its disk in place.'
-  [[ $stderr == *'[Errno 17] File exists'* ]]
-  run --separate-stderr image_clone source destination
-  assert_failure
-  assert_output 'Lanai could not make an instant copy of the image.'
-  [[ $stderr == *'No space left on device'* ]]
-}
-
-@test "restore progress: checks first and labels disk replacement through the final map" {
-  recovery_snapshots
-  shim python3 'if [[ $1 == */image-proof.py && $2 == progress ]]; then echo "$3" >>"$T/phases"; fi
-if [[ $1 == */ficlone.py && $2 != --new ]] || [[ $1 == */image-proof.py && $2 == final ]]; then
-  jq -r .phase "$LANAI_IMAGE_PROGRESS" >>"$T/replacement-phases"
-fi
-exec /usr/bin/python3 "$@"'
-  lanai_run restore "$GOOD"
-  assert_success
-  assert_equal "$(head -n 1 "$T/phases")" checking
-  assert_equal "$(cat "$T/replacement-phases")" $'replacing\nreplacing'
-}
-
-@test "restore: non-btrfs destination has a restore refusal without setup snapshot advice" {
-  btrfs_tmp
-  export XDG_DATA_HOME=$B/data
-  use_install "$T/storage"
-  need_no_reflink
-  local snap
-  snap=$(data_dir)/snapshots/20260101T000000Z
-  mkdir -p "${snap%/*}"
-  mkdir -m 700 "$snap"
-  cp "$STORE/"* "$snap/"
-  echo "$STORE" >"$snap/SOURCE"
-  tree_manifest "$STORE" >"$snap/COMPLETE"
-  lanai_run restore 20260101T000000Z
-  assert_failure
-  assert_equal "$(field reason)" restore-unsupported
-  assert_equal "$(field message)" 'This storage location cannot make an instant copy with a verified image. Nothing was changed.'
-  assert [ ! -e "$S/restore-in-progress" ]
 }
