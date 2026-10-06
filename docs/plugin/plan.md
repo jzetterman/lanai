@@ -1591,9 +1591,10 @@ the same proof holds.
   equal the saved map. A resumed restore removes the stale temporary file and
   re-clones it with the snapshot's NOCOW attribute matched.
   Clone each small file to `.lanai-restore.<name>`, hash that temporary file
-  against COMPLETE, then rename it after the image proof. Drop the separate byte
-  check; restore reads each small file once. The marker must precede the storage
-  temporary files. With an existing disk, any failure before the first install
+  against COMPLETE, then rehash it immediately before its rename after the image
+  proof. Drop the separate byte check; small files may be read a few times.
+  The marker must precede the storage temporary files. With an existing disk,
+  any failure before the first install
   file is replaced (a clone error such as EXDEV, or a failed verification) is a
   clean refusal: it removes the temporary files and any newly created marker; preserve an
   older unfinished marker.
@@ -1609,10 +1610,12 @@ the same proof holds.
   created a disk in the meantime. Lock failure stops before publication; drop
   the branch for locking failure after publication. Before publishing, clone each
   small file to `.lanai-restore.<name>` and hash it against COMPLETE (a second or
-  less). Right after publishing data.img, rename those verified small files into
+  less). Right after publishing data.img, rehash and rename those small files into
   place, so dockur's start check finds an existing install and does not run its
   cleanup, which deletes disk files whatever their locks. Only then record equal
   maps, hash and prove data.img in place against COMPLETE and the saved maps.
+  Retain fresh small-file clones after the early renames; rehash them against
+  COMPLETE immediately before the final renames after the image proof.
   Never replace this locked inode later. A test starts a fake container check
   during the image hash and asserts it finds `windows.boot`. A failed proof keeps the marker;
   the disk was already gone, so nothing is lost. This path changes storage before
@@ -1730,10 +1733,14 @@ The orchestrator runs the gate; delegates run no review stage.
   John's Windows checks and proof log on a rehearsal copy remain pending.
 - **Phase B, snapshot and restore:** FIEMAP gates btrfs images and proves equal
   shared maps before and after the one image hash, with a final map after restore
-  FICLONE. Small files are verified before replacement; deleted disks publish the
-  locked inode with renameat2 no-replace and install boot files before hashing,
-  using John's approved req 7 exception. CLI and panel operations publish phases,
-  byte progress and owner under the operation lock; QML renders the percentage.
+  FICLONE. Each small temporary file is rehashed against COMPLETE immediately
+  before every rename; a mismatch keeps the unfinished restore marker. Deleted
+  disks publish the locked inode with renameat2 no-replace and install boot files
+  before hashing, using John's approved req 7 exception, then retain fresh small-file clones for
+  final verification and replacement after the image hash. CLI and panel
+  operations publish phases, byte progress and owner under the operation lock;
+  QML renders the percentage.
+  Non-object progress JSON is ignored as malformed, leaving panel progress null.
   Real normal, NOCOW, compressed, mixed and UNWRITTEN mutation fixtures cover the
   proof, plus sparse pagination, recovery and publication races. CI requires btrfs
   and strace; the read-budget test includes concurrent panel polls. Deviation:
@@ -2146,3 +2153,4 @@ The orchestrator runs the gate; delegates run no review stage.
 | plan amendment (scale, progress, clicks) | b single (opus-5.5) | 2 (full) | 1 blocker, 2 should-fix, 8 nits, 0 refuted; all integrated (by Codex): unwritten (preallocated) extents count as provable, since dockur's detect-zeroes and discard make them (verified), with zero-range fixtures and a read-only extent count John runs on the rehearsal copy first; the existing disk needs only btrfs and a NOCOW match; the progress owner is the pid holding the lock file open (/proc/locks names the short-lived flock process, verified); no probe, the real clone falls back to the next root; the deleted-disk clone is locked before it appears; small files cloned then hashed once; no separate SHARED check; right-click open needs no idle lock; pwsh tests skip in CI (AUR only); README covers both scale choices; ctypes statfs/renameat2, FIEMAP batching, map timing, helpers.bash |
 | plan amendment (scale, progress, clicks) | b single (opus-5.5) | 3 (full, cap) | 1 should-fix, 4 nits, 0 refuted; nits integrated by Claude: any failure before the first install file is replaced is a clean refusal (a clone error included); the progress owner compares device and inode, not a path; the helper is `btrfs_tmp`; keypad Enter handled too. The should-fix (the deleted-disk restore changes storage before the hash, against req 7's literal "before anything changes", and dockur's cleanup ignores the disk lock) waits for John |
 | plan amendment (scale, progress, clicks) | John | 2026-10-05 | John chose option 1 for round 3's should-fix: on a deleted disk, publish and lock data.img, then put back the verified small files at once, then hash; the exception to req 7's "before anything changes" is logged in the spec. Gate closed |
+| diff (scale, progress, clicks) | a (gpt-6.1-sol) | 1 (full) | 1 P1, 1 P2, 0 refuted, 0 downgraded to nit; both reproduced by the reviewer, confirmed and integrated (fixes by Codex): restore installed small files hashed before the minutes-long image proof without a recheck (now rehashed just before each rename, on both paths); a non-object progress record failed the whole panel view. Also fixed by Claude from CI: a test used rg, absent from CI |

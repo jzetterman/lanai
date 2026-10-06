@@ -1556,6 +1556,22 @@ setup_worker() {
   wait "$live" || true
 }
 
+non_object_progress() {
+  : >"$S/lock"
+  printf '%s\n' "$1" >"$S/image-progress.json"
+  shim systemctl 'echo inactive'
+  export PATH=$T/shims:$PATH
+  lanai_run panel
+  assert_success
+  assert_equal "$(jq -r '.progress' <<<"$output")" null
+  assert_equal "$stderr" ""
+}
+
+@test "panel progress: null document is ignored through lanai panel" { non_object_progress null; }
+@test "panel progress: array document is ignored through lanai panel" { non_object_progress '[]'; }
+@test "panel progress: number document is ignored through lanai panel" { non_object_progress 42; }
+@test "panel progress: string document is ignored through lanai panel" { non_object_progress '"hashing"'; }
+
 # Check both the transport action and the words shown by the icon.
 assert_right_click() {
   assert_equal "$(jq -r .right_click <<<"$output")" "$1"

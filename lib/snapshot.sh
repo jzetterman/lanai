@@ -272,6 +272,18 @@ restore_mark() {
     mv -f -- "$marker.tmp" "$marker" && sync -- "${marker%/*}"
 }
 
+# The image proof can take minutes. Recheck each staged small file against
+# COMPLETE immediately before its rename, even if it passed the clone check.
+restore_small_file() {
+  local dir=$1 name=$2 sum=$3 actual
+  if ! actual=$(sha256sum <"$dir/.lanai-restore.$name" | cut -d ' ' -f1) ||
+    [[ $actual != "$sum" ]]; then
+    echo "the temporary $name does not match its manifest"
+    return 1
+  fi
+  mv -f -T -- "$dir/.lanai-restore.$name" "$dir/$name"
+}
+
 # Restore uses one image read from a fresh clone, equal maps before and after
 # hashing, and a final map after in-place FICLONE. Small files are hashed before
 # replacement. Failures before any replacement clean up a new marker; later
@@ -280,7 +292,7 @@ restore_mark() {
 snapshot_restore() {
   local want=${1:-} dir s marker snap="" msrc="" reason note="" kind size sum name rc=0 e
   local -a order=() strays=()
-  local -A keep=()
+  local -A keep=() sums=()
   dir=$(storage_dir) || return 1
   s=$(state_dir)
   marker=$s/restore-in-progress
@@ -341,6 +353,7 @@ snapshot_restore() {
   fi
   while read -r kind size sum name; do
     keep[$name]=1
+    sums[$name]=$sum
     if [[ $name == data.img ]]; then image_sum=$sum; else order+=("$name"); fi
   done <"$snap/COMPLETE"
   if ! restore_mark "$marker" "$snap" "$dir"; then
@@ -372,7 +385,10 @@ snapshot_restore() {
       changed=true
       temp=$dir/data.img
       for name in "${order[@]}"; do
-        mv -f -T -- "$dir/.lanai-restore.$name" "$dir/$name" || { rc=1; break; }
+        if ! reason=$(restore_small_file "$dir" "$name" "${sums[$name]}"); then rc=1; break; fi
+        # Boot files must exist before the image read. Keep a fresh staged
+        # clone for final verification and replacement after that long read.
+        if ! reflink_file "$dir/$name" "$dir/.lanai-restore.$name"; then rc=1; break; fi
       done
     fi
   fi
@@ -386,11 +402,12 @@ snapshot_restore() {
     if ! reason=$(python3 "$LANAI_LIB/ficlone.py" "$temp" "$dir/data.img" 2>&1) ||
       ! reason=$(python3 "$LANAI_LIB/image-proof.py" final "$temp" "$dir/data.img" "$LANAI_IMAGE_MAP" 2>&1); then
       rc=1
-    else
-      for name in "${order[@]}"; do
-        mv -f -T -- "$dir/.lanai-restore.$name" "$dir/$name" || { rc=1; break; }
-      done
     fi
+  fi
+  if ((rc == 0)); then
+    for name in "${order[@]}"; do
+      if ! reason=$(restore_small_file "$dir" "$name" "${sums[$name]}"); then rc=1; break; fi
+    done
   fi
   if $existed; then rm -f -- "$dir/.lanai-restore.data.img"; fi
   if ((rc == 0)); then

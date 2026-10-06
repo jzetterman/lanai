@@ -1194,6 +1194,59 @@ exec /usr/bin/python3 "$@"'
   done
 }
 
+# Mutate a staged small file at either image hook, preserving its length.
+# Older deleted-disk restores have already renamed it; recreate the temp in
+# that case to expose their missing final verification too.
+small_temp_changes_during_image_hash() {
+  local deleted=$1 name before hook
+  proof_mode normal
+  echo boot >"$B/win/windows.boot"
+  take_snapshot
+  cat >"$T/change-small" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+temp=${2%/*}/.lanai-restore.$MUTATE_SMALL
+[[ -f $temp ]] || cp --reflink=always "${1%/*}/$MUTATE_SMALL" "$temp"
+stat -c %s "$temp" >"$T/small-size-before"
+printf Z | dd of="$temp" bs=1 count=1 conv=notrunc status=none
+stat -c %s "$temp" >"$T/small-size-after"
+SH
+  chmod +x "$T/change-small"
+  for hook in LANAI_TEST_IMAGE_AFTER_MAP LANAI_TEST_IMAGE_AFTER_HASH; do
+    for name in windows.base windows.boot windows.mac windows.rom windows.vars windows.ver; do
+      if $deleted; then
+        rm -f "$B/win/data.img"
+        before=$(sha256sum <"$SNAP/$name")
+      else
+        echo live >"$B/win/$name"
+        before=$(sha256sum <"$B/win/$name")
+      fi
+      export MUTATE_SMALL=$name
+      export "$hook=$T/change-small"
+      lanai_run restore "$NAME"
+      assert_failure
+      assert_output --partial "restore did not finish"
+      assert_output --partial "$name"
+      assert_output --partial "does not match its manifest"
+      assert_equal "$(<"$T/small-size-before")" "$(<"$T/small-size-after")"
+      assert_equal "$(sha256sum <"$B/win/$name")" "$before"
+      assert [ -e "$S/restore-in-progress" ]
+      unset "$hook"
+      lanai_run restore
+      assert_success
+      assert [ ! -e "$S/restore-in-progress" ]
+    done
+  done
+}
+
+@test "restore: existing disk refuses small temps changed during the image hash" {
+  small_temp_changes_during_image_hash false
+}
+
+@test "restore: deleted disk refuses small temps changed during the image hash" {
+  small_temp_changes_during_image_hash true
+}
+
 @test "proof: interruption keeps the restore marker and removes operation progress" {
   proof_mode normal
   take_snapshot

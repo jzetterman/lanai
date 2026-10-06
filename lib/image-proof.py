@@ -170,6 +170,8 @@ def activity(lock_path, progress_path):
             held = any("FLOCK" in line.split() and identity in line.split() for line in records)
         with open(progress_path) as record:
             doc = json.load(record)
+        if not isinstance(doc, dict):
+            return None
         if (type(doc.get("pid")) is not int or doc["pid"] <= 0 or
                 doc.get("operation") not in ("snapshot", "restore") or
                 doc.get("phase") not in ("cloning", "checking", "hashing", "finishing") or
