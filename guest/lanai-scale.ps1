@@ -94,8 +94,6 @@ function Update-DisplayScale([int]$Want) {
             $now = Get-Date
             if ($key -eq $script:LastScaleDecision -and $now -lt $script:NextScaleAttempt) { return }
             $newDecision = $key -ne $script:LastScaleDecision
-            $script:LastScaleDecision = $key
-            $script:NextScaleAttempt = $now.AddSeconds(60)
             if ($newDecision) {
                 Write-Log "Display: name '$($t.monitorFriendlyDeviceName)', path '$($t.monitorDevicePath)', resolution $resolution"
                 Write-Log ("Raw minScaleRel {0}, curScaleRel {1}, maxScaleRel {2}" -f `
@@ -105,7 +103,12 @@ function Update-DisplayScale([int]$Want) {
                     (StepName ([math]::Min($decision.recommended + $d.maxScaleRel, $Steps.Count - 1))),
                     (StepName $Want), (StepName $decision.target))
             }
-            [LanaiDisplay]::SetScale($path, $decision.relative)
+            try { [LanaiDisplay]::SetScale($path, $decision.relative) }
+            finally {
+                # Back off only once the API was attempted, even if it threw.
+                $script:LastScaleDecision = $key
+                $script:NextScaleAttempt = $now.AddSeconds(60)
+            }
             $after = [LanaiDisplay]::GetScale($path)
             $result = "Scale is now $(StepName (- $after.minScaleRel + $after.curScaleRel))."
             if ($newDecision -or $result -ne $script:LastScaleResult) { Write-Log $result }

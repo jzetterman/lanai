@@ -1054,3 +1054,47 @@ assert_steps() {
   assert_failure
   assert_output ""
 }
+
+# A bare setup lock must still check data; only an image owner may skip it.
+image_activity_fixture() {
+  S=$(state_dir)
+  STORE=$T/storage
+  mkdir -p "$S" "$(dirname "$(settings_file)")"
+  make_install "$STORE"
+  printf '{"storage":"%s"}\n' "$STORE" >"$(settings_file)"
+  systemctl() { echo ActiveState=inactive; }
+  container_fact() { echo none; }
+}
+
+@test "setup's own operation lock still detects a blank disk" {
+  image_activity_fixture
+  truncate -s 0 "$STORE/data.img"
+  truncate -s 1M "$STORE/data.img"
+  lanai_flock
+  run shared_facts
+  assert_success
+  assert_output --partial 'first 100 KB of data.img are all zero'
+  assert_output --partial 'LanaiProblemReason=layout'
+  exec {LANAI_FLOCK_FD}>&-
+  run setup_resume auto false '' ''
+  assert_failure
+  assert_equal "$(jq -r .step <<<"$output")" 1
+  assert_equal "$(jq -r .reason <<<"$output")" layout
+}
+
+
+@test "live snapshot and restore owners skip the panel image read" {
+  image_activity_fixture
+  truncate -s 0 "$STORE/data.img"
+  truncate -s 1M "$STORE/data.img"
+  local op
+  lanai_flock
+  for op in snapshot restore; do
+    jq -nc --arg op "$op" --argjson pid "$BASHPID" \
+      '{operation:$op,phase:"hashing",done:0,total:1048576,pid:$pid}' >"$S/image-progress.json"
+    run shared_facts
+    assert_success
+    refute_output --partial 'first 100 KB'
+    assert_output --partial 'LanaiProblemReason='
+  done
+}

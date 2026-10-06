@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ficlone.py [--new] <src> <dst>: clone onto an existing or new file.
 
-Lanai's restore uses it for data.img (docs/plugin/plan.md, phase 4). It
+Lanai's snapshot and restore use it for data.img (docs/plugin/plan.md, phase 4). It
 opens <dst> write-only without O_TRUNC, and never through a symlink, so the
 inode that holds QEMU's lock is the one written. The disk is never empty:
 when <dst> is larger it is first cut to <src>'s size (never to zero; btrfs
@@ -22,10 +22,11 @@ import struct
 import sys
 
 # linux/fs.h: FICLONE is _IOW(0x94, 9, int); FS_IOC_GETFLAGS is
-# _IOR('f', 1, long); FS_NOCOW_FL is the C attribute. Python 3.12+ also
+# _IOR('f', 1, long); FS_IOC_SETFLAGS is _IOW('f', 2, long). FS_NOCOW_FL is the C attribute. Python 3.12+ also
 # names FICLONE.
 FICLONE = getattr(fcntl, "FICLONE", 0x40049409)
 FS_IOC_GETFLAGS = 0x80086601
+FS_IOC_SETFLAGS = 0x40086602
 FS_NOCOW_FL = 0x00800000
 
 
@@ -54,7 +55,7 @@ def main(argv):
             flags = struct.unpack("l", fcntl.ioctl(dst, FS_IOC_GETFLAGS, b"\0" * 8))[0]
             flags = (flags | FS_NOCOW_FL) if nocow(src) else (flags & ~FS_NOCOW_FL)
             try:
-                fcntl.ioctl(dst, 0x40086602, struct.pack("l", flags))
+                fcntl.ioctl(dst, FS_IOC_SETFLAGS, struct.pack("l", flags))
             except OSError as err:
                 # A filesystem without NOCOW (XFS, tmpfs) cannot hold this
                 # clone; let the caller try its next snapshot root.

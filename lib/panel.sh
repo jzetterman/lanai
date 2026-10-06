@@ -28,6 +28,7 @@ panel_words() {
       agents:"The Windows agents did not answer. Shut down and set up Windows again.",
       answers:"The final checks did not pass. Shut down and set up Windows again.",
       client:"The Windows window could not open. Check the Windows window log and try again.",
+      "restore-unsupported":"The restore was refused because Lanai cannot verify an instant copy in this storage location. Nothing was changed. Choose storage that supports verified instant copies, then try again.",
       "snapshot-unsupported":"This filesystem cannot make an instant snapshot. Make a backup before continuing without a snapshot.",
       "invalid-reply":"Lanai did not give a readable reply. Check the " + log + " and try again."
     };
@@ -87,7 +88,7 @@ cmd_panel() {
     token=$2 at=$3
   fi
   progress=$(python3 "$LANAI_LIB/image-proof.py" activity "$(state_dir)/lock" "$(state_dir)/image-progress.json")
-  facts=$(shared_facts)
+  facts=$(shared_facts "$progress")
   status_details=$(status_facts "$facts")
   status=$(status_map <<<"$status_details")
   plan=$(setup_plan "$facts")

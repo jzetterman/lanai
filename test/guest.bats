@@ -399,8 +399,10 @@ scale_decision() {
     if ([LanaiDisplay]::Sets -ne $sets+2) { throw "new target did not apply promptly" }
     # A full log filesystem must not break the repeating task in its catch.
     function Write-Log($Message) { throw "log is unavailable" }
-    Update-DisplayScale 3
-    Update-DisplayScale 3
+    Update-DisplayScale 4
+    function Write-Log($Message) { $script:Logs += $Message }
+    Update-DisplayScale 4
+    if ([LanaiDisplay]::Sets -ne $sets+3) { throw "failed log delayed a new target before SetScale was attempted" }
     "ok"'
   assert_success
   assert_output ok

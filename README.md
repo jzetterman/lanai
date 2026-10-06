@@ -79,8 +79,7 @@ job, and whenever the panel refreshes. If the filesystem cannot make a snapshot,
 the setup offer explains that you need a backup before continuing without one.
 Snapshot and restore show their phase and a progress bar with a percentage,
 also when you open the panel partway through or start from the CLI. You can close
-the panel during a snapshot. The progress label appears once beside its percentage.
-Keep Windows stopped until a restore finishes; that advice stays visible with progress.
+the panel during a snapshot. Keep Windows stopped until a restore finishes.
 Lanai blocks Start while a restore is unfinished; use **Finish the unfinished restore** to resume it.
 It tries the Lanai data directory's `snapshots/`, then
 `<storage>.lanai-snapshots/` on the storage filesystem. Both VMs must be stopped for
@@ -96,7 +95,9 @@ deliberate re-cloning or reference juggling by another process running as your
 user is outside the proof, including substitution of compressed extent slices.
 An existing disk keeps its locked inode during restore. If dockur already deleted
 the disk, Lanai publishes its locked clone and verified boot files before reading
-it; a failed proof leaves recovery unfinished and prevents Start.
+it. A failed image check leaves recovery unfinished and prevents Start; choose
+another saved snapshot to recover. A failed check before the disk is put in place
+removes the temporary files and leaves Windows unchanged.
 
 In the setup window, open Lanai's setup drive in Explorer and run `setup.cmd`. Approve
 the administrator prompt as the same Windows user; approval as a different account
@@ -182,8 +183,8 @@ If Windows accepts a change but leaves the scale unchanged, Lanai retries the sa
 change once a minute without repeating its log lines. A new display, range or
 target applies promptly. A log write failure does not stop the loop.
 Existing users must click **Run setup again** after this update to install the
-persistent scale script and its task. John's resize, cap/recovery and attachment
-checks on a rehearsal copy remain pending.
+persistent scale script and its task. The [rehearsal checklist](docs/plugin/proofs.md)
+covers resizing, scale limits and reconnecting the display.
 Host locking, suspend and session shutdown are covered by the
 [phase 8 checks](docs/plugin/plan.md#phase-8-acceptance), which remain pending.
 

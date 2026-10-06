@@ -805,6 +805,7 @@ container_fact() {
 }
 
 # The shared, read-only host facts. An active unit owns the disk lock.
+# An optional validated activity value lets panel reuse its one helper read.
 shared_facts() {
   local show st=unknown has_state=false line dir="" rc=0 problem="" reason="" container=none
   show=$(systemctl --user show "$LANAI_UNIT" -p ActiveState -p SubState -p Result \
@@ -820,7 +821,8 @@ shared_facts() {
   fi
   if ! dir=$(storage_dir 2>/dev/null); then reason=settings
   else
-    if image_lock_held; then problem=$(layout_check "$dir" structural) || rc=$?
+    if [[ ${1:-} != null ]] && { (($#)) || image_lock_held; }; then
+      problem=$(layout_check "$dir" structural) || rc=$?
     else problem=$(layout_check "$dir") || rc=$?; fi
   fi
   case $rc in 0) ;; 2) reason=missing ;; *) reason=layout ;; esac
@@ -1540,8 +1542,8 @@ cmd_snapshot() {
   out=$(image_operation snapshot snapshot_create) || rc=$?
   if ((rc == 3)); then
     dir=$(storage_dir) || dir="the storage location"
-    emit false "" "$out Lanai cannot make an instant snapshot on this filesystem." \
-      "make a backup of $dir before Lanai's first boot" '{ "reason":"snapshot-unsupported" }'
+    emit false "" "$out" \
+      "Make a backup of $dir before the first boot." '{ "reason":"snapshot-unsupported" }'
     return 1
   elif ((rc != 0)); then
     emit false "" "$out" ""
@@ -1569,15 +1571,14 @@ cmd_snapshots() {
 # setup starts again at step 1 (setup_reset): the disk may predate any
 # Lanai boot, and setup is safe to rerun on a later one.
 cmd_restore() {
-  local out rc=0 dir
+  local out rc=0
   if ! lanai_flock; then
     emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
     return 1
   fi
   out=$(image_operation restore snapshot_restore "${1:-}") || rc=$?
   if ((rc == 3)); then
-    dir=$(storage_dir) || dir="the storage location"
-    emit false "" "$out" "make a backup of $dir" '{"reason":"snapshot-unsupported"}'
+    emit false "" "$out" "Choose storage that supports verified instant copies, then try the restore again." '{"reason":"restore-unsupported"}'
     return 1
   elif ((rc != 0)); then
     emit false "" "$out" ""

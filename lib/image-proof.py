@@ -173,7 +173,7 @@ def activity(lock_path, progress_path):
             return None
         if (type(doc.get("pid")) is not int or doc["pid"] <= 0 or
                 doc.get("operation") not in ("snapshot", "restore") or
-                doc.get("phase") not in ("cloning", "checking", "hashing", "finishing") or
+                doc.get("phase") not in ("cloning", "checking", "hashing", "replacing", "finishing") or
                 any(type(doc.get(k)) is not int or doc[k] < 0 for k in ("done", "total")) or
                 doc["done"] > doc["total"]):
             return None
@@ -200,7 +200,7 @@ def activity(lock_path, progress_path):
         percent = min(99, doc["done"] * 99 // doc["total"]) if doc["total"] else 0
         verb = "Taking snapshot" if doc["operation"] == "snapshot" else "Restoring Windows"
         labels = {"cloning": "making instant copy", "checking": "checking shared storage",
-                  "hashing": "reading image", "finishing": "finishing and saving"}
+                  "hashing": "reading image", "replacing": "replacing the disk", "finishing": "finishing and saving"}
         return {"label": f'{verb}: {labels[doc["phase"]]}', "percent": percent}
     except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.SubprocessError):
         return None

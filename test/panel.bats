@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # Panel decisions use isolated files and functions, never sockets or a VM.
-# shellcheck disable=SC2030,SC2031,SC2034,SC2329
+# shellcheck disable=SC2030,SC2031,SC2034,SC2329,SC2016
 load helpers
 
 setup() {
@@ -1520,10 +1520,11 @@ setup_worker() {
   mv "$S/next.json" "$S/image-progress.json"
   run cmd_panel
   assert_equal "$(jq -r '.busy.line' <<<"$output")" "Keep Windows stopped until it finishes."
-  jq '.done=100' "$S/image-progress.json" >"$S/next.json"
+  jq '.done=100 | .phase="replacing"' "$S/image-progress.json" >"$S/next.json"
   mv "$S/next.json" "$S/image-progress.json"
   run cmd_panel
   assert_equal "$(jq -r '.progress.percent' <<<"$output")" 99
+  assert_equal "$(jq -r '.progress.label' <<<"$output")" "Restoring Windows: replacing the disk"
   exec {fd}>&-
   run cmd_panel
   assert_equal "$(jq -r '.progress' <<<"$output")" null
@@ -1684,4 +1685,37 @@ assert_right_click() {
   assert_equal "$(jq -r .busy.active <<<"$output")" true
   assert_right_click panel
   exec {fd}>&-
+}
+
+@test "panel restore refusal: explains unsupported storage and unchanged Windows" {
+  local words reply
+  reply='{"ok":false,"reason":"restore-unsupported"}'
+  words='The restore was refused because Lanai cannot verify an instant copy in this storage location. Nothing was changed. Choose storage that supports verified instant copies, then try again.'
+  run panel_words restore "$reply"
+  assert_success
+  assert_output "$words"
+  state '{"done":true}'
+  jq -nc --argjson reply "$reply" '{command:"restore",reply:$reply}' >"$S/panel-result-snapshots.json"
+  shim systemctl 'printf "ActiveState=inactive\nResult=success\nInvocationID=\n"'
+  export PATH=$T/shims:$PATH
+  lanai_run panel
+  assert_success
+  assert_equal "$(jq -r .result.snapshots <<<"$output")" "$words"
+}
+
+@test "panel activity: gathers once and reuses the result for the storage check" {
+  state '{"done":true}'
+  shim python3 'if [[ $1 == */image-proof.py && $2 == activity ]]; then
+  echo activity >>"$T/activity-calls"
+  echo "{\"label\":\"Restoring Windows: replacing the disk\",\"percent\":99}"
+  exit 0
+fi
+exec /usr/bin/python3 "$@"'
+  export PATH=$T/shims:$PATH
+  layout_check() { echo "${2:-full}" >>"$T/layout-calls"; }
+  run cmd_panel
+  assert_success
+  assert_equal "$(cat "$T/activity-calls")" activity
+  assert_equal "$(cat "$T/layout-calls")" structural
+  assert_equal "$(jq -r .progress.label <<<"$output")" 'Restoring Windows: replacing the disk'
 }

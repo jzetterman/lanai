@@ -42,7 +42,8 @@ snapshot_roots() {
 # owned by the user, in a snapshot place that passes own_dir, with a
 # snapshot name, a SOURCE naming <storage>, a COMPLETE manifest of top-level
 # install files only, and exactly those files at those sizes beside them.
-# (restore checks every SHA-256 before it writes anything.)
+# Restore checks every SHA-256 before replacing an existing disk. A deleted
+# disk is published locked before its image hash (the approved req 7 exception).
 snapshot_valid() {
   local d=$1 storage=$2 kind size sum name want="" have
   [[ ${d##*/} =~ $LANAI_SNAP_RE && -d $d && ! -L $d ]] || return 1
@@ -170,22 +171,43 @@ image_map_sweep() {
   done
 }
 
-# Keep detailed proof errors in stderr for the operation log. Successful
-# prove output is a manifest record; failed output is a plain reason only.
-image_proof() {
-  local output rc=0
-  output=$(python3 "$LANAI_LIB/image-proof.py" "$@" 2>&1) || rc=$?
+# Both image helpers keep detailed errors on stderr for the operation log.
+# Successful proof output is a manifest; failures use one plain reason.
+image_helper() {
+  local helper=$1 output rc=0
+  shift
+  output=$(python3 "$LANAI_LIB/$helper.py" "$@" 2>&1) || rc=$?
   if ((rc == 0)); then printf '%s\n' "$output"; return 0; fi
   printf '%s\n' "$output" >&2
   case $output in
     *'filesystem cannot make an instant copy'*)
-      echo "This storage location cannot make an instant copy with a verified image" ;;
+      echo "This storage location cannot make an instant copy with a verified image." ;;
     *FIEMAP*|*ioctl*|*'cannot identify image filesystem'*)
-      echo "Lanai cannot verify the image in this storage location" ;;
-    *) printf '%s\n' "${output#image-proof: }" ;;
+      echo "Lanai cannot verify the image in this storage location." ;;
+    *'File exists'*)
+      echo "Another disk appeared before the restore could put its disk in place." ;;
+    *'snapshot is damaged'*)
+      echo "The snapshot is damaged: its image does not match its manifest." ;;
+    *'image changed during verification'*)
+      echo "The image changed during verification." ;;
+    *'image changed or its shared storage does not match'*)
+      echo "The image changed or its shared storage does not match." ;;
+    *'image path changed'*|*'image shortened'*)
+      echo "The image changed while Lanai was checking it." ;;
+    *'first 100 KB'*)
+      echo "The Windows disk is blank." ;;
+    *)
+      if [[ $helper == ficlone ]]; then
+        echo "Lanai could not make an instant copy of the image."
+      else
+        echo "Lanai could not verify the image."
+      fi ;;
   esac
   return "$rc"
 }
+
+image_proof() { image_helper image-proof "$@"; }
+image_clone() { image_helper ficlone "$@"; }
 
 # Progress belongs to the operation lock, including CLI invocations. A separate
 # subshell keeps traps and exported helper context out of sourced callers.
@@ -200,7 +222,7 @@ image_operation() (
   trap 'rm -f -- "$LANAI_IMAGE_PROGRESS" "$LANAI_IMAGE_MAP"; if [[ -n $LANAI_SNAPSHOT_PART ]]; then snapshot_remove "$LANAI_SNAPSHOT_PART"; fi; unlock_disk' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  image_phase cloning || exit 1
+  image_phase checking || exit 1
   "$@"
 )
 
@@ -269,14 +291,14 @@ snapshot_create() {
     fi
     image_phase cloning
     rc=0
-    reason=$(python3 "$LANAI_LIB/ficlone.py" --new "$dir/data.img" "$part/data.img" 2>&1) || rc=$?
+    reason=$(image_clone --new "$dir/data.img" "$part/data.img") || rc=$?
     if ((rc == 0)); then break; fi
     snapshot_remove "$part"; part=''; LANAI_SNAPSHOT_PART=''
     $made_root && rmdir -- "$root" 2>/dev/null || true
-    if ((rc != 3)); then echo "the snapshot failed: $reason; nothing was kept"; return 1; fi
+    if ((rc != 3)); then echo "The snapshot failed: ${reason%.}. Nothing was kept."; return 1; fi
   done < <(snapshot_roots "$dir")
   if [[ -z $part ]]; then
-    echo "$dir's filesystem cannot make an instant copy here."; return 3
+    echo "This storage location cannot make an instant copy with a verified image."; return 3
   fi
   rc=0
   reason="copy or small-file check failed"
@@ -307,16 +329,20 @@ snapshot_create() {
     printf '%s\n' "$root/$name"; return 0
   fi
   snapshot_remove "$part"
-  echo "the snapshot failed: ${reason:-copy or small-file check failed}; nothing was kept"
+  echo "The snapshot failed: ${reason%.}. Nothing was kept."
   return 1
 }
 
 # Write the restore-in-progress marker <marker> (the snapshot, then the
-# storage location) and flush it and its folder to disk before any storage
+# storage location, optionally followed by verification-failed) and flush
+# it and its folder to disk before any storage
 # file changes.
 restore_mark() {
   local marker=$1
-  printf '%s\n%s\n' "$2" "$3" >"$marker.tmp" && sync -- "$marker.tmp" &&
+  {
+    printf '%s\n%s\n' "$2" "$3" &&
+      if [[ -n ${4:-} ]]; then printf '%s\n' "$4"; fi
+  } >"$marker.tmp" && sync -- "$marker.tmp" &&
     mv -f -- "$marker.tmp" "$marker" && sync -- "${marker%/*}"
 }
 
@@ -346,16 +372,24 @@ restore_small_file() {
 # with its lock held before hashing (John's approved req 7 exception).
 snapshot_restore() {
   local want=${1:-} dir s marker snap="" msrc="" reason note="" kind size sum name rc=0 e
+  local marker_snap="" marker_status="" verification_failed=false
   local -a order=() strays=()
   local -A keep=() sums=()
   dir=$(storage_dir) || return 1
   s=$(state_dir)
   marker=$s/restore-in-progress
   if [[ -f $marker ]]; then
-    { IFS= read -r snap && IFS= read -r msrc; } <"$marker" || true
+    { IFS= read -r snap && IFS= read -r msrc; IFS= read -r marker_status || true; } <"$marker" || true
+    marker_snap=$snap
     if [[ $msrc != "$dir" ]]; then
       echo "the unfinished restore ($marker) was for ${msrc:-an unknown storage location}, not $dir. Point Lanai's storage back at it, then run lanai restore again."
       return 1
+    elif [[ $marker_status == verification-failed ]]; then
+      if [[ -z $want || $want == "${snap##*/}" ]]; then
+        echo "The unfinished restore's snapshot failed verification. Restore another snapshot by name."
+        return 1
+      fi
+      snap=""
     elif snapshot_valid "$snap" "$dir"; then
       if [[ -n $want && $want != "${snap##*/}" ]]; then
         echo "a restore of ${snap##*/} did not finish: run lanai restore again to finish it first"
@@ -396,11 +430,11 @@ snapshot_restore() {
   fi
   image_phase checking
   if ! reason=$(image_proof gate "$snap/data.img"); then
-    echo "$reason. Nothing was changed."; return 3
+    echo "${reason%.}. Nothing was changed."; return 3
   fi
   if $existed; then
     if ! reason=$(image_proof filesystem "$dir/data.img"); then
-      echo "$reason. Nothing was changed."; return 3
+      echo "${reason%.}. Nothing was changed."; return 3
     fi
     if [[ $(has_nocow "$snap/data.img" && echo C) != "$(has_nocow "$dir/data.img" && echo C)" ]]; then
       echo "$dir/data.img and $snap/data.img differ in NOCOW (the C attribute). Nothing was changed."; return 1
@@ -420,7 +454,7 @@ snapshot_restore() {
     rm -f -- "$dir/.lanai-restore.$name"
   done
   temp=$dir/.lanai-restore.data.img
-  if ! reason=$(python3 "$LANAI_LIB/ficlone.py" --new "$snap/data.img" "$temp" 2>&1); then rc=1; fi
+  if ! reason=$(image_clone --new "$snap/data.img" "$temp"); then rc=1; fi
   for name in "${order[@]}"; do
     ((rc == 0)) || break
     if ! reflink_file "$snap/$name" "$dir/.lanai-restore.$name"; then rc=1; break; fi
@@ -430,11 +464,12 @@ snapshot_restore() {
     fi
   done
   if ((rc == 0)) && ! $existed; then
+    image_phase replacing
     # Approved req 7 exception: lock the inode before publishing, then install
     # verified boot markers before hashing, preventing dockur's disk cleanup.
     if ! lock_disk "$temp"; then
       reason="cannot take the disk lock ($LANAI_LOCK_ERROR)"; rc=1
-    elif ! reason=$(python3 "$LANAI_LIB/image-proof.py" publish "$temp" "$dir/data.img" 2>&1); then
+    elif ! reason=$(image_proof publish "$temp" "$dir/data.img"); then
       rc=1
     else
       changed=true
@@ -448,13 +483,14 @@ snapshot_restore() {
     fi
   fi
   if ((rc == 0)); then
-    reason_map=$(image_proof prove "$snap/data.img" "$temp" "$LANAI_IMAGE_MAP" "$image_sum") || { reason=$reason_map; rc=1; }
+    reason_map=$(image_proof prove "$snap/data.img" "$temp" "$LANAI_IMAGE_MAP" "$image_sum") || { reason=$reason_map; verification_failed=true; rc=1; }
   fi
   if ((rc == 0)) && $existed; then
     # From here any failure keeps recovery blocked, even if FICLONE partially
     # changed the destination. It retains QEMU's locked inode throughout.
     changed=true
-    if ! reason=$(python3 "$LANAI_LIB/ficlone.py" "$temp" "$dir/data.img" 2>&1) ||
+    image_phase replacing
+    if ! reason=$(image_clone "$temp" "$dir/data.img") ||
       ! reason=$(image_proof final "$temp" "$dir/data.img" "$LANAI_IMAGE_MAP"); then
       rc=1
     fi
@@ -464,7 +500,7 @@ snapshot_restore() {
       if ! reason=$(restore_small_file "$dir" "$name" "${sums[$name]}"); then rc=1; break; fi
     done
   fi
-  if $existed; then rm -f -- "$dir/.lanai-restore.data.img"; fi
+  rm -f -- "$dir/.lanai-restore.data.img"
   if ((rc == 0)); then
     image_phase finishing
     while IFS= read -r -d '' e; do
@@ -480,12 +516,24 @@ snapshot_restore() {
     ((rc != 0)) || sync -f -- "$dir" || rc=1
   fi
   if ((rc != 0)); then
-    if $existed && ! $changed; then
-      for name in data.img "${order[@]}"; do rm -f -- "$dir/.lanai-restore.$name"; done
-      $older || rm -f -- "$marker"
-      echo "${reason:-verification failed}. Nothing was changed."
+    reason=${reason:-Lanai could not complete the restore}
+    # Give up on staged copies in every failure path, including deleted disks.
+    for name in data.img "${order[@]}"; do rm -f -- "$dir/.lanai-restore.$name"; done
+    if ! $changed; then
+      if $older; then
+        restore_mark "$marker" "$marker_snap" "$dir" "$marker_status" || return 1
+      else
+        rm -f -- "$marker"
+        sync -- "$s"
+      fi
+      echo "${reason%.}. Nothing was changed."
+    elif $verification_failed; then
+      # Size validation cannot find data damage. Persist the failed proof so a
+      # different named snapshot may replace this unfinished restore after a crash.
+      restore_mark "$marker" "$snap" "$dir" verification-failed || return 1
+      echo "The restore did not finish: ${reason%.}. Restore another snapshot by name."
     else
-      echo "the restore did not finish: ${reason:-replacement failed}; run lanai restore again; the snapshot is intact"
+      echo "The restore did not finish: ${reason%.}. Try the restore again."
     fi
     return 1
   fi

@@ -1729,7 +1729,9 @@ The orchestrator runs the gate; delegates run no review stage.
   changes, caps and recovers, retries late attachment and suppresses repeated
   errors. An unchanged failing scale decision backs off to one attempt per minute
   and logs that decision once; a new display, range or target still applies at
-  once. A failing log write inside error handling cannot end the loop. Its
+  once. The retry deadline starts only after the scale API is attempted, so a
+  failed log write before that attempt cannot delay a new target. A failing log
+  write inside error handling cannot end the loop. Its
   sign-in task has no execution limit and ignores duplicate starts.
   README documents rerunning setup, next-start choices and manual Windows scale
   changes reverting within 2 s. Tests were written first, including PowerShell
@@ -1741,17 +1743,25 @@ The orchestrator runs the gate; delegates run no review stage.
 - **Phase B, snapshot and restore:** FIEMAP gates btrfs images and proves equal
   shared maps before and after the one image hash, with a final map after restore
   FICLONE. Each small temporary file is rehashed against COMPLETE immediately
-  before every rename; a mismatch keeps the unfinished restore marker. Deleted
+  before every rename. A refusal before publication removes staged files and a
+  new marker, preserving any older marker. Deleted
   disks publish the locked inode with renameat2 no-replace and install boot files
   before hashing, using John's approved req 7 exception, then retain fresh small-file clones for
-  final verification and replacement after the image hash. CLI and panel
+  final verification and replacement after the image hash. A failed image proof
+  after publication records failed verification in the marker, so a different
+  named snapshot may replace it; staged images are removed on failure. CLI and panel
   operations publish phases, byte progress and owner under the operation lock;
   QML renders the percentage with a comma after the label, showing the label
   once and keeping "Keep Windows stopped until it finishes." visible during
-  restore. Only validated activity from a live snapshot or restore owner skips
+  restore. Checks are labeled before cloning starts; replacing the disk covers
+  the in-place clone and its final map. The panel reads activity once per poll
+  and reuses it for shared facts. Only validated activity from a live snapshot or restore owner skips
   the panel image read; setup's own operation lock still checks the first 100 KB
   for nonzero data. Proof and gate failures keep details in stderr and show plain
-  reasons, with backup advice once in the next step. A successful proof's manifest
+  reasons with final periods; snapshot backup advice appears once in the next
+  step. Restore refusals have a separate reason and panel words explaining the
+  unsupported storage and unchanged disk. All clone and publication errors use
+  the same mapping, with details kept in the operation log. A successful proof's manifest
   is separate from later small-file failure reasons. Under the lock, stale
   partials matching SOURCE and dead-owner image maps are swept. SOURCE precedes
   cloning and is flushed with its directory before a clone can pin blocks;
@@ -1772,20 +1782,27 @@ The orchestrator runs the gate; delegates run no review stage.
   John's rehearsal-image timing and container-start check remain manual proofs.
 
 - **Checks after the confirmed findings (2026-10-05):** Tests first reproduced
-  the blank-disk bypass with a visible bare FLOCK record, the leaked manifest and
-  proof details, stale partials and maps, empty fallback roots, duplicate progress
-  words and the guest's repeated unsuccessful sets. The new isolated regression
-  suite also verifies setup step 1 under its own lock, valid snapshot and restore
-  owners, SOURCE flushed before cloning, duplicate manifest rejection and reuse
-  of parsed restore hashes. The
-  old COMPLETE reread fails that regression in an isolated mutation check.
-  The touched suites pass 181 cases: 53 snapshot, 89 panel, 26 guest (including
-  pwsh), one QML renderer and 12 isolated regression cases. The snapshot trace
-  case skips because strace is unavailable. Seven snapshot cases are omitted
-  because they start QEMU or write in /dev/shm, outside this delegate's allowed
-  scope. No socket cases fail. QML lint, the full ShellCheck command and
-  `git diff --check` pass. Scratch is removed. The delegate runs no review gate;
-  the orchestrator owns that gate and John's manual proofs remain pending.
+  both deleted-disk damage paths, unsupported restore wording, repeated snapshot
+  advice, raw helper errors, early clone progress, duplicate activity calls and
+  the guest log backoff. The firmware-byte and image-byte fixtures each try the
+  bad snapshot, an unnamed restore and the good named snapshot, then check the
+  cleared marker and exact good manifest. Older markers survive clean refusals.
+  Cases from `test/review-fixes.bats` now live in the snapshot and adoption suites
+  with behavior names; the obsolete lock shim and that file are removed.
+  New-file clone cases live with snapshot's existing clone cases. Lifecycle's
+  automatic scale boot test uses representative values; adoption tests keep the
+  full rounding matrix. The clone helper names its set-flags ioctl and documents
+  snapshot use too. The touched suites cover 327 distinct cases: 323 pass,
+  three lifecycle fake-QMP cases fail because the sandbox denies socket binds,
+  and the read-budget case skips because strace is unavailable. Passing cases
+  by suite: snapshot 73, panel 91, guest 26 (including pwsh), adoption 62,
+  copy 27 and lifecycle 44. All four btrfs mutation modes pass. Under the
+  delegate's scope limits, 48 cases are omitted: 14 paused-QEMU probes, 33
+  compose-file cases and one /dev/shm write. The corrected cleanup and copy
+  expectations pass on rerun. QML lint, the full ShellCheck command and
+  `git diff --check` pass. Scratch is removed.
+  The delegate runs no review stage; the orchestrator owns the gate and John's
+  manual rehearsal proofs remain pending.
 
 - **Icon clicks (amendment Phase C):** Bash supplies the right-click action and
   tooltip: Start only for a stopped install with current setup finished and no
@@ -2192,3 +2209,4 @@ The orchestrator runs the gate; delegates run no review stage.
 | diff (scale, progress, clicks) | a (gpt-6.1-sol) | 2 (full) | 1 P2, 0 refuted, 0 downgraded to nit; confirmed (reproduced on tmpfs) and fixed by Claude: a NOCOW image whose first snapshot root cannot hold NOCOW (XFS, tmpfs) failed instead of falling back to the root beside storage; ficlone.py now returns the fallback code, with a test that fails without it |
 | diff (scale, progress, clicks) | a (gpt-6.1-sol) | 3 (full, cap) | 1 P2, 0 refuted, 0 downgraded to nit; confirmed and fixed by Claude: a staged small file swapped for a symlink to the snapshot copy passed the hash (sha256sum follows links) and was installed as a link while the restore reported success; restore_small_file now refuses non-regular files before and after the rename, with a test that fails without it. Stage closed at the cap with this fix unreviewed by stage a |
 | diff (scale, progress, clicks) | b single (opus-5.5) | 1 (full; single by John's Claude-usage rule until 09:00 EDT 2026-10-06, though this gate's findings above nit call for a panel) | 1 should-fix, 5 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): setup under its own lock skipped the blank-disk check (only a live image operation now skips it); prove output leaked into later failure reasons, raw helper text and a doubled backup hint; stale .partial folders, empty fallback roots and dead-owner map files are swept again; plain progress text without an em dash or a repeated label; the guest scale loop backs off and survives log failures; dead code |
+| diff (scale, progress, clicks) | b single (opus-5.5) | 2 (full; single by John's Claude-usage rule) | 2 should-fix, 6 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): a deleted-disk restore from a damaged snapshot deadlocked (a mismatch before publication is now a clean refusal; after it, the marker records the failed snapshot and a named other snapshot may replace it); a refused restore showed the setup step's snapshot advice (own reason and words); run-on CLI messages; raw helper errors; progress labels per step; scale backoff after the attempt; tests regrouped by behavior; named ioctl, docstring, README and one activity call per poll. The reviewer briefly took a flock on the real ~/.local/state/lanai/lock (no file changed; later prompts forbid it) |
