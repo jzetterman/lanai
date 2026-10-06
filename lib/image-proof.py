@@ -35,7 +35,6 @@ def btrfs(fd):
 
 def image_map(fd):
     btrfs(fd)
-    fcntl.ioctl(fd, 0x80086601, b"\0" * 8)  # Read the file attribute, never extent NOCOW flags.
     os.fsync(fd)
     size = os.fstat(fd).st_size
     if not size:

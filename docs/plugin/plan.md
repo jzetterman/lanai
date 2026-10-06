@@ -429,9 +429,9 @@ Where the code differs from the text above, the code and this list win:
   the command goes out, after the sync. The resume retry stops after 60 s.
 - Snapshots record their source: a `SOURCE` file beside `COMPLETE` holds the storage
   location's real path, and only snapshots of the current location are listed,
-  restored or cleaned (`.partial` leftovers of this location, or with no `SOURCE` yet;
-  the flock means none is being built). A snapshot place is used, listed or resumed
-  from only when it is a real folder owned by the user with no group or other write
+  restored or cleaned (`.partial` leftovers with SOURCE matching this location;
+  unknown locations are left alone, and the flock means none is being built).
+  A snapshot place is used, listed or resumed from only when it is a real folder owned by the user with no group or other write
   (`own_dir`; new ones are made 0700), and each snapshot folder must be the user's.
   A snapshot takes install files only: dockur's `setup.img` leftovers or a restore's
   temp files must be deleted first, and the folder must pass `layout_check` (so
@@ -1565,9 +1565,13 @@ the same proof holds.
   map. Compressed slices are one instance of the broader exclusion. The same
   process could rewrite COMPLETE or the snapshot's files outright. Say so in a
   comment at the comparison.
-- Remove `snapshot_root`'s probe, its cleanup and stale sweep, FICLONERANGE code
-  and probe tests. Under the disk lock, apply the statfs and extent-class gate
-  first. Try the real clone into the first snapshot root's partial folder, with
+- Remove `snapshot_root`'s probe and probe cleanup, FICLONERANGE code and probe
+  tests. Under the operation lock, retain the sweep of stale partial snapshot
+  folders whose SOURCE matches this storage location; leave unknown or other
+  locations alone. Record and flush SOURCE before cloning so interrupted copies
+  can be reclaimed after power loss too. Remove newly created empty roots after failed clone attempts and
+  stale image-map records whose owner pid is dead. Under the disk lock, apply
+  the statfs and extent-class gate first. Try the real clone into the first snapshot root's partial folder, with
   NOCOW matched. On EXDEV or EINVAL, remove that folder and try the next root.
   Other clone errors fail the operation. If no root works, say this location
   cannot make an instant copy and suggest a backup.
@@ -1723,7 +1727,10 @@ The orchestrator runs the gate; delegates run no review stage.
   reply and resets on reopen. The guest recomputes the relative offset from the
   current display path, resolution and DPI range every 2 s, sets only actual
   changes, caps and recovers, retries late attachment and suppresses repeated
-  errors. Its sign-in task has no execution limit and ignores duplicate starts.
+  errors. An unchanged failing scale decision backs off to one attempt per minute
+  and logs that decision once; a new display, range or target still applies at
+  once. A failing log write inside error handling cannot end the loop. Its
+  sign-in task has no execution limit and ignores duplicate starts.
   README documents rerunning setup, next-start choices and manual Windows scale
   changes reverting within 2 s. Tests were written first, including PowerShell
   AST decision and late-display fixtures run locally with pwsh. All 14 new Bats
@@ -1739,7 +1746,19 @@ The orchestrator runs the gate; delegates run no review stage.
   before hashing, using John's approved req 7 exception, then retain fresh small-file clones for
   final verification and replacement after the image hash. CLI and panel
   operations publish phases, byte progress and owner under the operation lock;
-  QML renders the percentage.
+  QML renders the percentage with a comma after the label, showing the label
+  once and keeping "Keep Windows stopped until it finishes." visible during
+  restore. Only validated activity from a live snapshot or restore owner skips
+  the panel image read; setup's own operation lock still checks the first 100 KB
+  for nonzero data. Proof and gate failures keep details in stderr and show plain
+  reasons, with backup advice once in the next step. A successful proof's manifest
+  is separate from later small-file failure reasons. Under the lock, stale
+  partials matching SOURCE and dead-owner image maps are swept. SOURCE precedes
+  cloning and is flushed with its directory before a clone can pin blocks;
+  failed fallback attempts remove newly created empty roots.
+  Snapshot validation relies on the exact sorted file list to reject duplicate
+  manifest names, restore reuses its parsed small-file hashes, and the unused
+  snapshot manifest helper and unused image-map attribute query are removed.
   Non-object progress JSON is ignored as malformed, leaving panel progress null.
   Real normal, NOCOW, compressed, mixed and UNWRITTEN mutation fixtures cover the
   proof, plus sparse pagination, recovery and publication races. CI requires btrfs
@@ -1751,6 +1770,22 @@ The orchestrator runs the gate; delegates run no review stage.
   duplicate script was needed. Outside the sandbox the full suite passes 650 of 650 (locale and strace
   skips). Local strace measurement skips when unavailable;
   John's rehearsal-image timing and container-start check remain manual proofs.
+
+- **Checks after the confirmed findings (2026-10-05):** Tests first reproduced
+  the blank-disk bypass with a visible bare FLOCK record, the leaked manifest and
+  proof details, stale partials and maps, empty fallback roots, duplicate progress
+  words and the guest's repeated unsuccessful sets. The new isolated regression
+  suite also verifies setup step 1 under its own lock, valid snapshot and restore
+  owners, SOURCE flushed before cloning, duplicate manifest rejection and reuse
+  of parsed restore hashes. The
+  old COMPLETE reread fails that regression in an isolated mutation check.
+  The touched suites pass 181 cases: 53 snapshot, 89 panel, 26 guest (including
+  pwsh), one QML renderer and 12 isolated regression cases. The snapshot trace
+  case skips because strace is unavailable. Seven snapshot cases are omitted
+  because they start QEMU or write in /dev/shm, outside this delegate's allowed
+  scope. No socket cases fail. QML lint, the full ShellCheck command and
+  `git diff --check` pass. Scratch is removed. The delegate runs no review gate;
+  the orchestrator owns that gate and John's manual proofs remain pending.
 
 - **Icon clicks (amendment Phase C):** Bash supplies the right-click action and
   tooltip: Start only for a stopped install with current setup finished and no
@@ -2156,3 +2191,4 @@ The orchestrator runs the gate; delegates run no review stage.
 | diff (scale, progress, clicks) | a (gpt-6.1-sol) | 1 (full) | 1 P1, 1 P2, 0 refuted, 0 downgraded to nit; both reproduced by the reviewer, confirmed and integrated (fixes by Codex): restore installed small files hashed before the minutes-long image proof without a recheck (now rehashed just before each rename, on both paths); a non-object progress record failed the whole panel view. Also fixed by Claude from CI: a test used rg, absent from CI |
 | diff (scale, progress, clicks) | a (gpt-6.1-sol) | 2 (full) | 1 P2, 0 refuted, 0 downgraded to nit; confirmed (reproduced on tmpfs) and fixed by Claude: a NOCOW image whose first snapshot root cannot hold NOCOW (XFS, tmpfs) failed instead of falling back to the root beside storage; ficlone.py now returns the fallback code, with a test that fails without it |
 | diff (scale, progress, clicks) | a (gpt-6.1-sol) | 3 (full, cap) | 1 P2, 0 refuted, 0 downgraded to nit; confirmed and fixed by Claude: a staged small file swapped for a symlink to the snapshot copy passed the hash (sha256sum follows links) and was installed as a link while the restore reported success; restore_small_file now refuses non-regular files before and after the rename, with a test that fails without it. Stage closed at the cap with this fix unreviewed by stage a |
+| diff (scale, progress, clicks) | b single (opus-5.5) | 1 (full; single by John's Claude-usage rule until 09:00 EDT 2026-10-06, though this gate's findings above nit call for a panel) | 1 should-fix, 5 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): setup under its own lock skipped the blank-disk check (only a live image operation now skips it); prove output leaked into later failure reasons, raw helper text and a doubled backup hint; stale .partial folders, empty fallback roots and dead-owner map files are swept again; plain progress text without an em dash or a repeated label; the guest scale loop backs off and survives log failures; dead code |

@@ -152,20 +152,13 @@ disk_locked() {
     END { exit !found }' "$locks"
 }
 
-# The operation lock can be held by external flock even after that helper exits.
-# Match the inode and mount device; never compare its recorded pid with an owner.
+# Only a live snapshot or restore owner with progress and a held operation
+# lock lets panel polls omit the image read. Setup's own lock does not qualify.
+# The helper checks lock identity and ownership without probing with flock.
 image_lock_held() {
-  local path dev ino maj min
-  path=$(state_dir)/lock
-  [[ -f $path ]] || return 1
-  ino=$(stat -c %i -- "$path") || return 1
-  dev=$(mount_dev "$path") || return 1
-  IFS=: read -r maj min <<<"$dev"
-  dev=$(printf '%02x:%02x' "$maj" "$min")
-  awk -v want="$dev:$ino" '$2 == "FLOCK" {for (i=1;i<=NF;i++) if ($i == want) found=1}
-    END {exit !found}' /proc/locks && return 0
-  # A PID namespace may hide an exited external flock creator's record.
-  [[ $(python3 "$LANAI_LIB/image-proof.py" activity "$path" "$(state_dir)/image-progress.json") != null ]]
+  local activity
+  activity=$(python3 "$LANAI_LIB/image-proof.py" activity "$(state_dir)/lock" "$(state_dir)/image-progress.json") || return 1
+  [[ $activity != null ]]
 }
 
 # --- adoption checks and settings (plan phase 3) ---

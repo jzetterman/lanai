@@ -79,11 +79,15 @@ job, and whenever the panel refreshes. If the filesystem cannot make a snapshot,
 the setup offer explains that you need a backup before continuing without one.
 Snapshot and restore show their phase and a progress bar with a percentage,
 also when you open the panel partway through or start from the CLI. You can close
-the panel during a snapshot. Keep Windows off until a restore finishes. Lanai blocks Start
-while a restore is unfinished; use **Finish the unfinished restore** to resume it.
+the panel during a snapshot. The progress label appears once beside its percentage.
+Keep Windows stopped until a restore finishes; that advice stays visible with progress.
+Lanai blocks Start while a restore is unfinished; use **Finish the unfinished restore** to resume it.
 It tries the Lanai data directory's `snapshots/`, then
 `<storage>.lanai-snapshots/` on the storage filesystem. Both VMs must be stopped for
-snapshot or restore. A restore requires running Lanai setup again.
+snapshot or restore. Before a new snapshot, Lanai removes interrupted snapshot
+folders whose recorded storage location matches this install, freeing their shared
+blocks. Other locations and folders with no recorded location are left alone.
+A restore requires running Lanai setup again.
 Each operation clones first and reads the image once, then proves its shared
 btrfs extents stayed unchanged. Plain, compressed, NOCOW and preallocated
 unwritten extents are supported; other filesystems or unprovable extent classes
@@ -174,6 +178,9 @@ The guest keeps that target as the window resizes, caps it at Windows' limit for
 the current resolution, and restores it when the window grows. This is Windows'
 display scale, separate from its “Text size” setting. The guest checks every 2 s
 and reverts manual scale changes in Windows Settings within 2 s for both choices.
+If Windows accepts a change but leaves the scale unchanged, Lanai retries the same
+change once a minute without repeating its log lines. A new display, range or
+target applies promptly. A log write failure does not stop the loop.
 Existing users must click **Run setup again** after this update to install the
 persistent scale script and its task. John's resize, cap/recovery and attachment
 checks on a rehearsal copy remain pending.

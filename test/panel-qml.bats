@@ -306,7 +306,7 @@ TestCase {
     var words = objects(panel, function(o) { return o.objectName === "imageProgressText" })[0]
     verify(bar !== undefined)
     compare(bar.value, 37)
-    compare(words.text, "Restoring Windows: reading image — 37%")
+    compare(words.text, "Restoring Windows: reading image, 37%")
     model.view = {buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{},progress:null}
     compare(bar.visible, false)
     compare(words.text, "")

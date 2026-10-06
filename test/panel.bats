@@ -1514,6 +1514,12 @@ setup_worker() {
   assert_equal "$(jq -r '.busy.active' <<<"$output")" true
   assert_equal "$(jq -r '.buttons.take_snapshot.enable' <<<"$output")" false
   assert_equal "$(jq -r '.progress.label' <<<"$output")" "Taking snapshot: reading image"
+  assert_equal "$(jq -r '.busy.line' <<<"$output")" ""
+  refute_output --partial '—'
+  jq '.operation="restore"' "$S/image-progress.json" >"$S/next.json"
+  mv "$S/next.json" "$S/image-progress.json"
+  run cmd_panel
+  assert_equal "$(jq -r '.busy.line' <<<"$output")" "Keep Windows stopped until it finishes."
   jq '.done=100' "$S/image-progress.json" >"$S/next.json"
   mv "$S/next.json" "$S/image-progress.json"
   run cmd_panel

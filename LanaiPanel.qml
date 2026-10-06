@@ -252,7 +252,7 @@ Panel {
             }
             Note {
               objectName: "imageProgressText"
-              text: root.model.view.progress ? root.model.view.progress.label + " — " + root.model.view.progress.percent + "%" : ""
+              text: root.model.view.progress ? root.model.view.progress.label + ", " + root.model.view.progress.percent + "%" : ""
             }
             Flow {
               width: parent.width

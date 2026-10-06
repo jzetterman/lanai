@@ -38,14 +38,6 @@ snapshot_roots() {
   printf '%s\n' "$(data_dir)/snapshots" "$1.lanai-snapshots"
 }
 
-# Print the manifest (tree_manifest) of snapshot folder <dir> without its
-# own COMPLETE and SOURCE files.
-snapshot_manifest() {
-  local m
-  m=$(tree_manifest "$1") || return 1
-  grep -vE '^f [0-9]+ [0-9a-f]{64} (COMPLETE|SOURCE)$' <<<"$m" || true
-}
-
 # Return 0 when <dir> is a complete snapshot of <storage>: a real folder
 # owned by the user, in a snapshot place that passes own_dir, with a
 # snapshot name, a SOURCE naming <storage>, a COMPLETE manifest of top-level
@@ -53,7 +45,6 @@ snapshot_manifest() {
 # (restore checks every SHA-256 before it writes anything.)
 snapshot_valid() {
   local d=$1 storage=$2 kind size sum name want="" have
-  local -A seen=()
   [[ ${d##*/} =~ $LANAI_SNAP_RE && -d $d && ! -L $d ]] || return 1
   [[ $(stat -c %u -- "$d") == "$(id -u)" ]] && own_dir "${d%/*}" || return 1
   [[ -f $d/SOURCE && ! -L $d/SOURCE && -f $d/COMPLETE && ! -L $d/COMPLETE ]] || return 1
@@ -61,8 +52,6 @@ snapshot_valid() {
   while read -r kind size sum name; do
     [[ $kind == f && $size =~ ^[0-9]+$ && $sum =~ ^[0-9a-f]{64}$ &&
       $LANAI_STORE_NAMES == *" $name "* ]] || return 1
-    [[ -z ${seen[$name]:-} ]] || return 1
-    seen[$name]=1
     want+="f $name $size"$'\n'
   done <"$d/COMPLETE"
   [[ $want == *" data.img "* ]] || return 1
@@ -153,6 +142,51 @@ snapshot_remove() {
   rm -rf -- "$1"
 }
 
+# Sweep only interrupted snapshots belonging to this storage location, under
+# lanai_flock. Unknown SOURCE files and other locations are left alone.
+snapshot_sweep() {
+  local root part source
+  while IFS= read -r root; do
+    own_dir "$root" || continue
+    for part in "$root"/*.partial; do
+      [[ ${part##*/} =~ ^[0-9]{8}T[0-9]{6}Z\.partial$ ]] || continue
+      own_dir "$part" || continue
+      source=$part/SOURCE
+      [[ -f $source && ! -L $source && $(<"$source") == "$1" ]] || continue
+      snapshot_remove "$part"
+    done
+  done < <(snapshot_roots "$1")
+}
+
+# Old proof maps pin no blocks, but an interrupted owner can leave records.
+# Only numeric names with a dead pid are ours to remove. The caller holds the
+# operation lock, so no other image operation can be starting concurrently.
+image_map_sweep() {
+  local file pid
+  for file in "$(state_dir)"/image-map.*.json; do
+    pid=${file##*/image-map.}; pid=${pid%.json}
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || continue
+    [[ -d /proc/$pid ]] || rm -f -- "$file"
+  done
+}
+
+# Keep detailed proof errors in stderr for the operation log. Successful
+# prove output is a manifest record; failed output is a plain reason only.
+image_proof() {
+  local output rc=0
+  output=$(python3 "$LANAI_LIB/image-proof.py" "$@" 2>&1) || rc=$?
+  if ((rc == 0)); then printf '%s\n' "$output"; return 0; fi
+  printf '%s\n' "$output" >&2
+  case $output in
+    *'filesystem cannot make an instant copy'*)
+      echo "This storage location cannot make an instant copy with a verified image" ;;
+    *FIEMAP*|*ioctl*|*'cannot identify image filesystem'*)
+      echo "Lanai cannot verify the image in this storage location" ;;
+    *) printf '%s\n' "${output#image-proof: }" ;;
+  esac
+  return "$rc"
+}
+
 # Progress belongs to the operation lock, including CLI invocations. A separate
 # subshell keeps traps and exported helper context out of sourced callers.
 image_operation() (
@@ -162,6 +196,7 @@ image_operation() (
   export LANAI_IMAGE_PROGRESS LANAI_IMAGE_MAP
   shift
   LANAI_SNAPSHOT_PART=''
+  image_map_sweep
   trap 'rm -f -- "$LANAI_IMAGE_PROGRESS" "$LANAI_IMAGE_MAP"; if [[ -n $LANAI_SNAPSHOT_PART ]]; then snapshot_remove "$LANAI_SNAPSHOT_PART"; fi; unlock_disk' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -191,7 +226,7 @@ install_list() {
 
 # Make a snapshot; return 3 for an unprovable image or unsupported roots.
 snapshot_create() {
-  local dir reason root name part='' m image name_file rc
+  local dir reason root name part='' m image name_file rc made_root
   dir=$(storage_dir) || return 1
   if [[ $dir == *$'\n'* ]]; then
     echo "the storage location's path holds a newline"; return 1
@@ -206,13 +241,16 @@ snapshot_create() {
     echo "cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it first."; return 1
   fi
   image_phase checking
-  if ! reason=$(python3 "$LANAI_LIB/image-proof.py" gate "$dir/data.img" 2>&1); then
+  if ! reason=$(image_proof gate "$dir/data.img"); then
     echo "$reason"; return 3
   fi
+  snapshot_sweep "$dir"
   name=$(date -u +%Y%m%dT%H%M%SZ)
   while IFS= read -r root; do
+    made_root=false
     if [[ ! -e $root && ! -L $root ]]; then
       if ! mkdir -p -- "${root%/*}" || ! mkdir -m 700 -- "$root"; then continue; fi
+      made_root=true
     fi
     own_dir "$root" || continue
     part=$root/$name.partial
@@ -221,23 +259,33 @@ snapshot_create() {
     fi
     mkdir -m 700 -- "$part" || return 1
     LANAI_SNAPSHOT_PART=$part
+    # Save the location before a clone can pin blocks, including after power
+    # loss. Both the record and its directory entry must reach disk first.
+    if ! printf '%s\n' "$dir" >"$part/SOURCE" ||
+      ! sync -- "$part/SOURCE" || ! sync -- "$part"; then
+      snapshot_remove "$part"
+      $made_root && rmdir -- "$root" 2>/dev/null || true
+      echo "the snapshot could not record its storage location; nothing was kept"; return 1
+    fi
     image_phase cloning
     rc=0
     reason=$(python3 "$LANAI_LIB/ficlone.py" --new "$dir/data.img" "$part/data.img" 2>&1) || rc=$?
     if ((rc == 0)); then break; fi
     snapshot_remove "$part"; part=''; LANAI_SNAPSHOT_PART=''
+    $made_root && rmdir -- "$root" 2>/dev/null || true
     if ((rc != 3)); then echo "the snapshot failed: $reason; nothing was kept"; return 1; fi
   done < <(snapshot_roots "$dir")
   if [[ -z $part ]]; then
-    echo "$dir's filesystem cannot make an instant copy here; make a backup."; return 3
+    echo "$dir's filesystem cannot make an instant copy here."; return 3
   fi
   rc=0
+  reason="copy or small-file check failed"
   while IFS= read -r name_file; do
     [[ $name_file != data.img ]] || continue
     reflink_file "$dir/$name_file" "$part/$name_file" || { rc=1; break; }
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\n' | LC_ALL=C sort)
   if ((rc == 0)); then
-    image=$(python3 "$LANAI_LIB/image-proof.py" prove "$dir/data.img" "$part/data.img" "$LANAI_IMAGE_MAP" adopt 2>&1) || rc=1
+    image=$(image_proof prove "$dir/data.img" "$part/data.img" "$LANAI_IMAGE_MAP" adopt) || { reason=$image; rc=1; }
   fi
   if ((rc == 0)); then
     if m=$(small_manifest "$part"); then
@@ -259,7 +307,7 @@ snapshot_create() {
     printf '%s\n' "$root/$name"; return 0
   fi
   snapshot_remove "$part"
-  echo "the snapshot failed: ${image:-copy or small-file check failed}; nothing was kept"
+  echo "the snapshot failed: ${reason:-copy or small-file check failed}; nothing was kept"
   return 1
 }
 
@@ -347,11 +395,11 @@ snapshot_restore() {
     fi
   fi
   image_phase checking
-  if ! reason=$(python3 "$LANAI_LIB/image-proof.py" gate "$snap/data.img" 2>&1); then
+  if ! reason=$(image_proof gate "$snap/data.img"); then
     echo "$reason. Nothing was changed."; return 3
   fi
   if $existed; then
-    if ! reason=$(python3 "$LANAI_LIB/image-proof.py" filesystem "$dir/data.img" 2>&1); then
+    if ! reason=$(image_proof filesystem "$dir/data.img"); then
       echo "$reason. Nothing was changed."; return 3
     fi
     if [[ $(has_nocow "$snap/data.img" && echo C) != "$(has_nocow "$dir/data.img" && echo C)" ]]; then
@@ -376,7 +424,7 @@ snapshot_restore() {
   for name in "${order[@]}"; do
     ((rc == 0)) || break
     if ! reflink_file "$snap/$name" "$dir/.lanai-restore.$name"; then rc=1; break; fi
-    sum=$(awk -v n="$name" '$4 == n {print $3}' "$snap/COMPLETE")
+    sum=${sums[$name]}
     if [[ $(sha256sum <"$dir/.lanai-restore.$name" | cut -d ' ' -f1) != "$sum" ]]; then
       reason="$snap is damaged: $name does not match its manifest"; rc=1
     fi
@@ -400,14 +448,14 @@ snapshot_restore() {
     fi
   fi
   if ((rc == 0)); then
-    reason_map=$(python3 "$LANAI_LIB/image-proof.py" prove "$snap/data.img" "$temp" "$LANAI_IMAGE_MAP" "$image_sum" 2>&1) || { reason=$reason_map; rc=1; }
+    reason_map=$(image_proof prove "$snap/data.img" "$temp" "$LANAI_IMAGE_MAP" "$image_sum") || { reason=$reason_map; rc=1; }
   fi
   if ((rc == 0)) && $existed; then
     # From here any failure keeps recovery blocked, even if FICLONE partially
     # changed the destination. It retains QEMU's locked inode throughout.
     changed=true
     if ! reason=$(python3 "$LANAI_LIB/ficlone.py" "$temp" "$dir/data.img" 2>&1) ||
-      ! reason=$(python3 "$LANAI_LIB/image-proof.py" final "$temp" "$dir/data.img" "$LANAI_IMAGE_MAP" 2>&1); then
+      ! reason=$(image_proof final "$temp" "$dir/data.img" "$LANAI_IMAGE_MAP"); then
       rc=1
     fi
   fi

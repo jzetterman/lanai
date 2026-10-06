@@ -17,6 +17,7 @@
   sign-out, including after a resize changes the recommended step. Windows caps
   it at its allowed maximum; the target recovers when that range grows. Manual
   changes in Windows Settings are reverted for both fixed and monitor choices.
+  If Windows leaves a change unapplied, retry the same decision once a minute.
   Actual changes and distinct errors go to %LOCALAPPDATA%\Lanai\lanai-scale.log.
 
 .PARAMETER Scale
@@ -70,6 +71,8 @@ function ScaleDecision([int]$Want, [int]$MinRel, [int]$CurrentRel, [int]$MaxRel)
 # Query paths and the range on every poll: the IDD can attach late and Windows
 # can change its recommendation after the resolution has settled. An unchanged
 # poll is silent; identical errors are logged only once until a healthy poll.
+# Windows may accept a set without applying it. Retry an identical decision
+# once a minute; changed displays, ranges or targets still apply at once.
 function Update-DisplayScale([int]$Want) {
     try {
         $paths = [LanaiDisplay]::ActivePaths()
@@ -86,23 +89,49 @@ function Update-DisplayScale([int]$Want) {
         $decision = ScaleDecision $Want $d.minScaleRel $d.curScaleRel $d.maxScaleRel
         if ($decision.change) {
             $t = [LanaiDisplay]::GetTargetName($path)
-            Write-Log "Display: name '$($t.monitorFriendlyDeviceName)', path '$($t.monitorDevicePath)', resolution $resolution"
-            Write-Log ("Raw minScaleRel {0}, curScaleRel {1}, maxScaleRel {2}" -f `
-                $d.minScaleRel, $d.curScaleRel, $d.maxScaleRel)
-            Write-Log ("Recommended {0}, current {1}, allowed {2} to {3}; target {4}, applying {5}" -f `
-                (StepName $decision.recommended), (StepName $decision.current), (StepName 0),
-                (StepName ([math]::Min($decision.recommended + $d.maxScaleRel, $Steps.Count - 1))),
-                (StepName $Want), (StepName $decision.target))
+            $key = "{0}|{1}|{2}|{3}|{4}|{5}|{6}" -f $t.monitorDevicePath, $resolution,
+                $decision.recommended, $decision.current, $decision.target, $decision.relative, $d.maxScaleRel
+            $now = Get-Date
+            if ($key -eq $script:LastScaleDecision -and $now -lt $script:NextScaleAttempt) { return }
+            $newDecision = $key -ne $script:LastScaleDecision
+            $script:LastScaleDecision = $key
+            $script:NextScaleAttempt = $now.AddSeconds(60)
+            if ($newDecision) {
+                Write-Log "Display: name '$($t.monitorFriendlyDeviceName)', path '$($t.monitorDevicePath)', resolution $resolution"
+                Write-Log ("Raw minScaleRel {0}, curScaleRel {1}, maxScaleRel {2}" -f `
+                    $d.minScaleRel, $d.curScaleRel, $d.maxScaleRel)
+                Write-Log ("Recommended {0}, current {1}, allowed {2} to {3}; target {4}, applying {5}" -f `
+                    (StepName $decision.recommended), (StepName $decision.current), (StepName 0),
+                    (StepName ([math]::Min($decision.recommended + $d.maxScaleRel, $Steps.Count - 1))),
+                    (StepName $Want), (StepName $decision.target))
+            }
             [LanaiDisplay]::SetScale($path, $decision.relative)
             $after = [LanaiDisplay]::GetScale($path)
-            Write-Log "Scale is now $(StepName (- $after.minScaleRel + $after.curScaleRel))."
+            $result = "Scale is now $(StepName (- $after.minScaleRel + $after.curScaleRel))."
+            if ($newDecision -or $result -ne $script:LastScaleResult) { Write-Log $result }
+            $script:LastScaleResult = $result
+            if (- $after.minScaleRel + $after.curScaleRel -eq $decision.target) {
+                # Confirmed changes need no backoff, even if a user reverses
+                # the setting before the next unchanged poll.
+                $script:LastScaleDecision = ''
+                $script:LastScaleResult = ''
+            }
+        }
+        else {
+            # A healthy poll permits immediate correction of a later manual change.
+            $script:LastScaleDecision = ''
+            $script:LastScaleResult = ''
         }
         $script:LastScaleError = ''
     }
     catch {
         $message = $_.Exception.Message
-        if ($message -ne $script:LastScaleError) { Write-Log "Error: $message" }
+        $newError = $message -ne $script:LastScaleError
         $script:LastScaleError = $message
+        if ($newError) {
+            # A missing or unwritable log must not terminate the sign-in loop.
+            try { Write-Log "Error: $message" } catch { }
+        }
     }
 }
 
@@ -265,6 +294,9 @@ try {
     # A task with an Interactive logon token ends with the user's session.
     # IgnoreNew prevents duplicates and its zero execution limit permits >72 h.
     $script:LastScaleError = ''
+    $script:LastScaleDecision = ''
+    $script:LastScaleResult = ''
+    $script:NextScaleAttempt = [datetime]::MinValue
     while ($true) {
         Update-DisplayScale $want
         Start-Sleep -Seconds 2

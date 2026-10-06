@@ -640,7 +640,7 @@ exec /usr/bin/sha256sum "$@"'
   assert_equal "$(dirname "$SNAP")" "$B/win.lanai-snapshots"
 }
 
-@test "snapshot: only a complete snapshot counts; old partial folders are not swept" {
+@test "snapshot: only complete snapshots count and stale partials matching SOURCE are swept" {
   btrfs_tmp
   export XDG_DATA_HOME=$B/data
   use_install "$B/win"
@@ -660,7 +660,7 @@ exec /usr/bin/sha256sum "$@"'
   assert_failure
   take_snapshot
   assert [ -e "$root/20260101T000000Z.partial" ]
-  assert [ -e "$root/20260102T000000Z.partial" ]
+  assert [ ! -e "$root/20260102T000000Z.partial" ]
   assert [ -e "$root/20260104T000000Z.partial" ]
   lanai_run snapshots
   assert_equal "$(jq -r '.snapshots | length' <<<"$JSON")" 1
@@ -847,7 +847,9 @@ damage() {
   sleep 1
   take_snapshot
   : >"$SNAP/data.img"
-  snapshot_manifest "$SNAP" >"$SNAP/COMPLETE"
+  { small_manifest "$SNAP"
+    printf 'f 0 %s data.img\n' "$(sha256sum <"$SNAP/data.img" | cut -d ' ' -f1)"
+  } >"$SNAP/COMPLETE"
   echo changed >"$B/win2/windows.vars"
   before=$(tree_manifest "$B/win2")
   lanai_run restore "$NAME"
@@ -1147,7 +1149,8 @@ fi
 exec /usr/bin/python3 "$@"'
   lanai_run restore "$NAME"
   assert_failure
-  assert_output --partial "FIEMAP ioctl failed"
+  assert_output --partial "cannot verify"
+  [[ $stderr == *"FIEMAP ioctl failed"* ]]
   assert [ ! -e "$S/restore-in-progress" ]
   lanai_run snapshot
   assert_failure
@@ -1172,8 +1175,7 @@ exec /usr/bin/python3 "$@"'
       assert_failure
       assert_output --partial "nothing was kept"
     fi
-    run find "$B/data/lanai/snapshots" -mindepth 1
-    assert_output ""
+    assert [ ! -e "$B/data/lanai/snapshots" ]
   done
 }
 

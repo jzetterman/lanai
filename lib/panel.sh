@@ -188,7 +188,7 @@ cmd_panel() {
      right_click_tooltip:({start:"Right click: Start Windows.",open:"Right click: Open the Windows window.",panel:"Right click: Open the panel."}[$rightClick]),
      pending_ack:(if $seen then $token else "" end),
      progress:$progress,notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
-     busy:{active:$busy,line:(if $progress != null then $progress.label elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
+     busy:{active:$busy,line:(if $progress != null then (if ($progress.label | startswith("Restoring Windows:")) then "Keep Windows stopped until it finishes." else "" end) elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
        elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes."}[$job.command // ""] // "Starting the operation.") else "" end)},
      result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot and restore log, then try again." else "" end)}),
      setup:{show:($p.finished|not),finished:$p.finished,

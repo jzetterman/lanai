@@ -344,11 +344,12 @@ scale_decision() {
       static [object[]] $Paths = @()
       static [object] $Dpi = @{minScaleRel=-1;curScaleRel=0;maxScaleRel=5}
       static [int] $Sets = 0
+      static [bool] $IgnoreSet = $false
       static [object[]] ActivePaths() { return [LanaiDisplay]::Paths }
       static [object] GetTargetName([object] $p) { return @{monitorFriendlyDeviceName="LGIDD";monitorDevicePath="display"} }
       static [string] Resolution([object] $p) { return "1920x1080" }
       static [object] GetScale([object] $p) { return [LanaiDisplay]::Dpi }
-      static [void] SetScale([object] $p, [int] $rel) { [LanaiDisplay]::Sets++; [LanaiDisplay]::Dpi.curScaleRel=$rel }
+      static [void] SetScale([object] $p, [int] $rel) { [LanaiDisplay]::Sets++; if (-not [LanaiDisplay]::IgnoreSet) { [LanaiDisplay]::Dpi.curScaleRel=$rel } }
     }
     $ErrorActionPreference="Stop"
     $Steps = @(100,125,150,175,200,225,250,300,350,400,450,500)
@@ -374,6 +375,32 @@ scale_decision() {
     $count=$Logs.Count
     Update-DisplayScale 1
     if ([LanaiDisplay]::Sets -ne 1 -or $Logs.Count -ne $count) { throw "unchanged poll set or logged" }
+    # Real changes succeed promptly, including an immediate manual reversal
+    # before the next healthy poll can clear the previous attempt.
+    [LanaiDisplay]::Dpi.curScaleRel=0
+    Update-DisplayScale 1
+    [LanaiDisplay]::Dpi.curScaleRel=0
+    Update-DisplayScale 1
+    if ([LanaiDisplay]::Sets -ne 3) { throw "successful set delayed an immediate manual correction" }
+    # A successful API return need not mean Windows applied the new scale.
+    $script:Now = [datetime]"2026-10-05T00:00:00Z"
+    function Get-Date { return $script:Now }
+    [LanaiDisplay]::IgnoreSet=$true
+    [LanaiDisplay]::Dpi.curScaleRel=0
+    Update-DisplayScale 1
+    $sets=[LanaiDisplay]::Sets
+    $count=$Logs.Count
+    1..29 | ForEach-Object { $script:Now=$script:Now.AddSeconds(2); Update-DisplayScale 1 }
+    if ([LanaiDisplay]::Sets -ne $sets -or $Logs.Count -ne $count) { throw "unchanged failing decision retried or logged before one minute" }
+    $script:Now=$script:Now.AddSeconds(2)
+    Update-DisplayScale 1
+    if ([LanaiDisplay]::Sets -ne $sets+1 -or $Logs.Count -ne $count) { throw "one minute retry or log deduplication failed" }
+    Update-DisplayScale 2
+    if ([LanaiDisplay]::Sets -ne $sets+2) { throw "new target did not apply promptly" }
+    # A full log filesystem must not break the repeating task in its catch.
+    function Write-Log($Message) { throw "log is unavailable" }
+    Update-DisplayScale 3
+    Update-DisplayScale 3
     "ok"'
   assert_success
   assert_output ok
