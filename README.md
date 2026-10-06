@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/lanai-wordmark.jpg" alt="Lanai" width="540"></p>
+
 # Lanai
 
 Run Windows in a window on Omarchy, through [Looking Glass](https://github.com/gnif/LookingGlass).
