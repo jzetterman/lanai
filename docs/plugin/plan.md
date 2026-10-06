@@ -1680,6 +1680,15 @@ the same proof holds.
   container-start refusal on a separate test install. README explains progress
   and the fallback for an unprovable filesystem.
 
+- Unfinished restores (John, 2026-10-05, from the diff gate's stage b round 3):
+  `lanai restore` with no name resumes the marker's snapshot, as before.
+  `lanai restore <name>` naming a different valid snapshot always replaces an
+  unfinished marker and starts over, since a restore replaces the whole disk.
+  There is no separate "verification failed" marker state. While a restore is
+  unfinished, the panel offers Finish the unfinished restore and every other
+  snapshot's Restore control; its words say either works. A failed check never
+  says "Nothing was changed" once an earlier run has changed the disk.
+
 **Phase C: icon clicks (req 11).** Change the icon's clicks and leave the panel's
 Start, Open and Shut down controls in place.
 
@@ -2210,3 +2219,5 @@ The orchestrator runs the gate; delegates run no review stage.
 | diff (scale, progress, clicks) | a (gpt-6.1-sol) | 3 (full, cap) | 1 P2, 0 refuted, 0 downgraded to nit; confirmed and fixed by Claude: a staged small file swapped for a symlink to the snapshot copy passed the hash (sha256sum follows links) and was installed as a link while the restore reported success; restore_small_file now refuses non-regular files before and after the rename, with a test that fails without it. Stage closed at the cap with this fix unreviewed by stage a |
 | diff (scale, progress, clicks) | b single (opus-5.5) | 1 (full; single by John's Claude-usage rule until 09:00 EDT 2026-10-06, though this gate's findings above nit call for a panel) | 1 should-fix, 5 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): setup under its own lock skipped the blank-disk check (only a live image operation now skips it); prove output leaked into later failure reasons, raw helper text and a doubled backup hint; stale .partial folders, empty fallback roots and dead-owner map files are swept again; plain progress text without an em dash or a repeated label; the guest scale loop backs off and survives log failures; dead code |
 | diff (scale, progress, clicks) | b single (opus-5.5) | 2 (full; single by John's Claude-usage rule) | 2 should-fix, 6 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): a deleted-disk restore from a damaged snapshot deadlocked (a mismatch before publication is now a clean refusal; after it, the marker records the failed snapshot and a named other snapshot may replace it); a refused restore showed the setup step's snapshot advice (own reason and words); run-on CLI messages; raw helper errors; progress labels per step; scale backoff after the attempt; tests regrouped by behavior; named ioctl, docstring, README and one activity call per poll. The reviewer briefly took a flock on the real ~/.local/state/lanai/lock (no file changed; later prompts forbid it) |
+| diff (scale, progress, clicks) | b single (opus-5.5) | 3 (full, cap; single by John's Claude-usage rule) | 3 should-fix, 4 nits, 0 refuted, 0 downgraded to nit; all reproduced by the reviewer: any proof failure (not only a hash mismatch) marked a deleted-disk restore's snapshot failed, leaving no way out; an interrupted existing-disk restore whose snapshot later failed its hash deadlocked the same way; the panel could not show the failed state. Nits: a log failure before the scale set, a tautological awk test, article-less progress copy, a lost "You can close this panel." line |
+| diff (scale, progress, clicks) | John | 2026-10-05 | John chose to simplify instead of patching: a named different snapshot always replaces an unfinished restore, the failed-verification state goes away, and the panel offers every snapshot while a restore is unfinished (plan, phase B). One more stage b round, past the cap, on his OK |
