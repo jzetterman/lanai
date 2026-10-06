@@ -128,6 +128,7 @@ import QtQuick
 Item {
   property string text
   property bool focusable
+  property bool bordered
   property bool selected
   property color foreground
   property string fontFamily

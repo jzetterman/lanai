@@ -319,6 +319,7 @@ Panel {
     visible: descriptor.show
     enabled: descriptor.enable
     focusable: true
+    bordered: true
     foreground: root.foreground
     fontFamily: root.fontFamily
     opacity: enabled ? 1.0 : 0.4
