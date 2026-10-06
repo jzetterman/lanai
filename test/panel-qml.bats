@@ -63,6 +63,7 @@ Panel 1.0 Panel.qml
 KeyboardPanel 1.0 KeyboardPanel.qml
 Button 1.0 Button.qml
 NumberField 1.0 NumberField.qml
+Dropdown 1.0 Dropdown.qml
 PanelSectionHeader 1.0 PanelSectionHeader.qml
 PanelSeparator 1.0 PanelSeparator.qml
 QML
@@ -156,6 +157,26 @@ Item {
     value: parent.value
     editable: true
   }
+}
+QML
+  cat >"$T/qml/imports/TestUi/Dropdown.qml" <<'QML'
+import QtQuick
+Item {
+  property string label
+  property string value
+  property var options: []
+  property color foreground
+  property string fontFamily
+  signal changed(string value)
+  // As the real Dropdown does: assign value, then emit changed.
+  function select(v) { value = v; changed(v) }
+  function currentLabel() {
+    for (var i = 0; i < options.length; i++)
+      if (String(options[i].value) === value) return String(options[i].label)
+    return value
+  }
+  implicitWidth: 200
+  implicitHeight: 40
 }
 QML
   echo 'import QtQuick; Text { property color foreground; property string fontFamily }' >"$T/qml/imports/TestUi/PanelSectionHeader.qml"
@@ -380,12 +401,11 @@ TestCase {
     panel.open()
     var scale = objects(panel, function(o) { return o.objectName === 'windowsScale' })[0]
     verify(scale !== undefined)
-    compare(scale.currentText, 'Match my monitor')
-    scale.forceActiveFocus()
-    keyClick(Qt.Key_Down); keyClick(Qt.Key_Return)
+    compare(scale.currentLabel(), 'Match my monitor')
+    scale.select('125')
     compare(panel.windowsScaleInput, 125)
     model.view = view(250)
-    compare(scale.currentText, '125%')
+    compare(scale.currentLabel(), '125%')
     var save = objects(panel, function(o) { return o.control === 'save_settings' })[0]
     save.clicked()
     var action = process(model, model.cli)
@@ -401,7 +421,12 @@ TestCase {
     compare(panel.windowsScaleInput, 125)
     panel.close(); panel.open()
     compare(panel.windowsScaleInput, 250)
-    compare(scale.currentText, '250%')
+    compare(scale.currentLabel(), '250%')
+    scale.select('auto')
+    compare(panel.windowsScaleInput, 'auto')
+    model.view = view(125)
+    panel.close(); panel.open()
+    compare(scale.currentLabel(), '125%')
     panel.destroy(); wait(1)
   }
   function test_finished_setup_reveals_both_display_choices_without_a_bare_job() {

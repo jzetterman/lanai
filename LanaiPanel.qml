@@ -214,20 +214,31 @@ Panel {
             spacing: Style.space(12)
             NumberField { id: memoryField; label: "Memory (GiB)"; from: 1; to: 512; value: root.memoryInput; enabled: root.model.control("save_settings").enable; foreground: root.foreground; fontFamily: root.fontFamily }
             NumberField { id: coresField; label: "CPU cores"; from: 1; to: 64; value: root.coresInput; enabled: root.model.control("save_settings").enable; foreground: root.foreground; fontFamily: root.fontFamily }
-            Column {
-              width: Style.space(230)
-              spacing: Style.space(4)
-              Note { text: "Windows scale" }
-              QQC.ComboBox {
+            // The shell's themed dropdown, so it matches the number fields.
+            // It works in strings; the setting is "auto" or a whole number.
+            // The FocusScope sees focus on the dropdown's inner trigger, so
+            // tabbing to it scrolls it into view.
+            FocusScope {
+              implicitWidth: scaleDropdown.implicitWidth
+              implicitHeight: scaleDropdown.implicitHeight
+              onActiveFocusChanged: if (activeFocus) root.reveal(this)
+              Dropdown {
+                id: scaleDropdown
                 objectName: "windowsScale"
-                width: parent.width
-                model: root.model.view.settings.scale_choices || []
-                textRole: "label"
-                valueRole: "value"
-                currentIndex: model.findIndex(function(choice) { return choice.value === root.windowsScaleInput })
+                anchors.fill: parent
+                focus: true
+                label: "Windows scale"
+                options: root.model.view.settings.scale_choices || []
+                value: String(root.windowsScaleInput)
                 enabled: root.model.control("save_settings").enable
-                onActivated: root.windowsScaleInput = currentValue
-                onActiveFocusChanged: if (activeFocus) root.reveal(this)
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                // Picking an option assigns value inside Dropdown, which
+                // breaks the binding; restore it so saves and reopens show.
+                onChanged: function(value) {
+                  root.windowsScaleInput = value === "auto" ? "auto" : Number(value)
+                  scaleDropdown.value = Qt.binding(function() { return String(root.windowsScaleInput) })
+                }
               }
             }
           }
