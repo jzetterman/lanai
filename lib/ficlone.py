@@ -53,7 +53,14 @@ def main(argv):
         if create and nocow(dst) is not None:
             flags = struct.unpack("l", fcntl.ioctl(dst, FS_IOC_GETFLAGS, b"\0" * 8))[0]
             flags = (flags | FS_NOCOW_FL) if nocow(src) else (flags & ~FS_NOCOW_FL)
-            fcntl.ioctl(dst, 0x40086602, struct.pack("l", flags))
+            try:
+                fcntl.ioctl(dst, 0x40086602, struct.pack("l", flags))
+            except OSError as err:
+                # A filesystem without NOCOW (XFS, tmpfs) cannot hold this
+                # clone; let the caller try its next snapshot root.
+                print(f"ficlone.py: cannot set NOCOW on {argv[2]} ({err.strerror})",
+                      file=sys.stderr)
+                return 3
         size = os.fstat(src).st_size
         if size == 0:
             print(f"ficlone.py: {argv[1]} is empty", file=sys.stderr)

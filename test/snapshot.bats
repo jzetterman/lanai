@@ -1177,6 +1177,18 @@ exec /usr/bin/python3 "$@"'
   done
 }
 
+@test "proof: a NOCOW image falls back to the root beside storage when the data folder cannot hold NOCOW" {
+  [[ -d /dev/shm && $(stat -f -c %T /dev/shm) == tmpfs ]] || skip "needs a tmpfs /dev/shm"
+  proof_mode nocow
+  XDG_DATA_HOME=$(mktemp -d /dev/shm/lanai-test.XXXXXX)
+  export XDG_DATA_HOME
+  lanai_run snapshot
+  local data=$XDG_DATA_HOME
+  rm -rf -- "$data"
+  assert_success
+  assert_equal "$(dirname "$(field snapshot)")" "$B/win.lanai-snapshots"
+}
+
 @test "proof: each small temporary file is hashed before any rename" {
   proof_mode normal
   take_snapshot
