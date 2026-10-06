@@ -251,9 +251,12 @@ Windows shutdown time on John's machine at reboot.** Earlier proof 4 sessions wi
 idle Windows took 7 seconds at reboot and 11–13 seconds at logout. They do not replace
 the final measurement. If the wait expires, the next start reports the forced stop.
 
-The resize-drag and scale-timing checks at the top of phase 7 still need a person and
-a running Windows test copy. No client flag changes or timing claims have been made
-from those checks.
+Known issue: when the Windows window first opens, Windows can stay at its boot
+resolution (for example 1920x1080) instead of matching the window. Make the window
+fullscreen and tile it again, and Windows follows. The Looking Glass client sends the
+window size once, and a display driver restart during Windows' boot loses it; a fix
+is planned. The resize-drag and scale-timing checks still need a person and a running
+Windows test copy.
 
 ## Removal
 

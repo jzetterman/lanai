@@ -16,11 +16,14 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   read-only panel view and words, `client.sh` holds the
   Looking Glass client code, `setup.sh` the setup flow and setup media, `pins.sh`
   the pinned downloads, `ui.sh` the settings command, per-group result records
-  and session-unit panel jobs),
+  and session-unit panel jobs, `snapshot.sh` snapshot and restore, `copy.sh` the
+  reflink copy helpers, `ficlone.py` the in-place clone, `image-proof.py` the
+  one-read image hash, FIEMAP proof and progress record),
   `systemd/` (the VM unit template), `guest/` (what runs in
   Windows: `setup.cmd`, `lanai-lock.cmd`, `lanai-scale.ps1`) and `test/` (bats; fake
   QMP and guest agent servers and trimmed client logs in `test/fixtures/`).
-  `docs/plugin/proof-kit/` holds the phase 1 proof scripts.
+  `docs/plugin/proof-kit/` holds the phase 1 proof scripts and
+  `count-image-extents.py`, the read-only extent census.
 - QML lint: `test/qml-lint` (or `test/qml-lint <file>`). It makes a temporary
   repository-local import root with `qs` linked to `/usr/share/omarchy/shell`,
   then runs `/usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell -I "$imports" "$@"`.
@@ -28,7 +31,9 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   types. The script removes its import root on exit and never starts the shell.
   `/usr/bin/qmllint` is the older Qt 5 linter and rejects Qt 6 syntax.
 - Tests: `bats test spike/test`; btrfs tests read `LANAI_TEST_BTRFS_DIR` (the ignored
-  `.btrfs-test/` works). CI runs the same in an Arch container
+  `.btrfs-test/` works). Keep `TMPDIR` short (for example a folder under
+  `$XDG_RUNTIME_DIR`): socket paths over 108 characters make the fake QMP and guest
+  agent tests fail. CI runs the same in an Arch container
   (`.github/workflows/test.yml`).
 
 ## Rules
