@@ -22,6 +22,10 @@ source "$LANAI_LIB/snapshot.sh"
 source "$LANAI_LIB/client.sh"
 # shellcheck source-path=SCRIPTDIR source=setup.sh
 source "$LANAI_LIB/setup.sh"
+# shellcheck source-path=SCRIPTDIR source=ui.sh
+source "$LANAI_LIB/ui.sh"
+# shellcheck source-path=SCRIPTDIR source=panel.sh
+source "$LANAI_LIB/panel.sh"
 
 # --- output ---
 
@@ -146,6 +150,15 @@ disk_locked() {
   dev=$(printf '%02x:%02x' "$maj" "$min")
   awk -v want="$dev:$ino" '{ for (i = 1; i <= NF; i++) if ($i == want) found = 1 }
     END { exit !found }' "$locks"
+}
+
+# Only a live snapshot or restore owner with progress and a held operation
+# lock lets panel polls omit the image read. Setup's own lock does not qualify.
+# The helper checks lock identity and ownership without probing with flock.
+image_lock_held() {
+  local activity
+  activity=$(python3 "$LANAI_LIB/image-proof.py" activity "$(state_dir)/lock" "$(state_dir)/image-progress.json") || return 1
+  [[ $activity != null ]]
 }
 
 # --- adoption checks and settings (plan phase 3) ---
@@ -467,7 +480,7 @@ layout_check() {
       problems+=("data.img is missing or empty; dockur would install Windows on a new disk")
   elif (($(stat -c %s -- "$dir/data.img") < 102400)); then
     problems+=("data.img is smaller than 100 KB, so it is not a Windows disk")
-  else
+  elif [[ ${2:-} != structural ]]; then
     # dockur's hasData: a disk whose first 100 KiB are zero counts as blank.
     # cmp: 0 = all zero, 1 = data; anything else (cmp missing, the disk
     # unreadable) fails closed.
@@ -576,8 +589,11 @@ share_check() {
 # Return 0 when process <pid> is in a docker container's cgroup: a systemd
 # docker-<id>.scope or a cgroupfs /docker/<id> path. LANAI_PROC swaps /proc.
 in_docker_cgroup() {
-  grep -qE '(^|/)docker-[0-9a-f]+\.scope(/|$)|(^|/)docker/[0-9a-f]+(/|$)' \
-    "${LANAI_PROC:-/proc}/$1/cgroup" 2>/dev/null
+  local line
+  while IFS= read -r line; do
+    [[ $line =~ (^|/)docker-[0-9a-f]+\.scope(/|$) || $line =~ (^|/)docker/[0-9a-f]+(/|$) ]] && return 0
+  done 2>/dev/null <"${LANAI_PROC:-/proc}/$1/cgroup"
+  return 1
 }
 
 # Print the pid of a QEMU running in a Docker container and return 0; return
@@ -759,13 +775,62 @@ helper_alive() {
   stat=$(<"$proc/stat")
   stat=${stat##*) }
   [[ ${stat:0:1} != [ZX] ]] || return 1
-  grep -qE "/${LANAI_UNIT//./\\.}\$" "$proc/cgroup" 2>/dev/null
+  local line
+  while IFS= read -r line; do
+    [[ $line == */"$LANAI_UNIT" ]] && return 0
+  done 2>/dev/null <"$proc/cgroup"
+  return 1
 }
 
 # Return 0 when the last boot asked for QEMU's window (boot.json): a setup
 # boot on a guest without the IDD. Meaningful only while the unit runs.
 boot_window() {
   jq -e '.window == true' "$(state_dir)/boot.json" >/dev/null 2>&1
+}
+
+# Scan cgroups once with builtins; running takes precedence over preparing.
+container_fact() {
+  local f pid arg first preparing=false
+  for f in "${LANAI_PROC:-/proc}"/[0-9]*/cmdline; do
+    pid=${f%/cmdline}; pid=${pid##*/}
+    in_docker_cgroup "$pid" || continue
+    first=true
+    while IFS= read -r -d '' arg; do
+      if $first && [[ ${arg##*/} == qemu-system-x86_64 ]]; then echo running; return; fi
+      first=false
+      [[ $arg != /run/entry.sh ]] || preparing=true
+    done 2>/dev/null <"$f"
+  done
+  if $preparing; then echo preparing; else echo none; fi
+}
+
+# The shared, read-only host facts. An active unit owns the disk lock.
+# An optional validated activity value lets panel reuse its one helper read.
+shared_facts() {
+  local show st=unknown has_state=false line dir="" rc=0 problem="" reason="" container=none
+  show=$(systemctl --user show "$LANAI_UNIT" -p ActiveState -p SubState -p Result \
+    -p InvocationID -p ExecMainStatus 2>/dev/null) || show=ActiveState=unknown
+  while IFS= read -r line; do
+    if [[ $line == ActiveState=* ]]; then st=${line#*=}; has_state=true; fi
+  done <<<"$show"
+  # Keep the value-only unit-state query as a fallback when the property
+  # response omits ActiveState. Never treat an absent state as a stopped VM.
+  if ! $has_state; then
+    st=$(unit_state) || st=unknown
+    show+=$'\n'"ActiveState=$st"
+  fi
+  if ! dir=$(storage_dir 2>/dev/null); then reason=settings
+  else
+    if [[ ${1:-} != null ]] && { (($#)) || image_lock_held; }; then
+      problem=$(layout_check "$dir" structural) || rc=$?
+    else problem=$(layout_check "$dir") || rc=$?; fi
+  fi
+  case $rc in 0) ;; 2) reason=missing ;; *) reason=layout ;; esac
+  case $st in active|activating|deactivating|reloading) ;; *) container=$(container_fact) ;; esac
+  printf '%s\n' "$show" "LanaiStorage=$dir" "LanaiProblem=${problem//$'\n'/; }" \
+    "LanaiProblemReason=$reason" "LanaiContainer=$container"
+  if ((rc == 2)); then echo LanaiInstall=none; else echo LanaiInstall=present; fi
+  if restore_pending >/dev/null; then echo LanaiRestorePending=true; else echo LanaiRestorePending=false; fi
 }
 
 # Print the facts lanai status maps to a state, as Key=Value lines: the
@@ -780,26 +845,13 @@ boot_window() {
 # build. QMP is asked on qmp-cli.sock, in one short session. It also
 # records the guest version the client log names (guest_version_set).
 status_facts() {
-  local show active inv dir rc s run out name missing="" rinv at version=unknown old="" first=""
-  show=$(systemctl --user show "$LANAI_UNIT" -p ActiveState -p SubState -p Result \
-    -p InvocationID -p ExecMainStatus 2>/dev/null) || show=ActiveState=unknown
+  local show active inv s run out name missing="" rinv at version=unknown old="" first=""
+  show=${1:-$(shared_facts)}
   printf '%s\n' "$show"
   active=$(sed -n 's/^ActiveState=//p' <<<"$show")
   inv=$(sed -n 's/^InvocationID=//p' <<<"$show")
   s=$(state_dir)
-  rc=0
-  if dir=$(storage_dir 2>/dev/null); then
-    layout_check "$dir" >/dev/null || rc=$?
-  fi
-  if ((rc == 2)); then echo LanaiInstall=none; else echo LanaiInstall=present; fi
   if setup_done; then echo LanaiSetup=done; else echo LanaiSetup=needed; fi
-  if container_running >/dev/null; then
-    echo LanaiContainer=running
-  elif container_preparing; then
-    echo LanaiContainer=preparing
-  else
-    echo LanaiContainer=none
-  fi
   [[ ! -e $s/forced ]] || echo LanaiForced=yes
   [[ ! -f $s/last-run ]] || echo "LanaiLastRun=$(<"$s/last-run")"
   if [[ $active == active || $active == reloading ]] && boot_window; then
@@ -852,7 +904,8 @@ status_facts() {
 # that is not the pinned build), force_stop (true once a shutdown from the
 # bar has run 2 minutes, spec 16), active (the unit runs, starts or stops:
 # an active VM before setup is done also reads setup-needed, so the panel
-# needs it during the setup boot), window (the running VM shows QEMU's
+# needs it during the setup boot), setup_done (LanaiSetup is done),
+# window (the running VM shows QEMU's
 # window, so Open is hidden) and, for failed, logs. The client log's
 # verdict (LanaiVersion) makes a mismatch version-mismatch, and a missing
 # IDD on a booted VM failed, with the client log as its logs (spec 8); a
@@ -877,7 +930,7 @@ status_map() {
         if ((${f[LanaiStopAge]:-0} >= 120)); then
           force=true
           message="Windows has not shut down after 2 minutes. It may be installing updates, or a Windows security screen may be open."
-          next="wait, or use the forced stop in the panel"
+          next="wait, or use Force stop below"
         fi
       elif [[ $qmp == internal-error || $qmp == guest-panicked || $qmp == io-error ]]; then
         state=failed message="QEMU reports $qmp." next=$failed_next
@@ -931,6 +984,11 @@ status_map() {
       ;;
     *) state=failed message="Lanai cannot read the VM's state from systemd." next=$failed_next ;;
   esac
+  if [[ ${f[LanaiRestorePending]:-false} == true && ($active == inactive || $active == failed)
+    && ($state == stopped || $state == setup-needed) ]]; then
+    message="A restore did not finish, so Windows cannot start."
+    next="finish the restore in the Lanai panel"
+  fi
   # status_facts reports LanaiClient only for an active unit.
   if [[ ${f[LanaiClient]:-} == timeout ]]; then
     warning+="${warning:+ }The Windows window did not open: QEMU did not answer within $LANAI_CLIENT_WAIT s. Try Open again."
@@ -943,9 +1001,12 @@ status_map() {
   emit true "$state" "$message" "$next" "$(jq -n -c --arg notice "$notice" --arg warning "$warning" \
     --argjson force "$force" --arg logs "$logs" --argjson pending "$([[ $forced == yes ]] && echo true || echo false)" \
     --argjson active "$up" --argjson window "$([[ ${f[LanaiWindow]:-} == true ]] && echo true || echo false)" \
+    --argjson restore "${f[LanaiRestorePending]:-false}" \
+    --argjson setup_done "$([[ $setup == "done" ]] && echo true || echo false)" \
     '{notice: (if $notice == "" then null else $notice end),
       warning: (if $warning == "" then null else $warning end),
-      force_stop: $force, forced_pending: $pending, active: $active, window: $window} +
+      force_stop: $force, forced_pending: $pending, active: $active, setup_done: $setup_done,
+      window: $window, restore_pending: $restore} +
       (if $logs == "" then {} else {logs: $logs} end)')"
 }
 
@@ -1026,8 +1087,18 @@ unit_render() {
   printf '%s\n' "${unit//@ENV@/"$env"}"
 }
 
+# A version alone misses unreleased updates. Hash relative names and contents
+# of every copied file; identical trees keep the same stable runtime path.
+runtime_revision() (
+  local hash
+  set -o pipefail
+  cd -- "$LANAI_LIB/.." || return 1
+  hash=$(find bin lib -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum -- | sha256sum) || return 1
+  printf '%s-%s\n' "$LANAI_VERSION" "${hash%% *}"
+)
+
 # Make sure the VM unit runs Lanai's current code from a stable copy (plan:
-# Stable runtime copy): copy bin/ and lib/ into <data>/runtime/<version>/
+# Stable runtime copy): copy bin/ and lib/ into <data>/runtime/<revision>/
 # when that copy is missing, install the unit when it differs, reload
 # systemd, and remove older copies. Every step's failure stops it. Runs only
 # while the unit is stopped (after preflight), so a plugin update or removal
@@ -1035,7 +1106,7 @@ unit_render() {
 runtime_refresh() {
   local root rt src part unit_dir unit want d
   root=$(data_dir)/runtime
-  rt=$root/$LANAI_VERSION
+  rt=$root/$(runtime_revision) || return 1
   src=$(cd -- "$LANAI_LIB/.." && pwd) || return 1
   if [[ ! -d $rt ]]; then
     part=$rt.partial
@@ -1061,8 +1132,8 @@ runtime_refresh() {
 # boot_vm <setup true|false> [<window auto|true|false>] [<step6 true|false>]:
 # the one path that starts the VM unit (lanai start, lanai setup-guest and
 # setup's step 6 boot). Under lanai_flock it runs preflight, rechecks setup
-# state without changing it, turns the focused monitor's scale into a
-# Windows step (100% without Hyprland), checks vm_plan, refreshes the
+# state without changing it, resolves fixed scale or the focused monitor's
+# nearest Windows step (100% without Hyprland), checks vm_plan, refreshes the
 # runtime copy, writes the scale and boot mode to boot.json, and starts
 # the unit. Setup boots require this disk's snapshot decision; step 6
 # requires this disk's step5 to be true; ordinary starts require setup_done
@@ -1076,7 +1147,7 @@ boot_vm() {
   local setup=$1 window=${2:-auto} step6=${3:-false} reason scale step s dir media="" last="" next="wait for Windows to start"
   local message="Windows is starting." network=true
   if ! lanai_flock; then
-    emit false "" "$LANAI_BUSY." "try again when it finishes"
+    emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
     return 1
   fi
   if ! reason=$(preflight); then
@@ -1118,8 +1189,14 @@ boot_vm() {
   else
     window=false
   fi
-  scale=$(host_scale) || scale=100
-  step=$(scale_step "$scale") || step=100
+  if ! step=$(vm_windows_scale); then
+    emit false "" "Lanai cannot read Windows scale in its settings file." "set auto or a valid Windows scale step"
+    return 1
+  fi
+  if [[ $step == auto ]]; then
+    scale=$(host_scale) || scale=100
+    step=$(scale_step "$scale") || step=100
+  fi
   if ! reason=$(vm_plan "$step" "$media" "$window"); then
     emit false "" "$reason" ""
     return 1
@@ -1133,8 +1210,9 @@ boot_vm() {
     return 1
   fi
   if ! mkdir -p -- "$s" || ! jq -n -c --argjson scale "$step" --argjson setup "$setup" \
-    --argjson window "$window" --arg wayland "${WAYLAND_DISPLAY:-}" \
+    --argjson window "$window" --argjson step6 "$step6" --arg wayland "${WAYLAND_DISPLAY:-}" \
     '{scale: $scale, setup: $setup, window: $window} +
+      (if $step6 then {step6:true} else {} end) +
       (if $window then {wayland_display: $wayland} else {} end)' >"$s/boot.json"; then
     emit false "" "Lanai cannot write $s/boot.json." ""
     return 1
@@ -1336,9 +1414,16 @@ cmd_setup() {
 
 # The body of lanai setup: prints its one JSON reply (see cmd_setup).
 setup_command() {
-  local window=auto nosnap=false share="" scale="" out rc built=false
+  local window=auto nosnap=false share="" scale="" follow_step="" follow_inv="" out rc built=false
   while (($#)); do
     case $1 in
+      --follow)
+        if [[ ${2:-} != 5 && ${2:-} != 6 ]] || [[ ! ${3:-} =~ ^[A-Za-z0-9-]+$ ]]; then
+          emit false "" "Invalid setup follow-up." ""; return 2
+        fi
+        follow_step=$2 follow_inv=$3
+        shift 2
+        ;;
       --window) window=true ;;
       --no-window) window=false ;;
       --no-snapshot) nosnap=true ;;
@@ -1359,7 +1444,7 @@ setup_command() {
   done
   while :; do
     rc=0
-    out=$(setup_resume "$window" "$nosnap" "$share" "$scale") || rc=$?
+    out=$(setup_resume "$window" "$nosnap" "$share" "$scale" "$follow_step" "$follow_inv") || rc=$?
     case $out in
       build)
         if $built; then
@@ -1374,6 +1459,13 @@ setup_command() {
         ;;
       setup-boot)
         out=$(setup_guest "$window") || rc=$?
+        if ((rc == 0)) && [[ $(jq -r '.window' <<<"$out") == false ]]; then
+          local client
+          if ! client=$(build_select) || ! { client_active || client_start "$client" >&2; }; then
+            setup_reply false 5 "Lanai could not open the Windows window." "see the client log" '{"reason":"client"}'
+            return 1
+          fi
+        fi
         setup_with_step 5 "In Windows, open Lanai's setup drive and run setup.cmd; Windows shuts down by itself when it finishes." <<<"$out" ||
           return 1
         return "$rc"
@@ -1381,7 +1473,10 @@ setup_command() {
       normal-boot)
         out=$(boot_vm false auto true) || rc=$?
         # Step 6 checks the IDD with the pinned client, not build_select's.
-        ((rc != 0)) || client_start "$(pinned_client)" >&2 || true
+        if ((rc == 0)) && ! { client_active || client_start "$(pinned_client)" >&2; }; then
+          setup_reply false 6 "Lanai could not open the Windows window." "see the client log" '{"reason":"client"}'
+          return 1
+        fi
         setup_with_step 6 "Lanai checks each part once it has booted; run setup again in a moment." <<<"$out" ||
           return 1
         return "$rc"
@@ -1441,14 +1536,14 @@ cmd_force_stop() {
 cmd_snapshot() {
   local out rc=0 dir name
   if ! lanai_flock; then
-    emit false "" "$LANAI_BUSY." "try again when it finishes"
+    emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
     return 1
   fi
-  out=$(snapshot_create) || rc=$?
+  out=$(image_operation snapshot snapshot_create) || rc=$?
   if ((rc == 3)); then
     dir=$(storage_dir) || dir="the storage location"
-    emit false "" "$out Lanai cannot make an instant snapshot on this filesystem." \
-      "make a backup of $dir before Lanai's first boot"
+    emit false "" "$out" \
+      "Make a backup of $dir before the first boot." '{ "reason":"snapshot-unsupported" }'
     return 1
   elif ((rc != 0)); then
     emit false "" "$out" ""
@@ -1462,10 +1557,12 @@ cmd_snapshot() {
 # snapshots: list the complete snapshots of the storage location, oldest
 # first.
 cmd_snapshots() {
-  local dir list
+  local dir list count noun=snapshots
   dir=$(storage_dir) || return 1
-  list=$(snapshot_list "$dir" | jq -R . | jq -s -c .)
-  emit true "" "$(jq -r 'length' <<<"$list") snapshot(s)" "" "{\"snapshots\": $list}"
+  list=$(snapshot_list "$dir" | jq -R . | jq -s -c .) || return 1
+  count=$(jq -r 'length' <<<"$list")
+  ((count != 1)) || noun=snapshot
+  emit true "" "$count $noun" "" "{\"snapshots\": $list}"
 }
 
 # restore [<name>]: return the storage location to a snapshot (spec 7).
@@ -1474,12 +1571,16 @@ cmd_snapshots() {
 # setup starts again at step 1 (setup_reset): the disk may predate any
 # Lanai boot, and setup is safe to rerun on a later one.
 cmd_restore() {
-  local out
+  local out rc=0
   if ! lanai_flock; then
-    emit false "" "$LANAI_BUSY." "try again when it finishes"
+    emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
     return 1
   fi
-  if ! out=$(snapshot_restore "${1:-}"); then
+  out=$(image_operation restore snapshot_restore "${1:-}") || rc=$?
+  if ((rc == 3)); then
+    emit false "" "$out" "Choose storage that supports verified instant copies, then try the restore again." '{"reason":"restore-unsupported"}'
+    return 1
+  elif ((rc != 0)); then
     emit false "" "$out" ""
     return 1
   fi

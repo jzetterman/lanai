@@ -36,8 +36,8 @@ use.
   there with their tests.
 - **Stable runtime copy.** Setup (and every Lanai update, on the next `lanai start`
   while the VM is stopped) copies `bin/` and `lib/` into
-  `$XDG_DATA_HOME/lanai/runtime/<version>/`. The unit points there, so a plugin update
-  or removal mid-run cannot break a clean stop (req 18, 32). A refresh rewrites the unit
+  `$XDG_DATA_HOME/lanai/runtime/<version>-<content-sha256>/`. The unit points
+  there, so a plugin update or removal mid-run cannot break a clean stop (req 18, 32). A refresh rewrites the unit
   and runs `systemctl --user daemon-reload`.
 - **One VM unit, `lanai-vm.service`,** a systemd user unit installed to
   `~/.config/systemd/user/` with absolute paths filled in. `PartOf=` and
@@ -429,9 +429,9 @@ Where the code differs from the text above, the code and this list win:
   the command goes out, after the sync. The resume retry stops after 60 s.
 - Snapshots record their source: a `SOURCE` file beside `COMPLETE` holds the storage
   location's real path, and only snapshots of the current location are listed,
-  restored or cleaned (`.partial` leftovers of this location, or with no `SOURCE` yet;
-  the flock means none is being built). A snapshot place is used, listed or resumed
-  from only when it is a real folder owned by the user with no group or other write
+  restored or cleaned (`.partial` leftovers with SOURCE matching this location;
+  unknown locations are left alone, and the flock means none is being built).
+  A snapshot place is used, listed or resumed from only when it is a real folder owned by the user with no group or other write
   (`own_dir`; new ones are made 0700), and each snapshot folder must be the user's.
   A snapshot takes install files only: dockur's `setup.img` leftovers or a restore's
   temp files must be deleted first, and the folder must pass `layout_check` (so
@@ -1137,8 +1137,12 @@ reviews look hard at the panel's wording, layout and states.
 - README rules from phase 6: no step asks the user to press Super shortcuts or
   Ctrl+Alt+Del (the host keys bullet), and it says that a restore means running setup
   again.
-- README: install; removal (first, inside Windows, under Lanai or over RDP under
-  `omarchy-windows-vm`, in an administrator Command Prompt as the same Windows user
+- README: install; removal (first shut Lanai's VM down with
+  `systemctl --user stop lanai-vm.service`, then start Windows with
+  `omarchy-windows-vm` and connect over RDP; every Windows removal step runs in that
+  RDP session, since removing the IDD or SPICE vdagent can remove Lanai's display or
+  input and a normal Lanai boot has no QEMU display. In an administrator Command
+  Prompt as the same Windows user
   (some settings are in `HKCU`): restore Windows' default lock settings with `reg delete
   HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System /v
   DisableLockWorkstation /f`, `reg delete
@@ -1152,9 +1156,8 @@ reviews look hard at the panel's wording, layout and states.
   (`virtiofs.exe` and `lanai-scale.ps1`); remove HostFission's certificate from
   Trusted Publishers (`certlm.msc`, Trusted Publishers). Then shut Windows down
   from its Start menu, since a restored lock can drop the stop request (the container
-  does not restart by itself: `omarchy-windows-vm` sets `restart: "no"`). Then, if
-  Lanai's VM still runs, `systemctl --user stop lanai-vm.service`, which works without
-  the plugin); verified Omarchy and dockur versions; the remaining risks from req 5a
+  does not restart by itself: `omarchy-windows-vm` sets `restart: "no"`)); verified
+  Omarchy and dockur versions; the remaining risks from req 5a
   (including the disk-size check skipped when the compose is unreadable); the clipboard
   exposure (req 29); the publisher trust exposure: setup adds HostFission's signing
   certificate to the machine's Trusted Publishers, so Windows then accepts any
@@ -1173,6 +1176,944 @@ reviews look hard at the panel's wording, layout and states.
   that turning the lock back on, or a domain or MDM lock policy, brings back the forced
   stop, as can any Windows security screen left open (such as a UAC prompt); and how to
   turn the lock back on.
+
+### Amendment: the panel view (John, 2026-10-05)
+
+Why: four Opus rounds and two Codex rounds of the phase 7 diff gate each found new
+should-fix bugs in the same place: `LanaiModel.qml` and `LanaiPanel.qml` decide what
+to tell the user, and when to call setup again, by merging cached setup replies, the
+job file and status reads, about 400 lines of QML with no test in the repo. This
+amendment moves every decision into bash, where bats tests cover it, and makes the
+QML a renderer. It supersedes, for the panel, the earlier phase 7 bullets and Phase
+6's "For phase 7" contract where they tell the panel to read `setup-reply.json` or to
+decide itself when to call setup again; the rest of that contract (setup runs
+detached, at most every 10 s, never two at a time, never after a failure, never keyed
+on text) still holds, now kept by the setup job.
+
+**`lanai panel`** (new, `lib/panel.sh`) prints one JSON object, the view. Its only
+write is the one `lanai status` already makes (`guest_version_note`); it acts on
+nothing. Inputs, in one call: the shared facts (below) and `status_map`'s result,
+`setup_plan`'s decision, the panel's group records, `last-run` (the forced-stop
+notice comes only from `last-run`, never from `run_verdict`), `settings.json` and
+the snapshot list. `setup-reply.json` stays for the CLI and is not an input; a test
+pins that the view ignores it. The view holds:
+- `label`, `headline`, `cause`, `next`: the state in plain words, why, and the next
+  step, for a user who is not an engineer (no CLI text, no internal codes); the
+  widget's tooltip uses the same fields;
+- `notice`, `warning`: the forced-stop notice and status warnings, plain text;
+- `busy`: whether a long job runs, and its one line (a click-started step, or the
+  setup job following Windows' boot, get different lines);
+- `buttons`: for every control (start, open, stop, force stop, dismiss notice,
+  continue setup, install in a terminal, take snapshot, skip snapshot, the two
+  display choices, send answers, finish restore, take and restore snapshots, save
+  settings), `show` and `enable`, plus the label where it varies; the snapshot list
+  comes with every view, so there is no list control;
+- `setup`: whether the section shows, `finished`, the current step, its lines, the
+  step 6 questions and the step 5 display choices when they apply;
+- `result`: per control group, an outcome that the state cannot say by itself,
+  shown beside its controls (below);
+- `settings` (memory, cores, or the read error), `snapshots` (names, or the read
+  error), `logs` (the VM and client log paths status names, and the panel's job and
+  command logs).
+
+**Panel words.** `lib/panel.sh` turns every reply into panel words from a table keyed
+on the command, `ok`, `step` and the reply's detail keys, never on its English text.
+Where one key has several causes that need different words, the CLI reply gains a
+`reason` code: step 1's problems, setup's back-to-step-5 reasons, and the snapshot
+offer when the filesystem cannot snapshot. The CLI's own message appears at most as a
+details line. Snapshot results still say where the snapshot lives, that it grows, and
+how to delete it, in panel words (spec 7).
+
+**Shared facts.** One small gatherer reads the facts both status and setup need: the
+container (running or preparing), the layout check, the unit's state and `Result`,
+and restore pending. `status_facts` and `setup_resume` both call it; it makes no QMP
+call and writes nothing. Its container check reads cgroup files with bash builtins
+(no `grep` per /proc pid, which costs about 0.55 s of CPU per call on John's machine)
+and is skipped while Lanai's unit is active (status ignores it then, and Lanai's
+QEMU holds the disk lock); `setup_resume` skips it in the same case, so the two
+agree.
+
+**Setup's step comes from durable state.** `setup_resume` is split. A read-only
+`setup_plan` decides the step and what it needs (an action such as a package install
+or the snapshot offer, the step 5 display choices, a boot to wait for, step 6's
+checks or its questions, done). `setup_resume` becomes: lock, `record_previous_run`,
+`setup_follow`, the shared facts, `setup_plan`, then act. Because the panel calls
+`setup_plan` without the first two, `setup_plan` applies their pending effects to
+what it reads, without writing:
+- the ended run (only while the unit is inactive or failed, as in `setup_resume`):
+  `record_previous_run`'s rule moves into a pure `run_verdict` over the run markers
+  (`running`, `started`, `last-shutdown`, `forced`, `stop-requested`, `boot.json`),
+  which both call; it reads `running` last (`record_previous_run` deletes it first),
+  so a present `running` proves the other reads came before any deletion. It returns the verdict (clean,
+  forced, nostart, or none) and whether it completes step 5 (a clean setup boot that
+  no stop request asked for). The markers stay on disk until the next start consumes
+  them, so the view sees the ended run before any command. `setup_plan` reads the
+  markers before `setup.json` (`record_previous_run` writes `step5` before it
+  deletes them), so a setup call in between cannot yield "step5 false, no markers";
+- a changed storage location (`setup_follow`'s reset) and step 3's automatic
+  "taken" when snapshots exist.
+`finished` follows step 7's rule (setup done for this location, no open round,
+`step5` not false, the guest not behind the pin, step 4's stamp current); step 1 and 2 problems show only
+while setup is not finished, since the VM state already covers in-use and a pending
+restore. Step 4 checks the pinned client by a stamp file inside its build folder
+holding `LG_BUILD` (so a rebuild or `builds_prune` removes it with the binary), never
+by running the binary; an existing install without the stamp takes one quick step 4,
+in which `build_client`'s check writes it. Step 6's questions are durable:
+`setup_step6` writes `$RUN/step6-asked` when it asks them; the QMP event logger, which
+already records SHUTDOWN events, deletes it on any `RESET` event (a Windows restart);
+`vm_exec` removes it at each start. `setup_plan` shows the questions while that file
+exists and the plan is at step 6 (step5 true, the unit active, not a setup boot), so a
+"no" answer that sends setup back to step 5 hides them. Step 6's other verdicts
+(waiting, back to step 5) need QMP and the guest agent, so they come from the setup
+job's own result, not from `setup_plan`. A bats test pins that `setup_plan` and
+`setup_resume` agree on the step, action and JSON reply reason for every fixture,
+both with the markers still on disk (as the view sees them) and consumed (as setup sees them), including a panel
+Shut down during the setup boot (a clean guest shutdown with a matching stop request
+gives the display choices, and the setup job stops following).
+
+**The setup job follows its own waits.** The panel never decides when to call setup
+again. `ui-job setup` runs `lanai setup` with the click's arguments (a display choice,
+answers, `--no-snapshot`); while the reply is an ok:true wait (step 5, or step 6 with
+no questions; step 3a's and step 7's ok:true replies are not waits), the job checks
+every 2 s for that wait's expected next state (an activating unit counts as active)
+and then calls `lanai setup --follow <step> <invocation>` again, never repeating
+the click's arguments (a repeated `--window` would start another setup boot):
+- step 5: `run_verdict` says that run ended and completes step 5, and the unit is
+  inactive or failed; if the run ended any other way (a panel Shut down, a forced
+  stop), the job stops and the view offers the display choices;
+- step 6: the unit is still active with the same invocation and no stop request for
+  it; the next call comes 10 s after the last reply; if the unit stops or changes,
+  the job stops.
+The follow-up carries only its expected step and invocation. Setup revalidates
+that expectation under its own operation lock, before bookkeeping or any action:
+step 5 needs the same ended run completing step 5; step 6 needs the same active
+invocation with no matching stop request. A changed expectation returns an inert
+`follow_stopped` reply, so a stop between the worker probe and setup cannot boot
+Windows again.
+A busy reply from setup resume's own operation lock retries after two seconds,
+keeping the last wait visible; setup rechecks the same expectation under its lock
+on each retry. A busy reply from the later boot lock ends following, since the
+resume may already have consumed the run markers.
+It writes the setup group's record after every completed setup call and ends on any
+reply that is not a wait, on any failure except this initial-lock contention, or when the
+expected state does not come. So setup runs at most
+every 10 s, never two at a time, never after a failure, keyed on step and state, and
+it keeps going with the panel closed. Open, notice dismissal and settings saves do
+not stop it; Shut down and Force stop end it through the expected-state check. The
+job holds `panel-job.lock` while it follows, which only blocks snapshot and restore,
+and those refuse while the VM runs anyway; the view disables the long-job controls
+while the lock is held. `ui-job` starts through `systemd-run --user --collect` in
+`session.slice`, as `client_start` does, so a shell restart or plugin reload does not
+end it (spec 18). A client-mode setup boot starts its own client: `setup_command`
+runs `client_start` with `build_select`'s build after it, as the step 6 boot starts
+the pinned client, so no panel call is needed.
+
+**Records.** The panel runs every command it offers through `lib/ui.sh`, never
+directly. Through a new `lanai ui-run`, which the QML runs as a `Process` without a
+deadline (never killed partway) and refreshes when it exits: `start`, `open`, `stop`,
+`force-stop`, `notice-seen`, `settings`, `setup-host`. Through `lanai ui-job`
+(detached, as above): every `lanai setup` call (including step 3's skip, the display
+choices and the answers), `snapshot` (including step 3's take) and `restore`. Groups:
+`vm` (start, open, stop, force-stop, notice-seen), `setup` (setup, setup-host),
+`settings` (settings), `snapshots` (snapshot and restore). Each group has one record, `panel-result-<group>.json`, written by
+atomic rename: the token, the command and its arguments, the VM's `InvocationID`,
+the start and end times, and the reply. `ui-job` writes a started record (no end, no
+reply) at launch, holds `panel-job.lock` while it runs, writes each result before it
+releases the lock, and on exit writes the final record before it releases. A record
+is started (no reply), following (a reply, no end) or ended (an end). There is no
+separate job file: the running job is the started or following record whose lock is
+held. The view reads the records while holding a shared non-blocking probe on
+`panel-job.lock` (only for the read, well under `ui-job`'s `flock -w 1`): if it gets
+the lock, no job runs and the records are final, and a started or following record
+then reads as interrupted, with Continue setup offered; if it does not, a job runs. A
+launch refused by `flock -w 1` writes no record (so it cannot overwrite the running
+job's); the pending token then times out. `ui-run` writes its record when its command
+ends, with the unit's `InvocationID` read at that moment, and its stderr goes to
+`panel-run.log` (the long jobs' go to `panel-job.log`). A result shows only when it
+says something the state and `setup_plan` cannot: an `ok: false` failure (for setup,
+only while its reply step matches the current plan; otherwise until the next action
+in its group), start's no-network message (while that run is active), the snapshot
+success text spec 7 requires, and a restore's outcome (both until the next
+action in their group). Offers, waits and other successes map to nothing in the words
+table, because the state already shows them; a stepless failure (the lock busy, the
+user manager unreachable) stays until the next action in its group. A setup result
+with the same reason as the current plan is hidden to avoid repeated guidance.
+
+**During setup** (John, 2026-10-05, after the first panel test): the view hides
+controls during first-time setup and setup boots, and draws the eye to what needs
+the user.
+- Start Windows and Open window are hidden only when setup has never finished for
+  this storage location, or while a setup boot or final check boot is running.
+  Setup starts Windows and opens the right window itself during those boots.
+  A working install keeps Start Windows and Open window when an update or an
+  unfinished setup round is pending, with the pending step in Setup beside them.
+  This includes an outdated client build stamp after a Lanai update and a guest
+  driver behind the pin. The top guidance agrees with the visible controls.
+  When the usual window controls are hidden and the Looking Glass window closes,
+  Setup offers "Reopen the Windows window", including after step 6 rolls back to
+  step 5. It is hidden for QEMU's basic window and while Windows shuts down.
+- The Snapshots section is hidden while setup boots or checks Windows (the unit is
+  active); it shows again when Windows is off, so step 3's offer and recovery
+  restores still work.
+- Shut down stays during the setup boot. Use Shut down only if setup.cmd stops
+  responding. The first request asks for a second click with "Shutting down now
+  stops setup. You'll choose how to continue." A request already sent for this boot
+  or a shutdown in progress needs no further confirmation. Arming Shut down clears
+  Force stop's confirmation, and arming Force stop clears Shut down's confirmation.
+- Settings stay: they apply at the next start.
+- `setup.attention` is true when the user must act (an action such as Continue
+  setup, the snapshot offer, the display choices, running setup.cmd, the step 6
+  questions, or a failure) and false while Lanai works by itself, including every
+  shutdown wait regardless of the setup reason. QML changes the Setup section's
+  accent border and light background while keeping its inset constant. It uses
+  the shell's selected accent fill when available, else a light accent fill.
+Once setup is finished, every control shows as before. Tests cover each rule.
+
+**The QML.** It polls `lanai panel` every 2 s while its own panel is open, and every
+15 s otherwise (the tooltip), whatever the state; only the bar whose panel is open
+polls fast. It has a 10 s deadline, skips a tick while a call runs, and an
+action asks for exactly one fresh call after it ends. It renders the view's fields as
+plain text (`Text.PlainText`), shows and enables controls from `buttons`, and runs
+every command through `ui-run` or `ui-job`. Besides moment-to-moment input that
+decides nothing on its own (the selected answers, unsaved settings edits, an armed
+second-click confirmation for the forced stop or a restore, whose controls and labels
+come from the view), it keeps one value: the token and time of a long job it launched
+(`--pending <token> <epoch>`), passed to `lanai panel` until its record appears
+or the next long job starts. Long-job clicks within the first 10 s of a pending
+launch are ignored; short actions preserve the pending token and time. If no
+started record with that token appears within 10 s, the view reports the launch as
+failed (with the job log path). `SetupCalls.js` goes away.
+
+**Performance.** One view makes at most one 5 s QMP session (status's), reads the
+shared facts once, runs no client binary and no per-pid `grep`; it fits the 10 s
+deadline in the worst case.
+
+**Tests** (bats, over fixtures for the shared facts, `setup.json`, the run markers,
+the group records and lock, `last-run`, settings and snapshots): every state
+`status_map` can return; every setup step, including step 5 during and after the
+setup boot, step 6 waiting, questions, a restart that retires them and a "no" answer
+that hides them, the display choices, and a back-to-step-5 failure; a finished
+install with omarchy-windows-vm running or `~/Windows` missing (still finished); a
+job running, interrupted and never started; a pending restore (stopped,
+setup-needed, in-use); a restore success and failure; the forced-stop notice; Shut
+down shown and enabled while stopping; Force stop only when `force_stop` is true,
+with its armed second click in the QML; result currency (a setup result after a
+restore, a vm result after the VM stopped, a wait reply after a Shut down ended its
+job); the step 5 transition after a clean setup shutdown started from a `--window`
+click (the follow-up carries only its expected step/invocation); a finished install
+with `step5` false after a failed explicit display choice (not finished); a record read racing a launch and an
+end; every reply-to-words table entry and its
+`reason` codes; and that `setup-reply.json` is ignored. The setup job's following:
+the step 5 transition after a clean setup shutdown (one more call), a panel Shut down
+during the setup boot (stops), step 6 waits spaced 10 s apart, a stop during step 6
+(stops), a failure (stops), and the record written before the lock is released. The
+open phase 7 findings (gate rounds b 1-4, a 4) become test cases where they concern a
+decision. The QML stays small enough to read in one sitting; `qmllint` must pass.
+
+### Amendment: scale, progress and clicks (John, 2026-10-05)
+
+This implements the approved spec changes to reqs 7, 11 and 12 and acceptance
+rows 7 and 10-17. It supersedes the earlier scale and widget click rules. The
+2026-10-05 spec review rows explain the proof and click cases John accepted.
+Risk order: B, A, C. Start B's storage proof first. A's guest script and B's storage
+helper can run in parallel. Integrate their shared bash, QML and test files in
+turn. C follows B's operation-lock and progress contract.
+
+Each phase starts with failing bats tests. Keep strict mode in bash entry points
+(`set -euo pipefail`), preserve callers' options in sourced libraries, and pass
+ShellCheck. Bash decides the `lanai panel` view; QML renders it. Keep all agent
+scratch in the repository, including isolated HOME/XDG paths and `.btrfs-test/`.
+Agents never touch John's live `~/.windows`. John runs the Windows checks on a
+rehearsal copy and records them in `proofs.md` before phase 8's acceptance gate.
+
+**Phase A: display scale (req 12).** Windows' scale changed with the Looking Glass
+window's size (125% full screen, 175% at a quarter). `lanai-scale.ps1` currently
+runs once at sign-in. Its API stores steps from Windows' recommended scale, which
+changes with resolution. Keep the chosen absolute step through those changes.
+
+- Tests first: extend `test/ui.bats`, `test/lifecycle.bats`, `test/checks.bats`,
+  `test/guest.bats`, `test/panel.bats` and `test/panel-qml.bats`. Cover every valid
+  step, `"auto"`, a missing key, invalid types and values, old two-argument saves,
+  preserved settings keys, fixed boots without a monitor query, and automatic
+  boots with the existing nearest-step matrix and 100% fallback. Invalid scale
+  values refuse boot and show a panel error, as invalid memory and cores do
+  today. Test the boot refusal and panel error. Test unsaved scale edits across
+  polls, successful and failed saves, and reopening. Extract
+  the guest's pure scale decision through its PowerShell AST, as StepName tests
+  do; skip without pwsh. Cover caps, recovery, a moved recommended step, an
+  unchanged display, and a display that appears after sign-in. Pin task flags.
+  Add `powershell-bin` to CI only if it enters Arch's official repos.
+  [ArchWiki](https://wiki.archlinux.org/title/PowerShell) lists it in the AUR,
+  so guest scale tests skip in CI and must run locally with pwsh.
+- Files: `lib/ui.sh`, `lib/lanai.sh` (`boot_vm`), `lib/vm.sh` as needed for a shared
+  settings reader, `lib/panel.sh`, `LanaiPanel.qml`, `LanaiModel.qml`,
+  `guest/lanai-scale.ps1`, `guest/setup.cmd` and `README.md`.
+  `settings.json` gains `windows_scale`: `"auto"` by default, or a valid integer
+  step (100 to 250 by 25, then 300 to 500 by 50). `lanai settings` reads it and
+  accepts it as an optional third save argument; old saves preserve it. Validate
+  it in bash, including at boot; refuse invalid values. `boot_vm` uses the fixed
+  step or samples the focused monitor for `"auto"`, then passes the resolved
+  step through boot.json and the existing SMBIOS string. Changes apply at the
+  next start.
+- The Settings view supplies the value and labeled choices for "Windows scale",
+  starting with "Match my monitor". Windows' own "Text size" setting is different.
+  QML keeps only the unsaved choice and sends it with memory and cores. Extend
+  the settings-saved transport too.
+  The guest applies the target at sign-in, then checks the current display path,
+  resolution and scale range every 2 s. Recompute the target's relative steps
+  each time and set only when its absolute scale differs. Cap at Windows' limit
+  and recover when it grows. Checking the range as well as resolution catches
+  Windows updating its recommendation later. Retry while the display is absent;
+  log actual changes and errors without repeating unchanged polls. Exit at
+  sign-out. Register the task with no execution time limit and
+  `MultipleInstances IgnoreNew`, so it lasts past 72 hours without duplicates.
+- Verify: run the named bats suites, ShellCheck and `test/qml-lint`. John reruns
+  setup on the test copy to install the script, then checks fixed 125% from a
+  quarter-size window to full screen, caps and recovery, two host scales, and
+  both late and immediate client attachment from the earlier scale-timing check.
+  Record the Windows scale and guest log. README tells existing users to click
+  "Run setup again" after this update. Both "Match my monitor" and a fixed step
+  resolve to one target at boot. README says the guest loop reverts manual scale
+  changes in Windows Settings within 2 s for both choices.
+
+**Phase B: snapshot and restore (req 7).** Clone first, then hash once. Every
+allocated block must be shared before the read. On tested btrfs modes, a later
+write to either file moves a shared block, including NOCOW's first write to a
+shared extent; compressed clones share the encoded extent. An unchanged copy
+map that still matches the other file proves the hashed data stayed shared.
+Preallocated UNWRITTEN extents pass too. Dockur opens data.img with
+`discard=unmap,detect-zeroes=on` (`lib/dockur-6.05.args`). QEMU turns guest zero
+writes into fallocate zero ranges, which btrfs reports as UNWRITTEN. John's disk
+likely has these extents. A clone reports them as shared and unwritten. A write
+into a shared unwritten extent moves the block in both COW and NOCOW files, so
+the same proof holds.
+
+- Before building B, add `docs/plugin/proof-kit/count-image-extents.py`, a small
+  read-only script that counts FIEMAP extent classes and flags without reading
+  image data. John runs it on his rehearsal copy and records the counts in
+  `proofs.md`. Agents never run it on `~/.windows`.
+- Tests first: extend `test/snapshot.bats`, `test/lanai-copy.bats`,
+  `test/panel.bats` and `test/panel-qml.bats`. Use real reflinks under
+  `LANAI_TEST_BTRFS_DIR=$REPO/.btrfs-test`, with normal, NOCOW (`chattr +C`),
+  compressed (`chattr +c`) and mixed-extent images. Set attributes before filling
+  files. Use `chattr +m` or incompressible data for normal images and assert no
+  ENCODED extents. Assert ENCODED extents for compressed images, and both plain
+  and ENCODED extents for mixed images. Check NOCOW through the file attribute.
+  Add `fallocate -z` regions to every mode and assert UNWRITTEN extents. Run the
+  same mutation hooks on those regions as on the other allocated extents.
+  For each mode and each operation, a test-only environment hook changes one
+  allocated block of the clone after its first map, before hashing. A second
+  hook changes the original source or snapshot after hashing, before proof.
+  Both restore size and mtime. Each must reject completion with a clear message;
+  snapshots leave no COMPLETE snapshot and restores keep recovery possible.
+  Also change the actual read file at the second hook. Change the original
+  snapshot after cloning and before proof while the hashed clone still matches
+  COMPLETE. Only the map check before and after hashing can catch that case.
+  Add a restore hook after ficlone onto data.img and before the final map
+  compare; changing an allocated block there must reject completion. Removing
+  either map check must fail its test. Cover sparse maps, map failures, partial
+  files, damaged manifests, deleted disks, inode preservation, resumable markers,
+  late stray files, locks, progress and cleanup on failure. For a deleted disk,
+  assert data.img exists and holds the disk lock before hashing starts. Test a
+  contender creating data.img before publication: never replace its inode.
+  A lock failure on the temporary inode must leave data.img absent.
+  A failed proof keeps the marker. Resume with a stale `.lanai-restore.data.img`
+  whose NOCOW attribute differs; remove it and clone afresh with the right flag.
+  Restore over an existing disk with rejected extent classes; only its btrfs
+  filesystem and NOCOW match gate that destination. Gate refusals create no
+  restore marker or partial snapshot folder. Test root fallback on EXDEV and
+  EINVAL, partial-folder cleanup, and refusal on other clone errors. Test each
+  small restore file's temporary hash before its rename.
+  Plain-copy shims may test errors, but cannot establish a successful proof.
+- Files: `lib/snapshot.sh`, `lib/copy.sh`, `lib/ficlone.py`, a new
+  `lib/image-proof.py`, `lib/lanai.sh` (`layout_check`, `shared_facts`,
+  `cmd_snapshot`, `cmd_restore`), `lib/panel.sh`, `LanaiPanel.qml`, `LanaiModel.qml`,
+  `test/helpers.bash` (`LANAI_REQUIRE_BTRFS`),
+  `docs/plugin/proof-kit/count-image-extents.py`, `.github/workflows/test.yml`
+  and `README.md`. Keep generic `tree_manifest` for
+  `lanai-copy`; snapshot/restore use manifests that hash data.img only once.
+- Use Python's FIEMAP ioctl, alongside the existing Python FICLONE helper.
+  It adds no filefrag dependency and avoids parsing tool output. Define the
+  provability gate: statfs must report btrfs magic (`0x9123683e`). Synchronize
+  allocations and collect the complete map, including holes and EOF. Python's
+  `os.statvfs` has no `f_type`; use ctypes statfs or `stat -f -c %t`.
+  Loop over FIEMAP batches with `fm_extent_count` as the capacity. Read each
+  batch's `fm_mapped_extents` entries and continue until LAST or EOF. A compressed
+  64 GiB image can map to about 500k extents. Measure map time, record it in
+  `proofs.md`, and show this work under the "checking" progress phase.
+  Every allocated extent must be plain, ENCODED (compressed) or UNWRITTEN
+  (`FIEMAP_EXTENT_UNWRITTEN`, preallocated). Apart from SHARED and LAST
+  bookkeeping, allow only ENCODED and UNWRITTEN; reject all other flags,
+  including inline, unknown and delalloc still present after sync. Read NOCOW
+  from the file attribute, not the extent flags. Omarchy mounts btrfs with `compress=zstd`,
+  so an image with no attributes can have both plain and ENCODED extents. That
+  mix passes. Compare logical offset, physical offset, length and ENCODED and
+  UNWRITTEN flags. Equal physical offsets in two inodes prove sharing; drop the
+  separate SHARED flag check. Reject ioctl errors. Open files without
+  following symlinks; map and read the same open files and reject path
+  replacement. Size only bounds the map; size and timestamps never prove data
+  equality. Only btrfs with these extent classes and the tested NOCOW modes
+  passes. XFS and every unprovable mode get the existing unsupported-snapshot
+  response and backup advice, even if reflink itself succeeds.
+- Threat model of the proof: it catches accidental writes, crashes and ordinary
+  tools that change either file after the clone. Deliberate re-cloning or
+  reference juggling by a same-user process is out of scope in every mode:
+  unshare, write in place, clone back or other reference changes. For a
+  compressed extent, FIEMAP reports the encoded extent's start but not the offset
+  of a file's slice inside it, so a same-user process that deliberately clones a
+  different slice of the same extent into the same position would not change the
+  map. Compressed slices are one instance of the broader exclusion. The same
+  process could rewrite COMPLETE or the snapshot's files outright. Say so in a
+  comment at the comparison.
+- Remove `snapshot_root`'s probe and probe cleanup, FICLONERANGE code and probe
+  tests. Under the operation lock, retain the sweep of stale partial snapshot
+  folders whose SOURCE matches this storage location; leave unknown or other
+  locations alone. Record and flush SOURCE before cloning so interrupted copies
+  can be reclaimed after power loss too. Remove newly created empty roots after failed clone attempts and
+  stale image-map records whose owner pid is dead. Under the disk lock, apply
+  the statfs and extent-class gate first. Try the real clone into the first snapshot root's partial folder, with
+  NOCOW matched. On EXDEV or EINVAL, remove that folder and try the next root.
+  Other clone errors fail the operation. If no root works, say this location
+  cannot make an instant copy and suggest a backup.
+- Snapshot: retain the partial folder, SOURCE, COMPLETE format, rename and flush
+  rules. Apply the provability gate before creating the partial folder. Clone
+  the install, record both image maps and require equality. Hash the clone once,
+  then require both maps to equal that saved map. Hash small
+  files from the clone and byte-compare them to the source; check the exact file
+  list too. Only then write COMPLETE and publish. Failure removes the partial
+  snapshot and says nothing was kept. Reading the shared clone hashes the
+  source's data while keeping the single read easy to count.
+- Restore: retain validation, NOCOW refusal, the operation and disk locks,
+  resumable marker, stray-file check and flush rules. Apply the full provability
+  gate to the snapshot image before the marker. For an existing storage disk,
+  check only statfs for btrfs and NOCOW match, not its extent classes. FICLONE
+  replaces all its extents; the final map check compares data.img with the saved
+  temporary map. A gate failure is a clean refusal. When data.img exists, hold
+  its disk lock, clone snapshot data.img to `.lanai-restore.data.img` in storage
+  with NOCOW matched, record
+  equal maps, hash that file once against COMPLETE, then require both maps to
+  equal the saved map. A resumed restore removes the stale temporary file and
+  re-clones it with the snapshot's NOCOW attribute matched.
+  Clone each small file to `.lanai-restore.<name>`, hash that temporary file
+  against COMPLETE, then rehash it immediately before its rename after the image
+  proof. Drop the separate byte check; small files may be read a few times.
+  The marker must precede the storage temporary files. With an existing disk,
+  any failure before the first install
+  file is replaced (a clone error such as EXDEV, or a failed verification) is a
+  clean refusal: it removes the temporary files and any newly created marker; preserve an
+  older unfinished marker.
+  Interruption keeps the marker. After proof, clone the verified temporary file
+  onto data.img with `ficlone.py`, keeping QEMU's locked inode. Compare the final
+  map with the saved temporary map, rename the verified small files and remove
+  the temporary image before the stray-file check. Never run a final image hash.
+  When data.img is absent, write the marker, clone snapshot data.img into
+  `.lanai-restore.data.img` with NOCOW matched. Take `lock_disk` on that temporary
+  inode before publishing it as data.img. QEMU's OFD locks stay with the inode,
+  so data.img holds the disk lock the moment it appears. Publish with ctypes
+  `renameat2(RENAME_NOREPLACE)`. Never use `mv -n` or `mv -f -T`: dockur may have
+  created a disk in the meantime. Lock failure stops before publication; drop
+  the branch for locking failure after publication. Before publishing, clone each
+  small file to `.lanai-restore.<name>` and hash it against COMPLETE (a second or
+  less). Right after publishing data.img, rehash and rename those small files into
+  place, so dockur's start check finds an existing install and does not run its
+  cleanup, which deletes disk files whatever their locks. Only then record equal
+  maps, hash and prove data.img in place against COMPLETE and the saved maps.
+  Retain fresh small-file clones after the early renames; rehash them against
+  COMPLETE immediately before the final renames after the image proof.
+  Never replace this locked inode later. A test starts a fake container check
+  during the image hash and asserts it finds `windows.boot`. A failed proof keeps the marker;
+  the disk was already gone, so nothing is lost. This path changes storage before
+  the hash. It is a deliberate exception to req 7's "before anything changes",
+  justified by its disk-lock clause: the disk was already gone. John approved it
+  on 2026-10-05 (spec review log). Keep the marker
+  if publication or locking fails too. On success, clear the marker and reset
+  setup only after completion.
+  Preserve today's messages' intent, including damage before replacement and
+  recovery guidance after a partial replacement.
+- One chunked hashlib reader in `image-proof.py` reads image data. Fold the
+  first-100-KiB nonzero adoption check into that pass for snapshots.
+  `layout_check` currently reads those bytes separately; split its structural
+  checks from that data check. Snapshot uses the structural checks first, and
+  panel polls omit the image read while the operation lock is held. Normal boot
+  checks stay complete. Test this with a panel opened during both operations.
+- Publish `<state>/image-progress.json` by atomic rename, about once a second:
+  operation, phase, bytes done, total and owner pid. Bash publishes cloning,
+  checking and finishing phases too. Initialize and remove it inside the
+  operation lock for CLI and panel starts. Keep completion below 100% until
+  proof and flush succeed. "Held" means a FLOCK entry for `<state>/lock`'s dev:ino
+  in `/proc/locks`; use `lib/lanai.sh`'s existing device and inode parser near
+  line 140. "Owner" means the progress file's pid is alive and has `<state>/lock`
+  open, checked by comparing each `/proc/<pid>/fd/*` target's device and inode
+  (`stat -L`) with `<state>/lock`'s, so a symlinked state folder still matches. `lanai_flock` runs external
+  `flock -n "$fd"`, so `/proc/locks` names the short-lived flock process, not the
+  holder. Do not compare that pid with the progress owner. `lanai panel` requires
+  both checks, then returns `progress: {label,percent}` or null. Never probe with
+  flock: even a brief probe can make concurrent `lanai_flock` (`flock -n` on
+  `<state>/lock`) fail as busy. Use this activity for busy controls even without
+  a panel-job record. Ignore stale, dead-owner and
+  malformed files; polling writes nothing. Supply null in initial/error views.
+  QML shows a progress bar and the percentage as plain text in Snapshots. Test
+  advancing progress, a newly opened
+  panel, CLI starts, failure, interruption and stale records. Test the real
+  external flock case after flock exits, a live pid without the lock file open,
+  a dead owner, a held lock on another inode and an open file without a held lock.
+- Verify the read budget with `strace -f -yy`, summing successful read/pread and
+  readv/preadv variants on storage, snapshot and temporary-copy files across all
+  children. Also fail if mmap, sendfile, splice or copy_file_range touches a
+  counted file. Start concurrent panel polls only after the operation holds its
+  lock, for example once its progress file appears. Keep fixture preparation and
+  independent outcome hashes outside the trace. Image reads must total at most
+  one logical image size. For a one-snapshot fixture, cap small-file reads at
+  `4*S + (P+1)*64 KiB`: S is the sum of install files other than data.img, P is
+  the fixed number of panel polls, and 64 KiB covers SOURCE/COMPLETE reads.
+  Report image and small-file counts separately. Add strace to CI and require
+  the measurement there. CI keeps its privileged container's loop-mounted
+  btrfs folder (`LANAI_TEST_BTRFS_DIR`, `.github/workflows/test.yml`) and adds
+  strace to its packages. CI also sets `LANAI_REQUIRE_BTRFS=1`, which makes
+  `btrfs_tmp` in `test/helpers.bash` fail instead of skip when the folder is
+  missing or not btrfs. Local runs keep skipping without it. Skip locally if
+  unavailable and report the skip.
+  This observes reads outside the helper and cannot hide a second pass in page
+  cache. Run the named bats suites, ShellCheck and `test/qml-lint`; CI must run
+  all four real btrfs fixtures. Record row 7's hashes, traces and proof fixtures in
+  `proofs.md`. Use mocked lock contenders in agent runs; John checks the real
+  container-start refusal on a separate test install. README explains progress
+  and the fallback for an unprovable filesystem.
+
+- Unfinished restores (John, 2026-10-05, from the diff gate's stage b round 3):
+  `lanai restore` with no name resumes the marker's snapshot, as before.
+  `lanai restore <name>` naming a different valid snapshot always replaces an
+  unfinished marker and starts over, since a restore replaces the whole disk.
+  There is no separate "verification failed" marker state. While a restore is
+  unfinished, the panel offers Finish the unfinished restore and every other
+  snapshot's Restore control; its words say either works. A failed check never
+  says "Nothing was changed" once an earlier run has changed the disk.
+
+**Phase C: icon clicks (req 11).** Change the icon's clicks and leave the panel's
+Start, Open and Shut down controls in place.
+
+- Tests first: extend `test/panel.bats` for all nine req 10 states, finished and
+  unfinished setup, setup and check boots, snapshot/restore from CLI and panel,
+  an unfinished restore, and running with the window open or closed. Assert
+  `right_click` and its tooltip words. Extend `test/panel-qml.bats` to load
+  `Widget.qml` with inert bar/button types too. Test left click, Enter and Space
+  opening and closing the panel, Menu toggling it, right-click dispatch,
+  unknown/missing actions opening the panel, and literal `ui-run` argv without a
+  real service or shell. Cover a stopped install with a pending update step:
+  right click opens the panel and Start stays enabled.
+  Test running with a closed window during a blocking operation: right click
+  still opens the window, as the panel's Open button does.
+- Files: `lib/panel.sh`, `Widget.qml`, `LanaiModel.qml` and `README.md`.
+  Bash returns `right_click: "start"` only for stopped, finished setup with no
+  blocking operation or unfinished restore; `"open"` only for running, finished
+  setup with its window closed; otherwise `"panel"`.
+  Use `panel.sh`'s `$p.finished` for current setup completion.
+  This is stricter than dailyControls' `setup_done` for a stopped VM, on purpose.
+  A right click on a working install with a pending update step opens the panel;
+  its Start still works. Bash supplies a tooltip line naming "Right click" and
+  the action; `LanaiModel.qml` includes that line. Widget left click, Enter (Return and keypad
+  Enter, `Keys.onReturnPressed` and `Keys.onEnterPressed`), Space and the Menu key
+  toggle the panel in every state. Right click dispatches
+  the supplied start/open action through `ui-run`, or opens the panel. It never
+  decides from status or control enablement. Keep command-side guards for
+  changes since the last poll.
+- Verify: run both named bats suites, ShellCheck and `test/qml-lint`. John checks
+  clicks and keyboard input on the rehearsal copy using the row 10-17 matrix,
+  then checks shut down and close/reopen (rows 16-17). README names both clicks,
+  Enter, Space and the Menu key. Rows 10 and 13-17 keep their other phase 8 checks.
+
+**Review.** Put the plan amendment's gate rows in this document's Review log.
+The orchestrator runs the gate; delegates run no review stage.
+
+### As built (2026-10-05)
+
+- **Display scale (amendment Phase A):** Settings now read and save
+  `windows_scale` as `"auto"` or a validated Windows step; old two-argument saves
+  preserve it and other keys. Boot validates the setting and resolves a fixed
+  step without querying a monitor, or uses the existing nearest-step rule and
+  100% fallback. Bash supplies the panel's labeled choices, and QML preserves
+  unsaved scale edits through polls and failed saves, accepts the successful save
+  reply and resets on reopen. The guest recomputes the relative offset from the
+  current display path, resolution and DPI range every 2 s, sets only actual
+  changes, caps and recovers, retries late attachment and suppresses repeated
+  errors. An unchanged failing scale decision backs off to one attempt per minute
+  and logs that decision once; a new display, range or target still applies at
+  once. Pre-attempt logs are best effort, so a failed log write cannot prevent
+  the scale API attempt. The retry deadline starts only after that attempt.
+  A failing log write inside error handling cannot end the loop. Its
+  sign-in task has no execution limit and ignores duplicate starts.
+  README documents rerunning setup, next-start choices and manual Windows scale
+  changes reverting within 2 s. Tests were written first, including PowerShell
+  AST decision and late-display fixtures run locally with pwsh. All 14 new Bats
+  cases and the added QML test function pass. Outside the agent sandbox (which denies
+  Unix socket binds), Claude ran the full suite: 640 of 640 pass, one locale skip. QML lint,
+  the full ShellCheck command and `git diff --check` pass. No plan deviation;
+  John's Windows checks and proof log on a rehearsal copy remain pending.
+- **Phase B, snapshot and restore:** FIEMAP gates btrfs images and proves equal
+  shared maps before and after the one image hash, with a final map after restore
+  FICLONE. Each small temporary file is rehashed against COMPLETE immediately
+  before every rename. A refusal before publication removes staged files and a
+  new marker, preserving any older marker. Deleted
+  disks publish the locked inode with renameat2 no-replace and install boot files
+  before hashing, using John's approved req 7 exception, then retain fresh small-file clones for
+  final verification and replacement after the image hash. Any unfinished
+  restore can resume its snapshot, with no name or the same name, or start over
+  with a different valid named snapshot on either disk path. The marker records
+  only the snapshot and storage location; staged images are removed on failure.
+  Hash damage advises restoring another snapshot by name. Refusals claim nothing
+  changed only when no older marker existed and this attempt changed no install
+  file. The panel offers finishing or restoring any other snapshot and explains
+  both choices while Windows is stopped. CLI and panel
+  operations publish phases, byte progress and owner under the operation lock;
+  QML renders the percentage with a comma after the label, showing the label
+  once and keeping "Keep Windows stopped until it finishes." visible during
+  restore and "You can close this panel." visible during a snapshot. Labels say
+  "Taking a snapshot: making an instant copy" and include the articles in the
+  checking and reading phases. Checks are labeled before cloning starts;
+  replacing the disk covers
+  the in-place clone and its final map. The panel reads activity once per poll
+  and reuses it for shared facts. Only validated activity from a live snapshot or restore owner skips
+  the panel image read; setup's own operation lock still checks the first 100 KB
+  for nonzero data. Proof and gate failures keep details in stderr and show plain
+  reasons with final periods; snapshot backup advice appears once in the next
+  step. Restore refusals have a separate reason and panel words explaining the
+  unsupported storage without claiming the disk is unchanged. All clone and
+  publication errors use the same mapping, with details kept in the operation
+  log. A successful proof's manifest
+  is separate from later small-file failure reasons. Under the lock, stale
+  partials matching SOURCE and dead-owner image maps are swept. SOURCE precedes
+  cloning and is flushed with its directory before a clone can pin blocks;
+  failed fallback attempts remove newly created empty roots.
+  Snapshot validation relies on the exact sorted file list to reject duplicate
+  manifest names, restore reuses its parsed small-file hashes, and the unused
+  snapshot manifest helper and unused image-map attribute query are removed.
+  Non-object progress JSON is ignored as malformed, leaving panel progress null.
+  Real normal, NOCOW, compressed, mixed and UNWRITTEN mutation fixtures cover the
+  proof, plus sparse pagination, recovery and publication races. CI requires btrfs
+  and strace; the read-budget test includes concurrent panel polls. Deviation:
+  this PID namespace hides /proc/locks entries after external flock exits even
+  while the lock remains held. In that case the reader checks the matching
+  owner's kernel FLOCK entry in /proc/<pid>/fdinfo, without probing the lock.
+  The existing read-only extent census gains map timing and JSON output; no
+  duplicate script was needed. Outside the sandbox the full suite passes 650 of 650 (locale and strace
+  skips). Local strace measurement skips when unavailable;
+  John's rehearsal-image timing and container-start check remain manual proofs.
+
+- **Unfinished restore checks (2026-10-05):** Tests first reproduced a deleted
+  disk's non-hash proof failure blocking named and unnamed retries, an
+  interrupted replacement followed by snapshot image damage hiding the way
+  out, and another named snapshot being refused with the disk still missing.
+  Recovery checks cover both disk paths, exact restored manifests and marker
+  removal. Older-marker refusals cover the image gate, destination filesystem,
+  disk lock, NOCOW, empty image and damaged small files without claiming Windows
+  was unchanged. Tests through `lanai panel` cover both recovery choices and
+  persistent snapshot progress guidance. The PowerShell log-failure fixture
+  checks the scale attempt before logging recovers. The obsolete marker-state
+  assertion and tautological awk test are removed; appended snapshot and restore
+  failure cases now sit in their behavior groups. With scratch HOME and XDG
+  folders, 77 snapshot cases, 93 panel cases and 26 guest cases pass. The
+  read-budget case skips because strace is unavailable; six QEMU lock cases
+  were excluded under the no-VM instruction. No socket tests failed. QML lint,
+  the full ShellCheck command and `git diff --check` pass.
+
+- **Checks after the confirmed findings (2026-10-05):** Tests first reproduced
+  both deleted-disk damage paths, unsupported restore wording, repeated snapshot
+  advice, raw helper errors, early clone progress, duplicate activity calls and
+  the guest log backoff. The firmware-byte and image-byte fixtures each try the
+  bad snapshot, an unnamed restore and the good named snapshot, then check the
+  cleared marker and exact good manifest. Older markers survive clean refusals.
+  Cases from `test/review-fixes.bats` now live in the snapshot and adoption suites
+  with behavior names; the obsolete lock shim and that file are removed.
+  New-file clone cases live with snapshot's existing clone cases. Lifecycle's
+  automatic scale boot test uses representative values; adoption tests keep the
+  full rounding matrix. The clone helper names its set-flags ioctl and documents
+  snapshot use too. The touched suites cover 327 distinct cases: 323 pass,
+  three lifecycle fake-QMP cases fail because the sandbox denies socket binds,
+  and the read-budget case skips because strace is unavailable. Passing cases
+  by suite: snapshot 73, panel 91, guest 26 (including pwsh), adoption 62,
+  copy 27 and lifecycle 44. All four btrfs mutation modes pass. Under the
+  delegate's scope limits, 48 cases are omitted: 14 paused-QEMU probes, 33
+  compose-file cases and one /dev/shm write. The corrected cleanup and copy
+  expectations pass on rerun. QML lint, the full ShellCheck command and
+  `git diff --check` pass. Scratch is removed.
+  The delegate runs no review stage; the orchestrator owns the gate and John's
+  manual rehearsal proofs remain pending.
+
+- **Icon clicks (amendment Phase C):** Bash supplies the right-click action and
+  tooltip: Start only for a stopped install with current setup finished and no
+  blocking operation or unfinished restore; Open for a running, finished install
+  with its window closed, including during a blocking operation; otherwise open
+  the panel. Pending update steps keep the panel's Start available while the icon
+  opens the panel. Left click, Return, keypad Enter, Space and Menu toggle the
+  panel; right click dispatches literal `ui-run` argv or opens the panel, with
+  existing command guards retained. Tests first cover the nine states, setup and
+  check boots, CLI and panel operations, recovery, window state, keyboard input,
+  fallback actions and tooltips using inert QML bar/button types. README names
+  both clicks and keyboard keys. No plan deviation; John's rehearsal-copy click,
+  keyboard, shutdown and close/reopen checks remain pending.
+
+- **During setup:** Start and Open hide only before setup has finished for the
+  current storage location or while a setup boot or final check boot is active.
+  Working installs keep their daily controls beside pending build, driver and
+  unfinished setup steps. Final check boots record their mode in the boot record;
+  an ordinary start clears it. A completed round stops treating that boot as a
+  final check boot, even if an update becomes pending while Windows stays running.
+  Setup offers Reopen the Windows window only while the usual window controls are
+  hidden, a client-mode boot's unit is active (not activating or reloading), the
+  client is not running, and shutdown is not in progress, including after a step 6
+  failure or no answer rolls back to step 5.
+  Boot flags also cover activation before status reports the display.
+  Reopen uses `ui-run open`. `snapshots.show` and its control descriptors hide
+  the section only when the usual controls are hidden with an active unit;
+  working installs keep Snapshots during ordinary boots with a pending update.
+  Settings stay.
+  Shut down during the setup boot supplies a confirmation control and the warning
+  “Shutting down now stops setup. You'll choose how to continue.” The second click
+  uses `ui-run stop`; Cancel, closing the panel or a view that no longer needs
+  confirmation clears it. An existing request for the current boot and any
+  shutdown in progress bypass confirmation. Shut down and Force stop cannot both
+  be armed. Both setup client starts accept a window already opened by Reopen.
+  Step 5 says "Use Shut down only if setup.cmd stops responding."
+  `setup.attention` marks user actions, setup failures, interrupted work, a failed
+  launch and a closed client window. It clears during automatic work and shutdown
+  waits regardless of the reason. A setup boot needs attention once QEMU reports
+  running, even if the setup drive is not yet available.
+  Regression tests cover rollback with a closed client and all step 6 rollback
+  reasons during unit deactivation, requested shutdown and guest shutdown.
+  Guidance follows the visible controls, including the cause in the top block.
+  QML keeps Setup's inset constant and uses an accent border and the shell's
+  `Style.selectedAccentFill`, falling back to `Util.alpha(Color.accent, 0.10)`,
+  following shell theme changes. Finished setup retains its usual controls and has
+  no attention highlight. An empty Setup section hides its padding too.
+  A pending launch with no record now supplies progress without indexing a missing
+  command. Nineteen new Bats cases cover every setup step, worker and idle attention,
+  both boot displays and client states, section visibility, confirmation and finished
+  controls. The inert QML test also covers confirmation, cancellation and resets,
+  daily shutdown, Reopen transport, section visibility, empty Setup content and
+  live theme colors.
+  Earlier validation for this addition: `bats test/panel.bats test/panel-jobs.bats
+  test/panel-qml.bats test/ui.bats` runs 105 cases with one comma-locale skip.
+  These review fixes pass 89 cases in `test/panel.bats`, `test/panel-qml.bats` and
+  `test/ui.bats`, with one comma-locale skip; the renderer runs 16 QML test functions.
+  `test/qml-lint` passes all three QML
+  files, and the complete project ShellCheck command including both fake servers
+  and `test/qml-lint` passes. Tests were written first and failed before the changes.
+  Scratch stayed under `.btrfs-test/` and was removed. No VM, real units, shell,
+  review stage or commit ran.
+- **View and words:** `lanai panel` in `lib/panel.sh` returns one complete view,
+  including controls, setup, results, settings, snapshot names and logs. It never
+  acts and ignores `setup-reply.json`; status's existing `guest_version_note` is
+  its sole permitted write. Status and reply tables supply plain text rather than
+  CLI messages. Structured `reason` codes distinguish step 1 problems,
+  back-to-step-5 failures, failed snapshot-choice writes and unsupported snapshots.
+  A failed snapshot-choice write carries `reason: record` with no `step`, so an
+  existing snapshot advancing the plan to step 4 or 5 cannot hide the failure.
+  It persists until the next setup action and tells the user to check home folder
+  space, then click Continue without a snapshot or take a snapshot again when the
+  plan is at step 3, or click Continue setup otherwise. The snapshot offer stays
+  silent.
+  Snapshot success keeps its location, growth and file-manager deletion guidance.
+  Snapshot outcomes also show below the step 3 snapshot controls. The Setup
+  header shows whenever Continue setup shows. Missing-install guidance appears
+  only in the top block when the plan repeats that state. Shared-folder advice
+  explains that Windows must be a real folder in the home folder, owned by the user.
+  Offers, successful waits
+  and ordinary successes produce no result text. Setup failures with a step show
+  only at the current plan's step; duplicate plan reasons are hidden. Stepless
+  failures and other groups' failures persist until the next action in their group;
+  start's network warning requires the same active invocation; snapshot and restore
+  outcomes persist until another action in that group. Settings/list read errors
+  are separate data, and warnings use status's structured details, joined without
+  leading spaces or a repeated driver warning during a version mismatch. Logs
+  name each file: Windows window log, setup/snapshot/restore log, and button actions
+  log. The VM log points to the user journal under `lanai-vm`; an unavailable
+  runtime omits the Windows window log. Reply words use those same names.
+  Restore success says only "The snapshot was restored.", so its persistent
+  outcome cannot keep asking for setup after setup finishes again.
+  Step 5 and 6 waiting words require a setup job holding `panel-job.lock`;
+  without one they ask the user to click Continue setup. The step 5 drive
+  instructions still require the setup boot. While step 6 is stopping, its line
+  asks the user to wait for shutdown, then click Continue setup; the button stays
+  disabled until shutdown ends. Continue setup is disabled for `no-media` and
+  `active` at every step, whose next step is shutdown.
+  Restore labels include the snapshot name before "and replace Windows".
+  Armed Run setup again shows "Choose how Windows should show during setup."
+  and a Cancel button that clears the armed state.
+- **Shared facts:** `shared_facts` supplies layout, storage, container, unit state,
+  `Result`, invocation and restore pending. A layout result of 2 gets reason
+  `missing` and tells the user to install Windows with Omarchy before setup;
+  an incomplete or unsupported install keeps reason `layout`.
+  Status and setup each gather once.
+  Container detection scans cgroups and command lines with bash builtins and is
+  skipped for an active unit. The gatherer makes no QMP call or write. The complete
+  view uses status's one bounded QMP session and never executes a client binary.
+- **Durable setup:** `setup_plan` selects every step without acting. It reads the
+  pure `run_verdict` before setup state, overlays clean setup shutdown, changed
+  storage and existing snapshots, and implements step 7's finished rule including
+  `step5 != false`. `record_previous_run` shares the verdict; `running` is read
+  last and deleted first, with step 5 written before deletion. A build-local
+  `build-stamp` containing `LG_BUILD` replaces binary execution during planning;
+  verified existing installs and new builds get the stamp, and pruning removes it
+  with the build. Step 6 writes its question marker, RESET events retire it, and
+  VM startup clears it. A negative answer hides the questions by returning to
+  step 5. Plan/resume agreement tests cover both present and consumed markers,
+  early and active phases, and a panel-requested shutdown, comparing steps,
+  actions and JSON reply reasons. Both agreement tests include runs that started
+  then failed with `Result=exit-code`, with `step5` true and false. Resume passes
+  its consumed verdict, using `none` for empty output, into planning; the same
+  effective verdict decides whether Windows never started.
+- **Following jobs:** the setup worker owns all follow-up calls. Two-second checks
+  require the expected unit/invocation state; follow-ups carry only
+  `--follow <step> <invocation>`; completed setup calls are at least ten seconds
+  apart, with busy setup-resume lock attempts retried after two seconds. Setup
+  rechecks that expectation under its operation lock before bookkeeping or any
+  action; stale expectations return an inert reply, covering the stop race
+  between the worker probe and setup's fact gather. A clean automatic setup
+  shutdown advances once; a deactivating unit keeps the worker waiting until
+  inactive or failed, before it evaluates the ended run. Panel shutdown,
+  force stop, invocation changes, failures and terminal replies end
+  following. Only a busy reply from setup resume's initial lock, marked
+  `follow_retry: true`, retries after two seconds without replacing the wait.
+  A later `boot_vm` lock refusal ends following and exposes Continue setup:
+  a step 5 resume has already consumed the run markers by then, so replaying
+  its guard would stop without retrying the boot. Settings saves and notice
+  dismissal do not end step 6 checks. Step 6 also checks matching stop requests. Long jobs run through
+  `systemd-run --user --collect` in `session.slice`, with
+  `PartOf=graphical-session.target` and `After=graphical-session.target`, and
+  hold `panel-job.lock`. The setup worker checks that target is active before
+  every setup call and during waits; logout ends following even with lingering
+  enabled. A first call outside the desktop session records a visible failure.
+  Result timestamps use a local C locale so decimal commas cannot break JSON.
+  The locale test skips when no comma-decimal locale is installed.
+  Closing the panel or reloading the shell does not end them. Client-mode setup
+  boots start the selected client themselves; step 6 starts the pinned client.
+- **Records:** `ui-run` records direct actions when they end, with the current
+  invocation and stderr in `panel-run.log`. `ui-job` serializes setup, snapshot
+  and restore, and atomically writes one `panel-result-<group>.json` for each of
+  vm, setup, settings and snapshots. It publishes started, following and ended
+  records, writing the final record before releasing its lock. Refused workers
+  leave the owner's record untouched and append their refusal to `panel-job.log`,
+  so the launch-failure log contains the reason. The view probes the existing
+  lock read-only with a shared lock before reading records and keeps a successful probe
+  throughout the reads. Concurrent bars do not report each other as workers;
+  unfinished records without a held lock become interrupted. Interrupted setup
+  always offers Continue setup. A pending token with no record after ten seconds
+  reports a launch failure. The view returns `pending_ack` when that token's
+  record appears; its bar clears the pending token, so a later action from
+  another bar replacing the group's record cannot revive a launch failure.
+  Pending long-job clicks within ten seconds are ignored. Short actions preserve
+  the pending token and time, including a launch failure; the next long job replaces
+  them. Backend and QML tests cover rapid clicks, short actions after a failed
+  launch and both monitors' launch/acknowledgment sequence.
+  High-resolution start times select the newest
+  outstanding record when an older interrupted record belongs to another group.
+  The old `panel-job.json` and `ui-job-status` path is removed.
+- **Runtime updates:** the stable runtime revision combines `LANAI_VERSION`
+  with a SHA-256 of the relative filenames and contents in `bin/` and `lib/`.
+  A stopped install replaces the legacy version-only copy and reloads its unit
+  after any code change, including RESET handling and VM startup cleanup;
+  identical content reuses the copy without a reload.
+- **CI result reporting:** sourced libraries preserve the caller's shell
+  options; the CLI entry points own strict mode. `lib/ui.sh` no longer enables
+  nounset in Bats, which otherwise makes Bats 1.14.0 timeout cleanup abort on
+  `BATS_killer_pid` after a failed assertion and lose the result line. The
+  unstamped-client test isolates its build/`timeout` call in a fresh Bash process
+  with the test's HOME/XDG paths. The original CI assertion failure remains
+  unconfirmed; its result-suppression mechanism was reproduced locally.
+- **Renderer:** `LanaiModel.qml` polls only `lanai panel`, every two seconds while
+  its own panel is open and every fifteen seconds otherwise, with a ten-second
+  deadline. It skips routine overlapping calls and requests one fresh read after
+  an action, discarding an older in-flight read. Direct `ui-run` actions use a
+  Process without a deadline; `ui-job` launches are detached so pending-token
+  checks remain possible even if launch stalls. QML retains transient answers,
+  unsaved settings, second-click confirmations and the pending token/time, with
+  transport state only for serializing reads/actions. It renders plain text and
+  backend control descriptors; `SetupCalls.js` and its test are deleted. Settings
+  fields freeze their transient input on the SpinBox's `valueModified`
+  signal, so real keyboard edits survive polls; reopening loads current settings,
+  and a successful Save resets the fields to the submitted values. Failed saves
+  keep the edits. On a finished install, Run setup again reveals the backend's two
+  display choices and their hints, only while Windows is off. While Windows runs,
+  the disabled button says to shut it down first. After an interrupted re-run,
+  Run setup again also reveals the choices first. Each choice launches an explicit
+  `setup --no-window`
+  or `setup --window` job, bypassing the finished shortcut. Only that reveal is
+  transient; reopening clears it, and the backend still enables each choice.
+  Basic-window and step 5 guidance use plain words, including the automatic
+  shutdown and restart for checks. Progress distinguishes setup completion from
+  checking Windows; interruption words name setup, snapshots or restore.
+  The widget retains its L-in-a-monitor glyph, shell-owned popout and primary-click
+  start/open behavior. Force stop and restore both require a second click.
+- **Documentation:** README describes autonomous setup, current guidance,
+  snapshot refreshes, result logs and the Qt 6 renderer test. CLAUDE's layout now
+  names the view, transport and per-group records, and `test/qml-lint` resolves
+  imports against the installed shell types with a temporary local `qs` mapping.
+  CI no longer installs Node for
+  the deleted JavaScript test.
+- **Interpretations:** setup samples the shared facts immediately after taking
+  its lock, before consuming markers and following storage, to guard those writes
+  with the unit state and validated layout without a second gather. Mutation
+  order remains record, follow, then act; planning uses that same sample. VM logs
+  live in the journal, so the view names the session service rather than inventing
+  a filesystem path or exposing a CLI command. The shell's Qt 6 types use
+  `ComponentBehavior: Bound`; Qt 6 lint is authoritative, since this machine's
+  legacy `/usr/bin/qmllint` (1.0) exits silently on that pragma. No other amendment
+  departures are intended.
+- **Validation:** tests were added before implementation. All 75 tests in
+  `test/panel.bats`, `test/panel-jobs.bats`, `test/panel-qml.bats` and `test/ui.bats`
+  pass. The QML test loads the real files with inert shell/Process types and checks
+  both monitors' polling cadence, refresh races, direct and detached literal
+  arguments, launch tracking, settings edits with a real Qt SpinBox and keyboard
+  input across polls, failed/successful saves and reopen, both repair display
+  choices with their hints, and both confirmations. Launch acknowledgment is
+  tested across both monitors before one replaces the other's group record.
+  Worker tests check the graphical-session unit properties, refusal outside
+  the session, logout during a wait and after its probe, and step 5 waiting
+  through deactivation before checking the ended run, plus saves and notice
+  dismissal during step 6 and a busy follow-up retry after two seconds. Tests
+  also pin setup result currency, duplicate-reason suppression, warning spacing,
+  journal labels, missing runtime paths and the local C timestamp guard (no comma
+  locale is installed here). The QML checks the disabled re-run button's hint.
+  This follow-up ran 142 passing tests: those 75, all 22 guest tests, 23 selected
+  client tests and 22 selected spike tests. The unchanged spike live-flock test
+  still fails at line 190; without Bats' timeout it reports the assertion normally.
+  With the timeout it loses its result line during cleanup. The setup regression also
+  checks both failed snapshot-decision writes (taken and declined) and both
+  explicit displays after finished setup. The earlier socket-free selections also
+  passed in
+  `test/lanai.bats`, `test/checks.bats`, `test/vm.bats`,
+  `test/client.bats`, `test/setup.bats`, `test/lifecycle.bats`,
+  `test/proof-kit.bats`, `test/lanai-copy.bats` and `test/snapshot.bats`; all of
+  `test/guest.bats` passed. That earlier socket-free selection totaled 387 passes, three
+  filesystem skips and one failure: 44 of 45 selected `spike/test/lgtest.bats`
+  tests pass, but its unchanged live-flock test does not find the held lock in
+  `/proc/locks` here (line 190). Qt 6 `qmllint` passes
+  all three QML files with the installed shell imports (a repository-local `qs`
+  import mapping supplies the installed shell's namespace), and the complete
+  project ShellCheck command passes. Socket-dependent tests could not run in this sandbox;
+  paused-QEMU and compose-reading tests were excluded by the task constraints.
+  Scratch stayed in the repository and was removed. No VM, real units, Omarchy
+  shell, plugin installation, review stage or commit ran.
+- **Deferred acceptance:** resize-drag and scale timing still require a person
+  and a running Windows test copy. No client flags changed. The proof records do
+  not establish an exact supported Omarchy release; README keeps that and reboot
+  timing/spike measurements as phase 8 items. The custom glyph remains because
+  marketplace Windows plugins are not installed here.
+
+## Follow-ons after v0.1.0
+
+John's calls from the phase 7 hands-on run (2026-10-05). Each goes through the usual
+spec, plan and review gates before it is built.
+
+- **Looking Glass resize on first open.** The client sends the window size once per
+  process; a display driver restart during Windows' boot loses it, and the client's
+  `lastWindowSize` (client/src/message.c) then skips the resend. Fix: carry one small
+  pinned patch that clears it when a session starts, and file the bug upstream.
+- **Icon color by health.** Today the icon turns the shell's urgent color (red in John's
+  theme) whenever the VM runs, because `active` uses `Color.urgent`. Wanted: green when
+  running and healthy, amber when running with a problem, red when running with a major
+  issue, and no color (the normal foreground) when Windows is not running. Bash decides
+  the level in the panel view; the tooltip keeps the words (req 10: never color alone).
 
 ## Phase 8: Acceptance
 
@@ -1208,7 +2149,7 @@ reviews look hard at the panel's wording, layout and states.
 |---|---|
 | 10 | Each state appears with its text, cause and next step: not installed (empty storage copy), setup needed, stopped, starting, running, stopping, in use by `omarchy-windows-vm` (test install), version mismatch (older client build), failed (kill QEMU) |
 | 11 | Start, open and shut down from the bar and panel; panel actions by keyboard |
-| 12 | Tile, fullscreen, resize; desktop follows; scale matrix through `scale_step` tests plus two real host scales |
+| 12 | Tile, fullscreen, resize; desktop follows; scale matrix through `scale_step` tests plus two real host scales; a fixed 125% scale setting holds from a quarter-size window to full screen (or caps and recovers where Windows' limit applies) |
 | 13 | Typing, mouse, clipboard text both ways, a file both ways, a system sound; a file copied in Windows appears on the host in the Looking Glass client's read-only FUSE folder under `/run/user/<uid>/` (the spike saw `looking-glass-clipboard-*`, `ro,nodev,nosuid,noexec`), checked with `findmnt` (spec req 29) |
 | 14 | Sign-in with the user's password (dockur signs in automatically, so first sign out from Start, as proof 4 did); `grep` for a sentinel password in Lanai's files and logs finds nothing |
 | 15 | A file round-trips through `~/Windows` |
@@ -1281,3 +2222,45 @@ reviews look hard at the panel's wording, layout and states.
 | diff (phase 6) | a (gpt-6.1-sol) | 8 (full, the rerun on the final diff) | 1 P1, 2 P2, 0 refuted, 0 downgraded to nit; all confirmed and integrated (fixes by Codex): a fixed write-probe name let a planted file pass a writable copy; a failed step 6 start stuck as "did not start"; an ordinary start skipped `setup_done` under the lock. Above nit, so stage b runs again, then stage a |
 | diff (phase 6) | b single (opus-5.5) | 3 (full, cap; single by John's call to save Claude usage, where the mode rule picks a panel) | 2 should-fix, 5 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): step 6 could reopen a dying client forever and wait unbounded on `unknown`/`waiting`; the phase 7 auto-call rule looped failed boots. Claude caught that Codex's fix failed a freshly reopened client and limited the failure to a client that is not running. Stage closed at the cap |
 | diff (phase 6) | a (gpt-6.1-sol) | 9 (full, the rerun on the final diff) | 1 P2, 0 refuted, 1 downgraded to nit: a copied folder whose ACL denies the administrator file creation but lets another account modify files passes the write probe. Downgraded: an account that can set that ACL controls the folder, so it can already rewrite `setup.cmd` itself, which no check inside the script can stop; the comment scopes the probe to that limit, and the README sends users to the read-only setup drive. A disk read-only check (`Get-Disk` `IsReadOnly`) is a candidate for the hands-on Windows run. Nits only, so no further rerun. Gate closed |
+| diff (phase 7) | a (gpt-6.1-sol) | 1 (full) | 1 P1, 4 P2, 1 P3, 0 refuted, 0 downgraded to nit; all confirmed and integrated (fixes by Codex): jq read the panel's setup options as its own; Shut down was disabled while stopping; a finished job could replay and boot Windows unasked; a completion race read as interrupted; a failed launch kept the panel busy; raw state codes shown to users. Claude's own copy notes went in with them |
+| diff (phase 7) | a (gpt-6.1-sol) | 2 (full) | 2 P2, 0 refuted, 0 downgraded to nit; both confirmed and integrated (fixes by Codex): a failed launch let the panel relaunch setup without a click; the README's removal could cut off its own screen or input inside Lanai's window, so removal runs over RDP |
+| diff (phase 7) | a (gpt-6.1-sol) | 3 (full, cap) | 2 P2, 0 refuted, 0 downgraded to nit; both confirmed (reproduced against the model) and integrated (fixes by Codex): a settings read hid a finished operation's result, and was dropped during another action. Stage closed at the cap; stage b reviews the fixes |
+| diff (phase 7) | b single (opus-5.5) | 1 (full; single by John's Claude-usage rule, where the mode rule picks a panel) | 13 should-fix, 8 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex). Correctness: step 5 auto-advance keyed on English and stalled after a Windows-window setup boot; the setup.cmd note showed without a setup drive; the forced-stop notice was never cleared (new `lanai notice-seen`). UX: CLI hints shown to users, a Setup section that never closed, results far from their buttons, a restore button with nothing to restore (new `restore_pending` in status), step 6 flicker, popout owner for the shell's open-panel dot, rewritten copy |
+| diff (phase 7) | b single (opus-5.5) | 2 (full) | 10 should-fix, 10 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex). It reversed round 1's "disable Shut down while starting", which left no way to stop a boot whose agent never answers. Others: invisible disabled state, no progress for long jobs, a wrong "Setup is finished" (new `setup_done` in status), stale status overwriting an action, unfinished restore not blocking Start, copy rewrites; the SetupCalls safety test now runs in CI (nodejs) |
+| diff (phase 7) | b single (opus-5.5) | 3 (full, cap) | 8 should-fix, 8 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): silent glyph failures and missing tooltip notices; a false "start Windows" with a restore pending; a lost launch-timeout error; Help during normal setup steps; repeated and flashing setup notes; CLI hints in results; a README snapshot-deletion contradiction; `notice-seen` without the lock. Stage closed at the cap; John approved the stage a rerun on the final diff |
+| diff (phase 7) | a (gpt-6.1-sol) | 4 (full, the rerun on the final diff, approved by John) | 3 P2, 0 refuted, 0 downgraded to nit; all confirmed (one reproduced headless) and integrated (fixes by Codex): routine polls discarded every slow status read; a cached step 7 reply outlived a restore; restore failure advice ignored `restore_pending`. Above nit, so stage b and stage a run again; stage b is at its cap, so John decides |
+| diff (phase 7) | b single (opus-5.5) | 4 (full, John's extra round) | 6 should-fix, 4 nits, 0 refuted, 0 downgraded to nit; all confirmed, none integrated: the step 5 note during step 6's boot, guidance from status read before the newest reply, a successful restore saying "try again", contradictory unfinished-restore hints, "Setup is finished" over a driver update, no checked-in test for the model. Claude diagnosed the pattern (every round finds new clashes in the QML's decisions) and John chose to move every decision into bash (`lanai panel`, amendment above); the round's findings become its test cases |
+| plan amendment (panel view) | a (gpt-6.1-sol) | 1 (full) | 3 P2; all confirmed and integrated: direct action results had no record (every panel action now goes through `lib/ui.sh` and leaves one); the freshness rule would have rejected step 5's wait reply right when it must authorize the next call (separate rules for what to show and when to continue); a launch that never started was untracked (the QML keeps a pending token and a paused flag and passes them to `lanai panel`) |
+| plan amendment (panel view) | a (gpt-6.1-sol) | 2 (full) | 4 P2; all confirmed and integrated: a reloaded panel could act on an old reply (records carry the panel session and VM invocation; only this session's results authorize); Shut down could overwrite a running job's tracking (running job and last results in separate files); the view lacked settings, snapshots and log data (added); the reply-freshness rule was not implementable (setup's step now comes from a read-only `setup_plan` split from `setup_resume`, not from replies) |
+| plan amendment (panel view) | a (gpt-6.1-sol) | 3 (full, cap) | 1 P1, 3 P2; all confirmed and integrated: `auto` after step 5 waited on bookkeeping only the next setup call does (a pure `run_verdict` over the markers still on disk); a Windows restart could revive step 6's questions (the event logger counts QMP RESET events); transient input had no home (exempted, decides nothing); direct commands routed inconsistently (every panel command through ui-run or ui-job). Stage closed at the cap |
+| plan amendment (panel view) | b single (opus-5.5) | 1 (full; single by John's Claude-usage rule) | 5 should-fix, 6 nits, 0 refuted; all integrated in a rewrite of the amendment: `setup_plan` applies `record_previous_run`'s and `setup_follow`'s pending effects through a pure `run_verdict` (and agrees with `setup_resume` in both marker states); `auto` keeps the 10 s spacing and a precise wait definition; one result file per control group; step 6's questions from a `$RUN/step6-asked` file the event logger deletes on RESET (replacing the reset counter); no duplicated /proc scan or client run per poll, 15 s polling unless something is happening; session per bar instance passed to ui-run and ui-job; no list control; named Shut down and Force stop tests |
+| plan amendment (panel view) | b single (opus-5.5) | 2 (full) | 8 should-fix, 9 nits, 0 refuted; all integrated in a second rewrite. The main one simplifies: the setup job follows its own waits, so session ids, the `auto` field and its rules, and the paused flag go away (and clicking Open no longer cancels progress). Also: one record per group with a started record at launch (no separate job file), a fixed write and read order, result currency rules, panel words from a table with `reason` codes, `finished` by step 7's rule, one shared fact gatherer with a builtin cgroup scan skipped while the VM runs, 2 s polling only on the monitor whose panel is open, and the superseded contract lines named |
+| plan amendment (panel view) | b single (opus-5.5) | 3 (full, cap) | 9 should-fix, 4 nits, 0 refuted; all integrated: follow-up setup calls are bare (a repeated `--window` looped setup boots); results show only what the state cannot say (failures, spec 7's snapshot text, a restore's outcome), since wait replies and systemd's kept InvocationID made currency rules leak; `finished` needs `step5` not false; the view reads records while holding the lock probe, with three named record states; `ui-job` runs as a systemd user unit (spec 18); a client-mode setup boot starts its own client; `ui-run` has no deadline; `run_verdict` reads `running` last; the overlay applies only while the unit is inactive or failed; job polling 2 s; only the open panel's bar polls fast. Stage closed at the cap; the amendment's gate is closed |
+| diff (phase 7, panel view) | a (gpt-6.1-sol) | 1 (full) | 3 P2, 0 refuted, 0 downgraded to nit; all confirmed and integrated (fixes by Codex): polls wiped unsaved settings edits; "Run setup again" did nothing on a finished install (now offers the two display choices); a failed snapshot-choice save showed nothing |
+| diff (phase 7, panel view) | a (gpt-6.1-sol) | 2 (full) | 3 P2, 0 refuted, 0 downgraded to nit; all confirmed and integrated (fixes by Codex): a follow-up could boot Windows after it stopped (setup now revalidates `--follow` under its lock); existing installs never got the new VM helpers (runtime revision now hashes bin/ and lib/); concurrent readers saw a phantom job (shared reader lock). Also fixed: CI lost one test's result because lib/ui.sh set shell options when sourced |
+| diff (phase 7, panel view) | a (gpt-6.1-sol) | 3 (full, cap) | 1 P1, 3 P2, 0 refuted, 0 downgraded to nit; all confirmed and integrated (fixes by Codex, the test stub by Claude, who found it from CI first): with lingering on, a setup worker could start Windows after logout (now PartOf graphical-session.target, checked before each call); deactivation ended step 5's following; a replaced record made a seen launch read as failed; a test lost its package stub when it re-sourced client.sh. Stage closed at the cap |
+| diff (phase 7, panel view) | b single (opus-5.5) | 1 (full; single by John's Claude-usage rule) | 5 should-fix, 7 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): a setup failure outlived a restore; busy replies got the wrong words and stopped following; agreement tests could not tell a boot from an offer; timestamps broke under comma locales; "Run setup again" dead-ended while Windows ran; plus copy, warnings, logs and the QML lint invocation (test/qml-lint) |
+| diff (phase 7, panel view) | b single (opus-5.5) | 2 (full) | 4 should-fix, 7 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): steps 5 and 6 promised automatic progress with no job running; a restore success told the user to continue setup for days; unlabelled log paths; a README button name. Nits: a `missing` reason, busy-retry scope, the refused worker's log line, restore and re-run control wording, Continue setup disabled where it does nothing, a locale test that skips |
+| diff (phase 7, panel view) | b single (opus-5.5) | 3 (full, cap) | 3 should-fix, 6 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): plan and resume disagreed after a started run that failed; a double-click gave a false launch failure; a snapshot refusal showed far from step 3's controls; plus stopping, shared-folder and not-installed copy, gating and the README lint line. Stage closed at the cap; stage a's rerun on the final diff waits for John |
+| diff (phase 7, panel view) | a (gpt-6.1-sol) | 4 (full, the rerun on the final diff, approved by John) | 1 P2, 1 P3, 0 refuted, 0 downgraded to nit; both confirmed and integrated (fix by Codex): a failed snapshot-choice save could vanish once the plan moved past step 3 (now stepless); its retry text named a hidden button. Both stages are at their caps; John decides whether to accept or run one more round |
+| diff (phase 7, panel view) | John | 2026-10-05 | John accepted the gate with round 4's fixes unreviewed, both stages at their caps. Next: the hands-on test in the bar on the test copy |
+| diff (phase 7, during setup) | a (gpt-6.1-sol) | 1 (full) | 2 P2, 0 refuted, 0 downgraded to nit; both confirmed and integrated (fixes by Codex): Reopen vanished after a step 6 rollback; the accent stayed on while Windows shut down |
+| diff (phase 7, during setup) | b single (opus-5.5) | 1 (full; single by John's Claude-usage rule) | 1 should-fix, 1 test gap, 6 nits, 0 refuted, 0 downgraded to nit; integrated (fixes by Codex) except one accepted nit: Start and Open hid on a working install with a pending update step (spec 8); untested client timeout warnings; one Cancel at a time; no confirm once a stop is under way; setup accepts a window already open; constant Setup inset; step 5 copy. Accepted: the highlight lights before the setup drive is visible (no guest signal before setup) |
+| diff (phase 7, during setup) | b single (opus-5.5) | 2 (full; single by John's Claude-usage rule) | 0 should-fix, 7 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex, the log rows by Claude): Snapshots stay for a working install with a pending update; Reopen only on an active unit; truthful attention note; a guard comment; no empty Setup band on a finished install; test counts; these log rows. Stage closed clean |
+| diff (phase 7, during setup) | a (gpt-6.1-sol) | 2 (full, the rerun on the final diff) | 0 findings, 0 refuted, 0 downgraded to nit. Clean; its sandbox could not run bats, so Claude ran the full suite on 1563c2b (626 pass, 1 locale skip). The gate is closed |
+| plan amendment (scale, progress, clicks) | a (gpt-6.1-sol) | 1 (full) | 1 P1, 1 P2, 0 refuted; both integrated: the compressed-extent limit of the FIEMAP proof is stated as out of the threat model (a same-user process that clones a chosen slice could rewrite COMPLETE anyway; flagged to John); CI gets a host-made btrfs folder and fails, not skips, without it. Round 2 showed the CI premise was wrong (CI already loop-mounts btrfs in a privileged container); that finding is refuted on recheck, so the count is 1 confirmed, 1 refuted |
+| plan amendment (scale, progress, clicks) | a (gpt-6.1-sol) | 2 (full) | 1 P2, 0 refuted; integrated: round 1's host-step CI fix could not run (job-level container); the plan keeps CI's existing loop-mounted btrfs, adds strace, and fails rather than skips without btrfs in CI |
+| plan amendment (scale, progress, clicks) | a (gpt-6.1-sol) | 3 (full, cap) | 0 findings. Stage a clean |
+| plan amendment (scale, progress, clicks) | b single (opus-5.5) | 1 (full) | 4 should-fix, 6 nits, 0 refuted; all integrated (by Codex): a restore onto a deleted disk installs and locks the clone before hashing; provability defined by statfs and extent classes, with mixed plain and compressed extents (Omarchy mounts compress=zstd) and a fixture each; a one-extent probe with no write; a hook for restore's final map compare; threat model covers deliberate re-cloning in any mode; strace also rejects mmap/sendfile/splice/copy_file_range and polls start after the lock; the progress lock is read from /proc/locks; a resumed restore re-clones a stale temp; invalid windows_scale refuses boot like memory/cores, label "Windows scale"; right click uses $p.finished on purpose, Menu key toggles |
+| plan amendment (scale, progress, clicks) | b single (opus-5.5) | 2 (full) | 1 blocker, 2 should-fix, 8 nits, 0 refuted; all integrated (by Codex): unwritten (preallocated) extents count as provable, since dockur's detect-zeroes and discard make them (verified), with zero-range fixtures and a read-only extent count John runs on the rehearsal copy first; the existing disk needs only btrfs and a NOCOW match; the progress owner is the pid holding the lock file open (/proc/locks names the short-lived flock process, verified); no probe, the real clone falls back to the next root; the deleted-disk clone is locked before it appears; small files cloned then hashed once; no separate SHARED check; right-click open needs no idle lock; pwsh tests skip in CI (AUR only); README covers both scale choices; ctypes statfs/renameat2, FIEMAP batching, map timing, helpers.bash |
+| plan amendment (scale, progress, clicks) | b single (opus-5.5) | 3 (full, cap) | 1 should-fix, 4 nits, 0 refuted; nits integrated by Claude: any failure before the first install file is replaced is a clean refusal (a clone error included); the progress owner compares device and inode, not a path; the helper is `btrfs_tmp`; keypad Enter handled too. The should-fix (the deleted-disk restore changes storage before the hash, against req 7's literal "before anything changes", and dockur's cleanup ignores the disk lock) waits for John |
+| plan amendment (scale, progress, clicks) | John | 2026-10-05 | John chose option 1 for round 3's should-fix: on a deleted disk, publish and lock data.img, then put back the verified small files at once, then hash; the exception to req 7's "before anything changes" is logged in the spec. Gate closed |
+| diff (scale, progress, clicks) | a (gpt-6.1-sol) | 1 (full) | 1 P1, 1 P2, 0 refuted, 0 downgraded to nit; both reproduced by the reviewer, confirmed and integrated (fixes by Codex): restore installed small files hashed before the minutes-long image proof without a recheck (now rehashed just before each rename, on both paths); a non-object progress record failed the whole panel view. Also fixed by Claude from CI: a test used rg, absent from CI |
+| diff (scale, progress, clicks) | a (gpt-6.1-sol) | 2 (full) | 1 P2, 0 refuted, 0 downgraded to nit; confirmed (reproduced on tmpfs) and fixed by Claude: a NOCOW image whose first snapshot root cannot hold NOCOW (XFS, tmpfs) failed instead of falling back to the root beside storage; ficlone.py now returns the fallback code, with a test that fails without it |
+| diff (scale, progress, clicks) | a (gpt-6.1-sol) | 3 (full, cap) | 1 P2, 0 refuted, 0 downgraded to nit; confirmed and fixed by Claude: a staged small file swapped for a symlink to the snapshot copy passed the hash (sha256sum follows links) and was installed as a link while the restore reported success; restore_small_file now refuses non-regular files before and after the rename, with a test that fails without it. Stage closed at the cap with this fix unreviewed by stage a |
+| diff (scale, progress, clicks) | b single (opus-5.5) | 1 (full; single by John's Claude-usage rule until 09:00 EDT 2026-10-06, though this gate's findings above nit call for a panel) | 1 should-fix, 5 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): setup under its own lock skipped the blank-disk check (only a live image operation now skips it); prove output leaked into later failure reasons, raw helper text and a doubled backup hint; stale .partial folders, empty fallback roots and dead-owner map files are swept again; plain progress text without an em dash or a repeated label; the guest scale loop backs off and survives log failures; dead code |
+| diff (scale, progress, clicks) | b single (opus-5.5) | 2 (full; single by John's Claude-usage rule) | 2 should-fix, 6 nits, 0 refuted, 0 downgraded to nit; all integrated (fixes by Codex): a deleted-disk restore from a damaged snapshot deadlocked (a mismatch before publication is now a clean refusal; after it, the marker records the failed snapshot and a named other snapshot may replace it); a refused restore showed the setup step's snapshot advice (own reason and words); run-on CLI messages; raw helper errors; progress labels per step; scale backoff after the attempt; tests regrouped by behavior; named ioctl, docstring, README and one activity call per poll. The reviewer briefly took a flock on the real ~/.local/state/lanai/lock (no file changed; later prompts forbid it) |
+| diff (scale, progress, clicks) | b single (opus-5.5) | 3 (full, cap; single by John's Claude-usage rule) | 3 should-fix, 4 nits, 0 refuted, 0 downgraded to nit; all reproduced by the reviewer: any proof failure (not only a hash mismatch) marked a deleted-disk restore's snapshot failed, leaving no way out; an interrupted existing-disk restore whose snapshot later failed its hash deadlocked the same way; the panel could not show the failed state. Nits: a log failure before the scale set, a tautological awk test, article-less progress copy, a lost "You can close this panel." line |
+| diff (scale, progress, clicks) | John | 2026-10-05 | John chose to simplify instead of patching: a named different snapshot always replaces an unfinished restore, the failed-verification state goes away, and the panel offers every snapshot while a restore is unfinished (plan, phase B). One more stage b round, past the cap, on his OK |
+| diff (scale, progress, clicks) | b single (opus-5.5) | 4 (full; past the cap on John's OK; single by his Claude-usage rule) | 1 should-fix, 2 nits, 0 refuted, 0 downgraded to nit; all fixed by Claude, each with a test that fails without it: a damaged small file in the snapshot did not say "Restore another snapshot by name." and showed the snapshot path; a progress file left by a killed run carried its counts into the next run; "Right-click" spelling. The reviewer found no failure that leaves Windows unable to start with no way out while a valid snapshot exists. Stage b closed |
+| diff (scale, progress, clicks) | a (gpt-6.1-sol) | 4 (full, the rerun on the final diff, past the cap on John's OK) | 0 findings, 0 refuted, 0 downgraded to nit. Clean (its sandbox cannot bind sockets; Claude ran the full suite on 45bc98b: 707 pass). The gate is closed. Next: John's hands-on checks on the test copy |

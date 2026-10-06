@@ -839,6 +839,86 @@ no other prompt. Windows shut down by itself; step 6's automatic checks passed
 on the first poll; John answered yes to both questions, and setup reported step
 7. Pass: one prompt in total, as spec req 7 requires.
 
+## Phase 7 panel run (2026-10-05)
+
+John installed the `plugin/phase7` build (c48e683) into Omarchy's bar from the branch
+(`git clone -b plugin/phase7 ... ~/.config/omarchy/plugins/io.github.jzetterman.lanai`,
+then `omarchy plugin enable`), with Lanai's settings on the test copy.
+- The copy was already set up (the second hands-on run), so the panel showed step 4:
+  the client had no build stamp yet. Continue setup ran the quick check, wrote the
+  stamp without rebuilding, and setup reported finished.
+- Then, from the panel: Shut down, restore of snapshot `20261004T230202Z` ("The
+  snapshot was restored."), and Continue setup from step 1. The setup boot opened in
+  QEMU's basic window; John ran setup.cmd and approved the one prompt; Windows shut
+  down by itself; the setup job started it again with no click, opened the Looking
+  Glass window, and ran step 6's checks ("Checking Windows. You can close this
+  panel."). The two questions appeared; John answered yes to both; setup reported
+  finished.
+- John's feedback: during setup, hide controls the user can trip over (he clicked
+  Open window before setup needed it; it opened the Looking Glass window early), and
+  color the Setup section when the user must act. Both went into the plan amendment
+  ("During setup").
+
+## Extent classes of the test copy (2026-10-05)
+
+Before phase B of the scale, progress and clicks amendment, John ran
+`docs/plugin/proof-kit/count-image-extents.py` on the test copy's
+`/home/john/lanai-proofs/lanai-setup-test/data.img`, with its Windows shut down.
+The script reads the extent map only.
+
+```text
+filesystem: btrfs
+nocow: True
+size: 274877906944 bytes
+shared: 56003497984 bytes
+class                        extents               bytes
+plain                         318266         55666053120
+unwritten                       2133           337444864
+provable classes only: yes
+```
+
+Result: every extent is in a class phase B proves. The image is NOCOW, so it has no
+compressed extents. It has about 320k extents, so the map read takes many FIEMAP
+batches; phase B times it and shows it under "checking". Its one hash pass covers the
+whole 256 GiB, but only about 56 GB comes from disk; the holes read as zeros, so
+hashing speed, not the disk, sets most of the time.
+
+## Phase B automated storage proof (2026-10-05)
+
+Agent runs used isolated fixtures in this repository's `.btrfs-test`, never the
+rehearsal image or live storage. Normal (`+m`), NOCOW (`+C`), compressed (`+c`)
+and mixed images passed the real FIEMAP/reflink mutation matrix, including
+`fallocate -z` UNWRITTEN regions. Mutations restore size and mtime and still
+refuse completion. Independent manifests in the restore tests match the initial
+install; snapshot failures publish no COMPLETE and restore failures retain
+recovery markers once replacement has begun. Tests also cover changed original
+snapshots while the hashed clone still matches COMPLETE, locked no-replace
+publication of a deleted disk, small-file hashes before rename, and recovery.
+
+A read-only census of a local sparse fixture (9,007,104 logical bytes,
+4,505,600 allocated bytes, 1,100 plain extents, NOCOW false) took 0.002907 s;
+this crosses both the census and proof helper's FIEMAP batch boundaries. This
+is a small-fixture measurement, not timing for John's approximately 320k extents;
+John still records that rehearsal-image measurement using the census script.
+
+The strace read-budget test includes three concurrent panel polls and separately
+reports image and small-file reads; strace is unavailable in this agent sandbox,
+so that local measurement skips. CI installs it and requires both the measurement
+and real btrfs fixtures. A sandbox PID namespace hides /proc/locks records after
+external flock exits while the lock remains held; progress validates the matching
+owner's fdinfo FLOCK record in that case. The real container-start check and
+rehearsal-image traces remain John's manual row 7 proofs.
+
+Final local verification: 24 added Bats tests (23 pass, one strace skip); the
+four focused suites report 171 pass, zero fail, one skip. The required full run
+schedules 650 tests: 591 pass, 56 fail because the sandbox refuses Unix-socket
+binds, two skip (strace and a missing comma-decimal locale), and the existing
+spike real-flock test emits no TAP result (Bats reports 649 executed). A direct
+socat fixture bind confirms `Operation not permitted`. QML lint and the required
+ShellCheck command pass; these environment-limited results need a full rerun
+outside this sandbox before the acceptance gate.
+
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

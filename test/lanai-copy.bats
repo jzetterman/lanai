@@ -442,3 +442,15 @@ EOF
   assert [ ! -e "$T/fs/dst.partial" ]
   vm_can_open "$T/fs/src/data.img"
 }
+
+@test "generic manifest: hashes the image beyond the adoption prefix for lanai-copy" {
+  local before after
+  mkdir "$T/tree"
+  truncate -s 1M "$T/tree/data.img"
+  printf LANAI | dd of="$T/tree/data.img" conv=notrunc status=none
+  before=$(tree_manifest "$T/tree")
+  printf changed | dd of="$T/tree/data.img" bs=1 seek=900000 conv=notrunc status=none
+  after=$(tree_manifest "$T/tree")
+  assert [ "$before" != "$after" ]
+  assert_equal "$(awk '{print $3}' <<<"$after")" "$(sha256sum <"$T/tree/data.img" | cut -d ' ' -f1)"
+}

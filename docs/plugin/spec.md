@@ -77,7 +77,8 @@ Neither needs GPU acceleration.
    `omarchy-windows-vm` while Lanai runs Windows, and do not change its container
    settings (Windows version, language, disk size or format, CLEAR, custom ISO mounts)
    while Lanai is in use.
-6. Lanai keeps its own VM settings (memory and CPU cores). Setup fills them from
+6. Lanai keeps its own VM settings (memory, CPU cores and Windows' display scale,
+   requirement 12). Setup fills them from
    `omarchy-windows-vm`'s settings when it can read them without a prompt. Otherwise it
    uses half the host's memory, at most 16 GiB, and half the host's CPU threads, at
    most 8. From those settings it reads only the memory and core values; it
@@ -98,7 +99,23 @@ Neither needs GPU acceleration.
      it. Where the filesystem cannot make one, setup says so and suggests a backup
      instead. Restoring the snapshot also requires both VMs to be stopped. Lanai refuses
      to snapshot or restore while either VM runs, and holds the disk lock QEMU uses for
-     the whole operation, so a container VM cannot boot while it runs;
+     the whole operation, so a container VM cannot boot while it runs. While a snapshot
+     or restore runs, the panel shows what it is doing and how far it has got, as a
+     progress bar with a percentage in text; that includes a panel opened partway
+     through and a snapshot or restore started from the command line. Each reads the
+     disk image's data once: a snapshot reads the source once and records its hashes as
+     the snapshot's manifest; a restore reads the snapshot once and checks it against
+     that manifest before anything changes. Neither reads the data a second time to
+     check the finished copy. Instead each proves the copy holds exactly the data that
+     was read and hashed, by a check of shared storage for the disk image (a byte
+     compare is only for the small files), never metadata such as size and timestamps.
+     The proof also covers a change to the file being read (the source, or the
+     snapshot) after its read and before the proof. Lanai treats a filesystem and file
+     mode as provable only when row 7's fixtures pass on it; any other counts as
+     unprovable. When the
+     proof fails, a snapshot keeps no complete snapshot and a restore does not finish,
+     and each says so. Where a filesystem can make instant copies but Lanai cannot prove
+     them this way, setup treats it as one that cannot make an instant copy;
    - installs the host packages Lanai needs, in a terminal that shows the exact command
      before it runs, with the system's normal password prompt;
    - installs one pinned Looking Glass client build, verified by checksum;
@@ -149,13 +166,26 @@ Neither needs GPU acceleration.
     cause and one next step. "Failed" also says where the logs are and names the
     `omarchy-windows-vm` fallback (requirement 8).
 11. From the bar and panel, the user can start Windows, open the Windows window, and shut
-    Windows down. The panel also holds setup, settings, errors and the forced stop.
-    Panel actions are reachable from the keyboard where the Omarchy shell allows it.
+    Windows down. Left-clicking the bar icon opens the panel, or closes it when open, in
+    every state. Right-clicking it starts Windows when the state (requirement 10) is
+    stopped and nothing blocks a start (setup not finished, a snapshot or restore
+    running, an unfinished restore); opens the Windows window when the state is running,
+    setup is finished and the window is closed; and otherwise opens the panel, so a
+    failed, blocked or unfinished state always shows its cause first. The icon's
+    tooltip names what a right click will do in the current state. Enter or Space on the
+    focused icon acts like a left click. The panel also holds setup, settings, errors
+    and the forced stop. Panel actions are reachable from the keyboard where the
+    Omarchy shell allows it.
 12. The Windows window behaves like any Omarchy window. It tiles, goes fullscreen and
-    resizes, and the Windows desktop follows its size. At start, Windows uses the display
-    scale step (100 to 250 in steps of 25, then 300 to 500 in steps of 50) nearest the
-    focused monitor's scale, with ties rounded down (John, 2026-09-28). A host scale
-    change applies at the next start of Lanai's VM.
+    resizes, and the Windows desktop follows its size. Windows' display scale is a
+    setting: "match my monitor" (the default) or one fixed step the user picks (John,
+    2026-10-05). Steps are 100 to 250 in steps of 25, then 300 to 500 in steps of 50.
+    "Match my monitor" uses, at start, the step nearest the focused monitor's scale,
+    with ties rounded down (John, 2026-09-28); a host scale change applies at the next
+    start of Lanai's VM. Windows keeps the chosen scale when the window is resized and
+    Windows changes resolution, except that Windows caps the scale at what it allows
+    for the current resolution; the scale goes back up when the window grows again. A
+    scale setting change applies at the next start.
 13. Keyboard, mouse, clipboard (both ways) and audio output work in the Windows window.
 14. When Windows asks for a password (dockur normally signs in automatically), the user
     types the one they chose when `omarchy-windows-vm` installed Windows. Lanai never
@@ -273,11 +303,11 @@ stopped; Windows then resumes, boots after a restart, and `chkdsk` reports no er
 | 5a | A fixture for each failing check (missing or empty firmware, variables or MAC file; disk below its configured size; zeroed first 100 KB; both `data.img` and `data.qcow2` present; missing `windows.boot`; a `windows.base` that does not match the configured version and language; a `custom.iso` or `boot.iso` present) makes Lanai refuse to start and say why; the README states the remaining risks |
 | 6 | Settings seed from `omarchy-windows-vm` when readable, and otherwise from the stated host-relative defaults, with no prompt; with a sentinel password set on the test install, the sentinel never appears in Lanai's files, logs, setup terminal output, or any child process's arguments or environment; changed settings take effect at the next start |
 | 6a | Lanai pointed at a reflink copy boots the copy and never opens the live `~/.windows` |
-| 7 | On a machine with a working `omarchy-windows-vm` install, a user who follows the README reaches a working Windows window from the bar; setup shows one package-manager password prompt and at most one Windows administrator prompt (none when UAC is off), and no other Windows prompt (the driver-publisher prompt may appear only when Windows refuses to record the publisher's trust, which setup says on screen), and asks for one Windows restart; where the storage location's filesystem can make an instant copy, setup offers the snapshot, and restoring it returns the storage location to its pre-adoption hashes; where it cannot, setup says so and suggests a backup; snapshot and restore are each refused while either VM runs; a container start attempted during a snapshot or restore does not boot a VM, and the snapshot still matches its source |
+| 7 | On a machine with a working `omarchy-windows-vm` install, a user who follows the README reaches a working Windows window from the bar; setup shows one package-manager password prompt and at most one Windows administrator prompt (none when UAC is off), and no other Windows prompt (the driver-publisher prompt may appear only when Windows refuses to record the publisher's trust, which setup says on screen), and asks for one Windows restart; where the storage location's filesystem can make an instant copy, setup offers the snapshot, and restoring it returns the storage location to its pre-adoption hashes; where it cannot, setup says so and suggests a backup; snapshot and restore are each refused while either VM runs; a container start attempted during a snapshot or restore does not boot a VM, and the snapshot still matches its source; a snapshot and a restore each show a progress bar that advances while they run, also in a panel opened partway through and for one started from the command line; the bytes read from the files of the storage location, the snapshot and the copy, counted at the read calls so the page cache cannot hide a second read, total no more than one image size plus a stated allowance for the small files; two fixtures, each run for a snapshot and a restore, on each filesystem and file mode Lanai treats as provable (at least btrfs with copy-on-write, btrfs compressed, and btrfs with copy-on-write turned off): one changes one block of the copy after the clone and puts back its size and modification time, the other changes one block of the file being read (the source, or the snapshot) after it is read and before the proof: in each the restore does not finish and the snapshot is not kept as complete, and each says so; a review confirms the proof compares data or shared storage, not metadata |
 | 7b | Before setup, each lock path locks Windows or leaves it at the sign-in screen: Lock in the Start menu and in Ctrl+Alt+Del, Switch user, Windows key + L sent with QMP `send-key`, and each automatic lock the VM can trigger, turned on at a 1-minute timeout (secure screen saver, machine inactivity limit). After setup, with the screen-saver timeout still at 1 minute (setup leaves it set but not secure) and the inactivity limit as setup left it, none of them does; Windows is still unlocked after idling past every timeout; Windows reports no sleep state it could wake from, and row 27 shows no Bluetooth device. A shutdown with the Ctrl+Alt+Del screen left open is recorded (clean, or the README names it). Setup's domain or MDM warning appears when its membership check reports membership (simulated). Approving the prompt with a different administrator account makes setup refuse; afterwards nothing differs from the before-setup inventory (dockur already installs some pieces, such as its own file-sharing service and guest agent): the lock controls still lock, the Looking Glass IDD and the scale sign-in task are absent, the guest agent's allow-list is not applied, and Lanai has not added or replaced any file-sharing piece. The README states the lock note from requirement 7 |
 | 8 | A deliberate client/IDD mismatch is detected and named; a simulated pin change keeps or restores a working window |
 | 9 | Interrupting setup at each step, then rerunning it, ends in a working install |
-| 10-17, 20 | Each passes a scripted or checklist test (list in the plan); requirement 12 is checked with a scale matrix: each step, a value just above and below each boundary, a tie (for example 112.5% gives 100%, 275% gives 250%), the 250-300 gap, and values below 100% and above 500% (clamped to the nearest end). If requirement 15 is moved to v2 (recorded in this spec before the release gate), its check and the requirement 28 check are skipped |
+| 10-17, 20 | Each passes a scripted or checklist test (list in the plan); requirement 12 is checked with a scale matrix: each step, a value just above and below each boundary, a tie (for example 112.5% gives 100%, 275% gives 250%), the 250-300 gap, and values below 100% and above 500% (clamped to the nearest end). If requirement 15 is moved to v2 (recorded in this spec before the release gate), its check and the requirement 28 check are skipped. Requirement 11's clicks: in each state requirement 10 lists, plus during setup, a snapshot or restore, and an unfinished restore, a left click, Enter and Space on the icon open the panel (and close it when open), and a right click starts Windows only when stopped with nothing blocking a start, opens its window only when running after setup with the window closed, and otherwise opens the panel |
 | 18 | Shell restart, plugin reload, plugin update and plugin disable each leave Windows running, and the bar shows its true state afterwards |
 | 19 | Logout ends in a clean shutdown, with lingering both enabled and disabled, including with row 7b's 1-minute screen saver still set (no longer secure) and running at logout; a guest that ignores shutdown at logout (fixture: turn the Windows lock back on and lock Windows, or leave open a security screen that row 7b recorded as ignoring shutdown, then log out) is force-stopped after 2 minutes and reported at the next start, naming a locked Windows, an open security screen, or a shutdown that did not finish in time as likely causes; on reboot and power-off, with lingering both enabled and disabled and an idle, unlocked Windows, Windows' shutdown starts when the host's does, the time Windows took is measured and written in the README, and the next start reports no forced stop; with the logout fixture above, a reboot whose wait expires ends in a forced stop that the next start reports |
 | 21 | After suspend and resume, the requirement 20 check passes, and the guest clock is within 2 s of the host's within 60 s |
@@ -338,3 +368,11 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | b Grok (substitute) | 2026-09-28 | Round 3 (full, cap): 2 P2, 1 P3; all confirmed and integrated (row 19 splits the clean reboot from the forced-stop fixture; row 7b's refusal compares against the before-setup inventory, since dockur already installs its own file-sharing service and guest agent; row 4 parenthetical dropped). Stage closed at the cap |
 | spec | amendment | 2026-09-28 | From the phase 4 review: req 23 lets Windows start with no host network (passt's local mode; checked by two reviewers), and row 23-24 tests it (John's decision) |
 | spec | amendment | 2026-10-04 | From the phase 6 hands-on runs (John's decisions): req 7 and row 7 allow at most one administrator prompt (none when UAC is off) and no other Windows prompt; the v2 no-touch install is described under Out of scope |
+| spec | amendment | 2026-10-05 | From the phase 7 panel run (John): Windows' scale drifted with the window size, because the sign-in task applied it once as an offset from Windows' recommended scale. Req 12 makes the scale a setting (match my monitor, or a fixed step) that Windows keeps through resizes, within Windows' cap; req 6 lists it |
+| spec | amendment | 2026-10-05 | From the phase 7 panel run (John): snapshot and restore show a progress bar, and each reads the disk's data once (the second full hash pass is replaced by a check that does not re-read the data); req 11 swaps the icon's clicks (left opens the panel, right starts or opens Windows); row 7 checks the progress and the single read, row 10-17 the clicks |
+| spec | amendment review a (gpt-6.1-sol) | 2026-10-05 | Progress, single read and clicks, round 1 (full): 0 findings. Stage a clean |
+| spec | amendment review b single (opus-5.5) | 2026-10-05 | Round 1 (full): 4 should-fix, 5 nits, 0 refuted; all integrated: the copy check must prove the same data, not size and timestamps, and row 7's fixture keeps them; what a snapshot and a restore each read and record; the snapshot's failed check is tested too; the right click is defined for every req 10 state (failed and unfinished states open the panel); Enter matches the left click; progress shows in a panel opened partway and for command-line runs; bytes read measure the single read; a missing period; the log row's row reference |
+| spec | amendment review b single (opus-5.5) | 2026-10-05 | Round 2 (full): 3 should-fix, 3 nits, 0 refuted; all integrated: the right click names what blocks a start (req 10 has no setup or busy state); the single read is counted at the read calls on the image files, with an allowance for small files; the proof covers a write to the file being read before the copy (on XFS and copy-on-write-off btrfs files an unshared block is overwritten in place, so the block map alone misses it), with a fixture; a review confirms the proof is not metadata; filesystems whose copies cannot be proven count as unable to make one; a left click toggles the panel |
+| spec | amendment review b single (opus-5.5) | 2026-10-05 | Round 3 (full, cap): 1 should-fix, 5 nits, 0 refuted; all integrated: the proof fixtures run on every filesystem and file mode Lanai treats as provable (btrfs copy-on-write, compressed and copy-on-write off), and anything untested counts as unprovable (so XFS falls back to "cannot make an instant copy" until it has a fixture run); the image's proof is shared storage, a byte compare only for small files; the read count covers the storage, snapshot and copy files; the second fixture's change lands before the proof; Space is tested; the tooltip names the right click. Stage closed at the cap with these integrations unreviewed; the gate waits for John |
+| spec | John | 2026-10-05 | John accepted the amendment's gate with round 3's integrations unreviewed. Next: the plan for this work and the display scale |
+| spec | John | 2026-10-05 | Req 7 exception (from the plan gate): when dockur has already deleted the disk, a restore puts the cloned disk in place locked, and the verified small files right after it, before the image's one hash, so a container start cannot wipe or boot it; a failed check leaves the restore unfinished. Approved by John |

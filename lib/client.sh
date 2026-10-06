@@ -221,6 +221,13 @@ log_client_build() {
   sed -n 's/^.* | Looking Glass (\([^)]*\))$/\1/p' "$1" 2>/dev/null | head -n 1
 }
 
+# The verified build stamp lives with the binary; polling never runs the client.
+build_stamp_current() {
+  local d
+  d=$(client_builds)/$LG_BUILD
+  [[ -x $d/bin/looking-glass-client && -f $d/build-stamp && $(<"$d/build-stamp") == "$LG_BUILD" ]]
+}
+
 # Print the build a client binary reports: the "Looking Glass (<build>)"
 # line it logs first, also for --help. Fails when it prints none.
 client_version() {
@@ -370,6 +377,7 @@ build_client() {
   local cache dl dest work src log part out
   dest=$(client_builds)/$LG_BUILD
   if [[ $(client_version "$dest/bin/looking-glass-client" 2>/dev/null) == "$LG_BUILD" ]]; then
+    printf '%s\n' "$LG_BUILD" >"$dest/build-stamp" || return 1
     builds_prune
     printf '%s\n' "$dest/bin/looking-glass-client"
     return 0
@@ -431,6 +439,7 @@ build_client() {
       exit 1
     }
   ) || return 1
+  printf '%s\n' "$LG_BUILD" >"$dest/build-stamp" || return 1
   builds_prune
   printf '%s\n' "$dest/bin/looking-glass-client"
 }

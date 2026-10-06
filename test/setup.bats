@@ -598,6 +598,7 @@ through_step4() {
   install
   setup_json '{"snapshot": "declined"}'
   fake_build "$LG_BUILD"
+  printf '%s\n' "$LG_BUILD" >"$(client_builds)/$LG_BUILD/build-stamp"
   pinned_files
 }
 
@@ -654,7 +655,7 @@ assert_set_time_now() {
   ((${ns:0:10} - EPOCHSECONDS <= 5 && EPOCHSECONDS - ${ns:0:10} <= 5)) || fail "guest-set-time $ns is not now"
 }
 
-@test "lanai setup: writes its reply to setup-reply.json too, for the panel's detached runs" {
+@test "lanai setup: writes its reply to setup-reply.json too, for CLI callers" {
   install
   lanai_run setup
   assert_failure
@@ -803,8 +804,9 @@ exec /usr/bin/mv "$@"'
     setup_run --no-snapshot
     assert_failure
     assert_equal "$(field ok)" false
-    assert_equal "$(field step)" 3
+    assert_equal "$(jq 'has("step")' <<<"$JSON")" false
     assert_equal "$(field message)" "Lanai cannot record its setup state."
+    assert_equal "$(field reason)" record
     assert_equal "$(field next)" "run setup again"
     assert_equal "$(jq -r '.snapshot // "unset"' "$S/setup.json")" unset
     assert [ ! -e "$T/build-called" ]
@@ -838,7 +840,11 @@ exec /usr/bin/mv "$@"'
   setup_json '{"snapshot": "declined"}'
   pinned_files
   export WAYLAND_DISPLAY=wayland-3
-  build_client() { fake_build "$LG_BUILD"; echo "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"; }
+  build_client() {
+    fake_build "$LG_BUILD"
+    printf '%s\n' "$LG_BUILD" >"$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/build-stamp"
+    echo "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"
+  }
   setup_run
   assert_success
   assert_equal "$(field step)" 5
@@ -881,7 +887,7 @@ exec /usr/bin/mv "$@"'
   assert_success
   assert_equal "$(field step)" 6
   assert_equal "$(jq -r .step5 "$S/setup.json")" true
-  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":100,"setup":false,"window":false}'
+  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":100,"setup":false,"window":false,"step6":true}'
   # The pinned client, not the build that matches the old record.
   run tail -n 1 "$T/systemd-run.args"
   assert_output "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"
@@ -1456,6 +1462,9 @@ exec /usr/bin/mv "$@"'
   setup_run --no-snapshot
   assert_equal "$(field step)" 4
   fake_build "$LG_BUILD"
+  # A completed step 4 now includes its verified stamp, which the read-only
+  # planner requires without running the client (panel-view amendment).
+  printf '%s\n' "$LG_BUILD" >"$(client_builds)/$LG_BUILD/build-stamp"
   setup_run
   assert_equal "$(field step)" 5
   assert_equal "$(field window)" true

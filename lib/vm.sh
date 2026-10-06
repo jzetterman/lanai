@@ -204,51 +204,48 @@ run_dir_check() {
 
 # --- run bookkeeping ---
 
-# Turn the previous run's markers into a verdict in <state>/last-run, and
-# print it (plan: Architecture). forced when the "forced" marker exists (it
-# wins over a guest SHUTDOWN record); else, for a run that really started
-# (the "running" marker, and a "started" stamp with the same invocation id,
-# which the event logger writes once QEMU answers QMP), clean when
-# last-shutdown records a guest-initiated shutdown of that invocation, and
-# forced otherwise. A run whose QEMU never answered failed to start; that
-# prints nostart without writing last-run. Without a verdict, last-run
-# stays as it was (the panel clears it once shown). It also owns step 5's
-# verdict (plan phase 6): after a clean setup boot (boot.json's setup)
-# that no stop request of that run asked for, it sets "step5" in an existing
-# setup.json. Always ends with the markers, the stamp, last-shutdown and any
-# stop request deleted. Every path that starts the unit calls it first,
-# through preflight.
-record_previous_run() {
-  local s verdict="" inv="" started="" boot=false rinv=""
+# Read the other markers before running: its presence proves they predate cleanup.
+# No writes; callers only interpret ended runs when the unit is stopped.
+run_verdict() {
+  local s inv="" started="" shutdown='{}' forced=false requested="" boot=false verdict=none complete=false
   s=$(state_dir)
-  mkdir -p -- "$s"
-  if [[ -e $s/forced ]]; then
-    verdict=forced
-  elif [[ -e $s/running ]]; then
-    inv=$(<"$s/running") || inv=""
-    [[ ! -f $s/started ]] || started=$(<"$s/started")
-    if [[ -n $inv && $started == "$inv" ]]; then
+  [[ ! -f $s/started ]] || started=$(<"$s/started")
+  shutdown=$(jq -c . "$s/last-shutdown" 2>/dev/null) || shutdown='{}'
+  [[ ! -e $s/forced ]] || forced=true
+  [[ ! -f $s/stop-requested ]] || read -r requested _ <"$s/stop-requested" || true
+  boot=$(jq -r '.setup == true' "$s/boot.json" 2>/dev/null) || boot=false
+  [[ ! -f $s/running ]] || inv=$(<"$s/running")
+  if $forced; then verdict=forced
+  elif [[ -n $inv ]]; then
+    if [[ $started == "$inv" ]]; then
       verdict=forced
-      if jq -e --arg inv "$inv" '.invocation == $inv and .guest == true' \
-        "$s/last-shutdown" >/dev/null 2>&1; then
+      if jq -e --arg i "$inv" '.invocation == $i and .guest == true' <<<"$shutdown" >/dev/null; then
         verdict=clean
       fi
-    else
-      verdict=nostart
-    fi
+    else verdict=nostart; fi
   fi
-  if [[ -n $verdict && $verdict != nostart ]]; then
+  [[ $verdict != clean || $boot != true || $requested == "$inv" ]] || complete=true
+  jq -nc --arg v "$verdict" --arg i "$inv" --argjson c "$complete" \
+    '{verdict:$v, invocation:$i, completes_step5:$c}'
+}
+
+# Consume the pure verdict under the operation lock, recording last-run and
+# step5 first. Remove running before the other markers so readers see the write.
+record_previous_run() {
+  local s doc verdict
+  s=$(state_dir)
+  mkdir -p -- "$s"
+  doc=$(run_verdict)
+  verdict=$(jq -r .verdict <<<"$doc")
+  if [[ $verdict == clean || $verdict == forced ]]; then
     printf '%s\n' "$verdict" >"$s/last-run.tmp" && mv -f -- "$s/last-run.tmp" "$s/last-run"
   fi
-  if [[ $verdict == clean && -f $s/setup.json ]]; then
-    boot=$(jq -r '.setup == true' "$s/boot.json" 2>/dev/null) || boot=false
-    [[ ! -f $s/stop-requested ]] || read -r rinv _ <"$s/stop-requested" || true
-    if [[ $boot == true && $rinv != "$inv" ]]; then
-      setup_set step5 true || echo "lanai: cannot record step 5 in setup.json" >&2
-    fi
+  if [[ -f $s/setup.json ]] && jq -e '.completes_step5' <<<"$doc" >/dev/null; then
+    setup_set step5 true || echo "lanai: cannot record step 5 in setup.json" >&2
   fi
-  rm -f -- "$s/running" "$s/started" "$s/forced" "$s/last-shutdown" "$s/stop-requested"
-  [[ -z $verdict ]] || printf '%s\n' "$verdict"
+  rm -f -- "$s/running"
+  rm -f -- "$s/started" "$s/forced" "$s/last-shutdown" "$s/stop-requested"
+  [[ $verdict == none ]] || printf '%s\n' "$verdict"
 }
 
 # --- socket clients (QMP and the guest agent) ---
@@ -598,9 +595,13 @@ clock_sync() {
 
 # Write the QMP line <line> to <state>/last-shutdown when it is a SHUTDOWN
 # event, stamped with this run's $INVOCATION_ID: {"invocation", "guest",
-# "reason"}. Other lines are ignored.
+# "reason"}. RESET retires step 6's questions; other lines are ignored.
 event_record() {
-  local rec s
+  local rec s run
+  if jq -e '.event == "RESET"' <<<"$1" >/dev/null 2>&1; then
+    if run=$(run_dir); then rm -f -- "$run/step6-asked"; fi
+    return 0
+  fi
   rec=$(jq -c --arg inv "${INVOCATION_ID:-}" 'select(.event == "SHUTDOWN") |
     {invocation: $inv, guest: (.data.guest == true), reason: (.data.reason // "")}' <<<"$1" 2>/dev/null) ||
     return 0
@@ -647,6 +648,29 @@ vm_settings() {
     [[ -n $cores ]] || cores=$(jq -r .cores <<<"$seed")
   fi
   printf '%s %s\n' "$mem" "$cores"
+}
+
+# Preserve JSON types: only an absent key defaults to auto, never null or false.
+windows_scale_value() {
+  jq -er --arg steps "$LANAI_SCALE_STEPS" '
+    select(type == "object") |
+    (if has("windows_scale") then .windows_scale else "auto" end) |
+    select(. == "auto" or (type == "number" and
+      (. as $v | [$steps | splits(" ") | select(length > 0) | tonumber] | index($v) != null)))' <<<"$1"
+}
+
+# Shared by boot and settings; no monitor reads for a fixed setting.
+vm_windows_scale() {
+  local f doc='{}'
+  f=$(settings_file)
+  [[ ! -L $f ]] || return 1
+  if [[ -e $f ]]; then doc=$(cat -- "$f") || return 1; fi
+  windows_scale_value "$doc"
+}
+
+# A validated CLI value as JSON, retaining auto's string type.
+scale_json() {
+  if [[ $1 == auto ]]; then printf '"auto"\n'; else printf '%s\n' "$1"; fi
 }
 
 # Print the host's IPv4 default gateway, or nothing when there is no
@@ -741,7 +765,7 @@ vm_exec() {
     rm -f -- "$run/$name.pid"
   done
   # Setup's step 6 times the guest agent's open and closed port per boot.
-  rm -f -- "$run/ivshmem" "$run/qga-open-since" "$run/qga-closed-since"
+  rm -f -- "$run/ivshmem" "$run/qga-open-since" "$run/qga-closed-since" "$run/step6-asked"
   : >"$run/client.log"
 
   run_once virtiofsd "$LANAI_VIRTIOFSD" --sandbox namespace --shared-dir "$HOME/Windows" \

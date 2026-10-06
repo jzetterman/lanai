@@ -5,13 +5,15 @@
 # at <data>/snapshots/<name>/, or at <storage>.lanai-snapshots/<name>/ when
 # the data folder cannot reflink from the storage location. <name> is the
 # UTC time, like 20260928T193000Z. It is built in <name>.partial/, checked
-# file by file (list, size, SHA-256) against the storage location while
+# by shared image extents and small-file bytes against the storage location while
 # QEMU's write lock is held, given a SOURCE file (the storage location's
 # real path) and a COMPLETE file (the manifest), and only then renamed. A
 # snapshot counts only for the storage location its SOURCE names, and only
 # with a matching COMPLETE. The callers hold lanai_flock, so no two
 # snapshots or restores overlap.
 # shellcheck shell=bash
+# The operation wrapper deliberately supplies exported variables to its callees.
+# shellcheck disable=SC2030,SC2031
 
 LANAI_SNAP_RE='^[0-9]{8}T[0-9]{6}Z$'
 
@@ -36,48 +38,12 @@ snapshot_roots() {
   printf '%s\n' "$(data_dir)/snapshots" "$1.lanai-snapshots"
 }
 
-# Print the first snapshot place that can hold an instant copy of the
-# install at <storage>, probed with a real reflink of windows.mac (a small
-# file). Places are made with mode 0700; one that fails own_dir is
-# skipped. A folder the probe had to create is removed again
-# when it fails. Fails when neither place can reflink.
-snapshot_root() {
-  local storage=$1 root probe made
-  while IFS= read -r root; do
-    made=0
-    if [[ ! -e $root && ! -L $root ]]; then
-      if ! mkdir -p -- "${root%/*}" 2>/dev/null || ! mkdir -m 700 -- "$root" 2>/dev/null; then
-        continue
-      fi
-      made=1
-    fi
-    own_dir "$root" || continue
-    # A place that cannot reflink is expected here, so cp's error is hidden.
-    probe=$root/.lanai-probe.$$
-    if reflink_file "$storage/windows.mac" "$probe" 2>/dev/null; then
-      rm -f -- "$probe"
-      printf '%s\n' "$root"
-      return 0
-    fi
-    rm -f -- "$probe"
-    ((made == 0)) || rmdir -- "$root" 2>/dev/null || true
-  done < <(snapshot_roots "$storage")
-  return 1
-}
-
-# Print the manifest (tree_manifest) of snapshot folder <dir> without its
-# own COMPLETE and SOURCE files.
-snapshot_manifest() {
-  local m
-  m=$(tree_manifest "$1") || return 1
-  grep -vE '^f [0-9]+ [0-9a-f]{64} (COMPLETE|SOURCE)$' <<<"$m" || true
-}
-
 # Return 0 when <dir> is a complete snapshot of <storage>: a real folder
 # owned by the user, in a snapshot place that passes own_dir, with a
 # snapshot name, a SOURCE naming <storage>, a COMPLETE manifest of top-level
 # install files only, and exactly those files at those sizes beside them.
-# (restore checks every SHA-256 before it writes anything.)
+# Restore checks every SHA-256 before replacing an existing disk. A deleted
+# disk is published locked before its image hash (the approved req 7 exception).
 snapshot_valid() {
   local d=$1 storage=$2 kind size sum name want="" have
   [[ ${d##*/} =~ $LANAI_SNAP_RE && -d $d && ! -L $d ]] || return 1
@@ -177,125 +143,253 @@ snapshot_remove() {
   rm -rf -- "$1"
 }
 
-# snapshot: make a snapshot of the storage location. Prints its path; on a
-# refusal prints the reason, and returns 3 when no place can reflink.
+# Sweep only interrupted snapshots belonging to this storage location, under
+# lanai_flock. Unknown SOURCE files and other locations are left alone.
+snapshot_sweep() {
+  local root part source
+  while IFS= read -r root; do
+    own_dir "$root" || continue
+    for part in "$root"/*.partial; do
+      [[ ${part##*/} =~ ^[0-9]{8}T[0-9]{6}Z\.partial$ ]] || continue
+      own_dir "$part" || continue
+      source=$part/SOURCE
+      [[ -f $source && ! -L $source && $(<"$source") == "$1" ]] || continue
+      snapshot_remove "$part"
+    done
+  done < <(snapshot_roots "$1")
+}
+
+# Old proof maps pin no blocks, but an interrupted owner can leave records.
+# Only numeric names with a dead pid are ours to remove. The caller holds the
+# operation lock, so no other image operation can be starting concurrently.
+image_map_sweep() {
+  local file pid
+  for file in "$(state_dir)"/image-map.*.json; do
+    pid=${file##*/image-map.}; pid=${pid%.json}
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || continue
+    [[ -d /proc/$pid ]] || rm -f -- "$file"
+  done
+}
+
+# Both image helpers keep detailed errors on stderr for the operation log.
+# Successful proof output is a manifest; failures use one plain reason.
+image_helper() {
+  local helper=$1 output rc=0
+  shift
+  output=$(python3 "$LANAI_LIB/$helper.py" "$@" 2>&1) || rc=$?
+  if ((rc == 0)); then printf '%s\n' "$output"; return 0; fi
+  printf '%s\n' "$output" >&2
+  case $output in
+    *'filesystem cannot make an instant copy'*)
+      echo "This storage location cannot make an instant copy with a verified image." ;;
+    *FIEMAP*|*ioctl*|*'cannot identify image filesystem'*)
+      echo "Lanai cannot verify the image in this storage location." ;;
+    *'File exists'*)
+      echo "Another disk appeared before the restore could put its disk in place." ;;
+    *'snapshot is damaged'*)
+      echo "The snapshot is damaged: its image does not match its manifest." ;;
+    *'image changed during verification'*)
+      echo "The image changed during verification." ;;
+    *'image changed or its shared storage does not match'*)
+      echo "The image changed or its shared storage does not match." ;;
+    *'image path changed'*|*'image shortened'*)
+      echo "The image changed while Lanai was checking it." ;;
+    *'first 100 KB'*)
+      echo "The Windows disk is blank." ;;
+    *)
+      if [[ $helper == ficlone ]]; then
+        echo "Lanai could not make an instant copy of the image."
+      else
+        echo "Lanai could not verify the image."
+      fi ;;
+  esac
+  return "$rc"
+}
+
+image_proof() { image_helper image-proof "$@"; }
+image_clone() { image_helper ficlone "$@"; }
+
+# Progress belongs to the operation lock, including CLI invocations. A separate
+# subshell keeps traps and exported helper context out of sourced callers.
+image_operation() (
+  export LANAI_IMAGE_OPERATION=$1 LANAI_IMAGE_OWNER=$BASHPID
+  LANAI_IMAGE_PROGRESS="$(state_dir)/image-progress.json"
+  LANAI_IMAGE_MAP="$(state_dir)/image-map.$BASHPID.json"
+  export LANAI_IMAGE_PROGRESS LANAI_IMAGE_MAP
+  shift
+  LANAI_SNAPSHOT_PART=''
+  image_map_sweep
+  trap 'rm -f -- "$LANAI_IMAGE_PROGRESS" "$LANAI_IMAGE_MAP"; if [[ -n $LANAI_SNAPSHOT_PART ]]; then snapshot_remove "$LANAI_SNAPSHOT_PART"; fi; unlock_disk' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # A run killed outright leaves its progress behind; never carry its counts over.
+  rm -f -- "$LANAI_IMAGE_PROGRESS"
+  image_phase checking || exit 1
+  "$@"
+)
+
+image_phase() {
+  python3 "$LANAI_LIB/image-proof.py" progress "$1"
+}
+
+# Hash only small files. The image's one hash comes from image-proof.py.
+small_manifest() {
+  local dir=$1 name size sum
+  while IFS= read -r name; do
+    [[ $LANAI_STORE_NAMES == *" $name "* && $name != data.img ]] || continue
+    size=$(stat -c %s -- "$dir/$name") || return 1
+    sum=$(sha256sum <"$dir/$name" | cut -d ' ' -f1) || return 1
+    [[ $sum =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf 'f %s %s %s\n' "$size" "$sum" "$name"
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\n' | LC_ALL=C sort)
+}
+
+install_list() {
+  find "$1" -mindepth 1 -maxdepth 1 ! -name SOURCE ! -name COMPLETE -printf '%y %P %s\n' | LC_ALL=C sort
+}
+
+# Make a snapshot; return 3 for an unprovable image or unsupported roots.
 snapshot_create() {
-  local dir reason root name part m d
+  local dir reason root name part='' m image name_file rc made_root
   dir=$(storage_dir) || return 1
   if [[ $dir == *$'\n'* ]]; then
-    echo "the storage location's path holds a newline"
-    return 1
+    echo "the storage location's path holds a newline"; return 1
   fi
   if reason=$(snapshot_blocked) || reason=$(restore_pending) || reason=$(storage_problem "$dir" snapshot); then
-    echo "$reason"
-    return 1
+    echo "$reason"; return 1
   fi
-  # The adoption checks (the setup flow's snapshot step comes after them),
-  # which also make sure snapshot_root's probe file, windows.mac, exists.
-  if ! reason=$(layout_check "$dir"); then
-    printf '%s\n' "$reason"
-    return 1
+  if ! reason=$(layout_check "$dir" structural); then
+    printf '%s\n' "$reason"; return 1
   fi
-  root=$(snapshot_root "$dir") || {
-    echo "$dir's filesystem cannot make an instant copy here."
-    return 3
-  }
   if ! lock_disk "$dir/data.img"; then
-    echo "cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it first."
-    return 1
+    echo "cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it first."; return 1
   fi
-  # Leftovers of an interrupted snapshot of this location. Under lanai_flock
-  # no snapshot is being built, so one without a SOURCE yet (stopped
-  # mid-copy) is a leftover too; another location's are left alone.
-  for d in "$root"/*.partial; do
-    [[ -d $d && ! -L $d ]] || continue
-    d=${d%.partial}
-    [[ ${d##*/} =~ $LANAI_SNAP_RE ]] || continue
-    if [[ ! -e $d.partial/SOURCE || $(<"$d.partial/SOURCE") == "$dir" ]]; then
-      snapshot_remove "$d.partial"
-    fi
-  done
+  image_phase checking
+  if ! reason=$(image_proof gate "$dir/data.img"); then
+    echo "$reason"; return 3
+  fi
+  snapshot_sweep "$dir"
   name=$(date -u +%Y%m%dT%H%M%SZ)
-  part=$root/$name.partial
-  if [[ -e $root/$name || -e $part ]]; then
-    unlock_disk
-    echo "a snapshot named $name already exists; try again in a second"
-    return 1
+  while IFS= read -r root; do
+    made_root=false
+    if [[ ! -e $root && ! -L $root ]]; then
+      if ! mkdir -p -- "${root%/*}" || ! mkdir -m 700 -- "$root"; then continue; fi
+      made_root=true
+    fi
+    own_dir "$root" || continue
+    part=$root/$name.partial
+    if [[ -e $root/$name || -e $part ]]; then
+      echo "a snapshot named $name already exists; try again in a second"; return 1
+    fi
+    mkdir -m 700 -- "$part" || return 1
+    LANAI_SNAPSHOT_PART=$part
+    # Save the location before a clone can pin blocks, including after power
+    # loss. Both the record and its directory entry must reach disk first.
+    if ! printf '%s\n' "$dir" >"$part/SOURCE" ||
+      ! sync -- "$part/SOURCE" || ! sync -- "$part"; then
+      snapshot_remove "$part"
+      $made_root && rmdir -- "$root" 2>/dev/null || true
+      echo "the snapshot could not record its storage location; nothing was kept"; return 1
+    fi
+    image_phase cloning
+    rc=0
+    reason=$(image_clone --new "$dir/data.img" "$part/data.img") || rc=$?
+    if ((rc == 0)); then break; fi
+    snapshot_remove "$part"; part=''; LANAI_SNAPSHOT_PART=''
+    $made_root && rmdir -- "$root" 2>/dev/null || true
+    if ((rc != 3)); then echo "The snapshot failed: ${reason%.}. Nothing was kept."; return 1; fi
+  done < <(snapshot_roots "$dir")
+  if [[ -z $part ]]; then
+    echo "This storage location cannot make an instant copy with a verified image."; return 3
   fi
-  if ! mkdir -m 700 -- "$part"; then
-    unlock_disk
-    echo "cannot create $part"
-    return 1
+  rc=0
+  reason="copy or small-file check failed"
+  while IFS= read -r name_file; do
+    [[ $name_file != data.img ]] || continue
+    reflink_file "$dir/$name_file" "$part/$name_file" || { rc=1; break; }
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\n' | LC_ALL=C sort)
+  if ((rc == 0)); then
+    image=$(image_proof prove "$dir/data.img" "$part/data.img" "$LANAI_IMAGE_MAP" adopt) || { reason=$image; rc=1; }
   fi
-  # Success is reported only once the tree, its rename and its final name
-  # are on disk: a crash must not leave the reported snapshot named
-  # *.partial, which the next snapshot would remove as a leftover. sync -f
-  # commits the whole filesystem, cloned files included; sync FILE would
-  # fsync only the files named, which on XFS leaves the clones unflushed.
-  if reflink_tree "$dir" "$part" && printf '%s\n' "$dir" >"$part/SOURCE" &&
-    m=$(tree_manifest "$dir") && [[ $m == "$(snapshot_manifest "$part")" ]] &&
+  if ((rc == 0)); then
+    if m=$(small_manifest "$part"); then
+      m=$( { printf '%s\n' "$image"; printf '%s\n' "$m"; } | LC_ALL=C sort -k4,4)
+    else rc=1; fi
+    while IFS= read -r name_file; do
+      [[ $name_file != data.img ]] || continue
+      cmp -s -- "$dir/$name_file" "$part/$name_file" || rc=1
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\n' | LC_ALL=C sort)
+    [[ $(install_list "$dir") == "$(install_list "$part")" ]] || rc=1
+  fi
+  image_phase finishing
+  if ((rc == 0)) && printf '%s\n' "$dir" >"$part/SOURCE" &&
     printf '%s\n' "$m" >"$part/COMPLETE" && sync -f -- "$part" &&
     mv -T -- "$part" "$root/$name"; then
-    unlock_disk
     if ! sync -f -- "$root"; then
-      echo "the snapshot at $root/$name could not be flushed to disk, so it may not survive a crash; delete it with rm -rf ${root@Q}/$name and try again"
-      return 1
+      echo "the snapshot at $root/$name could not be flushed to disk; delete it and try again"; return 1
     fi
-    printf '%s\n' "$root/$name"
-    return 0
+    printf '%s\n' "$root/$name"; return 0
   fi
   snapshot_remove "$part"
-  unlock_disk
-  echo "the snapshot failed; nothing was kept"
+  echo "The snapshot failed: ${reason%.}. Nothing was kept."
   return 1
 }
 
 # Write the restore-in-progress marker <marker> (the snapshot, then the
-# storage location) and flush it and its folder to disk before any storage
-# file changes.
+# storage location) and flush it and its folder before any storage file changes.
 restore_mark() {
   local marker=$1
   printf '%s\n%s\n' "$2" "$3" >"$marker.tmp" && sync -- "$marker.tmp" &&
     mv -f -- "$marker.tmp" "$marker" && sync -- "${marker%/*}"
 }
 
-# restore [<name>]: return the storage location to snapshot <name>. The
-# storage location must pass storage_problem before anything happens. When
-# data.img exists, QEMU's write lock is taken next and held to the end, and
-# the snapshot's files must match its manifest before anything is written.
-# Then the "restore-in-progress" marker names the snapshot and the storage
-# location (a deleted data.img is put back and locked only after it); every
-# file but data.img is replaced through a temp file and a rename, and data.img is cloned in place with ficlone.py, so it
-# is never empty and the locked inode is the one written; other regular
-# files are removed; the result is checked against the manifest, flushed,
-# and only then is the marker deleted. While the marker exists, a restore
-# without a name resumes it; when its snapshot is gone or damaged, a named
-# restore of another snapshot replaces it. Prints what it did, or why it
-# stopped.
+# The image proof can take minutes. Recheck each staged small file against
+# COMPLETE immediately before its rename, even if it passed the clone check.
+# sha256sum follows symlinks, so a staged file swapped for a link to the
+# snapshot's copy would pass the hash: refuse anything but a regular file,
+# before the rename and again after it.
+restore_small_file() {
+  local dir=$1 name=$2 sum=$3 actual temp=$1/.lanai-restore.$2
+  if [[ -L $temp || ! -f $temp ]] ||
+    ! actual=$(sha256sum <"$temp" | cut -d ' ' -f1) || [[ $actual != "$sum" ]]; then
+    echo "the temporary $name does not match its manifest"
+    return 1
+  fi
+  mv -f -T -- "$temp" "$dir/$name" || return 1
+  if [[ -L $dir/$name || ! -f $dir/$name ]]; then
+    echo "$name is not a regular file after its rename"
+    return 1
+  fi
+}
+
+# Restore uses one image read from a fresh clone, equal maps before and after
+# hashing, and a final map after in-place FICLONE. Small files are hashed before
+# replacement. Failures before any replacement clean up a new marker; later
+# failures keep it so recovery can resume or use another named snapshot.
+# A missing disk is published with its lock held before hashing
+# (John's approved req 7 exception).
 snapshot_restore() {
   local want=${1:-} dir s marker snap="" msrc="" reason note="" kind size sum name rc=0 e
-  local fail="run lanai restore again"
+  local marker_snap="" existed=false older=false changed=false image_sum temp reason_map
+  local unchanged='. Nothing was changed.'
   local -a order=() strays=()
-  local -A keep=()
+  local -A keep=() sums=()
   dir=$(storage_dir) || return 1
   s=$(state_dir)
   marker=$s/restore-in-progress
+  [[ ! -e $marker ]] || { older=true; unchanged='. The restore is still unfinished.'; }
   if [[ -f $marker ]]; then
     { IFS= read -r snap && IFS= read -r msrc; } <"$marker" || true
+    marker_snap=$snap
     if [[ $msrc != "$dir" ]]; then
       echo "the unfinished restore ($marker) was for ${msrc:-an unknown storage location}, not $dir. Point Lanai's storage back at it, then run lanai restore again."
       return 1
-    elif snapshot_valid "$snap" "$dir"; then
-      if [[ -n $want && $want != "${snap##*/}" ]]; then
-        echo "a restore of ${snap##*/} did not finish: run lanai restore again to finish it first"
-        return 1
-      fi
-    elif [[ -z $want ]]; then
-      echo "the unfinished restore's snapshot ($snap) is gone or damaged. Restore another snapshot by name (lanai snapshots lists them); that replaces $marker."
-      return 1
-    else
+    elif [[ -n $want && $want != "${snap##*/}" ]]; then
       note="replacing the unfinished restore of ${snap##*/} ($marker); "
       snap=""
+    elif ! snapshot_valid "$snap" "$dir"; then
+      echo "the unfinished restore's snapshot ($snap) is gone or damaged. Restore another snapshot by name; that replaces $marker."
+      return 1
     fi
   fi
   if [[ -z $snap ]]; then
@@ -312,94 +406,125 @@ snapshot_restore() {
     return 1
   fi
   if [[ ! -s $snap/data.img ]]; then
-    echo "$snap's data.img is empty, so it cannot be cloned onto the disk. Nothing was changed."
+    echo "$snap's data.img is empty, so it cannot be cloned onto the disk$unchanged"
     return 1
   fi
-  if [[ -f $dir/data.img ]] && [[ $(has_nocow "$snap/data.img" && echo C) != "$(has_nocow "$dir/data.img" && echo C)" ]]; then
-    echo "$dir/data.img and $snap/data.img differ in NOCOW (the C attribute), so btrfs cannot clone one onto the other. Nothing was changed."
-    return 1
-  fi
-  # QEMU's write lock is held from here to the end whenever the disk exists,
-  # through the minutes of hashing too, so no container VM (or a direct
-  # start of lanai-vm) can boot while the restore runs. Taking it writes
-  # nothing, so a refusal before the marker still changes nothing.
-  local locked=0
-  if [[ -f $dir/data.img ]]; then
+  [[ ! -f $dir/data.img ]] || existed=true
+  if $existed; then
     if ! lock_disk "$dir/data.img"; then
-      echo "cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it first. Nothing was changed."
-      return 1
+      echo "cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it first$unchanged"; return 1
     fi
-    locked=1
   fi
-  if [[ $(snapshot_manifest "$snap") != "$(<"$snap/COMPLETE")" ]]; then
-    ((locked == 0)) || unlock_disk
-    echo "$snap is damaged: its files do not match its manifest. Nothing was changed."
-    return 1
+  image_phase checking
+  if ! reason=$(image_proof gate "$snap/data.img"); then
+    echo "${reason%.}$unchanged"; return 3
+  fi
+  if $existed; then
+    if ! reason=$(image_proof filesystem "$dir/data.img"); then
+      echo "${reason%.}$unchanged"; return 3
+    fi
+    if [[ $(has_nocow "$snap/data.img" && echo C) != "$(has_nocow "$dir/data.img" && echo C)" ]]; then
+      echo "$dir/data.img and $snap/data.img differ in NOCOW (the C attribute)$unchanged"; return 1
+    fi
   fi
   while read -r kind size sum name; do
     keep[$name]=1
-    [[ $name == data.img ]] || order+=("$name")
+    sums[$name]=$sum
+    if [[ $name == data.img ]]; then image_sum=$sum; else order+=("$name"); fi
   done <"$snap/COMPLETE"
-  order+=(data.img)
-  # The marker comes before the first write to the storage folder, so a
-  # restore that stops anywhere after it blocks lanai start until it is
-  # finished.
   if ! restore_mark "$marker" "$snap" "$dir"; then
-    ((locked == 0)) || unlock_disk
-    echo "cannot write $marker; nothing was changed"
-    return 1
+    echo "cannot write $marker$unchanged"; return 1
   fi
-  if ((locked == 0)); then
-    # dockur deleted the disk: put it back first, so its lock can be taken.
-    if ! reflink_file "$snap/data.img" "$dir/.lanai-restore.data.img" ||
-      ! mv -f -T -- "$dir/.lanai-restore.data.img" "$dir/data.img"; then
-      echo "the restore did not finish: cannot copy data.img back from $snap; run lanai restore again"
-      return 1
-    fi
-    if ! lock_disk "$dir/data.img"; then
-      echo "the restore did not finish: cannot take the disk lock on $dir/data.img ($LANAI_LOCK_ERROR). Stop the VM that uses it, then run lanai restore again."
-      return 1
-    fi
-  fi
+  image_phase cloning
+  # Never reuse an interrupted temporary inode (its NOCOW may differ).
+  for name in data.img "${order[@]}"; do
+    rm -f -- "$dir/.lanai-restore.$name"
+  done
+  temp=$dir/.lanai-restore.data.img
+  if ! reason=$(image_clone --new "$snap/data.img" "$temp"); then rc=1; fi
   for name in "${order[@]}"; do
-    if [[ $name == data.img ]]; then
-      if ! reason=$(python3 "$LANAI_LIB/ficlone.py" "$snap/data.img" "$dir/data.img" 2>&1); then
-        # Keep ficlone.py's detail, but other files were already replaced,
-        # so its "nothing was changed" is not true here; and always end with
-        # the next step.
-        rc=1 fail=${reason#ficlone.py: }
-        fail=${fail//; nothing was changed/}
-        [[ $fail == *"the snapshot is intact"* ]] || fail+="; run lanai restore again"
-      fi
-    elif ! reflink_file "$snap/$name" "$dir/.lanai-restore.$name" ||
-      ! mv -f -T -- "$dir/.lanai-restore.$name" "$dir/$name"; then
+    ((rc == 0)) || break
+    if ! reflink_file "$snap/$name" "$dir/.lanai-restore.$name"; then rc=1; break; fi
+    sum=${sums[$name]}
+    if [[ $(sha256sum <"$dir/.lanai-restore.$name" | cut -d ' ' -f1) != "$sum" ]]; then
+      reason="The snapshot is damaged: $name does not match its manifest."; rc=1
+    fi
+  done
+  if ((rc == 0)) && ! $existed; then
+    image_phase replacing
+    # Approved req 7 exception: lock the inode before publishing, then install
+    # verified boot markers before hashing, preventing dockur's disk cleanup.
+    if ! lock_disk "$temp"; then
+      reason="cannot take the disk lock ($LANAI_LOCK_ERROR)"; rc=1
+    elif ! reason=$(image_proof publish "$temp" "$dir/data.img"); then
+      rc=1
+    else
+      changed=true
+      temp=$dir/data.img
+      for name in "${order[@]}"; do
+        if ! reason=$(restore_small_file "$dir" "$name" "${sums[$name]}"); then rc=1; break; fi
+        # Boot files must exist before the image read. Keep a fresh staged
+        # clone for final verification and replacement after that long read.
+        if ! reflink_file "$dir/$name" "$dir/.lanai-restore.$name"; then rc=1; break; fi
+      done
+    fi
+  fi
+  if ((rc == 0)); then
+    reason_map=$(image_proof prove "$snap/data.img" "$temp" "$LANAI_IMAGE_MAP" "$image_sum") || { reason=$reason_map; rc=1; }
+  fi
+  if ((rc == 0)) && $existed; then
+    # From here any failure keeps recovery blocked, even if FICLONE partially
+    # changed the destination. It retains QEMU's locked inode throughout.
+    changed=true
+    image_phase replacing
+    if ! reason=$(image_clone "$temp" "$dir/data.img") ||
+      ! reason=$(image_proof final "$temp" "$dir/data.img" "$LANAI_IMAGE_MAP"); then
       rc=1
     fi
-    ((rc == 0)) || break
-  done
+  fi
   if ((rc == 0)); then
-    # Only names a restore may remove; anything that appeared while the
-    # disk was being hashed or cloned stays, and the restore does not finish.
+    for name in "${order[@]}"; do
+      if ! reason=$(restore_small_file "$dir" "$name" "${sums[$name]}"); then rc=1; break; fi
+    done
+  fi
+  rm -f -- "$dir/.lanai-restore.data.img"
+  if ((rc == 0)); then
+    image_phase finishing
     while IFS= read -r -d '' e; do
       [[ -z ${keep[$e]:-} ]] || continue
       if restorable_name "$e" && [[ -f $dir/$e && ! -L $dir/$e ]]; then
         rm -f -- "${dir:?}/$e" || rc=1
-      else
-        strays+=("$e")
-      fi
+      else strays+=("$e"); fi
     done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\0' | LC_ALL=C sort -z)
     if ((${#strays[@]})); then
       rc=1
-      fail="$(printf '%s, ' "${strays[@]}" | sed 's/, $//') appeared in $dir while it ran; move that out, then run lanai restore again"
+      reason="$(printf '%s, ' "${strays[@]}" | sed 's/, $//') appeared in $dir while it ran; move that out"
     fi
-    ((rc != 0)) || [[ $(tree_manifest "$dir") == "$(<"$snap/COMPLETE")" ]] || rc=1
     ((rc != 0)) || sync -f -- "$dir" || rc=1
   fi
-  unlock_disk
   if ((rc != 0)); then
-    echo "the restore did not finish: $fail"
+    reason=${reason:-Lanai could not complete the restore}
+    # Give up on staged copies in every failure path, including deleted disks.
+    for name in data.img "${order[@]}"; do rm -f -- "$dir/.lanai-restore.$name"; done
+    if ! $changed; then
+      if $older; then
+        restore_mark "$marker" "$marker_snap" "$dir" || return 1
+      else
+        rm -f -- "$marker"
+        sync -- "$s"
+      fi
+    fi
+    if [[ $reason == 'The snapshot is damaged:'* ]]; then
+      note=' Restore another snapshot by name.'
+    elif $changed || $older; then
+      note=' Try the restore again.'
+    else note=''; fi
+    if $changed || $older; then
+      echo "The restore did not finish: ${reason%.}.$note"
+    else echo "${reason%.}$unchanged$note"; fi
     return 1
   fi
   rm -f -- "$marker"
+  sync -- "$s"
   echo "${note}restored $dir from $snap"
 }

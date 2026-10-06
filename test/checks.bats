@@ -1007,6 +1007,26 @@ assert_steps() {
 
 # --- dockur_version ---
 
+@test "vm_windows_scale: validates JSON types without conflating absent and null" {
+  mkdir -p "$(dirname "$(settings_file)")"
+  local value
+  for value in '"auto"' 100 125 150 175 200 225 250 300 350 400 450 500; do
+    printf '{"windows_scale":%s}\n' "$value" >"$(settings_file)"
+    run vm_windows_scale
+    assert_success
+    assert_equal "$output" "$(jq -r .windows_scale "$(settings_file)")"
+  done
+  printf '{}\n' >"$(settings_file)"
+  run vm_windows_scale
+  assert_success
+  assert_output auto
+  for value in null true false '"125"' '"AUTO"' '{}' '[]' 99 126 275 550 125.5; do
+    printf '{"windows_scale":%s}\n' "$value" >"$(settings_file)"
+    run vm_windows_scale
+    assert_failure
+  done
+}
+
 @test "dockur_version: the image's version label, asked without a prompt" {
   shim docker 'printf "%s\n" "$@" >"'"$T"'/docker.args"; [ -t 0 ] && echo tty >>"'"$T"'/docker.args"; echo 6.05'
   PATH=$T/shims:$PATH run dockur_version
@@ -1033,4 +1053,48 @@ assert_steps() {
   PATH=$T/bin run dockur_version
   assert_failure
   assert_output ""
+}
+
+# A bare setup lock must still check data; only an image owner may skip it.
+image_activity_fixture() {
+  S=$(state_dir)
+  STORE=$T/storage
+  mkdir -p "$S" "$(dirname "$(settings_file)")"
+  make_install "$STORE"
+  printf '{"storage":"%s"}\n' "$STORE" >"$(settings_file)"
+  systemctl() { echo ActiveState=inactive; }
+  container_fact() { echo none; }
+}
+
+@test "setup's own operation lock still detects a blank disk" {
+  image_activity_fixture
+  truncate -s 0 "$STORE/data.img"
+  truncate -s 1M "$STORE/data.img"
+  lanai_flock
+  run shared_facts
+  assert_success
+  assert_output --partial 'first 100 KB of data.img are all zero'
+  assert_output --partial 'LanaiProblemReason=layout'
+  exec {LANAI_FLOCK_FD}>&-
+  run setup_resume auto false '' ''
+  assert_failure
+  assert_equal "$(jq -r .step <<<"$output")" 1
+  assert_equal "$(jq -r .reason <<<"$output")" layout
+}
+
+
+@test "live snapshot and restore owners skip the panel image read" {
+  image_activity_fixture
+  truncate -s 0 "$STORE/data.img"
+  truncate -s 1M "$STORE/data.img"
+  local op
+  lanai_flock
+  for op in snapshot restore; do
+    jq -nc --arg op "$op" --argjson pid "$BASHPID" \
+      '{operation:$op,phase:"hashing",done:0,total:1048576,pid:$pid}' >"$S/image-progress.json"
+    run shared_facts
+    assert_success
+    refute_output --partial 'first 100 KB'
+    assert_output --partial 'LanaiProblemReason='
+  done
 }
