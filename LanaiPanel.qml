@@ -230,8 +230,10 @@ Panel {
                 onActiveFocusChanged: if (activeFocus) root.reveal(this)
               }
             }
-            Action { control: "save_settings"; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value), String(root.windowsScaleInput)], false) }
           }
+          // On its own line: a Flow aligns tops, so beside the labelled fields
+          // the button lined up with their labels, not their inputs.
+          Action { control: "save_settings"; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value), String(root.windowsScaleInput)], false) }
           Note { text: root.model.view.result.settings || "" }
 
           Column {
