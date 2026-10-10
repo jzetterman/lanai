@@ -123,10 +123,10 @@ Neither needs GPU acceleration.
      before it runs, with the system's normal password prompt;
    - installs one pinned Looking Glass client build, verified by checksum;
    - installs inside Windows, with at most one administrator prompt (none when UAC is
-     off): the matching Looking Glass
-     IDD, the SPICE guest agent, the QEMU guest agent (clock sync, requirement 21), the
-     file-sharing client (requirement 15), and the scale task, which applies the display
-     scale at sign-in and whenever Lanai sends a new one (requirement 12). The same prompt also turns off locking inside Windows for
+     off): the matching Looking Glass IDD, the SPICE guest agent, the QEMU guest agent
+     (clock sync, requirement 21), the file-sharing client (requirement 15), and the
+     scale task, which applies the display scale at sign-in and whenever Lanai sends a
+     new one (requirement 12). The same prompt also turns off locking inside Windows for
      the Windows user who runs setup; two of the changes, Switch user and the machine
      inactivity lock, apply to every account on that Windows. Setup refuses, before
      changing anything in Windows, if the administrator prompt is approved with a
@@ -181,15 +181,19 @@ Neither needs GPU acceleration.
     Omarchy shell allows it.
 12. The Windows window behaves like any Omarchy window. It tiles, goes fullscreen and
     resizes, and the Windows desktop follows its size. Windows' display scale is a
-    setting: "match my monitor" (the default) or one fixed step the user picks (John,
+    setting: "match my monitor" (the default) or one fixed step the user chooses (John,
     2026-10-05). Steps are 100 to 250 in steps of 25, then 300 to 500 in steps of 50.
     The scale can change while Windows runs, without a restart or sign-out (John,
     2026-10-10). Terms:
-    - The setting is "match my monitor" or a fixed step. Only a scale save changes it:
-      from the panel, or from `lanai settings` with a scale.
-    - A pick is a change to Windows' scale while the window's resolution stays the same,
-      such as a step the user picks in the Scale list of Windows' display settings. A
-      scale change that comes with a resolution change is not a pick.
+    - The setting is "match my monitor" or a fixed step. Only a scale save changes it. A
+      panel save is a scale save when the user selected an entry in the scale list since
+      the panel opened, even the entry already shown; otherwise it changes only memory
+      and cores. `lanai settings` with three arguments is always a scale save, with two
+      never.
+    - A pick is a scale change the scale task did not make, at a resolution that has not
+      changed for at least 5 seconds, such as a step the user picks in the Scale list of
+      Windows' display settings. A change of Windows' recommended scale, even one that
+      lands seconds after the resolution settles, is not a pick.
     - The target is the step of the pick while it holds; otherwise the fixed step, or
       under "match my monitor" the step for the monitor that counts.
     - The applied scale is the target capped at what Windows allows for the window's
@@ -201,20 +205,22 @@ Neither needs GPU acceleration.
       a monitor with a different scale, or that monitor's scale changes, Windows follows
       within 5 seconds, also while the panel is closed and while the window is closed.
       While the window is closed, the monitor it was last on since the VM started
-      counts; before it first opens, the focused monitor at start counts. If that
-      monitor is gone, the focused monitor counts; if none is focused, the first monitor
-      Hyprland lists; if Hyprland lists none, the target stays as it was. Following
-      pauses while the Omarchy shell or the plugin is not running and catches up within
-      5 seconds of its return.
+      counts, also across a shell or plugin restart; before it first opens, the focused
+      monitor at start counts. If that monitor is gone, the focused monitor counts; if
+      none is focused, the first monitor Hyprland lists; if Hyprland lists none, the
+      target stays as it was. Following pauses while the Omarchy shell or the plugin is
+      not running and catches up within 5 seconds of its return.
     - A scale save while Windows runs sends the new target to Windows, which applies it
-      within 5 seconds and drops any pick. Choosing the scale the panel already shows
-      and saving counts as a scale save. A save that changes only memory or cores sends
-      nothing to Windows.
+      within 5 seconds and drops any pick. A save that is not a scale save sends nothing
+      to Windows. A `lanai settings` scale save made while the shell or plugin is down
+      reaches Windows as a scale save within 5 seconds of its return.
     - A pick holds until the next scale save, a sign-out, a Windows restart, or the VM
       stopping. While it holds, the scale task does not change it back and "match my
       monitor" does not follow. A pick never changes the setting. When a pick ends
-      without a save, the latest target applies at the next sign-in. The scale task
-      changes any other scale change back to the applied scale.
+      without a save, the latest target applies within 5 seconds of the next sign-in.
+      The scale task changes any other scale change back to the applied scale. The scale
+      applies to the Windows user who ran setup, as the lock change does (requirement
+      7).
     - A resize never changes the target. Within 5 seconds of the last size change, the
       applied scale is the target capped for the new resolution: it drops when the
       window shrinks below what the target needs and goes back up when it grows.
@@ -225,9 +231,12 @@ Neither needs GPU acceleration.
       seconds if the user is signed in to Windows, otherwise at sign-in. A save while
       the VM is stopped applies at the next start.
     - When the scale task in Windows comes from a setup run before this change, the
-      panel says instead that the change applies at the next start, that the old task
-      undoes picks until then, and that "Run setup again" brings live changes and turns
-      the Windows lock off again (requirement 7).
+      panel says instead that the change applies at the next start, and that until setup
+      runs again the old task undoes picks in Windows and "match my monitor" does not
+      follow while Windows runs; "Run setup again" brings live changes and turns the
+      Windows lock off again (requirement 7). With the old task, the follow rule above
+      does not apply. Lanai decides this from its own setup record; a record without
+      the new task's mark counts as old.
 13. Keyboard, mouse, clipboard (both ways) and audio output work in the Windows window.
 14. When Windows asks for a password (dockur normally signs in automatically), the user
     types the one they chose when `omarchy-windows-vm` installed Windows. Lanai never
@@ -291,16 +300,19 @@ or 6008).
 27. The guest is untrusted. Besides the baseline emulated hardware that requirement 2
     keeps (CPU, disk controller, NIC, firmware, clock, USB controller and tablet), the
     accepted guest-to-host surfaces are: the frames, cursor data, and clipboard contents
-    (text, images and files) the Looking Glass client exchanges over shared memory; SPICE
-    (input, audio and clipboard); the network backend; the file share; the QEMU guest
-    agent channel, which Lanai uses only to set the guest clock (requirement 21); and
-    the scale channel (requirement 12). Nothing else. The scale channel runs one way. Each message from Lanai holds a scale step, whether it is a scale save, and a
-    save number that grows with each save, and nothing else. Lanai reads nothing from
-    the channel and discards anything the guest writes to it. A guest that never reads
+    (text, images and files) the Looking Glass client exchanges over shared memory;
+    SPICE (input, audio and clipboard); the network backend; the file share; the QEMU
+    guest agent channel, which Lanai uses only to set the guest clock (requirement 21);
+    and the scale channel (requirement 12). Nothing else. The scale channel runs one
+    way. Each message from Lanai holds a scale step, whether it is a scale save, and a
+    save number that grows with each save, and nothing else. A guest that never reads
     the channel, or floods it, cannot block, slow or grow the memory of any Lanai or
-    shell process: a send that cannot go through is dropped or replaced by the latest
-    one. The scale task runs as the signed-in user, without administrator rights. The
-    channel adds no network listener, and the guest agent's allow-list stays as
+    shell process: a send that cannot go through is replaced by the latest one, and the
+    scale task gets the latest target whenever it starts or reconnects. The save number
+    never goes down during a VM run, across shell and plugin restarts, whichever command
+    makes the save. Lanai never parses or acts on anything the guest writes to the
+    channel. The scale task runs as the signed-in user, without administrator rights.
+    The channel adds no network listener, and the guest agent's allow-list stays as
     requirement 7 sets it.
 28. The file share, if present, is confined to `~/Windows`. The guest cannot reach any
     other host path through it, including through symlinks or `..`.
@@ -347,17 +359,17 @@ stopped; Windows then resumes, boots after a restart, and `chkdsk` reports no er
 |---|---|
 | 1-2 | Lanai's VM configuration matches the verified `omarchy-windows-vm` configuration in every item requirement 2 lists, apart from the allowed differences; inside Windows, the MAC, CPU model and disk device match their values recorded before adoption; Device Manager shows no errors; activation state is unchanged |
 | 3 | Starting the container while Lanai runs does not boot Windows and causes no disk damage; starting Lanai while the container runs is refused with a clear message; starting Lanai while the container is still preparing (before its VM process exists) does not boot a second VM; a second Lanai start is refused |
-| 4 | After Lanai stops, `omarchy-windows-vm` boots and RDP works; in that session, a scale picked in Windows stays and the scale task's log shows it changed nothing; in that session, Lock in Start, Windows key + L and idling past the leftover screen-saver timeout still do not lock Windows |
+| 4 | After Lanai stops, `omarchy-windows-vm` boots and RDP works; in that session, a scale picked in Windows stays, the scale task's log shows it changed nothing, and no scale task process remains; in that session, Lock in Start, Windows key + L and idling past the leftover screen-saver timeout still do not lock Windows |
 | 5 | A fixture of each unsupported layout (none, TPM, Secure Boot, legacy) gets its refusal message |
 | 5a | A fixture for each failing check (missing or empty firmware, variables or MAC file; disk below its configured size; zeroed first 100 KB; both `data.img` and `data.qcow2` present; missing `windows.boot`; a `windows.base` that does not match the configured version and language; a `custom.iso` or `boot.iso` present) makes Lanai refuse to start and say why; the README states the remaining risks |
 | 6 | Settings seed from `omarchy-windows-vm` when readable, and otherwise from the stated host-relative defaults, with no prompt; with a sentinel password set on the test install, the sentinel never appears in Lanai's files, logs, setup terminal output, or any child process's arguments or environment; changed memory and cores take effect at the next start |
 | 6a | Lanai pointed at a reflink copy boots the copy and never opens the live `~/.windows` |
 | 7 | On a machine with a working `omarchy-windows-vm` install, a user who follows the README reaches a working Windows window from the bar; setup shows one package-manager password prompt and at most one Windows administrator prompt (none when UAC is off), and no other Windows prompt (the driver-publisher prompt may appear only when Windows refuses to record the publisher's trust, which setup says on screen), and asks for one Windows restart; where the storage location's filesystem can make an instant copy, setup offers the snapshot, and restoring it returns the storage location to its pre-adoption hashes; where it cannot, setup says so and suggests a backup; snapshot and restore are each refused while either VM runs; a container start attempted during a snapshot or restore does not boot a VM, and the snapshot still matches its source; a snapshot and a restore each show a progress bar that advances while they run, also in a panel opened partway through and for one started from the command line; the bytes read from the files of the storage location, the snapshot and the copy, counted at the read calls so the page cache cannot hide a second read, total no more than one image size plus a stated allowance for the small files; two fixtures, each run for a snapshot and a restore, on each filesystem and file mode Lanai treats as provable (at least btrfs with copy-on-write, btrfs compressed, and btrfs with copy-on-write turned off): one changes one block of the copy after the clone and puts back its size and modification time, the other changes one block of the file being read (the source, or the snapshot) after it is read and before the proof: in each the restore does not finish and the snapshot is not kept as complete, and each says so; a review confirms the proof compares data or shared storage, not metadata |
-| 7b | Before setup, each lock path locks Windows or leaves it at the sign-in screen: Lock in the Start menu and in Ctrl+Alt+Del, Switch user, Windows key + L sent with QMP `send-key`, and each automatic lock the VM can trigger, turned on at a 1-minute timeout (secure screen saver, machine inactivity limit). After setup, with the screen-saver timeout still at 1 minute (setup leaves it set but not secure) and the inactivity limit as setup left it, none of them does; Windows is still unlocked after idling past every timeout; Windows reports no sleep state it could wake from, and row 27 shows no Bluetooth device. A shutdown with the Ctrl+Alt+Del screen left open is recorded (clean, or the README names it). Setup's domain or MDM warning appears when its membership check reports membership (simulated). Approving the prompt with a different administrator account makes setup refuse; afterwards nothing differs from the before-setup inventory (dockur already installs some pieces, such as its own file-sharing service and guest agent): the lock controls still lock, the Looking Glass IDD and the scale task are absent, the guest agent's allow-list is not applied, and Lanai has not added or replaced any file-sharing piece. The README states the lock note from requirement 7 |
+| 7b | Before setup, each lock path locks Windows or leaves it at the sign-in screen: Lock in the Start menu and in Ctrl+Alt+Del, Switch user, Windows key + L sent with QMP `send-key`, and each automatic lock the VM can trigger, turned on at a 1-minute timeout (secure screen saver, machine inactivity limit). After setup, with the screen-saver timeout still at 1 minute (setup leaves it set but not secure) and the inactivity limit as setup left it, none of them does; Windows is still unlocked after idling past every timeout; Windows reports no sleep state it could wake from, and row 27 shows no Bluetooth device. A shutdown with the Ctrl+Alt+Del screen left open is recorded (clean, or the README names it). Setup's domain or MDM warning appears when its membership check reports membership (simulated). Approving the prompt with a different administrator account makes setup refuse; afterwards nothing differs from the before-setup inventory (dockur already installs some pieces, such as its own file-sharing service): the lock controls still lock, the Looking Glass IDD and the scale task are absent, the guest agent's allow-list is not applied, and Lanai has not added or replaced any file-sharing piece. The README states the lock note from requirement 7 |
 | 8 | A deliberate client/IDD mismatch is detected and named; a simulated pin change keeps or restores a working window |
 | 9 | Interrupting setup at each step, then rerunning it, ends in a working install |
 | 10-17, 20 | Each passes a scripted or checklist test (list in the plan); requirement 12 is checked with a scale matrix: each step, a value just above and below each boundary, a tie (for example 112.5% gives 100%, 275% gives 250%), the 250-300 gap, and values below 100% and above 500% (clamped to the nearest end). If requirement 15 is moved to v2 (recorded in this spec before the release gate), its check and the requirement 28 check are skipped. Requirement 11's clicks: in each state requirement 10 lists, plus during setup, a snapshot or restore, and an unfinished restore, a left click, Enter and Space on the icon open the panel (and close it when open), and a right click starts Windows only when stopped with nothing blocking a start, opens its window only when running after setup with the window closed, and otherwise opens the panel |
-| 12 | On two monitors with different scales, with "match my monitor": the step at start comes from the focused monitor; moving the window between the monitors changes Windows' scale within 5 seconds each way, and so does changing the window's monitor's scale, with the panel closed; with the window closed, changing its last monitor's scale applies, moving focus to the other monitor leaves the scale alone, and unplugging the last monitor applies the focused monitor's step; a move made while the shell was down applies within 5 seconds of its return. A panel save of a fixed step applies within 5 seconds and survives a VM restart; `lanai settings` with a scale does the same. Picks: a pick holds through a resize, a monitor move, a follow update and a shell restart with its catch-up; a memory-only save leaves it; a save of the scale the panel already shows drops it, and so does a second save of the same step; a sign-out, a Windows restart and a VM restart each end it, and the latest target applies at the next sign-in, including a panel save made after the VM started; a resize that moves Windows' recommended scale is not a pick and leaves the applied scale as it was. Cap: with a 300% target, shrinking the window until Windows allows at most 200% applies 200% within 5 seconds of the last size change, and growing it back applies 300%, with the setting still 300%; a 250% pick behaves the same way; a panel save or monitor move while capped applies the capped scale, then the new target once the window grows. Panel words: the note near the scale list, and the same after-save message whether or not the user is signed in; a save while the VM is stopped applies at the next start. Upgrade: on an install set up before this change, a panel save names Run setup again with the lock note and applies at the next start; after Run setup again, Windows has one scale task, a panel save applies live and a pick holds. Channel: a review shows each message carries only a step, a save flag and a save number from host to guest, and that Lanai reads nothing from it; with a guest that never reads the channel and with one that floods it, the panel, the bar and following stay responsive and Lanai's memory stays bounded. With Windows' custom scaling on, the README's words match what happens |
+| 12 | On two monitors with different scales, with "match my monitor": the step at start comes from the focused monitor; moving the window between the monitors changes Windows' scale within 5 seconds each way, and so does changing the window's monitor's scale, with the panel closed; with the window closed, changing its last monitor's scale applies, moving focus to the other monitor leaves the scale alone, and unplugging the last monitor applies the focused monitor's step; a move made while the shell was down applies within 5 seconds of its return; with the window closed and the shell restarted, a scale change on its last monitor still applies; with no monitor focused, the first monitor Hyprland lists counts. A save of "match my monitor" from a fixed step starts following within 5 seconds. A panel save of a fixed step applies within 5 seconds and survives a VM restart; `lanai settings` with three arguments does the same, and a three-argument save of the current step drops a pick; a `lanai settings` scale save made while the shell is down applies within 5 seconds of its return. Picks: a pick holds through a resize, a monitor move, a follow update and a shell restart with its catch-up; a panel save that changes memory with the scale list untouched leaves it; after a shell restart, a pick holds and the next scale save drops it; a save of the scale the panel already shows drops it, and so does a second save of the same step; a sign-out, a Windows restart and a VM restart each end it, and the latest target applies within 5 seconds of the next sign-in, including a panel save made after the VM started; a resize that moves Windows' recommended scale, including a recommendation that moves seconds after the resolution, is not a pick and leaves the applied scale at the target capped for the new size; a guest that stops reading the channel, gets several saves and follow updates, then resumes, applies only the latest target, and a save among them drops a pick. Cap: with a 300% target, shrinking the window until Windows allows at most 200% applies 200% within 5 seconds of the last size change, and growing it back applies 300%, with the setting still 300%; a 250% pick behaves the same way; a panel save or monitor move while capped applies the capped scale, then the new target once the window grows. Panel words: the note near the scale list, and the same after-save message whether or not the user is signed in; a save while the VM is stopped applies at the next start. Upgrade: on an install set up before this change, a panel save names Run setup again with the lock note and applies at the next start; after Run setup again, Windows has one scale task, a panel save applies live and a pick holds. Channel: a review shows each message carries only a step, a save flag and a save number from host to guest, and that Lanai never parses or acts on what the guest writes to it; with a guest that never reads the channel and with one that floods it, the panel, the bar and following stay responsive, and over a 10-minute flood no Lanai or shell process grows by more than 20 MB. With Windows' custom scaling on, the README's words match what happens |
 | 18 | Shell restart, plugin reload, plugin update and plugin disable each leave Windows running, and the bar shows its true state afterwards |
 | 19 | Logout ends in a clean shutdown, with lingering both enabled and disabled, including with row 7b's 1-minute screen saver still set (no longer secure) and running at logout; a guest that ignores shutdown at logout (fixture: turn the Windows lock back on and lock Windows, or leave open a security screen that row 7b recorded as ignoring shutdown, then log out) is force-stopped after 2 minutes and reported at the next start, naming a locked Windows, an open security screen, or a shutdown that did not finish in time as likely causes; on reboot and power-off, with lingering both enabled and disabled and an idle, unlocked Windows, Windows' shutdown starts when the host's does, the time Windows took is measured and written in the README, and the next start reports no forced stop; with the logout fixture above, a reboot whose wait expires ends in a forced stop that the next start reports |
 | 21 | After suspend and resume, the requirement 20 check passes, and the guest clock is within 2 s of the host's within 60 s |
@@ -436,3 +448,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | amendment review a (gpt-6.1-sol) | 2026-10-10 | Round 3 (full, cap): 3 should-fix, 0 refuted; all integrated: a resize keeps the target and reapplies the capped scale within 5 s (the old "keeps the applied scale" contradicted growth); guest ordering fields can never stop a later panel save, and the real-order guarantee holds only for an untampered guest; a channel that stops answering shows the save as not yet applied and converges to the latest target; row 10-17 adds explicit cap values, forged-order, replay and blocked-channel cases. Stage closed at the cap with these integrations for stage b to review |
 | spec | amendment review b single (opus-5.5) | 2026-10-10 | Round 1 (full): 0 blockers, 10 should-fix, 6 nits, 0 refuted. Most traced to Windows picks writing back to the host (ordering without a trusted clock, RDP picks, picks lost while the shell is down, Windows' own scale moves, custom scaling, flood writes, forged panel status). John chose the one-way design: a pick in Windows holds until the next panel scale save or the VM stops and never becomes the setting; the channel only sends from Lanai to Windows and Lanai reads nothing from it. Integrated: a save sends a scale only when one was chosen in the panel; the old task's revert is stated; the three terms (setting, target, applied scale) are defined; only picks in Windows' Scale list count; custom scaling is out of scope with a README note; following runs with the panel closed and catches up after a shell restart; fallback monitor rules; "last size change"; req 12 gets its own row; socket list in row 22, 25; req 2 and req 7 wording. Not applicable after the redesign: signed-out vs silent-channel status (the panel no longer claims "applied"), and showing the capped scale (Lanai cannot read it) |
 | spec | amendment review b single (opus-5.5) | 2026-10-10 | Round 2 (full): 1 blocker, 9 should-fix, 6 nits, 0 refuted; all integrated within the one-way design: each message carries a step, a save flag and a growing save number (a bare step could not tell a save from a follow update or a resend); a pick is defined by what Windows can observe (scale change without a resolution change) and is part of the target; a sign-out, Windows restart or VM stop ends a pick and the latest target applies at the next sign-in; one panel message for signed in or not; the guest cannot block or grow the host's sending side; the scale task does nothing under omarchy-windows-vm (req 4, row 4); a setup rerun leaves one scale task (req 9); the Run setup again hint names the lock; a note near the scale list; nits (CLI saves, monitor fallbacks, plugin down, wording, README notes, superseded log row) |
+| spec | amendment review b single (opus-5.5) | 2026-10-10 | Round 3 (full, cap): 0 blockers, 5 should-fix, 8 nits, 0 refuted; all integrated: a send is replaced by the latest, and the scale task gets the latest target when it starts or reconnects (dropping would lose saves made while no one reads); the save number never goes down across shell restarts; a pick excludes the task's own changes and late moves of Windows' recommended scale; a scale save is defined by input (scale list selected, or three-argument CLI); the old task neither keeps picks nor follows, and Lanai decides from its setup record; nits ("chooses", row 7b guest agent claim, cap wording, sign-in timing, flood bound, extra row cases, Lanai never parses guest writes, setup user only, last monitor across shell restarts). Stage closed at the cap with these integrations unreviewed; the gate waits for John |
