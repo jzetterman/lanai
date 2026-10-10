@@ -2133,7 +2133,8 @@ This implements the spec amendment of 2026-10-10: reqs 2, 4, 6, 7, 9, 12 and 27,
 start, and the guest no longer undoes every change made in Windows.
 
 Branch `plugin/live-scale`. Phases run in order; each starts from the previous
-phase's commit and is self-contained. Bash: `set -euo pipefail` in entry points,
+phase's commit and is self-contained. Order: phase 0 parts (1)-(5), phase A,
+phase B, phase 0 parts (6)-(7), phase C. Bash: `set -euo pipefail` in entry points,
 callers' options kept in sourced libraries, clean under ShellCheck. Bash decides
 the panel view; QML renders it. Tests first (bats; guest logic through pwsh where
 it is installed, skipped in CI as today). Agents never touch John's live
@@ -2209,12 +2210,16 @@ fixture `hyprctl` JSON; the loop is tested against a fake server that never read
 - Start: no `lanai-scale` OEM string means Lanai is not running this VM; exit at
   once and change nothing (req 4, as today). Otherwise the OEM step is the first
   target.
-- Open `\\.\Global\io.lanai.scale.0` for reading with an overlapped
-  `FileStream`. Each loop drains: it keeps completing reads until one stays
-  pending, so everything queued is consumed before the task acts, then it parses
-  the complete lines and acts on the last valid one only. A silent port never
-  blocks the loop; a failed open or read retries each loop. Malformed lines are
-  ignored (logged once).
+- A reader runspace opens `\\.\Global\io.lanai.scale.0` and loops on blocking
+  reads, putting each complete line and its arrival time into a
+  `ConcurrentQueue`; a failed open or read retries every 2 s. The main loop never
+  touches the port, so a silent port never blocks it. The main loop acts on the
+  queue only once no line has arrived for 300 ms (a backlog arrives at full speed,
+  so a quiet gap means it is drained), then dequeues everything and uses the last
+  valid line only. Malformed lines are dropped (logged once).
+- Each loop pass runs in this order: observe the display and detect a pick; then
+  process the drained line; then apply. A save received in a pass therefore
+  clears a pick seen in the same pass.
 - State: `want` (the step from Lanai), `lastSave`, `pick` (null or a step). At
   start, `want` and `lastSave` come from the two OEM strings, so the baseline
   exists before any pick and before the channel connects. A line whose save number
@@ -2244,7 +2249,8 @@ commit never gets it. A record without it means the old task (req 12's last
 rule).
 
 **Panel and words.** `LanaiPanel.qml` tracks `scaleTouched` (set by the dropdown's
-`changed`, cleared on open and after a save) and runs `settings <mem> <cores>` when
+`changed`, cleared only when the panel opens, so every save in that panel session
+counts as a scale save) and runs `settings <mem> <cores>` when
 untouched, `settings <mem> <cores> <scale>` when touched. `lib/panel.sh` adds a note
 under the scale list while Windows runs with the new task: "Saving a scale replaces
 one you picked in Windows." `cmd_settings` returns the after-save words (the panel
@@ -2259,7 +2265,7 @@ fixed line becomes "Memory and cores apply the next time Windows starts.":
 - Scale save, VM running, old task: "Saved. Windows uses the new scale the next time
   it starts. For changes while Windows runs, click Run setup again (it also turns the
   Windows lock off again). Until then, Windows undoes scale changes made in its own
-  settings."
+  settings, and Match my monitor does not follow the window while Windows runs."
 - VM stopped, or memory and cores only: "Saved. Changes apply the next time Windows
   starts." (memory and cores: "Memory and cores apply ...").
 
@@ -2277,7 +2283,14 @@ reconnects does the guest receive the old unread lines or only new ones; (5) doe
 QMP emit `VSERPORT_CHANGE` when the guest opens and closes the port; (6) latest
 only: with the guest paused (not reading), the host sends saves 1, 2 and 3 with
 different steps, then reconnects and sends 3 again; when the guest resumes and
-drains, the last line it acts on is save 3.
+drains, the last line it acts on is save 3. Run (6) with the phase B reader and
+quiet-gap rule itself, and once more with a backlog of 10,000 lines (larger than
+one read buffer); the task must never apply an earlier step first. (7) Flood: a
+guest process writes to the port as fast as it can for 10 minutes while the feed
+runs and John moves the window and saves twice; the panel, bar and following stay
+responsive, and the resident memory of the feed, QEMU and the shell grows by no
+more than 20 MB each. Phase 0 runs (6) and (7) after phase B's script exists, as
+phase B's last step; (1)-(5) run first.
 
 - Add `docs/plugin/proof-kit/proof-scale-port.ps1` (opens the port, prints each
   line with a timestamp, reports open errors) and a `--scale-port` flag to
@@ -2305,7 +2318,8 @@ drains, the last line it acts on is save 3.
   `boot.json` and the second OEM string carry the save number and boot monitor),
   `test/panel.bats` (the note shows only while running with the new task),
   `test/panel-qml.bats` (an untouched list sends two arguments; choosing the shown
-  entry sends three; reopening clears the touch).
+  entry sends three; two saves after one selection both send three; reopening
+  clears the touch), and the old-task words name the lost following.
 - Files: `lib/vm.sh` (`vm_plan`, `vm_exec`, the helper table, the feed),
   `lib/lanai.sh` (`boot_vm`), `bin/lanai-vm-helper`, `lib/ui.sh`, `lib/panel.sh`,
   `LanaiPanel.qml` (the touched-list rule).
@@ -2321,7 +2335,9 @@ drains, the last line it acts on is save 3.
   a recommended-step move is not a pick; the task's own set is not a pick), target
   and cap; the baseline from the OEM strings, with a pick before the channel
   connects and a save made in the meantime (the save clears it); a pick right
-  after a host-driven change; draining keeps only the last line. Pin the task
+  after a host-driven change; an unobserved pick followed by a save in the same
+  pass ends with the save applied; draining keeps only the last line, and a line
+  that arrives inside the 300 ms gap delays acting. Pin the task
   registration flags in `setup.cmd` (`-RunLevel Highest`, same name, `-Force`).
   `test/setup.bats`: `scale_task` written only when the finishing round's media
   carried the new script.
@@ -2334,8 +2350,8 @@ drains, the last line it acts on is save 3.
 
 Run setup again on the test copy, then walk row 12 on two monitors and row 4's
 RDP check on the test install when phase 8 reaches it. Record results in
-`proofs.md`. The flood and never-read cases are covered by phase A's tests and
-phase 0's findings; the hands-on adds the two-monitor, pick, cap, sign-out and
+`proofs.md`. Phase 0's part (7) is the measured flood check; phase A's tests cover the
+never-read feed. The hands-on adds the two-monitor, pick, cap, sign-out and
 restart cases.
 
 ### Routing
@@ -2494,3 +2510,4 @@ words, which need taste >= 7). Claude verifies, signs, and runs the diff gate.
 | diff (scale, progress, clicks) | b single (opus-5.5) | 4 (full; past the cap on John's OK; single by his Claude-usage rule) | 1 should-fix, 2 nits, 0 refuted, 0 downgraded to nit; all fixed by Claude, each with a test that fails without it: a damaged small file in the snapshot did not say "Restore another snapshot by name." and showed the snapshot path; a progress file left by a killed run carried its counts into the next run; "Right-click" spelling. The reviewer found no failure that leaves Windows unable to start with no way out while a valid snapshot exists. Stage b closed |
 | diff (scale, progress, clicks) | a (gpt-6.1-sol) | 4 (full, the rerun on the final diff, past the cap on John's OK) | 0 findings, 0 refuted, 0 downgraded to nit. Clean (its sandbox cannot bind sockets; Claude ran the full suite on 45bc98b: 707 pass). The gate is closed. Next: John's hands-on checks on the test copy |
 | plan (live scale) | a (gpt-6.1-sol) | 1 (full) | 1 blocker, 7 should-fix, 0 refuted; 6 integrated in the plan (guest drains before acting and phase 0 proves latest-only delivery; boot monitor recorded and per-run monitor state reset; picks judged against the task's own expected step, no 5 s after-set window; save number in settings.json, a changed number is a save, invalid refuses; baseline from a second OEM string before any pick; marker moves to phase B with the new script; structured reply fields through panel_words and the Settings line), 1 resolved in the spec (following keeps working with the shell down, flagged to John) |
+| plan (live scale) | a (gpt-6.1-sol) | 2 (full) | 5 should-fix, 0 refuted; all integrated: a reader runspace and a 300 ms quiet gap replace the pending-read drain test, proven with a 10,000-line backlog; each pass observes, then processes the line, then applies; the touched flag clears only on open; the old-task words name the lost following; a measured 10-minute guest flood in phase 0 |
