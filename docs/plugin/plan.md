@@ -2167,8 +2167,7 @@ guest treats any change of the number as a save (req 27), so even a lost counter
 cannot strand a pick: the next save writes a number the guest has not seen.
 
 **The boot record.** `boot_vm` already resolves the step and writes `boot.json`.
-It also writes `scale_save` and, for `"auto"`, the focused monitor's name
-(`boot_monitor`). QEMU gets a second OEM string beside the first:
+It also writes `scale_save` and the focused monitor's name (`boot_monitor`). QEMU gets a second OEM string beside the first:
 `-smbios type=11,value=lanai-scale=<step>,value=lanai-scale-save=<n>`. The old task
 matches only `lanai-scale=*`, so it keeps working unchanged.
 
@@ -2178,18 +2177,24 @@ panel, so following works with the panel closed and through shell restarts; it
 reads `HYPRLAND_INSTANCE_SIGNATURE` from the unit's environment (the user manager
 has it). Every 2 s it:
 
-1. Reads the setting (`vm_windows_scale`) and the save number.
-2. Computes the target. A fixed step is the target. For `"auto"`, the monitor that
+1. Reads `settings.json` once and takes the setting and the save number from that
+   one snapshot (a shared reader beside `vm_windows_scale`; `boot_vm` uses the same
+   reader), so a save landing between reads cannot pair a new number with an old
+   step.
+2. Records the client window's monitor by name in `$RUN/scale-monitor` whenever
+   the window is open, whatever the setting, so a later switch to "match my
+   monitor" knows the monitor since the VM started. `boot_vm` records the focused
+   monitor's name (`boot_monitor`) for every boot, fixed or auto.
+3. Computes the target. A fixed step is the target. For `"auto"`, the monitor that
    counts is the client window's monitor (found by the client's pid in
-   `hyprctl clients -j`, as `lanai open` does), remembered by name in
-   `$RUN/scale-monitor`; with no window, the remembered monitor; with none
+   `hyprctl clients -j`, as `lanai open` does); with no window, the remembered monitor; with none
    remembered yet, `boot.json`'s `boot_monitor`. If that monitor is not in
    `hyprctl monitors -j`, the focused monitor counts; then the first one listed;
    with no monitors, the last target stays. The step is `scale_step` of that
    monitor's current scale (ties round down), so a scale change on the boot monitor
    or the remembered one is followed too. `vm_exec` deletes `$RUN/scale-monitor`
    at each start, so nothing carries over between VM runs.
-3. Sends `lanai-scale <target> <save>` when the line differs from the last line
+4. Sends `lanai-scale <target> <save>` when the line differs from the last line
    sent, or when the guest has opened the port since (phase 0 decides how the feed
    learns this: QMP `VSERPORT_CHANGE`, or a resend every 2 s).
 
@@ -2217,7 +2222,10 @@ fixture `hyprctl` JSON; the loop is tested against a fake server that never read
   queue only once no line has arrived for 300 ms (a backlog arrives at full speed,
   so a quiet gap means it is drained), then dequeues everything and uses the last
   valid line only. Malformed lines are dropped (logged once).
-- Each loop pass runs in this order: observe the display and detect a pick; then
+- The main loop ticks every 250 ms, so the quiet gap is checked on its own
+  clock, never only at a display poll. It observes the display every 2 s, and
+  also on any tick that has a drained line to process.
+- Each pass that processes a line, or observes the display, runs in this order: observe the display and detect a pick; then
   process the drained line; then apply. A save received in a pass therefore
   clears a pick seen in the same pass.
 - State: `want` (the step from Lanai), `lastSave`, `pick` (null or a step). At
@@ -2226,13 +2234,17 @@ fixture `hyprctl` JSON; the loop is tested against a fake server that never read
   differs from `lastSave` is a scale save: set `want`, clear `pick`, set
   `lastSave`. A line with the same number updates `want` (a follow update) and
   keeps `pick`.
-- Pick: the task remembers the absolute step it last set or confirmed (`expected`)
-  with the recommended step and resolution at that moment. On a poll, a current
-  step that differs from `expected`, with the same recommended step and a
-  resolution unchanged for at least 5 s, is a pick: `pick` = the current step and
-  `expected` follows it. A moved recommended step or resolution is never a pick;
-  the task reapplies the applied scale. A pick right after the task's own change
-  counts, since `expected` already holds that change.
+- Pick: the task keeps two values. `confirmed` is the last step it observed with
+  the recommended step and resolution at that moment. `pending` is a step it asked
+  Windows for and has not yet observed (null when none). On a poll, a current step
+  equal to `pending` confirms it (`confirmed` = it, `pending` = null). A current
+  step equal to `confirmed` while `pending` is set means Windows has not applied
+  the request yet: not a pick; retry once a minute, as today. A current step that
+  equals neither, with the same recommended step and a resolution unchanged for at
+  least 5 s, is a pick: `pick` = it, `confirmed` = it, `pending` = null. A moved
+  recommended step or resolution is never a pick; the task updates `confirmed` and
+  reapplies the applied scale. A pick right after the task's own change counts,
+  since that change is already in `confirmed`.
 - Target = `pick` if set, else `want`; applied = `ScaleDecision` cap of the target.
   The pick lives only in the task's memory, so sign-out, a Windows restart and a VM
   stop end it; at the next sign-in the feed's next line brings the latest target.
@@ -2314,7 +2326,9 @@ phase B's last step; (1)-(5) run first.
   a fake server that never reads: the loop keeps its 2 s cadence and memory stays
   flat over 1,000 sends; a flooding guest is never read; the boot monitor's scale
   change and unplug before the window opens; `scale-monitor` cleared between
-  runs), `test/lifecycle.bats` (the helper is supervised and stops with the unit;
+  runs; the monitor recorded under a fixed setting counts after a switch to auto
+  with the window closed; settings replaced between two reads cannot pair a new
+  save number with an old step, because the feed reads once), `test/lifecycle.bats` (the helper is supervised and stops with the unit;
   `boot.json` and the second OEM string carry the save number and boot monitor),
   `test/panel.bats` (the note shows only while running with the new task),
   `test/panel-qml.bats` (an untouched list sends two arguments; choosing the shown
@@ -2337,7 +2351,10 @@ phase B's last step; (1)-(5) run first.
   connects and a save made in the meantime (the save clears it); a pick right
   after a host-driven change; an unobserved pick followed by a save in the same
   pass ends with the save applied; draining keeps only the last line, and a line
-  that arrives inside the 300 ms gap delays acting. Pin the task
+  that arrives inside the 300 ms gap delays acting; a resend every 2 s aligned
+  just after each display poll is still processed within one tick of its gap; a
+  set Windows accepts but does not apply is retried and never becomes a pick,
+  while a real pick right after it still counts. Pin the task
   registration flags in `setup.cmd` (`-RunLevel Highest`, same name, `-Force`).
   `test/setup.bats`: `scale_task` written only when the finishing round's media
   carried the new script.
@@ -2511,3 +2528,4 @@ words, which need taste >= 7). Claude verifies, signs, and runs the diff gate.
 | diff (scale, progress, clicks) | a (gpt-6.1-sol) | 4 (full, the rerun on the final diff, past the cap on John's OK) | 0 findings, 0 refuted, 0 downgraded to nit. Clean (its sandbox cannot bind sockets; Claude ran the full suite on 45bc98b: 707 pass). The gate is closed. Next: John's hands-on checks on the test copy |
 | plan (live scale) | a (gpt-6.1-sol) | 1 (full) | 1 blocker, 7 should-fix, 0 refuted; 6 integrated in the plan (guest drains before acting and phase 0 proves latest-only delivery; boot monitor recorded and per-run monitor state reset; picks judged against the task's own expected step, no 5 s after-set window; save number in settings.json, a changed number is a save, invalid refuses; baseline from a second OEM string before any pick; marker moves to phase B with the new script; structured reply fields through panel_words and the Settings line), 1 resolved in the spec (following keeps working with the shell down, flagged to John) |
 | plan (live scale) | a (gpt-6.1-sol) | 2 (full) | 5 should-fix, 0 refuted; all integrated: a reader runspace and a 300 ms quiet gap replace the pending-read drain test, proven with a 10,000-line backlog; each pass observes, then processes the line, then applies; the touched flag clears only on open; the old-task words name the lost following; a measured 10-minute guest flood in phase 0 |
+| plan (live scale) | a (gpt-6.1-sol) | 3 (full, cap) | 1 blocker, 3 should-fix, 0 refuted; all integrated: a 250 ms tick checks the quiet gap on its own clock (a 2 s poll could miss every gap); the window's monitor is recorded whatever the setting, and boot_monitor for every boot; pending and confirmed steps kept apart, so a set Windows ignores is never a pick; one settings snapshot for step and save number. Stage closed at the cap with these integrations for stage b to review |
