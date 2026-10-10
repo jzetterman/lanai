@@ -2173,7 +2173,9 @@ reverses today's "no monitor reads for a fixed setting" (`lib/vm.sh`, and
 update both, and a failed monitor read never blocks a fixed boot (it leaves
 `boot_monitor` empty). QEMU gets a second OEM string beside the first:
 `-smbios type=11,value=lanai-scale=<step>,value=lanai-scale-save=<n>`. `vm_args`
-gains the `<save>` argument, which `vm_exec` reads from `boot.json`; like every
+gains the `<save>` argument, and so does `vm_plan` (`vm_plan <scale> <save>
+<media> [<window>]`), which both `vm_exec` (reading `boot.json`) and `boot_vm`'s
+dry run call; the existing `vm_args` calls in `test/vm.bats` gain it too; like every
 other `vm_args` input it is checked (`^[0-9]{1,9}$`), since it lands in a
 comma-separated value. The old task
 matches only `lanai-scale=*`, so it keeps working unchanged.
@@ -2182,8 +2184,10 @@ matches only `lanai-scale=*`, so it keeps working unchanged.
 in `vm_exec` beside `event-log` (`supervise scale-feed ...`). It needs no shell or
 panel, so following works with the panel closed and through shell restarts. The
 user manager's environment may lack the session's (`lib/client.sh`), so `boot_vm`
-writes `hyprland_instance_signature` into `boot.json` and the feed exports it before
-calling `hyprctl`; a failing `hyprctl` is logged once, not silently. Every 2 s it:
+writes `hyprland_instance_signature` into `boot.json` and the feed checks it
+(`^[A-Za-z0-9_]+$`) and exports it before calling `hyprctl` (an empty or invalid
+one is logged); a failing `hyprctl` is logged once, not silently. Every 2 s, measured start to start (`LANAI_SCALE_INTERVAL`), with a 1 s timeout
+on each `hyprctl` call, it:
 
 1. Reads `settings.json` once and takes the setting and the save number from that
    one snapshot (a shared reader beside `vm_windows_scale`; `boot_vm` uses the same
@@ -2252,9 +2256,12 @@ once).
   process the drained line; then apply. A save received in a pass therefore
   clears a pick seen in the same pass.
 - State: `want` (the step from Lanai), `lastSave`, `pick` (null or a step). At
-  start, `want` and `lastSave` come from the two OEM strings; once the port opens,
-  the task waits up to 2.5 s for a first line before applying the OEM step, so a
-  sign-in after a mid-run save does not change the scale twice. The OEM values
+  start, `want` and `lastSave` come from the two OEM strings; the task waits for
+  a first line before applying the OEM step, so a sign-in after a mid-run save
+  does not change the scale twice. The wait ends at the first valid line, or one
+  feed period plus the send deadline after the port opens (3 s by default), or 5 s
+  after the task starts, whichever comes first; a port that never opens (an older
+  host, or a failed open) still gets the OEM step within 5 s. The OEM values
   give the baseline before any pick and before the channel connects. A line whose
   save number differs from `lastSave` is a scale save: set `want`, clear `pick`, set
   `lastSave`. A line with the same number updates `want` (a follow update) and
@@ -2285,19 +2292,21 @@ Because the task runs elevated, nothing it uses may be writable by the
 non-elevated user. Before its first `Add-Type` or cmdlet, it sets
 `$env:PSModulePath` to the system module folders (the user's
 `Documents\WindowsPowerShell\Modules` would otherwise autoload first) and
-`$env:TMP` and `$env:TEMP` to `C:\ProgramData\Lanai\tmp` (PowerShell 5.1's
+`$env:TMP` and `$env:TEMP` to `C:\Program Files\Lanai\tmp` (PowerShell 5.1's
 `Add-Type` compiles through files in the temp folder, then loads the DLL it built).
-It logs to `C:\ProgramData\Lanai\lanai-scale.log` (a junction under
-`%LOCALAPPDATA%` could redirect an elevated write). setup.cmd prepares
-`C:\ProgramData\Lanai` and its `tmp` folder, since standard users can create
-folders in ProgramData: if the folder is a reparse point it removes the link
-itself (`rd`, never the target); it creates both folders, sets the owner to
-Administrators (`icacls ... /setowner *S-1-5-32-544`) and replaces the ACL
-(`/inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F
-<setup user SID>:(OI)(CI)RX`). The task logs nothing, and compiles nothing, when
-either folder is a reparse point. One residual stays, recorded for John: a highest-privileges sign-in task
+It logs to `C:\Program Files\Lanai\lanai-scale.log`. Both live in the folder
+setup.cmd already creates elevated for the script, where standard users cannot
+create anything and inherit read and execute only, so no ACL repair is needed (a
+folder under ProgramData or `C:\` would race its ACL, as phase 6 found for
+`C:\Lanai`). setup.cmd creates `tmp` there. The task action names
+`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` by absolute path,
+expanded when setup.cmd registers the task.
+One residual stays, recorded for John: a highest-privileges sign-in task
 runs with the user's environment variables (HKCU\Environment), a known UAC-bypass
-class. With UAC on, as on John's install, malware already running as the user could
+class. For example, `COR_ENABLE_PROFILING` and `COR_PROFILER_PATH` there make the
+elevated powershell.exe load a DLL at start, so the pins above stop an attacker
+who can only write files (a planted module in a synced Documents folder), not
+code already running as the user. With UAC on, as on John's install, malware already running as the user could
 use it to gain admin; Microsoft does not treat UAC as a security boundary, and the
 same malware has other ways to the same end. In PowerShell 5.1 a `FileStream` will
 not open a `\\.\` device path, so the reader calls `CreateFile` through the
@@ -2361,7 +2370,10 @@ every line arrives within 1 s and none is lost, and the reader neither stalls no
 spins at each disconnect; (6) latest
 only: with the guest paused (not reading), the host sends saves 1, 2 and 3 with
 different steps, then reconnects and sends 3 again; when the guest resumes and
-drains, the last line it acts on is save 3. Run (6) with the phase B reader and
+drains, the last line it acts on is save 3. Run it with the shipped feed command
+and cadence, not hand-sent lines. If (4) shows QEMU delivering old unread lines
+at the port's open, the first-line wait collects for at least one feed period plus
+the send deadline and uses the last line. Run (6) with the phase B reader and
 quiet-gap rule itself, and once more with a backlog of 10,000 lines (larger than
 one read buffer); the task must never apply an earlier step first. (7) Flood: a
 guest process writes to the port as fast as it can for 10 minutes while the feed
@@ -2412,7 +2424,7 @@ phase B's last step; (1)-(5) run first.
   `lib/lanai.sh` (`boot_vm`), `bin/lanai-vm-helper`, `lib/ui.sh`, `lib/panel.sh`,
   `LanaiPanel.qml` (the touched-list rule).
 - Verify: `bats test spike/test` (TMPDIR under `$XDG_RUNTIME_DIR`), CI's ShellCheck
-  line.
+  line, `test/qml-lint`.
 
 ### Phase B: guest task and setup record (TDD where pwsh runs)
 
@@ -2436,8 +2448,10 @@ phase B's last step; (1)-(5) run first.
   set Windows accepts but does not apply is retried and never becomes a pick,
   while a real pick right after it still counts. Pin the task
   registration flags in `setup.cmd` (`-RunLevel Highest`, same name, `-Force`), the
-  ProgramData preparation lines (reparse check, owner, ACL), and that the script
-  assigns `PSModulePath`, `TMP` and `TEMP` before its first `Add-Type`.
+  absolute powershell.exe path, the log and `tmp` paths under
+  `C:\Program Files\Lanai\`, and that the script assigns `PSModulePath`, `TMP` and
+  `TEMP` before its first `Add-Type`. A port that never opens still gets the OEM
+  step within 5 s.
   `test/setup.bats`: `scale_task` written only when the new task opened its port:
   step 6 with `scale0` closed after the grace period
   reports the missing task and writes no marker; with it open, the marker is
@@ -2445,7 +2459,7 @@ phase B's last step; (1)-(5) run first.
 - Files: `guest/lanai-scale.ps1`, `guest/setup.cmd`, `lib/setup.sh`, `README.md`
   (live scale, picks, custom scaling, apps that redraw only after restart, "Run
   setup again" for existing installs).
-- Verify: the suites above, `test/qml-lint`.
+- Verify: the suites above.
 
 ### Phase C: hands-on (John, test copy)
 
@@ -2615,3 +2629,4 @@ words, which need taste >= 7). Claude verifies, signs, and runs the diff gate.
 | plan (live scale) | a (gpt-6.1-sol) | 3 (full, cap) | 1 blocker, 3 should-fix, 0 refuted; all integrated: a 250 ms tick checks the quiet gap on its own clock (a 2 s poll could miss every gap); the window's monitor is recorded whatever the setting, and boot_monitor for every boot; pending and confirmed steps kept apart, so a set Windows ignores is never a pick; one settings snapshot for step and save number. Stage closed at the cap with these integrations for stage b to review |
 | plan (live scale) | b single (opus-5.5) | 1 (full) | 0 blockers, 6 should-fix, 9 nits, 0 refuted; all integrated: first observation and in-window changes are never picks; the setup marker needs `chardev_open scale0` in step 6; a steady 2 s resend replaces the QMP event idea (no free QMP socket); a newline on each connection recovers a cut line; the elevated task pins PSModulePath and logs to an admin-only folder, and the HKCU environment residual is recorded for John; the Hyprland signature travels in boot.json; nits (socat -u with timeout, test interval, fixed-boot contract, CreateFile for the device path, settings words cleared per run, CLI words, monitor id mapping, stale socket and helper table, wording) |
 | plan (live scale) | b single (opus-5.5) | 2 (full) | 0 blockers, 3 should-fix, 8 nits, 0 refuted; all integrated: TMP and TEMP pinned to an admin-only folder before Add-Type; setup.cmd removes a planted ProgramData link and sets owner and ACL; one short connection per send, the reader keeps its handle across host disconnects, and phase 0 (5) proves that model; nits (join every missing part, vm_args as the site with a checked save argument, feed seeds and keeps the last good line, a 2.5 s wait for the first line, words for unfinished setup and stopped old installs, a send-timeout test knob, named pure functions for the guest, send failures logged once) |
+| plan (live scale) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 2 should-fix, 7 nits, 0 refuted; all integrated: the log and temp folder move under C:\Program Files\Lanai (ProgramData raced its ACL, as C:\Lanai did in phase 6), dropping the ACL repair; the first-line wait is bounded from task start, so a port that never opens still gets the OEM step; nits (residual reach and absolute powershell.exe path, phase 0 (6) uses the shipped feed, start-to-start cadence and hyprctl timeout, vm_plan signature, qml-lint in phase A, signature check). Stage closed at the cap with these integrations unreviewed; the gate waits for John |

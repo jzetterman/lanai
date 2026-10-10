@@ -39,9 +39,9 @@ Neither needs GPU acceleration.
    display path, the network backend, the file-sharing device and path, the devices
    Looking Glass needs, the guest agent channels (SPICE agent and QEMU guest agent), a
    setup-only display and read-only setup media, a host-to-guest SMBIOS text field that
-   carries the display scale (requirement 12), the scale channel (requirement 27), and
-   the SMBIOS serial (dockur copies the
-   host's serial, which only root can read).
+   carries the display scale and its save number (requirements 12 and 27), the scale
+   channel (requirement 27), and the SMBIOS serial (dockur copies the host's serial,
+   which only root can read).
 3. Lanai and `omarchy-windows-vm` never run the VM at the same time, and Lanai never
    runs two copies of its own VM.
    - Lanai refuses to start while the container VM runs. It detects that without Docker
@@ -455,3 +455,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | John | 2026-10-10 | From plan research: Windows' virtio-serial driver opens a port only to SYSTEM and Administrators (`SDDL_DEVOBJ_SYS_ALL_ADM_ALL`), so a task in the user's limited session cannot read the scale channel. John chose an elevated scale task (one piece, highest privileges at sign-in, no prompt) over a SYSTEM relay plus an unprivileged task; req 27 says so |
 | spec | Claude (flagged to John) | 2026-10-10 | From plan writing: the save flag in req 27 was redundant, since a grown save number already marks a scale save; req 27 and row 12 drop it |
 | spec | Claude (flagged to John) | 2026-10-10 | From plan review a round 1: following and CLI scale saves keep working while the shell or plugin is down (the feed runs in the VM unit; pausing would need a presence check for no user benefit); a save is a changed save number, not only a grown one, so a lost counter cannot strand a pick |
+| spec | Claude | 2026-10-10 | From plan review b round 3: req 2's SMBIOS field carries the scale and its save number (the boot baseline for the scale task) |
