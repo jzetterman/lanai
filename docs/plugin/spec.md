@@ -311,9 +311,10 @@ or 6008).
     scale task gets the latest target whenever it starts or reconnects. The save number
     never goes down during a VM run, across shell and plugin restarts, whichever command
     makes the save. Lanai never parses or acts on anything the guest writes to the
-    channel. The scale task runs as the signed-in user, without administrator rights.
-    The channel adds no network listener, and the guest agent's allow-list stays as
-    requirement 7 sets it.
+    channel. The scale task runs as the Windows user who ran setup, with that user's
+    administrator rights (the port opens only to administrators) and no prompt, from a
+    script only administrators can change. The channel adds no network listener, and the
+    guest agent's allow-list stays as requirement 7 sets it.
 28. The file share, if present, is confined to `~/Windows`. The guest cannot reach any
     other host path through it, including through symlinks or `..`.
 29. The README states the clipboard exposure: while the Windows window runs, the guest can
@@ -450,3 +451,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | amendment review b single (opus-5.5) | 2026-10-10 | Round 2 (full): 1 blocker, 9 should-fix, 6 nits, 0 refuted; all integrated within the one-way design: each message carries a step, a save flag and a growing save number (a bare step could not tell a save from a follow update or a resend); a pick is defined by what Windows can observe (scale change without a resolution change) and is part of the target; a sign-out, Windows restart or VM stop ends a pick and the latest target applies at the next sign-in; one panel message for signed in or not; the guest cannot block or grow the host's sending side; the scale task does nothing under omarchy-windows-vm (req 4, row 4); a setup rerun leaves one scale task (req 9); the Run setup again hint names the lock; a note near the scale list; nits (CLI saves, monitor fallbacks, plugin down, wording, README notes, superseded log row) |
 | spec | amendment review b single (opus-5.5) | 2026-10-10 | Round 3 (full, cap): 0 blockers, 5 should-fix, 8 nits, 0 refuted; all integrated: a send is replaced by the latest, and the scale task gets the latest target when it starts or reconnects (dropping would lose saves made while no one reads); the save number never goes down across shell restarts; a pick excludes the task's own changes and late moves of Windows' recommended scale; a scale save is defined by input (scale list selected, or three-argument CLI); the old task neither keeps picks nor follows, and Lanai decides from its setup record; nits ("chooses", row 7b guest agent claim, cap wording, sign-in timing, flood bound, extra row cases, Lanai never parses guest writes, setup user only, last monitor across shell restarts). Stage closed at the cap with these integrations unreviewed; the gate waits for John |
 | spec | John | 2026-10-10 | John accepted the live-scale gate with b round 3's integrations unreviewed. Next: the plan |
+| spec | John | 2026-10-10 | From plan research: Windows' virtio-serial driver opens a port only to SYSTEM and Administrators (`SDDL_DEVOBJ_SYS_ALL_ADM_ALL`), so a task in the user's limited session cannot read the scale channel. John chose an elevated scale task (one piece, highest privileges at sign-in, no prompt) over a SYSTEM relay plus an unprivileged task; req 27 says so |
