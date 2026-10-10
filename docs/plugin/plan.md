@@ -242,7 +242,7 @@ proof findings are folded into phases 4 to 7 below.
 - `bin/lanai` dispatches to `lib/lanai.sh`; every path prints one JSON object.
 - `test/lanai.bats` (bats-support, bats-assert); move the spike's reusable functions
   and their tests; `spike/` stays unchanged.
-- `.github/workflows/test.yml`: `ubuntu-latest`, `container: archlinux:latest`,
+- `.github/workflows/test.yml`: `ubuntu-24.04`, `container: archlinux:latest`,
   `timeout-minutes: 20`. `pacman -Syu --noconfirm bats bats-assert bats-support
   shellcheck ffmpeg jq socat e2fsprogs diffutils qemu-system-x86 qemu-img` (the lock
   tests run QEMU under TCG with `-S`, no KVM needed). Checkout with

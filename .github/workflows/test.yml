@@ -5,7 +5,8 @@
 # runners are throwaway VMs; never run this job on a self-hosted runner. The
 # lock tests run QEMU under TCG with -S, so they need no KVM. --init gives
 # the container a PID 1 that reaps orphans, as systemd does on a desktop;
-# BATS_TEST_TIMEOUT makes a hung test fail with its name.
+# BATS_TEST_TIMEOUT makes a hung test fail with its name. The runner image is
+# pinned, so a new ubuntu-latest cannot change the host under the container.
 name: test
 
 on:
@@ -17,7 +18,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: archlinux:latest
       options: --privileged --init
