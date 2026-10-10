@@ -39,7 +39,8 @@ Neither needs GPU acceleration.
    display path, the network backend, the file-sharing device and path, the devices
    Looking Glass needs, the guest agent channels (SPICE agent and QEMU guest agent), a
    setup-only display and read-only setup media, a host-to-guest SMBIOS text field that
-   carries the display scale (requirement 12), and the SMBIOS serial (dockur copies the
+   carries the display scale and the scale channel (requirements 12 and 27), and the
+   SMBIOS serial (dockur copies the
    host's serial, which only root can read).
 3. Lanai and `omarchy-windows-vm` never run the VM at the same time, and Lanai never
    runs two copies of its own VM.
@@ -187,19 +188,26 @@ Neither needs GPU acceleration.
       window is on, with ties rounded down (John, 2026-09-28). When the window moves to
       a monitor with a different scale, or that monitor's scale changes, Windows follows
       within 5 seconds. While the window is closed, the monitor it was last on counts;
-      before it first opens, the focused monitor at start counts.
-    - A scale saved in the panel while Windows runs applies within 5 seconds.
-    - A scale step the user picks in Windows' own display settings stays: Lanai never
-      changes it back. It becomes the setting, a fixed step, as if saved in the panel,
-      and the panel shows it within 5 seconds.
-    - Windows keeps the current scale when the window is resized and Windows changes
-      resolution, except that Windows caps the scale at what it allows for the current
-      resolution; the scale goes back up when the window grows again. A cap is not a
-      user change and never alters the setting.
-    - A live change needs the user signed in to Windows and the guest piece that setup
-      installs. Until both are in place, a panel change applies at the next sign-in or
-      start, and the panel says which; when the guest piece is missing, it names "Run
-      setup again" as the next step.
+      before it first opens, the focused monitor at start counts. When the monitor that
+      counts is gone, the focused monitor counts instead.
+    - A scale saved in the panel while Windows runs is the new setting and applies
+      within 5 seconds.
+    - A scale step the user picks in Windows' own display settings becomes the setting,
+      a fixed step, as if saved in the panel, and the panel shows it within 5 seconds.
+      Lanai does not change it back.
+    - The latest deliberate choice wins: a panel save or a step picked in Windows'
+      settings, in the order the user made them. A report or change that arrives late
+      never replaces a newer choice. Automatic changes (following a monitor under
+      "match my monitor", and Windows' cap below) never change the setting.
+    - The setting is the target; the applied scale is the target capped at what Windows
+      allows for the window's current resolution. Windows keeps the applied scale when
+      the window is resized; when the window grows, the scale goes back up to the
+      current target. The 5-second limits above apply to the applied scale.
+    - A live change needs the user signed in to Windows and the guest piece from a setup
+      run that includes this change. With that piece and no one signed in, the setting
+      applies at sign-in. With the piece from an earlier setup, the setting applies at
+      the next start of Lanai's VM, and the panel names "Run setup again" for live
+      changes. The panel says which case applies when the user saves.
 13. Keyboard, mouse, clipboard (both ways) and audio output work in the Windows window.
 14. When Windows asks for a password (dockur normally signs in automatically), the user
     types the one they chose when `omarchy-windows-vm` installed Windows. Lanai never
@@ -268,7 +276,7 @@ or 6008).
     guest agent channel, which Lanai uses only to set the guest clock (requirement 21);
     and the scale channel (requirement 12). Nothing else. The scale channel carries
     only a scale step in each direction. Lanai accepts from it only a listed step, and
-    a guest message can change nothing on the host but the scale setting. It adds no
+    a guest message can change nothing on the host but Lanai's scale setting. It adds no
     Windows administrator rights and no network listener, and the guest agent's
     allow-list stays as requirement 7 sets it.
 28. The file share, if present, is confined to `~/Windows`. The guest cannot reach any
@@ -325,7 +333,7 @@ stopped; Windows then resumes, boots after a restart, and `chkdsk` reports no er
 | 7b | Before setup, each lock path locks Windows or leaves it at the sign-in screen: Lock in the Start menu and in Ctrl+Alt+Del, Switch user, Windows key + L sent with QMP `send-key`, and each automatic lock the VM can trigger, turned on at a 1-minute timeout (secure screen saver, machine inactivity limit). After setup, with the screen-saver timeout still at 1 minute (setup leaves it set but not secure) and the inactivity limit as setup left it, none of them does; Windows is still unlocked after idling past every timeout; Windows reports no sleep state it could wake from, and row 27 shows no Bluetooth device. A shutdown with the Ctrl+Alt+Del screen left open is recorded (clean, or the README names it). Setup's domain or MDM warning appears when its membership check reports membership (simulated). Approving the prompt with a different administrator account makes setup refuse; afterwards nothing differs from the before-setup inventory (dockur already installs some pieces, such as its own file-sharing service and guest agent): the lock controls still lock, the Looking Glass IDD and the scale sign-in task are absent, the guest agent's allow-list is not applied, and Lanai has not added or replaced any file-sharing piece. The README states the lock note from requirement 7 |
 | 8 | A deliberate client/IDD mismatch is detected and named; a simulated pin change keeps or restores a working window |
 | 9 | Interrupting setup at each step, then rerunning it, ends in a working install |
-| 10-17, 20 | Each passes a scripted or checklist test (list in the plan); requirement 12 is checked with a scale matrix: each step, a value just above and below each boundary, a tie (for example 112.5% gives 100%, 275% gives 250%), the 250-300 gap, and values below 100% and above 500% (clamped to the nearest end). Requirement 12's live changes, on two monitors with different scales: with "match my monitor", moving the window between them changes Windows' scale within 5 seconds each way, and so does changing the window's monitor's scale; a panel save of a fixed step applies within 5 seconds and survives a restart; a step picked in Windows' display settings stays through a resize and a monitor move, and the panel shows it as the fixed setting within 5 seconds and after a restart; shrinking the window until Windows caps the scale, then growing it, restores the scale and leaves the setting unchanged; with the user signed out, and with the old guest piece, a panel save says when it applies (and names Run setup again for the old piece); a malformed or unlisted value sent on the scale channel from the guest changes nothing. If requirement 15 is moved to v2 (recorded in this spec before the release gate), its check and the requirement 28 check are skipped. Requirement 11's clicks: in each state requirement 10 lists, plus during setup, a snapshot or restore, and an unfinished restore, a left click, Enter and Space on the icon open the panel (and close it when open), and a right click starts Windows only when stopped with nothing blocking a start, opens its window only when running after setup with the window closed, and otherwise opens the panel |
+| 10-17, 20 | Each passes a scripted or checklist test (list in the plan); requirement 12 is checked with a scale matrix: each step, a value just above and below each boundary, a tie (for example 112.5% gives 100%, 275% gives 250%), the 250-300 gap, and values below 100% and above 500% (clamped to the nearest end). Requirement 12's live changes, on two monitors with different scales: with "match my monitor", moving the window between them changes Windows' scale within 5 seconds each way, and so does changing the window's monitor's scale; with the window closed and its last monitor unplugged, the focused monitor's scale applies; a panel save of a fixed step applies within 5 seconds and survives a restart; a step picked in Windows' display settings stays through a resize and a monitor move, and the panel shows it as the fixed setting within 5 seconds and after a restart; a panel save and a Windows pick made in each order within 2 seconds end with the later one as the setting and the applied scale; shrinking the window until Windows caps the scale, then growing it, restores the target and leaves the setting unchanged, and a panel save or monitor move while capped applies the capped scale, then the new target once the window grows; with the user signed out, a panel save applies at sign-in; with the guest piece from an earlier setup, a panel save names Run setup again and applies at the next start; a malformed or unlisted value sent on the scale channel from the guest changes nothing, and a valid one changes Lanai's scale setting and nothing else (memory, cores, storage, host monitor scales and the guest agent's allow-list unchanged). If requirement 15 is moved to v2 (recorded in this spec before the release gate), its check and the requirement 28 check are skipped. Requirement 11's clicks: in each state requirement 10 lists, plus during setup, a snapshot or restore, and an unfinished restore, a left click, Enter and Space on the icon open the panel (and close it when open), and a right click starts Windows only when stopped with nothing blocking a start, opens its window only when running after setup with the window closed, and otherwise opens the panel |
 | 18 | Shell restart, plugin reload, plugin update and plugin disable each leave Windows running, and the bar shows its true state afterwards |
 | 19 | Logout ends in a clean shutdown, with lingering both enabled and disabled, including with row 7b's 1-minute screen saver still set (no longer secure) and running at logout; a guest that ignores shutdown at logout (fixture: turn the Windows lock back on and lock Windows, or leave open a security screen that row 7b recorded as ignoring shutdown, then log out) is force-stopped after 2 minutes and reported at the next start, naming a locked Windows, an open security screen, or a shutdown that did not finish in time as likely causes; on reboot and power-off, with lingering both enabled and disabled and an idle, unlocked Windows, Windows' shutdown starts when the host's does, the time Windows took is measured and written in the README, and the next start reports no forced stop; with the logout fixture above, a reboot whose wait expires ends in a forced stop that the next start reports |
 | 21 | After suspend and resume, the requirement 20 check passes, and the guest clock is within 2 s of the host's within 60 s |
@@ -358,7 +366,8 @@ the repository public, tagging a release, or submitting to the marketplace.
   sysadmins.
 - Microphone input. A likely v2 need for Teams calls.
 - Starting Windows automatically at login.
-- Multiple VMs, multiple monitors, and HDR.
+- Multiple VMs, multiple Windows displays, and HDR. Several host monitors are
+  supported, with the one Windows window moving between them (requirement 12).
 
 ## Review log
 
@@ -395,3 +404,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | John | 2026-10-05 | John accepted the amendment's gate with round 3's integrations unreviewed. Next: the plan for this work and the display scale |
 | spec | John | 2026-10-05 | Req 7 exception (from the plan gate): when dockur has already deleted the disk, a restore puts the cloned disk in place locked, and the verified small files right after it, before the image's one hash, so a container start cannot wipe or boot it; a failed check leaves the restore unfinished. Approved by John |
 | spec | amendment | 2026-10-10 | From a week of daily use (John): the scale could not change while Windows ran (the panel waited for the next start, and the sign-in task undid changes in Windows' settings), and "match my monitor" read the focused monitor at start, not the window's. Req 12 makes the scale live: "match my monitor" follows the window's monitor, a panel save applies at once, and a step picked in Windows' settings stays and becomes the setting (John's choices); req 6 and req 27 (a scale channel) follow; row 6 and row 10-17 check it |
+| spec | amendment review a (gpt-6.1-sol) | 2026-10-10 | Live scale, round 1 (full): 1 blocker, 6 should-fix, 0 refuted; all integrated: the latest deliberate choice wins and late reports never replace it; target vs applied scale under Windows' cap; signed-out and earlier-setup cases each say when the setting applies; several host monitors in scope (multiple Windows displays out); a gone monitor falls back to the focused one; req 2 allows the scale channel; a valid guest message changes only the scale setting |
