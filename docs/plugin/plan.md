@@ -2125,6 +2125,186 @@ spec, plan and review gates before it is built.
   README step that tells the user to click it, in one change; decide then whether "Run
   setup again" follows the same wording.
 
+## Follow-on: live scale (John, 2026-10-10)
+
+This implements the spec amendment of 2026-10-10: reqs 2, 4, 6, 7, 9, 12 and 27,
+"Out of scope for v1", and rows 4, 6, 7b, 12 and 22/25. It supersedes phase 7's
+"Phase A: display scale" where they differ: the scale no longer waits for the next
+start, and the guest no longer undoes every change made in Windows.
+
+Branch `plugin/live-scale`. Phases run in order; each starts from the previous
+phase's commit and is self-contained. Bash: `set -euo pipefail` in entry points,
+callers' options kept in sourced libraries, clean under ShellCheck. Bash decides
+the panel view; QML renders it. Tests first (bats; guest logic through pwsh where
+it is installed, skipped in CI as today). Agents never touch John's live
+`~/.windows` or `~/.local/state/lanai`; the proof and hands-on checks run on the
+rehearsal copy (`~/lanai-proofs/lanai-setup-test`, where John's Lanai settings
+already point).
+
+### Design
+
+**The channel.** One virtio-serial port, like the guest agent's:
+`-chardev socket,id=scale0,path=$RUN/scale.sock,server=on,wait=off` and
+`-device virtserialport,chardev=scale0,name=io.lanai.scale.0`, added in `vm_plan`
+(`lib/vm.sh`) beside `qga0`. The socket is inside the 0700 runtime folder (req 25).
+QEMU is the server and accepts one client. Messages are one ASCII line each:
+
+    lanai-scale <step> <save>
+
+`<step>` is a listed step (100 to 500); `<save>` is the save number, a decimal
+integer below 10^9. Nothing else goes on the line (req 27). Windows' driver opens
+ports only to SYSTEM and Administrators (`SDDL_DEVOBJ_SYS_ALL_ADM_ALL` in
+virtio-win's `vioserial/sys/Port.c`), so the scale task runs elevated (req 27,
+John's call).
+
+**The save number.** `$(state_dir)/scale-save` holds one integer. `cmd_settings`
+(`lib/ui.sh`) increments it, under the lock it already takes, on every scale save:
+three arguments, even when the step is unchanged. Two-argument saves leave it. It
+never goes down; a missing or unreadable file counts as 0, and the next save writes
+1 or more. It lives in the state folder, so shell and plugin restarts keep it.
+
+**The feed (host).** A new supervised helper, `lanai-vm-helper scale-feed`, started
+in `vm_exec` beside `event-log` (`supervise scale-feed ...`). It needs no shell or
+panel, so following works with the panel closed and through shell restarts; it
+reads `HYPRLAND_INSTANCE_SIGNATURE` from the unit's environment (the user manager
+has it). Every 2 s it:
+
+1. Reads the setting (`vm_windows_scale`) and the save number.
+2. Computes the target. A fixed step is the target. For `"auto"`: find the client
+   window by the client's pid (as `lanai open` does) in `hyprctl clients -j`; its
+   monitor counts and is remembered in `$RUN/scale-monitor`. With no window, the
+   remembered monitor counts; with none remembered, the focused monitor at start
+   (`boot.json`'s step stands for it); then the focused monitor; then the first
+   monitor `hyprctl monitors -j` lists; with no monitors, the last target stays.
+   The step is `scale_step` of that monitor's scale (ties round down, as today).
+3. Sends `lanai-scale <target> <save>` when the line differs from the last line
+   sent, or when the guest has opened the port since (phase 0 decides how the feed
+   learns this: QMP `VSERPORT_CHANGE`, or a resend every 2 s).
+
+Sending never blocks the loop: each write has a 1 s deadline. A write that misses
+it closes the connection, which drops whatever the guest did not read, and the
+next loop reconnects and sends the latest line. The feed never reads from the
+socket; whatever the guest writes stays unread and is dropped when the connection
+closes (req 27). Pure functions (target choice, line format) are unit-tested with
+fixture `hyprctl` JSON; the loop is tested against a fake server that never reads.
+
+**The scale task (guest).** `guest/lanai-scale.ps1` keeps its 2 s loop and its
+`ScaleDecision` cap logic. Changes:
+
+- Start: no `lanai-scale` OEM string means Lanai is not running this VM; exit at
+  once and change nothing (req 4, as today). Otherwise the OEM step is the first
+  target.
+- Open `\\.\Global\io.lanai.scale.0` for reading with an overlapped
+  `FileStream`; poll a pending `ReadAsync` once per loop, so a silent port never
+  blocks the loop. A failed open or read retries each loop. Parse complete lines;
+  take the last valid one in each batch; ignore malformed ones (log once).
+- State: `want` (the step from Lanai), `lastSave`, `pick` (null or a step).
+  A line whose save number is greater than `lastSave` is a scale save: set
+  `want`, clear `pick`, set `lastSave`. A line with the same save number updates
+  `want` (a follow update) and keeps `pick`. A lower number is ignored. The first
+  line after the task starts sets `lastSave` and `want` without clearing anything.
+- Pick: on each poll, if the scale differs from what the task last set or confirmed,
+  the recommended step and resolution are unchanged, the resolution has been stable
+  for 5 s, and the task has not set the scale in the last 5 s, then `pick` = the
+  current step. A moved recommended step or resolution is never a pick; the task
+  reapplies the applied scale.
+- Target = `pick` if set, else `want`; applied = `ScaleDecision` cap of the target.
+  The pick lives only in the task's memory, so sign-out, a Windows restart and a VM
+  stop end it; at the next sign-in the feed's next line brings the latest target.
+
+`guest/setup.cmd` registers the task with `-RunLevel Highest` in its principal, under
+the same name with `-Force`, so a rerun leaves exactly one task (req 9). The script
+stays in `C:\Program Files\Lanai\` (administrator-only writes).
+
+**The setup record.** When setup finishes (`setup_patch '{"done": true, ...}'` in
+`lib/setup.sh`), it also writes `"scale_task": 2`. A record without it means the
+old task (req 12's last rule). The panel and `cmd_settings` read it.
+
+**Panel and words.** `LanaiPanel.qml` tracks `scaleTouched` (set by the dropdown's
+`changed`, cleared on open and after a save) and runs `settings <mem> <cores>` when
+untouched, `settings <mem> <cores> <scale>` when touched. `lib/panel.sh` adds a note
+under the scale list while Windows runs with the new task: "Saving a scale replaces
+one you picked in Windows." `cmd_settings` returns the after-save words (the panel
+shows `result.settings`):
+
+- Scale save, VM running, new task: "Saved. Windows uses the new scale within 5
+  seconds if you're signed in, or when you next sign in."
+- Scale save, VM running, old task: "Saved. Windows uses the new scale the next time
+  it starts. For changes while Windows runs, click Run setup again (it also turns the
+  Windows lock off again). Until then, Windows undoes scale changes made in its own
+  settings."
+- VM stopped, or memory and cores only: "Saved. Changes apply the next time Windows
+  starts." (memory and cores: "Memory and cores apply ...").
+
+The words above are drafts; the phase B implementer has the taste bar (>= 7) and
+may sharpen them, keeping each fact.
+
+### Phase 0: channel proof (John and Claude, test copy)
+
+Answer before building: (1) does an elevated process in the setup user's session
+open `\\.\Global\io.lanai.scale.0`, and does a non-elevated one get access denied;
+(2) do lines written to `scale.sock` arrive in order; (3) does a read with no host
+client connected block, return 0 bytes, or fail; (4) with the guest not reading,
+does a host write stall after the socket buffer fills, and after the host
+reconnects does the guest receive the old unread lines or only new ones; (5) does
+QMP emit `VSERPORT_CHANGE` when the guest opens and closes the port.
+
+- Add `docs/plugin/proof-kit/proof-scale-port.ps1` (opens the port, prints each
+  line with a timestamp, reports open errors) and a `--scale-port` flag to
+  `proof-vm` that adds the chardev and port. Claude boots the test copy with it and
+  drives the host side with `socat`; John runs the script in an elevated and a
+  normal PowerShell. Record results in `proofs.md`.
+- If (1) fails for the elevated process, stop and bring it to John (the SYSTEM
+  relay he declined becomes the fallback). (3)-(5) set the feed's resend rule and
+  the task's read handling above.
+
+### Phase A: host (TDD)
+
+- Tests first: `test/ui.bats` (save number: three-argument saves increment, also
+  for an unchanged step; two-argument saves do not; missing and corrupt files; the
+  after-save words for each case), `test/vm.bats` (the chardev and port in
+  `vm_plan`; socket path inside `$RUN`), a new `test/scale-feed.bats` (target
+  choice for fixed and auto across window present, closed with a remembered
+  monitor, gone monitor, no focus, no monitors; line format; resend on change only;
+  a fake server that never reads: the loop keeps its 2 s cadence and memory stays
+  flat over 1,000 sends; a flooding guest is never read), `test/lifecycle.bats`
+  (the helper is supervised and stops with the unit), `test/setup.bats`
+  (`scale_task` written at done), `test/panel.bats` (the note shows only while
+  running with the new task).
+- Files: `lib/vm.sh` (`vm_plan`, `vm_exec`, the feed), `bin/lanai-vm-helper`,
+  `lib/ui.sh`, `lib/setup.sh`, `lib/panel.sh`.
+- Verify: `bats test spike/test` (TMPDIR under `$XDG_RUNTIME_DIR`), CI's ShellCheck
+  line.
+
+### Phase B: guest and panel (TDD where pwsh and qmltestrunner run)
+
+- Tests first: `test/guest.bats` extracts pure functions from `lanai-scale.ps1`
+  through the PowerShell AST, as the StepName tests do: line parsing (valid,
+  malformed, oversize, unlisted step, huge number), the save rule (greater, equal,
+  lower, first line), the pick rule (each condition alone fails to make a pick;
+  a recommended-step move is not a pick; the task's own set is not a pick), target
+  and cap. Pin the task registration flags in `setup.cmd` (`-RunLevel Highest`,
+  same name, `-Force`). `test/panel-qml.bats`: untouched list sends two arguments;
+  choosing the shown entry sends three; reopen clears the touch.
+- Files: `guest/lanai-scale.ps1`, `guest/setup.cmd`, `LanaiPanel.qml`, `README.md`
+  (live scale, picks, custom scaling, apps that redraw only after restart, "Run
+  setup again" for existing installs).
+- Verify: the suites above, `test/qml-lint`.
+
+### Phase C: hands-on (John, test copy)
+
+Run setup again on the test copy, then walk row 12 on two monitors and row 4's
+RDP check on the test install when phase 8 reaches it. Record results in
+`proofs.md`. The flood and never-read cases are covered by phase A's tests and
+phase 0's findings; the hands-on adds the two-monitor, pick, cap, sign-out and
+restart cases.
+
+### Routing
+
+Phase 0: Claude with John. Phases A and B: an Opus 5.5 implementer in a worktree
+(the step-up: concurrency in the feed and the pick rule; phase B also carries UI
+words, which need taste >= 7). Claude verifies, signs, and runs the diff gate.
+
 ## Phase 8: Acceptance
 
 - Memory: before the rehearsal, the first Lanai boot on John's machine, set memory to
