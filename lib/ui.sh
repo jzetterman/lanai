@@ -40,11 +40,11 @@ scale_task_kind() {
 # Two-argument saves keep the scale, its save number and unrelated keys.
 # Three-argument saves are scale saves: they also count the save number up
 # (spec 27), even for an unchanged step, so the scale task drops a pick.
-# A save's reply carries scale_saved, running and scale_task. A scale
+# A save's reply carries scale_saved, running and scale_task_kind. A scale
 # save's message is the panel's words for them (panel_words); a memory and
 # cores save says when those apply, where the panel says only "Saved.".
 cmd_settings() {
-  local f doc='{}' mem cores scale save tmp reply running=false
+  local f doc='{}' mem cores scale save tmp reply message running=false
   f=$(settings_file)
   if [[ -L $f ]] || { [[ -e $f ]] && ! doc=$(jq -ce 'select(type == "object")' "$f"); }; then
     emit false "" "Lanai cannot read its settings file: $f." "repair that file, then try again"
@@ -114,9 +114,12 @@ cmd_settings() {
   if (($#)); then
     [[ $(unit_state 2>/dev/null) != active ]] || running=true
     reply=$(jq -c --argjson s "$([[ $# == 3 ]] && echo true || echo false)" --argjson r "$running" \
-      --arg t "$(scale_task_kind)" '. + {scale_saved:$s, running:$r, scale_task:$t}' <<<"$reply")
+      --arg t "$(scale_task_kind)" '. + {scale_saved:$s, running:$r, scale_task_kind:$t}' <<<"$reply")
     if (($# == 3)); then
-      emit true "" "$(panel_words settings "$(jq -c '. + {ok:true}' <<<"$reply")")" "" "$reply"
+      message=$(panel_words settings "$(jq -c '. + {ok:true}' <<<"$reply")")
+      # The CLI has no standing note under the scale list: add it.
+      [[ $(jq -r .scale_task_kind <<<"$reply") != old ]] || message+=" $(old_task_note "$running")"
+      emit true "" "$message" "" "$reply"
     else
       emit true "" "Saved. Memory and cores apply the next time Windows starts." "" "$reply"
     fi

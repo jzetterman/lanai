@@ -733,10 +733,10 @@ hypr_signature() {
   printf '%s\n' "${live[0]}"
 }
 
-# Export the Hyprland instance hypr_signature finds for boot.json's (the
-# user manager may lack the session's, and Hyprland may restart under a new
-# one). Logs the choice only when it changes. With none found, the inherited
-# one stays.
+# Export the Hyprland instance hypr_signature picks, trying boot.json's
+# first (the user manager may lack the session's, and Hyprland may restart
+# under a new one). Logs the choice only when it changes. With none found,
+# the inherited one stays.
 scale_feed_hypr() {
   local sig=""
   if sig=$(hypr_signature "$SCALE_FEED_BOOT_SIG"); then
@@ -751,14 +751,19 @@ scale_feed_hypr() {
   fi
 }
 
-# Seed the feed from boot.json: the boot's step and save number as the last
-# good line, the focused monitor at boot, and the session's Hyprland
-# instance (scale_feed_hypr).
+# Seed the feed: the last line it sent this VM run ($RUN/scale-line, so a
+# restart under supervise never resends the boot save number), else the
+# boot's step and save number from boot.json; the focused monitor at boot;
+# and the session's Hyprland instance (scale_feed_hypr).
 scale_feed_init() {
-  local f save
+  local f save run sent="" save_sent="" word=""
   f=$(state_dir)/boot.json
   SCALE_FEED_TARGET=$(jq -r '.scale | numbers' "$f" 2>/dev/null) || SCALE_FEED_TARGET=""
   save=$(jq -r '.scale_save // 0 | numbers' "$f" 2>/dev/null) || save=""
+  if run=$(run_dir) && [[ -f $run/scale-line ]]; then read -r word sent save_sent <"$run/scale-line" || true; fi
+  if [[ $word == lanai-scale ]] && scale_line "$sent" "$save_sent" >/dev/null; then
+    SCALE_FEED_TARGET=$sent save=$save_sent
+  fi
   SCALE_FEED_LINE=$(scale_line "$SCALE_FEED_TARGET" "$save") || SCALE_FEED_LINE="" SCALE_FEED_TARGET=""
   SCALE_FEED_BOOT_MONITOR=$(jq -r '.boot_monitor | strings' "$f" 2>/dev/null) || SCALE_FEED_BOOT_MONITOR=""
   SCALE_FEED_BOOT_SIG=$(jq -r '.hyprland_instance_signature | strings' "$f" 2>/dev/null) || SCALE_FEED_BOOT_SIG=""
@@ -785,7 +790,7 @@ scale_feed_step() {
   fi
   pid=$(timeout 1 systemctl --user show -p MainPID --value "$LANAI_CLIENT_UNIT" 2>/dev/null) || pid=""
   if clients=$(timeout 1 hyprctl clients -j </dev/null 2>/dev/null) &&
-    monitors=$(timeout 1 hyprctl monitors -j </dev/null 2>/dev/null); then
+    monitors=$(host_monitors 1); then
     ((SCALE_FEED_HYPR_FAILS == 0)) || echo "lanai: hyprctl answers the scale feed again" >&2
     SCALE_FEED_HYPR_FAILS=0
   else
@@ -808,6 +813,7 @@ scale_feed_step() {
   fi
   if [[ -n $SCALE_FEED_LINE && $SCALE_FEED_LINE != "$SCALE_FEED_LOGGED_LINE" ]]; then
     SCALE_FEED_LOGGED_LINE=$SCALE_FEED_LINE
+    printf '%s\n' "$SCALE_FEED_LINE" >"$run/scale-line.tmp" && mv -f -- "$run/scale-line.tmp" "$run/scale-line"
     read -r _ target save <<<"$SCALE_FEED_LINE"
     echo "lanai: the scale feed sends $target% (save $save) for ${name:+monitor }${name:-no monitor}" >&2
   fi
@@ -992,8 +998,8 @@ vm_exec() {
     rm -f -- "$run/$name.pid"
   done
   # Setup's step 6 times the guest agent's open and closed port per boot,
-  # and the scale feed's window monitor belongs to one run.
-  rm -f -- "$run/ivshmem" "$run/qga-open-since" "$run/qga-closed-since" "$run/step6-asked" "$run/step6-answered" "$run/scale-monitor"
+  # and the scale feed's window monitor and last line belong to one run.
+  rm -f -- "$run/ivshmem" "$run/qga-open-since" "$run/qga-closed-since" "$run/step6-asked" "$run/step6-answered" "$run/scale-monitor" "$run/scale-line"
   : >"$run/client.log"
 
   run_once virtiofsd "$LANAI_VIRTIOFSD" --sandbox namespace --shared-dir "$HOME/Windows" \

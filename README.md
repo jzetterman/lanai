@@ -195,8 +195,9 @@ save while Windows is stopped applies at the next start.
 
 You can also pick a scale in Windows, under Settings > System > Display > Scale.
 Your pick holds until your next scale save, a sign-out, a Windows restart or the VM
-stopping, and the panel notes that saving a scale replaces it. A pick never changes
-Lanai's setting. Windows changes its recommended scale when the resolution changes;
+stopping, and the panel notes that saving a scale replaces it. While it holds,
+“Match my monitor” does not follow the window. A pick never changes Lanai's
+setting. Windows changes its recommended scale when the resolution changes;
 the scale task sets it back to your pick, or to the scale you saved in Lanai when
 you have no pick. The scale holds as the window resizes: Lanai caps it at
 Windows' limit for the current resolution, and it goes back up when the window
@@ -211,8 +212,8 @@ minute. Its log is `C:\Program Files\Lanai\lanai-scale.log`.
 
 Installs set up before live scale keep the old scale task: a scale save applies at
 the next start, the old task undoes scale changes made in Windows, and “Match my
-monitor” does not follow the window while Windows runs. The panel says so after a
-save. To get live scale, shut Windows down and click **Run setup again**; it also
+monitor” does not follow the window while Windows runs. The panel says so under
+the scale list and after a save. To get live scale, shut Windows down and click **Run setup again**; it also
 turns the Windows lock off again. After you update Lanai while Windows runs, the
 panel may say some of Lanai's helpers stopped until Windows next starts. The
 [rehearsal checklist](docs/plugin/proofs.md)

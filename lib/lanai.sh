@@ -659,9 +659,10 @@ settings_seed() {
   printf '{"memory_gib":%d,"cores":%d,"source":"defaults"}\n' "$ram" "$cores"
 }
 
-# Print `hyprctl monitors -j`, waiting at most 5 s. Fails without Hyprland.
+# host_monitors [<seconds>]: print `hyprctl monitors -j`, waiting at most
+# <seconds> (default 5; the scale feed passes 1). Fails without Hyprland.
 host_monitors() {
-  timeout 5 hyprctl monitors -j </dev/null 2>/dev/null
+  timeout "${1:-5}" hyprctl monitors -j </dev/null 2>/dev/null
 }
 
 # Print a Hyprland monitor scale as a percentage with at most two decimals
@@ -1140,9 +1141,9 @@ runtime_refresh() {
 # setup's step 6 boot). Under lanai_flock it runs preflight, rechecks setup
 # state without changing it, resolves a fixed step, or for "auto" the step
 # scale_target gives (the focused monitor, else the first listed, else
-# 100%), checks vm_plan, refreshes the runtime copy, writes the scale, its save number, the focused monitor, the
-# session's Hyprland instance (for the scale feed) and the boot mode to
-# boot.json, and starts the unit. Setup boots require this disk's snapshot
+# 100%), checks vm_plan, refreshes the runtime copy, writes the scale, its
+# save number, the focused monitor, the session's Hyprland instance (for the
+# scale feed) and the boot mode to boot.json, and starts the unit. Setup boots require this disk's snapshot
 # decision; step 6 requires this disk's step5 to be true; ordinary starts
 # require setup_done under the same lock. A setup boot guesses QEMU's window
 # when no guest version is recorded, else the client; <window> overrides
@@ -1197,7 +1198,8 @@ boot_vm() {
     window=false
   fi
   if ! settings=$(vm_scale_settings); then
-    emit false "" "Lanai cannot read Windows scale or its save number in its settings file." "set auto or a valid Windows scale step"
+    emit false "" "Lanai cannot read Windows scale or its save number in its settings file." \
+      "repair settings.json: windows_scale is auto or a listed step, and scale_save a whole number below 10^9"
     return 1
   fi
   read -r step save <<<"$settings"
@@ -1207,8 +1209,6 @@ boot_vm() {
   monitors=$(host_monitors) || monitors=""
   monitor=$(focused_monitor "$monitors")
   if [[ $step == auto ]]; then
-    # The scale feed's rule (scale_target): the focused monitor, else the
-    # first listed, else 100%.
     step=$(scale_target auto "$monitors" "$monitor" 100)
   fi
   if ! reason=$(vm_plan "$step" "$save" "$media" "$window"); then

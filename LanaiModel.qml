@@ -39,7 +39,7 @@ Item {
   function run(args, longJob) {
     var now = Math.floor(Date.now() / 1000)
     if (actionProcess.running || (longJob && pendingToken && now - pendingAt < 10)) {
-      clickNotice = "The last action is still running. Try again in a moment."
+      clickNotice = "Your previous action is still running. Try again in a moment."
       clickNoticeAt = Date.now()
       clickNoticeTimer.interval = 5000
       clickNoticeTimer.restart()
@@ -65,8 +65,10 @@ Item {
     onTriggered: root.refresh()
   }
   onPanelOpenChanged: if (panelOpen) refresh()
-  // A dropped-click notice lasts until the action ends, at least 2 s and at
-  // most 5 s.
+  // A dropped-click notice lasts at most 5 s. A quick action that ends
+  // sooner clears it, but not before it has shown 2 s; a dropped long job
+  // shows it the full 5 s. Closing the panel or clicking the notice clears
+  // it at once.
   Timer {
     id: clickNoticeTimer
     interval: 5000

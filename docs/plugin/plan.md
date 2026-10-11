@@ -2195,7 +2195,7 @@ Every 2 s, measured start to start (`LANAI_SCALE_INTERVAL`), with a 1 s timeout
 on each `hyprctl` call, it:
 
 1. Reads `settings.json` once and takes the setting and the save number from that
-   one snapshot (a shared reader beside `vm_windows_scale`; `boot_vm` uses the same
+   one snapshot (a shared reader, `vm_scale_settings`, which replaced `vm_windows_scale`; `boot_vm` uses the same
    reader), so a save landing between reads cannot pair a new number with an old
    step.
 2. Finds the client window in `hyprctl clients -j` by the client unit's MainPID
@@ -2351,7 +2351,7 @@ shuts down without running setup.cmd therefore never gets the marker. A record
 without it means the old task (req 12's last rule).
 
 **Panel and words.** `cmd_settings` returns structured fields; `panel_words` turns
-them into words (below), and the CLI's own message says the same. `LanaiPanel.qml` tracks `scaleTouched` (set by the dropdown's
+them into words (below), and for a scale save the CLI's own message says the same (a memory-and-cores save prints a full sentence where the panel shows "Saved."). `LanaiPanel.qml` tracks `scaleTouched` (set by the dropdown's
 `changed`, cleared only when the panel opens, so every save in that panel session
 counts as a scale save) and runs `settings <mem> <cores>` when
 untouched, `settings <mem> <cores> <scale>` when touched. `lib/panel.sh` adds a note
@@ -2363,7 +2363,8 @@ moment." in a notice pinned over the panel's bottom edge for 2 to 5 s; before,
 such a click (a scale save among them) vanished with no word. Today `panel_words` (`lib/panel.sh`) returns nothing for
 a settings reply, and the Settings view hardcodes "Changes apply the next time
 Windows starts." The reply gains structured fields (`scale_saved`, `running`,
-`scale_task`), `panel_words` maps them to the words below, and the Settings view's
+`scale_task`; as built `scale_task_kind`, so it is not confused with the setup
+record's `scale_task` 2), `panel_words` maps them to the words below, and the Settings view's
 fixed line becomes "Memory and cores apply the next time Windows starts." The
 settings words clear when the VM unit's invocation differs from the record's
 (`ui_record` stores it), or once a running save's unit is no longer active (a
@@ -2442,7 +2443,7 @@ phase B's last step; (1)-(5) run first.
   a fake server that never reads: with `LANAI_SCALE_INTERVAL` and `LANAI_SCALE_SEND_TIMEOUT`
   shortened for the test (a QEMU-like server queues later connects, so each send
   can take the whole deadline), the loop keeps its cadence and its RSS (from `/proc/<pid>/status`) stays
-  within 2 MB over 1,000 sends; a cut write followed by a full line; a flooding guest is never read; the boot monitor's scale
+  within 2 MB over 1,000 sends (as built: 500 measured sends after a 50-send warm-up, bounded at 90 s so CI's 120 s limit never cuts it); a cut write followed by a full line; a flooding guest is never read; the boot monitor's scale
   change and unplug before the window opens; `scale-monitor` cleared between
   runs; the monitor recorded under a fixed setting counts after a switch to auto
   with the window closed; settings replaced between two reads cannot pair a new
@@ -2675,3 +2676,4 @@ words, which need taste >= 7). Claude verifies, signs, and runs the diff gate.
 | impl (live scale) | a (gpt-6.1-sol) | 3 (full, cap) | 1 should-fix (P2), 0 refuted, 0 downgraded to nit; integrated test-first: panel setup jobs forward HYPRLAND_INSTANCE_SIGNATURE to the detached worker, so boot_vm records it for the scale feed |
 | impl (live scale) | b panel (opus-5.5) | 1 (full, 6 lenses) | 0 blockers, 13 should-fix, 30 nits, 0 refuted, 0 downgraded to nit; all integrated test-first: setup step 6 judges the scale task after the user answers (a slow password sign-in no longer loops back to step 5); the guest reader retries only error 1450, reopens on other errors and logs open and read errors once; the feed picks a live Hyprland instance (boot record, inherited, or the only one) and finds it again after hyprctl fails; the guest's first-line hold folded into one LastArrival rule and the baseline reset into Step-ScaleState; the dropped-click notice is pinned and stays 2 to 5 s; tests pin the client-unit query, the hyprctl timeout and the real display observation; panel words and README corrected. Security lens: no defects |
 | impl (live scale) | b panel (opus-5.5) | 2 (full, 6 lenses) | 0 blockers, 6 should-fix, 25 nits (after merging duplicates), 0 refuted, 0 downgraded to nit; all integrated but one nit: a Hyprland instance counts only if it answers (dead instance folders and sockets stay behind; John's machine had about 48), with a search every 30 s while hyprctl fails; a SetScale error is logged once and retried at the next poll; boot and feed share one monitor rule (scale_target); the pinned notice swallows clicks and the panel can scroll under it; the RSS test is bounded under the CI limit; the task principal comes from the checked SID; step 6 has its own reason and words for a scale task that did not start; plan design text gets as-built notes. Not taken (nit): a user pick equal to an older of two unapplied requests is undone once; a second pick holds |
+| impl (live scale) | b panel (opus-5.5) | 3 (full, 6 lenses, cap) | 0 blockers, 5 should-fix, 28 nits, 0 refuted, 0 downgraded to nit; all integrated: a SetScale that keeps failing logs its applying line once (the round 2 retry had made it log every 2 s); an old-task install gets a standing note under the scale list, so the Run setup again step survives shutdown; old-task words no longer use "scale changes" two ways; tests now pin the 5 s settle after a resolution change and the remembered monitor over several closed-window passes; nits (reader reopens after any throw, restarted feed resends its last line, opaque notice, step 6 words, names, host_monitors timeout). Stage closed at the cap with these integrations unreviewed; stage a has no round left for the final-diff rerun; the gate waits for John |

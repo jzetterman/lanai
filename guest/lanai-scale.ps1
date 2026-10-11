@@ -23,7 +23,7 @@
   uses, as steps relative to the recommended scale, and applies at once.
   Windows caps it at what the current resolution allows; the target recovers
   when the window grows. A set Windows leaves unapplied is retried once a
-  minute. The port opens only to administrators, so the sign-in task runs
+  minute. The port opens only to administrators, so the scale task runs
   elevated. Changes and distinct errors go to
   C:\Program Files\Lanai\lanai-scale.log.
 
@@ -145,7 +145,7 @@ function Get-DrainedLine([object[]]$Lines, [double]$Now) {
 # Invoke-ScaleTick) or later while lines keep arriving (LastArrival).
 #   Confirmed  the last step observed
 #   Pending    the step asked for and not yet observed
-#   Requested  every step asked for since the last time a request was
+#   Requested  every step asked for since the pending request was
 #              confirmed, a decision needed no change, another change (a
 #              pick or not) was seen, the display path changed or the
 #              display was missing
@@ -313,13 +313,15 @@ function Get-DisplayObservation {
 #   LastError    the last logged display or SetScale error, cleared after
 #                a pass in which nothing failed
 #   LoggedPortError  the last logged port error
+#   LoggedSet    the last "applying" line logged, so a set retried at each
+#                poll while SetScale fails is logged once
 #   PortOpened   whether the port's opening was seen and logged
 #   MalformedLogged  whether a malformed line was logged
 function New-ScaleContext($State, $Queue, $Shared) {
     return @{
         State = $State; Queue = $Queue; Shared = $Shared
         Lines = New-Object 'System.Collections.Generic.List[object]'
-        NextObserve = 0; LastError = ''; LoggedPortError = ''; PortOpened = $false; MalformedLogged = $false
+        NextObserve = 0; LastError = ''; LoggedPortError = ''; LoggedSet = ''; PortOpened = $false; MalformedLogged = $false
     }
 }
 
@@ -367,7 +369,7 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
             try { Write-Log 'Dropped a malformed line from the scale channel.' } catch { }
         }
         if ($drained.Kind -eq 'stale') {
-            try { Write-Log "Dropped a stale backlog of $($drained.Valid) lines; the next line comes within 2 seconds." } catch { }
+            try { Write-Log "Dropped $($drained.Valid) lines that arrived together; the next line comes within 2 seconds." } catch { }
         }
         if ($drained.Kind -eq 'line') { $line = $drained.Line }
     }
@@ -394,9 +396,11 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
             Write-Log "Pick: $(StepName $r.State.Pick) chosen in Windows; it holds until the next scale save."
         }
         if ($r.Action -eq 'set') {
-            Write-Log ("Display '{0}' at {1}: raw minScaleRel {2}, curScaleRel {3}, maxScaleRel {4}; recommended {5}, current {6}, applying {7}" -f `
+            $text = "Display '{0}' at {1}: raw minScaleRel {2}, curScaleRel {3}, maxScaleRel {4}; recommended {5}, current {6}, applying {7}" -f `
                 $obs.Name, $obs.Resolution, $obs.MinRel, $obs.CurRel, $obs.MaxRel,
-                (StepName $obs.Recommended), (StepName $obs.Current), (StepName $r.Step))
+                (StepName $obs.Recommended), (StepName $obs.Current), (StepName $r.Step)
+            if ($text -ne $Ctx.LoggedSet) { Write-Log $text }
+            $Ctx.LoggedSet = $text
         }
     } catch { } # A failed log must not prevent the scale attempt.
     if ($r.Action -ne 'none') {
@@ -407,7 +411,8 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
         catch {
             Write-ErrorOnce $Ctx $_.Exception.Message
             $failed = $true
-            # Ask again at the next poll; the log stays quiet (Write-ErrorOnce).
+            # Ask again at the next poll. The error is logged once
+            # (Write-ErrorOnce), and the same applying line only once.
             $Ctx.State.Pending = $null
             $Ctx.State.NextRetry = 0
         }
@@ -496,7 +501,12 @@ $ReaderScript = {
             foreach ($l in $r.Lines) { $Queue.Enqueue([pscustomobject]@{ Text = $l; At = $now }) }
         }
         catch {
+            # Close whatever is open, so a throw after the open (such as the
+            # FileStream constructor) opens the port again.
             $Shared.PortError = "The scale port reader failed: $($_.Exception.Message)"
+            if ($null -ne $stream) { $stream.Dispose() } elseif ($null -ne $handle) { $handle.Dispose() }
+            $stream = $null
+            $handle = $null
             Start-Sleep -Seconds 2
         }
     }

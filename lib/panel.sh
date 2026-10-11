@@ -1,17 +1,25 @@
 # The panel's read-only view and copy table. No setup reply file is consulted.
 # shellcheck shell=bash
 
+# old_task_note <running true|false>: print the standing note for an install
+# whose scale task is from before live scale (scale_task_kind old).
+old_task_note() {
+  local how="click"
+  [[ $1 != true ]] || how="shut Windows down and click"
+  printf 'Scale saves apply the next time Windows starts. To make them apply while Windows runs, %s Run setup again.\n' "$how"
+}
+
 # Reply words depend on command, ok, step and structured details/reasons.
 # The optional current plan step selects visible snapshot-choice retry controls.
 # Offers and waits belong to the durable view and therefore have no result text.
-# A settings save's words come from its scale_saved, running and scale_task
-# fields; for a scale save, cmd_settings prints the same words.
+# A settings save's words come from its scale_saved, running and scale_task_kind
+# fields; for a scale save, cmd_settings prints the same words (plus
+# old_task_note for the old task, which the panel shows under the scale list).
 panel_words() {
   jq -r --arg c "$1" --arg step "${3:-}" '
     def log: {setup:"setup log",snapshot:"snapshot log",restore:"restore log"}[$c] // "button actions log";
-    def oldtask($running): " For scale changes while Windows runs, " + (if $running then "shut Windows down and click" else "click" end) +
-      " Run setup again. It also turns the Windows lock off again. Until then, Windows undoes scale changes made in its own settings," +
-      " and \u201cMatch my monitor\u201d does not follow the window while Windows runs.";
+    def oldtask: " Until you run setup again, the old scale task undoes scales you pick in Windows," +
+      " and \u201cMatch my monitor\u201d does not follow the window. Running setup again also turns the Windows lock off again.";
     def reasons: {
       busy:"Lanai is busy with another task. Try again in a moment.",
       session:"Lanai can run setup only while you are signed in to the desktop.",
@@ -32,7 +40,7 @@ panel_words() {
       mismatch:"The display driver in Windows needs an update. Shut down and set up Windows again.",
       agents:"The Windows agents did not answer. Shut down and set up Windows again.",
       answers:"The final checks did not pass. Shut down and set up Windows again.",
-      "scale-task":"The display scale task in Windows did not start. Shut down and set up Windows again. Sign in as the Windows user who ran setup. If it happens again, check C:\\Program Files\\Lanai\\lanai-scale.log in Windows.",
+      "scale-task":"The display scale task in Windows did not start. It starts when the Windows user who ran setup.cmd signs in. Shut down and set up Windows again, then sign in as that user. If it happens again, check C:\\Program Files\\Lanai\\lanai-scale.log in Windows.",
       client:"The Windows window could not open. Check the Windows window log and try again.",
       "restore-unsupported":"The restore was refused because Lanai cannot verify an instant copy in this storage location. Choose storage that supports verified instant copies, then try again.",
       "snapshot-unsupported":"This filesystem cannot make an instant snapshot. Make a backup before continuing without a snapshot.",
@@ -63,10 +71,10 @@ panel_words() {
     elif $c == "restore" then "The snapshot was restored."
     elif $c == "settings" and (.scale_saved | type) == "boolean" then
       if .scale_saved | not then "Saved."
-      elif .scale_task == "new" and .running == true then
+      elif .scale_task_kind == "new" and .running == true then
         "Saved. Windows uses the saved scale within 5 seconds if you\u0027re signed in, or when you next sign in."
-      elif .scale_task == "old" and .running == true then "Saved. Windows uses the saved scale the next time it starts." + oldtask(true)
-      elif .scale_task == "old" then "Saved. Changes apply the next time Windows starts." + oldtask(false)
+      elif .scale_task_kind == "old" and .running == true then "Saved. Windows uses the saved scale the next time it starts." + oldtask
+      elif .scale_task_kind == "old" then "Saved. Changes apply the next time Windows starts." + oldtask
       else "Saved. Changes apply the next time Windows starts." end
     elif $c == "start" and .network == false then "Windows started without a network. Connect Linux to a network, then shut down and start Windows again."
     else "" end' <<<"$2"
@@ -93,7 +101,7 @@ panel_records() {
 # from the same host facts. Settings/list errors are data, never swallowed results.
 cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
-  local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note
+  local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
       emit false "" "Invalid panel input." ""; return 2
@@ -157,11 +165,15 @@ cmd_panel() {
     results=$(jq -nc --argjson r "$results" --arg g "$group" --arg w "$words" '$r + {($g):$w}')
   done
   if settings=$(cmd_settings 2>/dev/null) && jq -e '.ok' <<<"$settings" >/dev/null; then
-    # The note near the scale list, while Windows runs with the live scale task.
-    note=''
-    if jq -e '.active' <<<"$status" >/dev/null && [[ $(scale_task_kind) == new ]]; then
-      note='Saving a scale replaces one you picked in Windows.'
-    fi
+    # The note near the scale list: with the live scale task, while Windows
+    # runs, that a scale save replaces a pick; with the old task, always,
+    # how to make scale saves apply while Windows runs.
+    note='' active=false
+    ! jq -e '.active' <<<"$status" >/dev/null || active=true
+    case $(scale_task_kind) in
+      new) ! $active || note='Saving a scale replaces one you picked in Windows.' ;;
+      old) note=$(old_task_note "$active") ;;
+    esac
     settings=$(jq -c --arg steps "$LANAI_SCALE_STEPS" --arg note "$note" '{memory_gib,cores,windows_scale,error:"",
       line:"Memory and cores apply the next time Windows starts.",note:$note,
       scale_choices:([{value:"auto",label:"Match my monitor"}] +
@@ -236,8 +248,8 @@ cmd_panel() {
            elif $st.active then "Shut Windows down before continuing setup."
            else "Continue setup to install the drivers in Windows." end),
          "6":(if $st.state == "stopping" then "Wait for Windows to shut down, then click Continue setup."
-           elif ($p.questions|length)>0 then "In Windows, sign in if Windows asks for your password, then check the shared drive in Explorer and the text size, and send both answers."
-           elif $setupJob and $p.scale_wait == true then "Waiting for the display scale task in Windows, which starts when you sign in."
+           elif ($p.questions|length)>0 then "Sign in to Windows if it asks for your password. Then check the shared drive in Explorer and the text size, and send both answers."
+           elif $setupJob and $p.scale_wait == true then "Waiting up to a minute for the display scale task to start in Windows. It starts when you sign in."
            elif $setupJob then "Windows is starting or being checked."
            else "Click Continue setup so Lanai can check Windows." end),
          "7":"Setup is finished."}[$p.step] end])},

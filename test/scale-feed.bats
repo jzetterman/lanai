@@ -348,6 +348,40 @@ hypr_stale() {
   assert_equal "$(received)" "lanai-scale 175 6"
 }
 
+@test "feed init: a restarted feed resends its last line, never the boot save number" {
+  serve_reader
+  echo '{"scale":100,"scale_save":0}' >"$S/boot.json"
+  scale_feed_init 2>>"$T/feed.log"
+  settings 175 9
+  step
+  assert_equal "$(<"$RUN/scale-line")" "lanai-scale 175 9"
+  # The supervisor restarts the feed; settings are unreadable for now.
+  SCALE_FEED_LINE="" SCALE_FEED_TARGET=""
+  scale_feed_init 2>>"$T/feed.log"
+  printf broken >"$(settings_file)"
+  step
+  assert_equal "$(received)" $'lanai-scale 175 9\nlanai-scale 175 9'
+  # A malformed saved line is ignored for boot.json's.
+  echo "lanai-scale 17 x" >"$RUN/scale-line"
+  scale_feed_init 2>>"$T/feed.log"
+  assert_equal "$SCALE_FEED_LINE" "lanai-scale 100 0"
+}
+
+@test "feed pass: the remembered monitor holds over several passes with the window closed" {
+  serve_reader
+  echo '{"scale":100,"scale_save":0,"boot_monitor":"DP-1"}' >"$S/boot.json"
+  scale_feed_init 2>>"$T/feed.log"
+  settings '"auto"' 0
+  window_on 1
+  step
+  window_on
+  : >"$T/received"
+  step
+  step
+  assert_equal "$(received)" $'lanai-scale 200 0\nlanai-scale 200 0'
+  assert_equal "$(<"$RUN/scale-monitor")" HDMI-A-1
+}
+
 @test "feed init: boot.json's Hyprland instance counts only when it answers" {
   hypr_live live_1
   hypr_live inherited_2

@@ -10,8 +10,8 @@
 #             clean guest shutdown that the panel did not ask for
 #   done      true once step 6 passed
 #   scale_task  2 once step 6 passed with the live scale task's port open:
-#             the task's version (the task before live scale never wrote
-#             it), so without it Windows has that older task
+#             the task's version (Lanai before live scale never wrote
+#             it), so a finished setup without it has the old task
 #   round     true from a setup boot's start until step 7; while it is
 #             open, a done setup (a pin bump, or a rerun) does not read as
 #             finished, though lanai start still works (spec 8)
@@ -427,7 +427,7 @@ setup_step6() {
       rm -f -- "$run/step6-asked"
     fi
     if ((EPOCHSECONDS - answered < LANAI_SETUP_SCALE_GRACE)); then
-      setup_wait "Waiting for the display scale task in Windows, which starts when you sign in."
+      setup_wait "Waiting up to a minute for the display scale task to start in Windows. It starts when you sign in."
       return 0
     fi
     rm -f -- "$run/step6-answered"

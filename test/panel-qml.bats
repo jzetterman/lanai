@@ -53,7 +53,7 @@ QtObject {
   function space(n) { return n }
 }
 QML
-  echo 'pragma Singleton; import QtQuick; QtObject { property color foreground: "white"; property color accent: "#4080c0"; property color background: "black"; property QtObject popups: QtObject { property color background: "black" } }' >"$T/qml/imports/TestCommons/Color.qml"
+  echo 'pragma Singleton; import QtQuick; QtObject { property color foreground: "white"; property color accent: "#4080c0"; property color background: "black"; property QtObject popups: QtObject { property color background: "#80000000" } }' >"$T/qml/imports/TestCommons/Color.qml"
   echo 'pragma Singleton; import QtQuick; QtObject { function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) } }' >"$T/qml/imports/TestCommons/Util.qml"
   cat >"$T/qml/imports/TestUi/qmldir" <<'QML'
 module TestUi
@@ -473,7 +473,7 @@ TestCase {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)
     var panel = createTemporaryObject(panelComponent, tests, {model:model, opened:true})
-    var words = 'The last action is still running. Try again in a moment.'
+    var words = 'Your previous action is still running. Try again in a moment.'
     model.run(['stop'], false)
     var action = process(model, model.cli)
     verify(action.running)
@@ -506,6 +506,14 @@ TestCase {
     // A click on the notice dismisses it and reaches nothing under it.
     mouseClick(note.parent)
     compare(model.clickNotice, '')
+    // Closing the panel clears it too.
+    model.run(['open'], false)
+    model.run(['open'], false)
+    verify(model.clickNotice !== '')
+    panel.close()
+    compare(model.clickNotice, '')
+    // Its fill is opaque, whatever the popup's alpha.
+    compare(note.parent.color.a, 1)
     panel.destroy(); wait(1)
   }
   function test_a_dropped_click_notice_goes_after_5_s_while_the_action_still_runs() {

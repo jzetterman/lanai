@@ -84,16 +84,20 @@ setup_finished() {
 
 @test "settings reply: structured fields say what was saved, whether Windows runs, and which task" {
   lanai_run settings 8 4 150
-  assert_equal "$(jq -c '{scale_saved,running,scale_task}' <<<"$JSON")" '{"scale_saved":true,"running":false,"scale_task":"none"}'
+  assert_equal "$(jq -c '{scale_saved,running,scale_task_kind}' <<<"$JSON")" '{"scale_saved":true,"running":false,"scale_task_kind":"none"}'
   lanai_run settings 8 4
-  assert_equal "$(jq -c '{scale_saved,running,scale_task}' <<<"$JSON")" '{"scale_saved":false,"running":false,"scale_task":"none"}'
+  assert_equal "$(jq -c '{scale_saved,running,scale_task_kind}' <<<"$JSON")" '{"scale_saved":false,"running":false,"scale_task_kind":"none"}'
   setup_finished
   echo active >"$T/unit-state"
   lanai_run settings 8 4 150
-  assert_equal "$(jq -c '{scale_saved,running,scale_task}' <<<"$JSON")" '{"scale_saved":true,"running":true,"scale_task":"old"}'
+  assert_equal "$(jq -c '{scale_saved,running,scale_task_kind}' <<<"$JSON")" '{"scale_saved":true,"running":true,"scale_task_kind":"old"}'
+  # The CLI has no standing note, so it adds the note's instruction.
+  assert_equal "$(field message)" "$(panel_words settings "$JSON") $(old_task_note true)"
+  run field message
+  assert_output --partial "shut Windows down and click Run setup again"
   setup_finished 2
   lanai_run settings 8 4 150
-  assert_equal "$(jq -c '{scale_saved,running,scale_task}' <<<"$JSON")" '{"scale_saved":true,"running":true,"scale_task":"new"}'
+  assert_equal "$(jq -c '{scale_saved,running,scale_task_kind}' <<<"$JSON")" '{"scale_saved":true,"running":true,"scale_task_kind":"new"}'
   # The CLI says what the panel says.
   assert_equal "$(field message)" "$(panel_words settings "$JSON")"
   echo deactivating >"$T/unit-state"

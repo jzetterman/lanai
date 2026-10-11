@@ -37,7 +37,7 @@ Panel {
       coresInput = Qt.binding(function() { return root.model.view.settings.cores || 1 })
       windowsScaleInput = Qt.binding(function() { return root.model.view.settings.windows_scale === undefined ? "auto" : root.model.view.settings.windows_scale })
       scaleTouched = false
-    } else { stopArmed = false; forceArmed = false; restoreArmed = ""; setupAgainArmed = false }
+    } else { stopArmed = false; forceArmed = false; restoreArmed = ""; setupAgainArmed = false; root.model.clickNotice = "" }
   }
   Connections {
     target: root.model
@@ -65,11 +65,13 @@ Panel {
   }
 
   // Keep the keyboard-focused control visible on small screens.
+  // The click notice, when shown, covers the bottom (flick.bottomMargin).
   function reveal(item) {
     var y = item.mapToItem(column, 0, 0).y
+    var view = flick.height - flick.bottomMargin
     if (y < flick.contentY) flick.contentY = y
-    else if (y + item.height > flick.contentY + flick.height)
-      flick.contentY = Math.min(Math.max(0, flick.contentHeight - flick.height), y + item.height - flick.height)
+    else if (y + item.height > flick.contentY + view)
+      flick.contentY = Math.min(Math.max(0, flick.contentHeight + flick.bottomMargin - flick.height), y + item.height - view)
   }
 
   KeyboardPanel {
@@ -319,9 +321,11 @@ Panel {
         anchors.bottom: parent.bottom
         visible: root.model.clickNotice !== ""
         height: clickNote.implicitHeight + 2 * Style.space(8)
-        // Color.popups is a grouped QtObject the lint metadata does not type.
+        // The popup's background, opaque so covered text never shows
+        // through. Color.popups is a grouped QtObject the lint metadata does
+        // not type.
         // qmllint disable missing-property
-        color: Color.popups.background
+        color: Qt.rgba(Color.popups.background.r, Color.popups.background.g, Color.popups.background.b, 1)
         // qmllint enable missing-property
         border.color: Color.accent
         border.width: 1

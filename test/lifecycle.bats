@@ -652,6 +652,11 @@ assert_both_refuse() {
     lanai_run start
     assert_failure
     assert_output --partial scale
+    # The hint names both fields and the file to repair.
+    run field next
+    assert_output --partial windows_scale
+    assert_output --partial scale_save
+    assert_output --partial settings.json
     refute_started
     assert [ ! -e "$S/boot.json" ]
   done

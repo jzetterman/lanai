@@ -945,6 +945,12 @@ fake_host() {
   shim hyprctl 'echo "HYPRLAND_INSTANCE_SIGNATURE not set" >&2; exit 1'
   PATH=$T/shims:$PATH run host_monitors
   assert_failure
+  # An optional timeout in seconds; the scale feed passes 1.
+  shim hyprctl 'exec sleep 10'
+  local start=$SECONDS
+  PATH=$T/shims:$PATH run host_monitors 1
+  assert_failure
+  ((SECONDS - start <= 3)) || fail "host_monitors 1 took $((SECONDS - start)) s"
 }
 
 # --- scale_step ---

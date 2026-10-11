@@ -452,6 +452,25 @@ guest_ps() {
   assert_output ok
 }
 
+@test "guest pick rule: a resolution change restarts the 5 s settle" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $s = New-ScaleState 1 5 0
+    $s.Ready = $true
+    $r = Step-ScaleState $s (Obs 0) $null 0
+    # The resolution changes at 10 s, the scale stays.
+    $r = Step-ScaleState $r.State (Obs 0 -1 5 "2560x1440") $null 10000
+    Assert ($r.Action -eq "none" -and $null -eq $r.State.Pick) "resolution change"
+    # A scale change 2 s later at the new resolution is not a pick yet.
+    $early = Step-ScaleState $r.State (Obs 2 -1 5 "2560x1440") $null 12000
+    Assert ($null -eq $early.State.Pick -and $early.Action -eq "set" -and $early.Step -eq 1) "early: $($early.State.Pick) $($early.Action)"
+    # Once settled for 5 s, a scale change is a pick.
+    $late = Step-ScaleState $r.State (Obs 2 -1 5 "2560x1440") $null 15000
+    Assert ($late.State.Pick -eq 3 -and $late.Action -eq "none") "late: $($late.State.Pick) $($late.Action)"'
+  assert_success
+  assert_output ok
+}
+
 @test "guest pick rule: only a settled change Windows made for the user is a pick" {
   command -v pwsh >/dev/null || skip "pwsh is not installed"
   run guest_ps '
@@ -794,7 +813,7 @@ guest_ps() {
     $q.Enqueue((Q "lanai-scale 150 6" 2100))
     for (; $t -le 4000; $t += 250) { Invoke-ScaleTick $ctx $t }
     $all = $script:Logs -join "`n"
-    Assert ($all -match "stale backlog of 2 lines") "stale count: $all"
+    Assert ($all -match "Dropped 2 lines that arrived together") "stale count: $all"
     Assert (@($script:Logs | Where-Object { $_ -match "malformed" }).Count -eq 1) "malformed logs: $all"'
   assert_success
   assert_output ok
@@ -876,7 +895,44 @@ guest_ps() {
     $errors = @($script:Logs | Where-Object { $_ -match "SET_DPI_SCALE" })
     Assert ($errors.Count -eq 1) "error lines: $($errors.Count)"
     # The set from 3 s on, then again at every 2 s poll, not once a minute.
-    Assert ([LanaiDisplay]::Sets -ge 290) "sets: $([LanaiDisplay]::Sets)"'
+    Assert ([LanaiDisplay]::Sets -ge 290) "sets: $([LanaiDisplay]::Sets)"
+    # The whole log stays small: no line per retry.
+    Assert ($script:Logs.Count -le 5) "log lines: $($script:Logs.Count)"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest loop: an error is logged again after a pass in which nothing failed" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $saved = [LanaiDisplay]::D
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    $ctx = New-ScaleContext (New-ScaleState 1 5 0) $q @{ OpenedAt = 0 }
+    [LanaiDisplay]::D = $null
+    for ($t = 0; $t -le 6000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    [LanaiDisplay]::D = $saved
+    for (; $t -le 10000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    [LanaiDisplay]::D = $null
+    for (; $t -le 16000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    $errors = @($script:Logs | Where-Object { $_ -match "Found 0" })
+    Assert ($errors.Count -eq 2) "error lines: $($errors.Count)"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest loop: a port that opens at 4 s brings the fallback to 5 s, not 7 s" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    $shared = @{ OpenedAt = $null; PortError = "" }
+    $ctx = New-ScaleContext (New-ScaleState 3 5 0) $q $shared
+    $first = -1
+    for ($t = 0; $t -le 8000; $t += 250) {
+      if ($t -eq 4000) { $shared.OpenedAt = 4000 }
+      Invoke-ScaleTick $ctx $t
+      if ($first -lt 0 -and [LanaiDisplay]::Sets -gt 0) { $first = $t }
+    }
+    Assert ($first -eq 5000) "first set at $first"'
   assert_success
   assert_output ok
 }
@@ -1051,6 +1107,7 @@ step_name() {
   body=$(awk '/^function StepName/ { skip = 1 } skip && /^}/ { skip = 0; next } !skip' "$f")
   run grep -n '\$Steps\[' <<<"$body"
   assert_failure
-  run grep -E 'minScaleRel.*curScaleRel.*maxScaleRel' "$f"
-  assert_output --partial 'Write-Log'
+  # The applying line names the raw values and goes to the log.
+  run grep -E -A3 'raw minScaleRel.*curScaleRel.*maxScaleRel' "$f"
+  assert_output --partial 'Write-Log $text'
 }

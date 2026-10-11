@@ -53,30 +53,30 @@ setup() {
 @test "panel words: settings saves for a live, stopped, memory-only and old-task save" {
   local live='Saved. Windows uses the saved scale within 5 seconds if you'"'"'re signed in, or when you next sign in.'
   local stopped='Saved. Changes apply the next time Windows starts.'
-  local tail='It also turns the Windows lock off again. Until then, Windows undoes scale changes made in its own settings, and “Match my monitor” does not follow the window while Windows runs.'
-  run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"new"}'
+  local tail='Until you run setup again, the old scale task undoes scales you pick in Windows, and “Match my monitor” does not follow the window. Running setup again also turns the Windows lock off again.'
+  run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task_kind":"new"}'
   assert_output "$live"
-  run panel_words settings '{"ok":true,"scale_saved":true,"running":false,"scale_task":"new"}'
+  run panel_words settings '{"ok":true,"scale_saved":true,"running":false,"scale_task_kind":"new"}'
   assert_output "$stopped"
   # The Settings line already says when memory and cores apply.
-  run panel_words settings '{"ok":true,"scale_saved":false,"running":true,"scale_task":"new"}'
+  run panel_words settings '{"ok":true,"scale_saved":false,"running":true,"scale_task_kind":"new"}'
   assert_output "Saved."
-  run panel_words settings '{"ok":true,"scale_saved":false,"running":false,"scale_task":"old"}'
+  run panel_words settings '{"ok":true,"scale_saved":false,"running":false,"scale_task_kind":"old"}'
   assert_output "Saved."
-  # The old task: the next start, Run setup again with the lock, and the
-  # lost following; only a running Windows needs shutting down first.
-  run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"old"}'
-  assert_output "Saved. Windows uses the saved scale the next time it starts. For scale changes while Windows runs, shut Windows down and click Run setup again. $tail"
-  run panel_words settings '{"ok":true,"scale_saved":true,"running":false,"scale_task":"old"}'
-  assert_output "$stopped For scale changes while Windows runs, click Run setup again. $tail"
+  # The old task: the next start, the lost picks and following, and the
+  # lock; the standing note under the scale list says how to run setup.
+  run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task_kind":"old"}'
+  assert_output "Saved. Windows uses the saved scale the next time it starts. $tail"
+  run panel_words settings '{"ok":true,"scale_saved":true,"running":false,"scale_task_kind":"old"}'
+  assert_output "$stopped $tail"
   # A first setup expects no mark yet: every scale save uses the stopped words.
-  run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"none"}'
+  run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task_kind":"none"}'
   assert_output "$stopped"
 }
 
 @test "panel words: a display scale task that did not start says what to do" {
   run panel_words setup '{"ok":false,"step":"5","reason":"scale-task","message":"UNTRUSTED"}'
-  assert_output 'The display scale task in Windows did not start. Shut down and set up Windows again. Sign in as the Windows user who ran setup. If it happens again, check C:\Program Files\Lanai\lanai-scale.log in Windows.'
+  assert_output 'The display scale task in Windows did not start. It starts when the Windows user who ran setup.cmd signs in. Shut down and set up Windows again, then sign in as that user. If it happens again, check C:\Program Files\Lanai\lanai-scale.log in Windows.'
 }
 
 @test "panel: step 6 asks to sign in first, and the wait after both answers names the scale task" {
@@ -86,7 +86,7 @@ setup() {
   echo '{"setup":false}' >"$S/boot.json"
   : >"$RUN/step6-asked"
   run cmd_panel
-  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'In Windows, sign in if Windows asks for your password, then check the shared drive in Explorer and the text size, and send both answers.'
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Sign in to Windows if it asks for your password. Then check the shared drive in Explorer and the text size, and send both answers.'
   # Both answers are in and the setup job waits for the scale task.
   rm "$RUN/step6-asked"
   echo "$EPOCHSECONDS" >"$RUN/step6-answered"
@@ -94,11 +94,11 @@ setup() {
   exec {fd}>"$S/panel-job.lock"; flock "$fd"
   run cmd_panel
   exec {fd}>&-
-  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Waiting for the display scale task in Windows, which starts when you sign in.'
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Waiting up to a minute for the display scale task to start in Windows. It starts when you sign in.'
 }
 
 @test "panel settings: running save words clear once the unit is no longer active, even with its invocation" {
-  panel_result_write settings '{"command":"settings","invocation":"inv","ended":1,"reply":{"ok":true,"scale_saved":true,"running":true,"scale_task":"new"}}'
+  panel_result_write settings '{"command":"settings","invocation":"inv","ended":1,"reply":{"ok":true,"scale_saved":true,"running":true,"scale_task_kind":"new"}}'
   ST=active INV=inv
   run cmd_panel
   assert_output --partial 'within 5 seconds'
@@ -108,15 +108,22 @@ setup() {
   assert_equal "$(jq -r .result.settings <<<"$output")" ''
 }
 
-@test "panel settings: the view names memory and cores, and the scale note shows only while running with the new task" {
+@test "panel settings: the view names memory and cores, and the scale note follows the task and the VM" {
   local note='Saving a scale replaces one you picked in Windows.'
-  state '{"done":true}'
+  local old='Scale saves apply the next time Windows starts. To make them apply while Windows runs,'
+  # A first setup that has not finished: no note.
+  state '{}'
   run cmd_panel
   assert_equal "$(jq -r .settings.line <<<"$output")" 'Memory and cores apply the next time Windows starts.'
   assert_equal "$(jq -r .settings.note <<<"$output")" ''
+  # The old task, stopped and running: a standing note says how to get live saves.
+  state '{"done":true}'
+  run cmd_panel
+  assert_equal "$(jq -r .settings.note <<<"$output")" "$old click Run setup again."
   ST=active
   run cmd_panel
-  assert_equal "$(jq -r .settings.note <<<"$output")" ''
+  assert_equal "$(jq -r .settings.note <<<"$output")" "$old shut Windows down and click Run setup again."
+  # The new task: the pick note only while Windows runs.
   state '{"done":true,"scale_task":2}'
   run cmd_panel
   assert_equal "$(jq -r .settings.note <<<"$output")" "$note"
@@ -126,7 +133,7 @@ setup() {
 }
 
 @test "panel settings: save words clear once the VM's invocation differs from the record's" {
-  local reply='{"ok":true,"scale_saved":true,"running":true,"scale_task":"new"}'
+  local reply='{"ok":true,"scale_saved":true,"running":true,"scale_task_kind":"new"}'
   panel_result_write settings "{\"command\":\"settings\",\"invocation\":\"inv\",\"ended\":1,\"reply\":$reply}"
   ST=active INV=inv
   run cmd_panel
@@ -135,7 +142,7 @@ setup() {
   run cmd_panel
   assert_equal "$(jq -r .result.settings <<<"$output")" ''
   # A save while stopped holds until the next start.
-  panel_result_write settings '{"command":"settings","invocation":"","ended":1,"reply":{"ok":true,"scale_saved":true,"running":false,"scale_task":"new"}}'
+  panel_result_write settings '{"command":"settings","invocation":"","ended":1,"reply":{"ok":true,"scale_saved":true,"running":false,"scale_task_kind":"new"}}'
   ST=inactive INV=''
   run cmd_panel
   assert_equal "$(jq -r .result.settings <<<"$output")" 'Saved. Changes apply the next time Windows starts.'
@@ -752,6 +759,7 @@ assert_plan_agreement() {
 @test "vm exec: clears the questions at start before running only stubbed helpers" {
   : >"$RUN/step6-asked"
   echo 1 >"$RUN/step6-answered"
+  echo "lanai-scale 300 99" >"$RUN/scale-line"
   : >"$RUN/qga-open-since"
   : >"$RUN/qga-closed-since"
   vm_plan() { echo arguments; }
@@ -763,6 +771,7 @@ assert_plan_agreement() {
   assert_failure
   assert [ ! -e "$RUN/step6-asked" ]
   assert [ ! -e "$RUN/step6-answered" ]
+  assert [ ! -e "$RUN/scale-line" ]
   assert [ ! -e "$RUN/qga-open-since" ]
   assert [ ! -e "$RUN/qga-closed-since" ]
 }
