@@ -11,6 +11,8 @@ Item {
   property string pendingToken: ""
   property double pendingAt: 0
   property bool refreshAgain: false
+  // Set when run() drops a click because the last action still runs.
+  property string clickNotice: ""
   signal panelRequested()
   signal settingsSaved(int memoryGib, int cores, var windowsScale)
   readonly property string tooltip: ["Lanai", view.label, view.headline, view.cause, view.next, view.notice, view.warning, view.right_click_tooltip].filter(function(s) { return !!s }).join("\n")
@@ -31,10 +33,14 @@ Item {
   }
 
   // Commands use literal argv and no deadline. Long work starts a session unit.
+  // A click while the last action runs is dropped, and clickNotice says so.
   function run(args, longJob) {
-    if (actionProcess.running) return
     var now = Math.floor(Date.now() / 1000)
-    if (longJob && pendingToken && now - pendingAt < 10) return
+    if (actionProcess.running || (longJob && pendingToken && now - pendingAt < 10)) {
+      clickNotice = "The last action is still running. Try again in a moment."
+      clickNoticeTimer.restart()
+      return
+    }
     var clickToken = token()
     if (longJob) {
       pendingToken = clickToken
@@ -55,6 +61,12 @@ Item {
     onTriggered: root.refresh()
   }
   onPanelOpenChanged: if (panelOpen) refresh()
+  // A dropped-click notice lasts a few seconds, or until the action ends.
+  Timer {
+    id: clickNoticeTimer
+    interval: 5000
+    onTriggered: root.clickNotice = ""
+  }
 
   // Quickshell omits the C++ exit-status enum from its lint metadata.
   // qmllint disable signal-handler-parameters
@@ -82,6 +94,7 @@ Item {
     id: actionProcess
     stdout: StdioCollector { id: actionOutput; waitForEnd: true }
     onExited: function(code) {
+      root.clickNotice = ""
       try {
         var reply = JSON.parse(actionOutput.text)
         if (reply.panel_requested === true) root.panelRequested()

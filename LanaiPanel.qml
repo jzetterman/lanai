@@ -21,6 +21,10 @@ Panel {
   property int memoryInput: root.model.view.settings.memory_gib || 1
   property int coresInput: root.model.view.settings.cores || 1
   property var windowsScaleInput: root.model.view.settings.windows_scale === undefined ? "auto" : root.model.view.settings.windows_scale
+  // Set by any choice in the scale list, even the entry already shown, and
+  // cleared only when the panel opens: while set, Save settings is a scale
+  // save (three arguments); otherwise it saves memory and cores only.
+  property bool scaleTouched: false
   // The shell supplies bar/theme fields dynamically on QObject groups.
   // qmllint disable missing-property
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -32,6 +36,7 @@ Panel {
       memoryInput = Qt.binding(function() { return root.model.view.settings.memory_gib || 1 })
       coresInput = Qt.binding(function() { return root.model.view.settings.cores || 1 })
       windowsScaleInput = Qt.binding(function() { return root.model.view.settings.windows_scale === undefined ? "auto" : root.model.view.settings.windows_scale })
+      scaleTouched = false
     } else { stopArmed = false; forceArmed = false; restoreArmed = ""; setupAgainArmed = false }
   }
   Connections {
@@ -99,6 +104,7 @@ Panel {
           Note { text: root.model.view.notice || "" }
           Note { text: root.model.view.warning || "" }
           Note { text: (root.model.view.busy || {}).line || "" }
+          Note { text: root.model.clickNotice }
           Note { text: root.model.view.result.launch || "" }
           Note { text: root.stopArmed ? root.model.control("stop_confirm").hint || "" : "" }
           Flow {
@@ -236,15 +242,18 @@ Panel {
                 // Picking an option assigns value inside Dropdown, which
                 // breaks the binding; restore it so saves and reopens show.
                 onChanged: function(value) {
+                  root.scaleTouched = true
                   root.windowsScaleInput = value === "auto" ? "auto" : Number(value)
                   scaleDropdown.value = Qt.binding(function() { return String(root.windowsScaleInput) })
                 }
               }
             }
           }
+          Note { text: root.model.view.settings.note || "" }
           // On its own line: a Flow aligns tops, so beside the labelled fields
           // the button lined up with their labels, not their inputs.
-          Action { control: "save_settings"; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value), String(root.windowsScaleInput)], false) }
+          Action { control: "save_settings"; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value)]
+              .concat(root.scaleTouched ? [String(root.windowsScaleInput)] : []), false) }
           Note { text: root.model.view.result.settings || "" }
 
           Column {

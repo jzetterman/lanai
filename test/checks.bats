@@ -1007,22 +1007,38 @@ assert_steps() {
 
 # --- dockur_version ---
 
-@test "vm_windows_scale: validates JSON types without conflating absent and null" {
+@test "vm_scale_settings: validates JSON types without conflating absent and null" {
   mkdir -p "$(dirname "$(settings_file)")"
   local value
   for value in '"auto"' 100 125 150 175 200 225 250 300 350 400 450 500; do
     printf '{"windows_scale":%s}\n' "$value" >"$(settings_file)"
-    run vm_windows_scale
+    run vm_scale_settings
     assert_success
-    assert_equal "$output" "$(jq -r .windows_scale "$(settings_file)")"
+    assert_equal "$output" "$(jq -r .windows_scale "$(settings_file)") 0"
   done
   printf '{}\n' >"$(settings_file)"
-  run vm_windows_scale
+  run vm_scale_settings
   assert_success
-  assert_output auto
+  assert_output "auto 0"
   for value in null true false '"125"' '"AUTO"' '{}' '[]' 99 126 275 550 125.5; do
     printf '{"windows_scale":%s}\n' "$value" >"$(settings_file)"
-    run vm_windows_scale
+    run vm_scale_settings
+    assert_failure
+  done
+}
+
+@test "vm_scale_settings: the save number is a whole number below 10^9, absent counts as 0" {
+  mkdir -p "$(dirname "$(settings_file)")"
+  local value
+  for value in 0 1 41 999999999; do
+    printf '{"windows_scale":150,"scale_save":%s}\n' "$value" >"$(settings_file)"
+    run vm_scale_settings
+    assert_success
+    assert_output "150 $value"
+  done
+  for value in null true '"3"' -1 1.5 1000000000 1e12 '[]' '{}'; do
+    printf '{"windows_scale":150,"scale_save":%s}\n' "$value" >"$(settings_file)"
+    run vm_scale_settings
     assert_failure
   done
 }

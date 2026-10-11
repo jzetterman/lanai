@@ -368,7 +368,7 @@ TestCase {
     var save = objects(panel, function(o) { return o.control === 'save_settings' })[0]
     save.clicked()
     var action = objects(model, function(o) { return o.command && o.command[1] === 'ui-run' })[0]
-    compare(action.command.slice(3).join(' '), 'settings 9 3 auto')
+    compare(action.command.slice(3).join(' '), 'settings 9 3')
     action.complete('{"ok":false}', 0)
     model.view = view(16, 8)
     compare(memory.field.value, 9)
@@ -428,6 +428,68 @@ TestCase {
     model.view = view(125)
     panel.close(); panel.open()
     compare(scale.currentLabel(), '125%')
+    panel.destroy(); wait(1)
+  }
+  function test_scale_list_touch_decides_a_scale_save() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    var v = {ok:true,buttons:{save_settings:{show:true,enable:true,label:'Save settings'}},setup:{},
+      settings:{memory_gib:8,cores:4,windows_scale:'auto',note:'Saving a scale replaces one you picked in Windows.',
+        scale_choices:[{value:'auto',label:'Match my monitor'},{value:125,label:'125%'}]},
+      snapshots:{names:[]},result:{},logs:{}}
+    // Finish the action, then answer the refresh it asks for with the same view.
+    function finish(action) {
+      action.complete('{"ok":true}', 0)
+      var poll = process(model, 'timeout')
+      if (poll && poll.running) poll.complete(JSON.stringify(v), 0)
+    }
+    model.view = v
+    var panel = createTemporaryObject(panelComponent, tests, {model:model})
+    panel.open()
+    var scale = objects(panel, function(o) { return o.objectName === 'windowsScale' })[0]
+    var save = objects(panel, function(o) { return o.control === 'save_settings' })[0]
+    verify(objects(panel, function(o) { return o.text === v.settings.note && o.visible }).length > 0)
+    // An untouched list saves memory and cores only.
+    save.clicked()
+    var action = process(model, model.cli)
+    compare(action.command.slice(3).join(' '), 'settings 8 4')
+    finish(action)
+    // Choosing the entry already shown is a scale save, and so is each save after it.
+    scale.select('auto')
+    save.clicked()
+    compare(action.command.slice(3).join(' '), 'settings 8 4 auto')
+    finish(action)
+    save.clicked()
+    compare(action.command.slice(3).join(' '), 'settings 8 4 auto')
+    finish(action)
+    // Reopening the panel clears the touch.
+    panel.close(); panel.open()
+    save.clicked()
+    compare(action.command.slice(3).join(' '), 'settings 8 4')
+    finish(action)
+    panel.destroy(); wait(1)
+  }
+  function test_a_dropped_click_says_the_last_action_still_runs() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    var panel = createTemporaryObject(panelComponent, tests, {model:model, opened:true})
+    var words = 'The last action is still running. Try again in a moment.'
+    model.run(['stop'], false)
+    var action = process(model, model.cli)
+    verify(action.running)
+    compare(model.clickNotice, '')
+    model.run(['open'], false)
+    compare(action.command.slice(3).join(' '), 'stop')
+    compare(model.clickNotice, words)
+    verify(objects(panel, function(o) { return o.text === words && o.visible }).length > 0)
+    action.complete('{"ok":true}', 0)
+    compare(model.clickNotice, '')
+    ready(model)
+    // A long job launched moments ago drops a second one, and says so too.
+    model.run(['setup'], true)
+    model.run(['snapshot'], true)
+    compare(model.clickNotice, words)
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'setup')
     panel.destroy(); wait(1)
   }
   function test_finished_setup_reveals_both_display_choices_without_a_bare_job() {

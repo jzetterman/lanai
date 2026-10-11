@@ -9,6 +9,8 @@
 #             ended cleanly; true once record_previous_run saw it end with a
 #             clean guest shutdown that the panel did not ask for
 #   done      true once step 6 passed
+#   scale_task  2 once step 6 passed with the live scale task's port open;
+#             without it, Windows has the scale task from before live scale
 #   round     true from a setup boot's start until step 7; while it is
 #             open, a done setup (a pin bump, or a rerun) does not read as
 #             finished, though lanai start still works (spec 8)
@@ -295,15 +297,16 @@ setup_wait() {
 #   idd-missing counts only once the guest agent's port has been open for
 #   LANAI_SETUP_GRACE, and means wait before that. match records the pin
 #   from this log (guest_version_note).
-# - Then the SPICE agent's port must be open, and the guest agent must set
-#   the clock and refuse an argument-free guest-exec as disabled (the
-#   allow-list took effect); a part still not answering once the grace has
-#   passed sends setup back to step 5.
+# - Then the SPICE agent's port must be open, the guest agent must set the
+#   clock and refuse an argument-free guest-exec as disabled (the allow-list
+#   took effect), and the scale task's port (scale0) must be open; a part
+#   still not answering once the grace has passed sends setup back to step
+#   5, naming every missing part.
 # - Last, the user's two answers (~/Windows shows in Explorer, the text
 #   size is right): a no sends setup back to step 5, two yeses finish it,
 #   and otherwise it asks the questions.
 setup_step6() {
-  local share=$1 scale=$2 run log stamp closed_stamp verdict="" guest="" build out wrong="" since="" age=-1
+  local share=$1 scale=$2 run log stamp closed_stamp verdict="" guest="" build out wrong="" since="" age=-1 i
   local -a missing=()
   if ! run=$(run_dir); then
     setup_reply false 6 "XDG_RUNTIME_DIR is not set, so Lanai cannot reach Windows." ""
@@ -374,8 +377,15 @@ setup_step6() {
     ! qga_reply "$run/qga.sock" refusal '{"execute":"guest-exec"}'; then
     missing+=("the QEMU guest agent with its allow-list")
   fi
+  # Only the elevated scale task opens this port: QEMU's port state, not
+  # data from the guest (spec 27).
+  chardev_open scale0 <<<"$out" || missing+=("the display scale task")
   if ((${#missing[@]})); then
-    out="${missing[0]}${missing[1]:+ and ${missing[1]}}"
+    # Every item: "a", "a and b", "a, b and c".
+    out=${missing[0]}
+    for ((i = 1; i < ${#missing[@]}; i++)); do
+      if ((i == ${#missing[@]} - 1)); then out+=" and ${missing[i]}"; else out+=", ${missing[i]}"; fi
+    done
     if ((age < LANAI_SETUP_GRACE)); then
       setup_wait "Windows is still starting: $out did not answer yet."
       return 0
@@ -395,7 +405,9 @@ setup_step6() {
       "answer with lanai setup --share-ok yes|no --scale-ok yes|no" '{"questions": ["share", "scale"]}'
     return 0
   fi
-  if ! setup_patch '{"done": true, "step5": null, "round": null}'; then
+  # The scale task's port is open (checked above), so Windows has the live
+  # task: scale_task 2. A record without it means the old task (spec 12).
+  if ! setup_patch '{"done": true, "step5": null, "round": null, "scale_task": 2}'; then
     setup_reply false 6 "Lanai cannot record its setup state." "run setup again"
     return 1
   fi

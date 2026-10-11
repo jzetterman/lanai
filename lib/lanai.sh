@@ -659,14 +659,31 @@ settings_seed() {
   printf '{"memory_gib":%d,"cores":%d,"source":"defaults"}\n' "$ram" "$cores"
 }
 
-# Print the focused monitor's scale as a percentage (1.5 prints 150, 1.125
-# prints 112.5), from `hyprctl monitors -j`. `lanai start` reads it (spec 12).
-# Fails without Hyprland or a focused monitor.
+# Print `hyprctl monitors -j`, waiting at most 5 s. Fails without Hyprland.
+host_monitors() {
+  timeout 5 hyprctl monitors -j </dev/null 2>/dev/null
+}
+
+# Print a Hyprland monitor scale as a percentage with at most two decimals
+# (1.5 prints 150, 1.125 prints 112.5), for scale_step.
+scale_percent() {
+  awk -v s="$1" 'BEGIN { p = sprintf("%.2f", s * 100); sub(/\.?0+$/, "", p); print p }'
+}
+
+# Print the focused monitor's scale as a percentage, from <monitors-json>
+# (`hyprctl monitors -j`), or from host_monitors without an argument.
+# `lanai start` reads it (spec 12). Fails without Hyprland or a focused
+# monitor.
 host_scale() {
-  local scale
-  scale=$(timeout 5 hyprctl monitors -j </dev/null 2>/dev/null |
-    jq -er 'first(.[] | select(.focused == true)) | .scale | numbers') || return 1
-  awk -v s="$scale" 'BEGIN { p = sprintf("%.2f", s * 100); sub(/\.?0+$/, "", p); print p }'
+  local mons=${1-} scale
+  (($#)) || mons=$(host_monitors) || return 1
+  scale=$(jq -er 'first(.[] | select(.focused == true)) | .scale | numbers' <<<"$mons" 2>/dev/null) || return 1
+  scale_percent "$scale"
+}
+
+# Print the focused monitor's name from <monitors-json>, or nothing.
+focused_monitor() {
+  jq -r 'first(.[]? | objects | select(.focused == true)) | .name | strings' <<<"$1" 2>/dev/null || true
 }
 
 # Print the Windows scale step nearest <percent> (spec 12): 100 to 250 by 25,
@@ -1134,9 +1151,11 @@ runtime_refresh() {
 # setup's step 6 boot). Under lanai_flock it runs preflight, rechecks setup
 # state without changing it, resolves fixed scale or the focused monitor's
 # nearest Windows step (100% without Hyprland), checks vm_plan, refreshes the
-# runtime copy, writes the scale and boot mode to boot.json, and starts
-# the unit. Setup boots require this disk's snapshot decision; step 6
-# requires this disk's step5 to be true; ordinary starts require setup_done
+# runtime copy, writes the scale, its save number, the focused monitor, the
+# session's Hyprland instance (for the scale feed) and the boot mode to
+# boot.json, and starts the unit. Setup boots require this disk's snapshot
+# decision; step 6 requires this disk's step5 to be true; ordinary starts
+# require setup_done
 # under the same lock. A setup boot guesses QEMU's window
 # when no guest version is recorded, else the client; <window> overrides
 # that guess. A window boot needs WAYLAND_DISPLAY, carried in boot.json.
@@ -1144,7 +1163,7 @@ runtime_refresh() {
 # unit starts. The reply includes window, last_run for the panel's forced
 # stop notice, and network false when the host has no default route.
 boot_vm() {
-  local setup=$1 window=${2:-auto} step6=${3:-false} reason scale step s dir media="" last="" next="wait for Windows to start"
+  local setup=$1 window=${2:-auto} step6=${3:-false} reason scale step save monitors monitor s dir media="" last="" next="wait for Windows to start"
   local message="Windows is starting." network=true
   if ! lanai_flock; then
     emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
@@ -1189,15 +1208,21 @@ boot_vm() {
   else
     window=false
   fi
-  if ! step=$(vm_windows_scale); then
-    emit false "" "Lanai cannot read Windows scale in its settings file." "set auto or a valid Windows scale step"
+  if ! step=$(vm_scale_settings); then
+    emit false "" "Lanai cannot read Windows scale or its save number in its settings file." "set auto or a valid Windows scale step"
     return 1
   fi
+  read -r step save <<<"$step"
+  # The focused monitor counts for "match my monitor" at start, and the
+  # scale feed falls back to it until the window first opens. A failed
+  # read never blocks a boot.
+  monitors=$(host_monitors) || monitors=""
+  monitor=$(focused_monitor "$monitors")
   if [[ $step == auto ]]; then
-    scale=$(host_scale) || scale=100
+    scale=$(host_scale "$monitors") || scale=100
     step=$(scale_step "$scale") || step=100
   fi
-  if ! reason=$(vm_plan "$step" "$media" "$window"); then
+  if ! reason=$(vm_plan "$step" "$save" "$media" "$window"); then
     emit false "" "$reason" ""
     return 1
   fi
@@ -1209,9 +1234,11 @@ boot_vm() {
     emit false failed "Lanai could not install its runtime copy or VM unit." "see the error output"
     return 1
   fi
-  if ! mkdir -p -- "$s" || ! jq -n -c --argjson scale "$step" --argjson setup "$setup" \
+  if ! mkdir -p -- "$s" || ! jq -n -c --argjson scale "$step" --argjson save "$save" --argjson setup "$setup" \
     --argjson window "$window" --argjson step6 "$step6" --arg wayland "${WAYLAND_DISPLAY:-}" \
-    '{scale: $scale, setup: $setup, window: $window} +
+    --arg monitor "$monitor" --arg sig "${HYPRLAND_INSTANCE_SIGNATURE:-}" \
+    '{scale: $scale, scale_save: $save, setup: $setup, window: $window,
+      boot_monitor: $monitor, hyprland_instance_signature: $sig} +
       (if $step6 then {step6:true} else {} end) +
       (if $window then {wayland_display: $wayland} else {} end)' >"$s/boot.json"; then
     emit false "" "Lanai cannot write $s/boot.json." ""

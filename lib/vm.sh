@@ -25,7 +25,13 @@ declare -gA LANAI_HELPERS=(
   [shutdown-watch]="a clean Windows shutdown at reboot or power-off is off"
   [sleep-watch]="clock sync after suspend is off"
   [event-log]="clean-shutdown tracking is off, so the next start may report a forced stop"
+  [scale-feed]="the Windows scale does not follow saves or monitors"
 )
+
+# The scale feed's loop period, start to start, and each send's deadline,
+# in seconds (tests shorten both).
+LANAI_SCALE_INTERVAL=${LANAI_SCALE_INTERVAL:-2}
+LANAI_SCALE_SEND_TIMEOUT=${LANAI_SCALE_SEND_TIMEOUT:-1}
 
 # How often lanai-vm-stop repeats system_powerdown while QEMU runs, in
 # seconds (tests shorten it).
@@ -63,10 +69,11 @@ run_dir() {
 # read-only setup disk, and <window> true shows QEMU's own GTK window
 # instead of the headless display. Every input is checked before use, and
 # the result is scanned for listeners and container paths, failing closed.
-#   vm_args <storage> <mac> <memory-gib> <cores> <scale> <gateway or ""> [<setup-media or ""> [<window true|false>]]
+#   vm_args <storage> <mac> <memory-gib> <cores> <scale> <save> <gateway or ""> [<setup-media or ""> [<window true|false>]]
 # An empty gateway (no default route) boots without passt's DNS forward.
+# <save> is the scale save number (spec 27), the scale task's baseline.
 vm_args() {
-  local storage=$1 mac=$2 mem=$3 cores=$4 scale=$5 gw=$6 media=${7:-} window=${8:-false} run arg
+  local storage=$1 mac=$2 mem=$3 cores=$4 scale=$5 save=$6 gw=$7 media=${8:-} window=${9:-false} run arg
   local -a out=()
   run=$(run_dir) || return 1
   if [[ $storage != /* || $storage == *[,$'\n']* ]]; then
@@ -87,6 +94,10 @@ vm_args() {
   fi
   if [[ ! $scale =~ ^[0-9]+$ || $LANAI_SCALE_STEPS != *" $scale "* ]]; then
     echo "the scale must be a Windows scale step: ${scale@Q}"
+    return 1
+  fi
+  if [[ ! $save =~ ^[0-9]{1,9}$ ]]; then
+    echo "the scale save number must be a whole number below 10^9: ${save@Q}"
     return 1
   fi
   if [[ -n $gw && ! $gw =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
@@ -132,6 +143,8 @@ vm_args() {
     -device "virtserialport,chardev=vdagent,name=com.redhat.spice.0"
     -chardev "socket,id=qga0,path=$run/qga.sock,server=on,wait=off"
     -device "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0"
+    -chardev "socket,id=scale0,path=$run/scale.sock,server=on,wait=off"
+    -device "virtserialport,chardev=scale0,name=io.lanai.scale.0"
     -chardev "spicevmc,id=usbredir0,name=usbredir"
     -device "usb-redir,chardev=usbredir0"
     -chardev "socket,id=vfs,path=$run/virtiofs.sock"
@@ -139,7 +152,7 @@ vm_args() {
     -qmp "unix:$run/qmp.sock,server=on,wait=off"
     -qmp "unix:$run/qmp-events.sock,server=on,wait=off"
     -qmp "unix:$run/qmp-cli.sock,server=on,wait=off"
-    -smbios "type=11,value=lanai-scale=$scale"
+    -smbios "type=11,value=lanai-scale=$scale,value=lanai-scale-save=$save"
   )
   if [[ -n $media ]]; then
     out+=(-drive "if=none,id=setup,file=fat:$media,format=raw,readonly=on"
@@ -630,6 +643,142 @@ event_log() {
   sock_close
 }
 
+# --- the scale feed (plan: Follow-on: live scale) ---
+
+# scale_line <step> <save>: print the one message the scale channel carries,
+# "lanai-scale <step> <save>" (spec 27). Fails on an unlisted step or a save
+# number that is not a whole number below 10^9.
+scale_line() {
+  [[ $1 =~ ^[0-9]+$ && $LANAI_SCALE_STEPS == *" $1 "* && $2 =~ ^[0-9]{1,9}$ ]] || return 1
+  printf 'lanai-scale %s %s\n' "$1" "$2"
+}
+
+# window_monitor <clients-json> <monitors-json> <pid>: print the name of the
+# monitor that holds process <pid>'s window (the Looking Glass client's), from
+# `hyprctl clients -j` and `hyprctl monitors -j`, or nothing.
+window_monitor() {
+  [[ $3 =~ ^[1-9][0-9]*$ ]] || return 0
+  jq -r --argjson pid "$3" --argjson m "$2" '
+    [.[]? | objects | select(.pid == $pid) | .monitor][0] as $id |
+    if $id == null then empty else [$m[]? | objects | select(.id == $id) | .name | strings][0] // empty end' \
+    <<<"$1" 2>/dev/null || true
+}
+
+# scale_target <setting> <monitors-json> <monitor> <last-target>: print the
+# step Windows should use (spec 12). A fixed step is the target. For "auto",
+# the step nearest the scale of monitor <monitor>; if Hyprland does not list
+# it, the focused monitor's, then the first listed; with no monitors, the
+# last target. Fails when there is none.
+scale_target() {
+  local scale
+  if [[ $1 != auto ]]; then
+    printf '%s\n' "$1"
+    return 0
+  fi
+  scale=$(jq -r --arg n "$3" '[.[]? | objects] |
+    (first(.[] | select(.name == $n)) // first(.[] | select(.focused == true)) // first(.[]) // {}) |
+    .scale | numbers' <<<"$2" 2>/dev/null) || scale=""
+  if [[ -n $scale ]] && scale_step "$(scale_percent "$scale")" 2>/dev/null; then return 0; fi
+  [[ -n $4 ]] || return 1
+  printf '%s\n' "$4"
+}
+
+# scale_send <socket> <line>: send <line> over its own short connection, one
+# way: socat -u copies stdin to the socket and never reads what the guest
+# writes (spec 27). It is killed after LANAI_SCALE_SEND_TIMEOUT seconds, so a
+# stalled port never blocks the feed. The leading newline ends any line a
+# killed send cut short.
+scale_send() {
+  [[ -S $1 ]] || return 1
+  printf '\n%s\n' "$2" | timeout "$LANAI_SCALE_SEND_TIMEOUT" socat -u - "UNIX-CONNECT:$1" 2>/dev/null
+}
+
+# The feed's state between passes: the last good line and target, the boot
+# monitor, and which problems are already logged (each is logged once, and
+# again when it clears).
+SCALE_FEED_LINE="" SCALE_FEED_TARGET="" SCALE_FEED_BOOT_MONITOR=""
+SCALE_FEED_SEND_FAILED=false SCALE_FEED_HYPR_FAILED=false SCALE_FEED_SETTINGS_BAD=false
+
+# Seed the feed from boot.json: the boot's step and save number as the last
+# good line, the focused monitor at boot, and the session's Hyprland
+# instance, exported for hyprctl when it is a plain name (the user manager
+# may lack it). An empty or invalid one is logged.
+scale_feed_init() {
+  local f save sig
+  f=$(state_dir)/boot.json
+  SCALE_FEED_TARGET=$(jq -r '.scale | numbers' "$f" 2>/dev/null) || SCALE_FEED_TARGET=""
+  save=$(jq -r '.scale_save // 0 | numbers' "$f" 2>/dev/null) || save=""
+  SCALE_FEED_LINE=$(scale_line "$SCALE_FEED_TARGET" "$save") || SCALE_FEED_LINE="" SCALE_FEED_TARGET=""
+  SCALE_FEED_BOOT_MONITOR=$(jq -r '.boot_monitor | strings' "$f" 2>/dev/null) || SCALE_FEED_BOOT_MONITOR=""
+  sig=$(jq -r '.hyprland_instance_signature | strings' "$f" 2>/dev/null) || sig=""
+  if [[ $sig =~ ^[A-Za-z0-9_]+$ ]]; then
+    export HYPRLAND_INSTANCE_SIGNATURE=$sig
+  else
+    echo "lanai: boot.json names no valid Hyprland instance; the scale feed may not reach Hyprland" >&2
+  fi
+}
+
+# One pass of the scale feed: read settings.json once (vm_scale_settings);
+# find the client window's monitor and record it in $RUN/scale-monitor when
+# it changes; compute the target, where with no window the recorded monitor
+# counts, else boot.json's; then send the line, changed or not. Unreadable
+# settings keep the last good line.
+scale_feed_step() {
+  local run settings setting="" save="" pid clients monitors name remembered="" target line
+  run=$(run_dir) || return 1
+  if settings=$(vm_scale_settings 2>/dev/null); then
+    read -r setting save <<<"$settings"
+    ! $SCALE_FEED_SETTINGS_BAD || echo "lanai: the scale feed reads settings.json again" >&2
+    SCALE_FEED_SETTINGS_BAD=false
+  elif ! $SCALE_FEED_SETTINGS_BAD; then
+    SCALE_FEED_SETTINGS_BAD=true
+    echo "lanai: the scale feed cannot read the Windows scale in settings.json; it sends the last good scale" >&2
+  fi
+  pid=$(timeout 1 systemctl --user show -p MainPID --value "$LANAI_CLIENT_UNIT" 2>/dev/null) || pid=""
+  if clients=$(timeout 1 hyprctl clients -j </dev/null 2>/dev/null) &&
+    monitors=$(timeout 1 hyprctl monitors -j </dev/null 2>/dev/null); then
+    ! $SCALE_FEED_HYPR_FAILED || echo "lanai: hyprctl answers the scale feed again" >&2
+    SCALE_FEED_HYPR_FAILED=false
+  else
+    clients='[]' monitors='[]'
+    $SCALE_FEED_HYPR_FAILED ||
+      echo "lanai: hyprctl does not answer; the Windows scale keeps its last monitor" >&2
+    SCALE_FEED_HYPR_FAILED=true
+  fi
+  name=$(window_monitor "$clients" "$monitors" "$pid")
+  [[ ! -f $run/scale-monitor ]] || read -r remembered <"$run/scale-monitor" || true
+  if [[ -n $name && $name != "$remembered" ]]; then
+    printf '%s\n' "$name" >"$run/scale-monitor.tmp" && mv -f -- "$run/scale-monitor.tmp" "$run/scale-monitor"
+  fi
+  name=${name:-${remembered:-$SCALE_FEED_BOOT_MONITOR}}
+  if [[ -n $setting ]] && target=$(scale_target "$setting" "$monitors" "$name" "$SCALE_FEED_TARGET") &&
+    line=$(scale_line "$target" "$save"); then
+    SCALE_FEED_TARGET=$target SCALE_FEED_LINE=$line
+  fi
+  [[ -n $SCALE_FEED_LINE ]] || return 0
+  if scale_send "$run/scale.sock" "$SCALE_FEED_LINE"; then
+    ! $SCALE_FEED_SEND_FAILED || echo "lanai: the scale feed sends to Windows again" >&2
+    SCALE_FEED_SEND_FAILED=false
+  elif ! $SCALE_FEED_SEND_FAILED; then
+    SCALE_FEED_SEND_FAILED=true
+    echo "lanai: the scale feed cannot send to Windows; it keeps trying" >&2
+  fi
+}
+
+# scale-feed helper: send the latest scale to Windows every
+# LANAI_SCALE_INTERVAL seconds, measured start to start, for the VM's life
+# (spec 12, 27). It needs no shell or panel.
+scale_feed() {
+  local start period t
+  period=$(awk -v s="$LANAI_SCALE_INTERVAL" 'BEGIN { printf "%d", s * 1000000 }')
+  scale_feed_init
+  while :; do
+    start=$(now_us)
+    scale_feed_step || true
+    if t=$(time_left $((start + period))); then sleep "$t"; fi
+  done
+}
+
 # --- the unit's ExecStart and ExecStop ---
 
 # Print the VM's memory (GiB) and cores: "memory_gib" and "cores" from
@@ -659,13 +808,29 @@ windows_scale_value() {
       (. as $v | [$steps | splits(" ") | select(length > 0) | tonumber] | index($v) != null)))' <<<"$1"
 }
 
-# Shared by boot and settings; no monitor reads for a fixed setting.
-vm_windows_scale() {
-  local f doc='{}'
+# Print the scale save number of settings JSON <doc>: a whole number from 0
+# to 999999999, 0 when the key is absent. Fails on any other value, which
+# refuses saves and boots as an invalid scale does.
+scale_save_value() {
+  local v
+  v=$(jq -r 'select(type == "object") | (if has("scale_save") then .scale_save else 0 end) |
+    select(type == "number" and . >= 0 and . < 1000000000 and . == floor)' <<<"$1" 2>/dev/null) || return 1
+  [[ $v =~ ^[0-9]{1,9}$ ]] || return 1
+  printf '%s\n' "$((10#$v))"
+}
+
+# Print "<scale setting> <save number>" from one read of settings.json, so
+# a save landing between two reads cannot pair a new number with an old
+# step. boot_vm and the scale feed share it. Fails on an unreadable file or
+# an invalid value.
+vm_scale_settings() {
+  local f doc='{}' scale save
   f=$(settings_file)
   [[ ! -L $f ]] || return 1
   if [[ -e $f ]]; then doc=$(cat -- "$f") || return 1; fi
-  windows_scale_value "$doc"
+  scale=$(windows_scale_value "$doc") || return 1
+  save=$(scale_save_value "$doc") || return 1
+  printf '%s %s\n' "$scale" "$save"
 }
 
 # A validated CLI value as JSON, retaining auto's string type.
@@ -680,7 +845,7 @@ default_gateway() {
     jq -r '[.[] | .gateway // empty][0] // empty' 2>/dev/null || true
 }
 
-# vm_plan <scale> <setup-media or ""> [<window true|false>]: check what
+# vm_plan <scale> <save> <setup-media or ""> [<window true|false>]: check what
 # lanai-vm-exec needs and print QEMU's arguments: the runtime folder
 # (created 0700 when missing), the settings, windows.mac, the gateway and
 # vm_args. On a problem, prints why and fails. boot_vm runs it as a dry run
@@ -716,11 +881,12 @@ vm_plan() {
     echo "Lanai cannot read $storage/windows.mac."
     return 1
   }
-  vm_args "$storage" "${mac//[[:space:]]/}" "$mem" "$cores" "$1" "$(default_gateway)" "$2" "${3:-false}"
+  vm_args "$storage" "${mac//[[:space:]]/}" "$mem" "$cores" "$1" "$2" "$(default_gateway)" "$3" "${4:-false}"
 }
 
 # lanai-vm-exec, the unit's ExecStart (plan: Architecture). It reads the
-# scale and boot mode boot_vm left in <state>/boot.json, builds QEMU's
+# scale, its save number and the boot mode boot_vm left in
+# <state>/boot.json, builds QEMU's
 # arguments with vm_plan, removes stale sockets and shared memory, empties
 # client.log, starts the helpers in the background (in the unit's cgroup;
 # systemd stops them after ExecStop): virtiofsd once, the others under
@@ -730,13 +896,14 @@ vm_plan() {
 # manager may lack it). Prints why and fails on any problem, before QEMU
 # starts.
 vm_exec() {
-  local run s scale=100 setup=false window=false wayland="" media="" out i name
+  local run s scale=100 save=0 setup=false window=false wayland="" media="" out i name
   local -a args
   : "${INVOCATION_ID:?lanai-vm-exec runs only as lanai-vm.service}"
   run=$(run_dir) || return 1
   s=$(state_dir)
   if [[ -f $s/boot.json ]]; then
     scale=$(jq -r '.scale // 100' "$s/boot.json") || return 1
+    save=$(jq -r '.scale_save // 0' "$s/boot.json") || return 1
     setup=$(jq -r '.setup // false' "$s/boot.json") || return 1
     window=$(jq -r '.window // false' "$s/boot.json") || return 1
     wayland=$(jq -r '.wayland_display // ""' "$s/boot.json") || return 1
@@ -751,21 +918,22 @@ vm_exec() {
   else
     unset WAYLAND_DISPLAY
   fi
-  out=$(vm_plan "$scale" "$media" "$window") || {
+  out=$(vm_plan "$scale" "$save" "$media" "$window") || {
     echo "lanai: $out" >&2
     return 1
   }
   mapfile -t args <<<"$out"
   [[ -n $(default_gateway) ]] ||
     echo "lanai: the host has no default route; Windows starts without a network" >&2
-  for name in qmp qmp-events qmp-cli spice qga virtiofs; do
+  for name in qmp qmp-events qmp-cli spice qga virtiofs scale; do
     rm -f -- "$run/$name.sock"
   done
   for name in "${!LANAI_HELPERS[@]}"; do
     rm -f -- "$run/$name.pid"
   done
-  # Setup's step 6 times the guest agent's open and closed port per boot.
-  rm -f -- "$run/ivshmem" "$run/qga-open-since" "$run/qga-closed-since" "$run/step6-asked"
+  # Setup's step 6 times the guest agent's open and closed port per boot,
+  # and the scale feed's window monitor belongs to one run.
+  rm -f -- "$run/ivshmem" "$run/qga-open-since" "$run/qga-closed-since" "$run/step6-asked" "$run/scale-monitor"
   : >"$run/client.log"
 
   run_once virtiofsd "$LANAI_VIRTIOFSD" --sandbox namespace --shared-dir "$HOME/Windows" \
@@ -774,6 +942,7 @@ vm_exec() {
     --why="Shutting Windows down cleanly" "$LANAI_BIN/lanai-vm-helper" shutdown-watch &
   supervise sleep-watch "$LANAI_BIN/lanai-vm-helper" sleep-watch &
   supervise event-log "$LANAI_BIN/lanai-vm-helper" event-log &
+  supervise scale-feed "$LANAI_BIN/lanai-vm-helper" scale-feed &
   for ((i = 0; i < 50; i++)); do
     [[ -S $run/virtiofs.sock ]] && break
     sleep 0.1

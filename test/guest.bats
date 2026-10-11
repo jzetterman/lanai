@@ -151,7 +151,7 @@ stage1_code() {
       }
       print n " changes"
     }'"'"'' _ "$CHANGE_RE" < <(setup_changes)
-  assert_output "13 changes"
+  assert_output "14 changes"
 }
 
 @test "setup.cmd: stage 1 tells a declined prompt (1223) from the elevated stage's own failures" {
@@ -337,84 +337,342 @@ scale_decision() {
   assert_output $'{"recommended":3,"current":3,"target":1,"relative":-2,"change":true}\n{"recommended":3,"current":1,"target":1,"relative":-2,"change":false}\n{"recommended":0,"current":0,"target":11,"relative":11,"change":true}'
 }
 
-@test "guest scale loop: retries a late display and sets only actual changes without repeated logs" {
-  command -v pwsh >/dev/null || skip "pwsh is not installed"
-  PS1=$REPO/guest/lanai-scale.ps1 run pwsh -NoProfile -NonInteractive -Command '
+# Run PowerShell <body> with the script's pure functions and its loop tick
+# loaded from $GUEST_SCRIPT (default: the repo's script) through the AST, as the
+# StepName tests do. Windows is faked: Get-DisplayObservation reads
+# [LanaiDisplay]::D (a missing display when it is $null) and counts polls,
+# SetScale counts calls and applies the change unless Apply is false, and
+# Write-Log collects lines in $script:Logs. Helpers: Obs builds an
+# observation, L parses a line, Q makes a queued line, Assert throws.
+guest_ps() {
+  PS1=${GUEST_SCRIPT:-$REPO/guest/lanai-scale.ps1} BODY=$1 pwsh -NoProfile -NonInteractive -Command '
+    $ErrorActionPreference = "Stop"
+    $Steps = @(100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500)
     class LanaiDisplay {
-      static [object[]] $Paths = @()
-      static [object] $Dpi = @{minScaleRel=-1;curScaleRel=0;maxScaleRel=5}
+      static [hashtable] $D = @{ DevicePath = "lg"; Resolution = "1920x1080"; MinRel = -1; CurRel = 0; MaxRel = 5 }
       static [int] $Sets = 0
-      static [bool] $IgnoreSet = $false
-      static [object[]] ActivePaths() { return [LanaiDisplay]::Paths }
-      static [object] GetTargetName([object] $p) { return @{monitorFriendlyDeviceName="LGIDD";monitorDevicePath="display"} }
-      static [string] Resolution([object] $p) { return "1920x1080" }
-      static [object] GetScale([object] $p) { return [LanaiDisplay]::Dpi }
-      static [void] SetScale([object] $p, [int] $rel) { [LanaiDisplay]::Sets++; if (-not [LanaiDisplay]::IgnoreSet) { [LanaiDisplay]::Dpi.curScaleRel=$rel } }
+      static [int] $Polls = 0
+      static [bool] $Apply = $true
+      static [void] SetScale([object] $p, [int] $rel) {
+        [LanaiDisplay]::Sets++
+        if ([LanaiDisplay]::Apply) { [LanaiDisplay]::D.CurRel = $rel }
+      }
     }
-    $ErrorActionPreference="Stop"
-    $Steps = @(100,125,150,175,200,225,250,300,350,400,450,500)
-    $script:LastScaleError=""
-    $script:Logs=@()
+    function Get-DisplayObservation {
+      [LanaiDisplay]::Polls++
+      $d = [LanaiDisplay]::D
+      if ($null -eq $d) { throw "Found 0 Looking Glass displays among 0; expected one" }
+      [pscustomobject]@{ Path = 1; Name = "LGIDD"; DevicePath = $d.DevicePath; Resolution = $d.Resolution
+        MinRel = $d.MinRel; CurRel = $d.CurRel; MaxRel = $d.MaxRel }
+    }
+    $script:Logs = @()
     function Write-Log($Message) { $script:Logs += $Message }
-    $ast=[System.Management.Automation.Language.Parser]::ParseFile($env:PS1,[ref]$null,[ref]$null)
-    foreach ($name in "StepName","ScaleDecision","Update-DisplayScale") {
-      $f=$ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true) | Select-Object -First 1
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
+    foreach ($name in "StepName", "ScaleDecision", "ConvertFrom-ScaleLine", "Get-DrainedLine", "New-ScaleState",
+      "Step-ScaleState", "New-ScaleContext", "Write-ErrorOnce", "Invoke-ScaleTick") {
+      $f = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $n.Name -eq $name }, $true) | Select-Object -First 1
       if (-not $f) { throw "missing $name" }
       . ([scriptblock]::Create($f.Extent.Text))
     }
-    Update-DisplayScale 1
-    $count=$Logs.Count
-    Update-DisplayScale 1
-    if ($Logs.Count -ne $count) { throw "repeated absent-display error" }
-    [LanaiDisplay]::Paths=@(@{sourceInfo=@{id=1};targetInfo=@{id=2}})
-    Update-DisplayScale 1
-    if ([LanaiDisplay]::Sets -ne 0) { throw "set unchanged display" }
-    [LanaiDisplay]::Dpi=@{minScaleRel=-3;curScaleRel=0;maxScaleRel=5}
-    Update-DisplayScale 1
-    if ([LanaiDisplay]::Sets -ne 1 -or [LanaiDisplay]::Dpi.curScaleRel -ne -2) { throw "late recommendation not corrected" }
-    $count=$Logs.Count
-    Update-DisplayScale 1
-    if ([LanaiDisplay]::Sets -ne 1 -or $Logs.Count -ne $count) { throw "unchanged poll set or logged" }
-    # Real changes succeed promptly, including an immediate manual reversal
-    # before the next healthy poll can clear the previous attempt.
-    [LanaiDisplay]::Dpi.curScaleRel=0
-    Update-DisplayScale 1
-    [LanaiDisplay]::Dpi.curScaleRel=0
-    Update-DisplayScale 1
-    if ([LanaiDisplay]::Sets -ne 3) { throw "successful set delayed an immediate manual correction" }
-    # A successful API return need not mean Windows applied the new scale.
-    $script:Now = [datetime]"2026-10-05T00:00:00Z"
-    function Get-Date { return $script:Now }
-    [LanaiDisplay]::IgnoreSet=$true
-    [LanaiDisplay]::Dpi.curScaleRel=0
-    Update-DisplayScale 1
-    $sets=[LanaiDisplay]::Sets
-    $count=$Logs.Count
-    1..29 | ForEach-Object { $script:Now=$script:Now.AddSeconds(2); Update-DisplayScale 1 }
-    if ([LanaiDisplay]::Sets -ne $sets -or $Logs.Count -ne $count) { throw "unchanged failing decision retried or logged before one minute" }
-    $script:Now=$script:Now.AddSeconds(2)
-    Update-DisplayScale 1
-    if ([LanaiDisplay]::Sets -ne $sets+1 -or $Logs.Count -ne $count) { throw "one minute retry or log deduplication failed" }
-    Update-DisplayScale 2
-    if ([LanaiDisplay]::Sets -ne $sets+2) { throw "new target did not apply promptly" }
-    # A full log filesystem must not prevent a scale attempt or end the task.
-    function Write-Log($Message) { throw "log is unavailable" }
-    Update-DisplayScale 4
-    if ([LanaiDisplay]::Sets -ne $sets+3) { throw "failed log prevented SetScale" }
-    function Write-Log($Message) { $script:Logs += $Message }
-    Update-DisplayScale 4
-    if ([LanaiDisplay]::Sets -ne $sets+3) { throw "failed log delayed a new target before SetScale was attempted" }
+    function Obs($Cur, $Min = -1, $Max = 5, $Res = "1920x1080", $Path = "lg") {
+      [pscustomobject]@{ Path = 1; Name = "LGIDD"; DevicePath = $Path; Resolution = $Res; MinRel = $Min; CurRel = $Cur; MaxRel = $Max }
+    }
+    function L($Step, $Save) { ConvertFrom-ScaleLine "lanai-scale $Step $Save" }
+    function Q($Text, $At) { [pscustomobject]@{ Text = $Text; At = $At } }
+    function Assert($Ok, $Why) { if (-not $Ok) { throw "failed: $Why" } }
+    Invoke-Expression $env:BODY
     "ok"'
+}
+
+@test "guest line: parses a listed step and a save number, and nothing else" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $p = ConvertFrom-ScaleLine "lanai-scale 150 7"
+    Assert ($p.Step -eq 2 -and $p.Save -eq 7) "valid line"
+    Assert ((ConvertFrom-ScaleLine "lanai-scale 500 999999999").Save -eq 999999999) "largest save"
+    $bad = @("", "lanai-scale 137 1", "lanai-scale 150", "lanai-scale 150 1 2", "LANAI-SCALE 150 1",
+      "lanai-scale 150 1234567890", "lanai-scale 150 99999999999999999999", ("lanai-scale 150 " + ("1" * 40)),
+      "lanai-scale 150 -1", " lanai-scale 150 1", "lanai-scale 150 1 ", "lanai-scale 050 1",
+      ("lanai-scale " + [char]0x0661 + [char]0x0665 + [char]0x0660 + " 1"), "lanai-scale 150 1.5")
+    foreach ($b in $bad) { Assert ($null -eq (ConvertFrom-ScaleLine $b)) "accepted [$b]" }'
   assert_success
   assert_output ok
 }
 
-@test "setup scale task: no execution limit and duplicates ignored" {
+@test "guest drain: one valid line is used, two or more are stale, a quiet gap of 300 ms first" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    Assert ((Get-DrainedLine @() 1000).Kind -eq "none") "empty batch"
+    $one = @((Q "" 100), (Q "lanai-scale 175 3" 100))
+    Assert ((Get-DrainedLine $one 399).Kind -eq "wait") "inside the gap"
+    $d = Get-DrainedLine $one 400
+    Assert ($d.Kind -eq "line" -and $d.Line.Step -eq 3 -and $d.Line.Save -eq 3) "one valid line"
+    $two = @((Q "lanai-scale 150 2" 100), (Q "" 100), (Q "lanai-scale 175 3" 100))
+    Assert ((Get-DrainedLine $two 500).Kind -eq "stale") "two valid lines"
+    # Empty and malformed lines do not count; a cut line is malformed.
+    $d = Get-DrainedLine @((Q "lanai-scale 15" 100), (Q "" 100), (Q "junk" 100), (Q "lanai-scale 175 3" 100)) 500
+    Assert ($d.Kind -eq "line" -and $d.Malformed -eq 2) "malformed lines dropped"
+    $d = Get-DrainedLine @((Q "junk" 100)) 500
+    Assert ($d.Kind -eq "none" -and $d.Malformed -eq 1) "only malformed"
+    # A line inside the gap delays acting on the batch.
+    $late = @((Q "junk" 100), (Q "lanai-scale 175 3" 350))
+    Assert ((Get-DrainedLine $late 500).Kind -eq "wait") "late line delays"
+    Assert ((Get-DrainedLine $late 650).Kind -eq "line") "acts after the late line'"'"'s gap"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest save rule: a changed number drops the pick, the same one keeps it, the first line sets it" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $s = New-ScaleState 2 5 0
+    $s.Pick = 4
+    $r = Step-ScaleState $s $null (L 175 6) 0
+    Assert ($null -eq $r.State.Pick -and $r.State.LastSave -eq 6 -and $r.State.Want -eq 3) "greater"
+    $r = Step-ScaleState $s $null (L 175 4) 0
+    Assert ($null -eq $r.State.Pick -and $r.State.LastSave -eq 4) "lower"
+    $r = Step-ScaleState $s $null (L 175 5) 0
+    Assert ($r.State.Pick -eq 4 -and $r.State.Want -eq 3 -and $r.State.Ready) "equal: a follow update"
+    # A host older than the save number: the first line sets it and clears nothing.
+    $s = New-ScaleState 2 $null 0
+    $s.Pick = 4
+    $r = Step-ScaleState $s $null (L 175 9) 0
+    Assert ($r.State.Pick -eq 4 -and $r.State.LastSave -eq 9) "first line"
+    $r = Step-ScaleState $r.State $null (L 175 10) 0
+    Assert ($null -eq $r.State.Pick) "the next save"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest pick rule: only a settled change Windows made for the user is a pick" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    # Want 125% (index 1, the recommended step); observed at 0, settled after 5 s.
+    $s = New-ScaleState 1 5 0
+    $s.Ready = $true
+    $r = Step-ScaleState $s (Obs 0) $null 0
+    Assert ($null -eq $r.State.Pick -and $r.State.Confirmed -eq 1 -and $r.Action -eq "none") "first observation"
+    $s = $r.State
+    $r = Step-ScaleState $s (Obs 2) $null 6000
+    Assert ($r.State.Pick -eq 3 -and $r.Action -eq "none") "a settled change is a pick"
+    # Each condition alone fails.
+    $r = Step-ScaleState $s (Obs 2) $null 4000
+    Assert ($null -eq $r.State.Pick -and $r.Action -eq "set" -and $r.Step -eq 1) "within 5 s of the resolution"
+    $r = Step-ScaleState $s (Obs 0 -2) $null 6000
+    Assert ($null -eq $r.State.Pick -and $r.Action -eq "set" -and $r.Step -eq 1) "a recommended-step move"
+    $r = Step-ScaleState $s (Obs 2 -1 5 "1280x720") $null 6000
+    Assert ($null -eq $r.State.Pick) "a resolution move"
+    $r = Step-ScaleState $s (Obs 2 -1 5 "1920x1080" "lg2") $null 6000
+    Assert ($null -eq $r.State.Pick -and $r.State.Confirmed -eq 3) "a new display path"
+    # A step seen inside the 5 s never ripens into a pick later.
+    $r = Step-ScaleState $s (Obs 2 -1 5 "1280x720") $null 6000
+    $r = Step-ScaleState $r.State (Obs 2 -1 5 "1280x720") $null 20000
+    Assert ($null -eq $r.State.Pick) "no ripening"
+    # The task'"'"'s own set is not a pick, and a pick right after it counts.
+    $r = Step-ScaleState $s (Obs 0) (L 175 6) 6000
+    Assert ($r.Action -eq "set" -and $r.Step -eq 3 -and $r.State.Pending -eq 3) "host-driven set"
+    $r = Step-ScaleState $r.State (Obs 2) $null 8000
+    Assert ($null -eq $r.State.Pick -and $r.State.Confirmed -eq 3 -and $null -eq $r.State.Pending) "own set observed"
+    $r = Step-ScaleState $r.State (Obs 3) $null 8250
+    Assert ($r.State.Pick -eq 4 -and $r.Action -eq "none") "a pick right after a host-driven change"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest target and cap: the pick or the wanted step, capped, and back up when the window grows" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    # Want 300% (index 7); the resolution allows at most 200% (index 4).
+    $s = New-ScaleState 7 5 0
+    $s.Ready = $true
+    $r = Step-ScaleState $s (Obs 0 -1 3) $null 0
+    Assert ($r.Action -eq "set" -and $r.Step -eq 4 -and $r.Relative -eq 3) "capped"
+    $r = Step-ScaleState $r.State (Obs 3 -1 3) $null 2000
+    Assert ($r.Action -eq "none") "applied"
+    $r = Step-ScaleState $r.State (Obs 3 -1 10 "2560x1440") $null 4000
+    Assert ($r.Action -eq "set" -and $r.Step -eq 7 -and $null -eq $r.State.Pick) "grown"
+    # A 250% pick (index 6) is capped the same way and holds as the target.
+    $s = $r.State
+    $s.Pick = 6
+    $r = Step-ScaleState $s (Obs 6 -1 4 "1920x1080") $null 6000
+    Assert ($r.Action -eq "set" -and $r.Step -eq 5 -and $r.State.Pick -eq 6) "pick capped"
+    $r = Step-ScaleState $r.State (Obs 6 -1 10 "2560x1440") $null 8000
+    Assert ($r.Action -eq "set" -and $r.Step -eq 6) "pick back up"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest baseline: the OEM values wait for the first line, and a save in the meantime drops a pick" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    # OEM: 150% (index 2), save 5. Before the first line the OEM step waits.
+    $s = New-ScaleState 2 5 0
+    $r = Step-ScaleState $s (Obs 0) $null 1000
+    Assert ($r.Action -eq "none" -and -not $r.State.Ready) "no apply before the first line"
+    # The wait ends at 5 s: the OEM step applies, then the user picks 175%.
+    $r = Step-ScaleState $r.State (Obs 0) $null 5000
+    Assert ($r.Action -eq "set" -and $r.Step -eq 2) "OEM step at 5 s"
+    $r = Step-ScaleState $r.State (Obs 1) $null 7000
+    $r = Step-ScaleState $r.State (Obs 2) $null 12000
+    Assert ($r.State.Pick -eq 3) "a pick before the channel connects"
+    $s = $r.State
+    $keep = Step-ScaleState $s (Obs 2) (L 150 5) 13000
+    Assert ($keep.State.Pick -eq 3 -and $keep.Action -eq "none") "no save meanwhile: the pick holds"
+    $drop = Step-ScaleState $s (Obs 2) (L 150 6) 13000
+    Assert ($null -eq $drop.State.Pick -and $drop.Action -eq "set" -and $drop.Step -eq 2) "a save meanwhile drops it"
+    # An unobserved pick and a save in the same pass: the save wins.
+    $r = Step-ScaleState $drop.State (Obs 1) $null 15000
+    $r = Step-ScaleState $r.State (Obs 2) (L 200 7) 21000
+    Assert ($null -eq $r.State.Pick -and $r.Action -eq "set" -and $r.Step -eq 4) "save in the same pass"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest loop: a port that never opens gets the OEM step within 5 s, an open one 3 s after it opens" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    function FirstSet($OpenedAt) {
+      [LanaiDisplay]::Sets = 0
+      [LanaiDisplay]::D.CurRel = 0
+      $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+      $ctx = New-ScaleContext (New-ScaleState 3 5 0) $q @{ OpenedAt = $OpenedAt }
+      for ($t = 0; $t -le 8000; $t += 250) {
+        Invoke-ScaleTick $ctx $t
+        if ([LanaiDisplay]::Sets -gt 0) { return $t }
+      }
+      return -1
+    }
+    $t = FirstSet $null
+    Assert ($t -eq 5000) "never opened: set at $t"
+    $t = FirstSet 500
+    Assert ($t -eq 3500) "opened at 500: set at $t"
+    # A first line before the wait ends applies its own step, never the OEM one first.
+    [LanaiDisplay]::Sets = 0
+    [LanaiDisplay]::D.CurRel = 0
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    $ctx = New-ScaleContext (New-ScaleState 3 5 0) $q @{ OpenedAt = 0 }
+    for ($t = 0; $t -le 3000; $t += 250) {
+      if ($t -eq 1000) { $q.Enqueue((Q "" 1000)); $q.Enqueue((Q "lanai-scale 200 6" 1000)) }
+      Invoke-ScaleTick $ctx $t
+      if ([LanaiDisplay]::Sets -gt 0) { break }
+    }
+    Assert ($t -eq 1500 -and [LanaiDisplay]::D.CurRel -eq 3) "first line at 1000: set at $t to $([LanaiDisplay]::D.CurRel)"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest loop: a resend just after each display poll is processed within one tick of its gap" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    $ctx = New-ScaleContext (New-ScaleState 1 5 0) $q @{ OpenedAt = 0 }
+    $polls = 0; $sent = $null; $acted = @(); $save = 5; $step = 175
+    for ($t = 0; $t -le 30000; $t += 250) {
+      # The feed'"'"'s line lands 10 ms after each poll, with a new save each time.
+      if ($null -ne $sent -and $t -ge $sent.At -and -not $sent.Queued) { $q.Enqueue((Q $sent.Text $sent.At)); $sent.Queued = $true }
+      $before = [LanaiDisplay]::Sets
+      Invoke-ScaleTick $ctx $t
+      if ([LanaiDisplay]::Sets -gt $before -and $null -ne $sent) { $acted += $t - $sent.At; $sent = $null }
+      if ([LanaiDisplay]::Polls -gt $polls -and $null -eq $sent) {
+        $polls = [LanaiDisplay]::Polls; $save++; $step = 325 - $step
+        $sent = [pscustomobject]@{ Text = "lanai-scale $step $save"; At = $t + 10; Queued = $false }
+      }
+      $polls = [LanaiDisplay]::Polls
+    }
+    Assert ($acted.Count -ge 10) "only $($acted.Count) lines acted on"
+    foreach ($a in $acted) { Assert ($a -le 550) "a line waited $a ms" }'
+  assert_success
+  assert_output ok
+}
+
+@test "guest loop: an unapplied set is retried once a minute and never becomes a pick; a real pick still counts" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    $ctx = New-ScaleContext (New-ScaleState 1 5 0) $q @{ OpenedAt = 0 }
+    [LanaiDisplay]::Apply = $false
+    $q.Enqueue((Q "lanai-scale 175 6" 0))
+    for ($t = 0; $t -le 2000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ([LanaiDisplay]::Sets -eq 1) "first set: $([LanaiDisplay]::Sets)"
+    # Not $logs: PowerShell names ignore case, and that would replace $Logs.
+    $logCount = $script:Logs.Count
+    for (; $t -le 60000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ([LanaiDisplay]::Sets -eq 1 -and $script:Logs.Count -eq $logCount) "retried or logged before a minute"
+    for (; $t -le 62500; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ([LanaiDisplay]::Sets -eq 2) "retry after a minute: $([LanaiDisplay]::Sets)"
+    Assert ($null -eq $ctx.State.Pick) "an unapplied set became a pick"
+    # The user picks 200% (index 4) in Windows: a real pick right after it.
+    [LanaiDisplay]::D.CurRel = 3
+    for (; $t -le 65000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ($ctx.State.Pick -eq 4 -and [LanaiDisplay]::Sets -eq 2) "the real pick"
+    Assert (($script:Logs -join "`n") -match "Pick: 200%") "the pick is logged"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest loop: a late display is logged once, then set; a failed log never stops a set" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    $ctx = New-ScaleContext (New-ScaleState 3 5 0) $q @{ OpenedAt = 0 }
+    [LanaiDisplay]::D = $null
+    for ($t = 0; $t -le 8000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ($script:Logs.Count -eq 1 -and $script:Logs[0] -match "Found 0") "one error line: $($script:Logs -join "|")"
+    [LanaiDisplay]::D = @{ DevicePath = "lg"; Resolution = "1920x1080"; MinRel = -1; CurRel = 0; MaxRel = 5 }
+    for (; $t -le 10000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ([LanaiDisplay]::Sets -eq 1 -and [LanaiDisplay]::D.CurRel -eq 2) "late display set"
+    $polls = [LanaiDisplay]::Polls
+    for (; $t -le 20000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ([LanaiDisplay]::Sets -eq 1 -and [LanaiDisplay]::Polls -gt $polls) "unchanged polls set nothing"
+    function Write-Log($Message) { throw "the log is full" }
+    $q.Enqueue((Q "lanai-scale 250 6" $t))
+    for ($i = 0; $i -lt 4; $i++) { $t += 250; Invoke-ScaleTick $ctx $t }
+    Assert ([LanaiDisplay]::Sets -eq 2 -and [LanaiDisplay]::D.CurRel -eq 5) "a failed log stopped the set"'
+  assert_success
+  assert_output ok
+}
+
+@test "lanai-scale.ps1: pins its module path and temp folder before the first cmdlet or Add-Type" {
+  local f=$REPO/guest/lanai-scale.ps1 first pins
+  # The first line that runs a cmdlet (Verb-Noun) or Add-Type, outside the
+  # functions and the comment block.
+  first=$(awk '/^<#/,/^#>/ { next } /^(function|\$ReaderScript)/ { skip = 1 } skip && /^}/ { skip = 0; next }
+    !skip && /^[^#]*(Add-Type|[A-Z][a-z]+-[A-Z][A-Za-z]+)/ { print NR; exit }' "$f")
+  pins=$(grep -nE '^\$env:(PSModulePath|TMP|TEMP) = ' "$f" | cut -d: -f1 | sort -n | tail -n 1)
+  [[ -n $first && -n $pins ]] || fail "first $first, pins $pins"
+  ((pins < first)) || fail "the env pins end on line $pins, after line $first"
+  run grep -E '^\$env:(PSModulePath|TMP|TEMP) = ' "$f"
+  assert_line "\$env:TMP = 'C:\Program Files\Lanai\tmp'"
+  assert_line "\$env:TEMP = 'C:\Program Files\Lanai\tmp'"
+  assert_line --partial '$env:PSModulePath = "$([Environment]::SystemDirectory)\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules"'
+  run grep -F "\$LogFile = 'C:\Program Files\Lanai\lanai-scale.log'" "$f"
+  assert_success
+  # Nothing under the user's profile.
+  run grep -iE 'LOCALAPPDATA|APPDATA|USERPROFILE' "$f"
+  assert_failure
+}
+
+@test "setup scale task: elevated, one task by name, no execution limit, duplicates ignored" {
   run setup_code
   assert_output --partial "New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew"
   assert_output --partial '-Settings $s'
+  assert_output --partial "New-ScheduledTaskPrincipal -UserId \$u -LogonType Interactive -RunLevel Highest"
+  assert_output --partial "Register-ScheduledTask -TaskName 'Lanai display scale' -Action \$a -Trigger \$t -Principal \$p -Settings \$s -Force"
+  # powershell.exe by absolute path, expanded by cmd when setup.cmd registers it.
+  assert_output --partial "New-ScheduledTaskAction -Execute '%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe'"
+  run grep -c 'Register-ScheduledTask' "$SETUP_CMD"
+  assert_output 1
   run cat "$REPO/guest/lanai-scale.ps1"
-  assert_output --partial 'Start-Sleep -Seconds 2'
+  assert_output --partial 'Start-Sleep -Milliseconds 250'
+}
+
+@test "setup.cmd: creates the task's tmp folder under C:\\Program Files\\Lanai before the task" {
+  local lanai tmp task
+  lanai=$(line_is 'mkdir "C:\Program Files\Lanai"')
+  tmp=$(line_is 'mkdir "C:\Program Files\Lanai\tmp"')
+  task=$(line_of 'Register-ScheduledTask')
+  ((lanai < tmp && tmp < task)) || fail "Lanai $lanai, tmp $tmp, task $task"
 }
 
 # Print the result of PowerShell <expression> after defining $Steps and the

@@ -24,13 +24,30 @@ cmd_notice_seen() {
   emit true "" "Notice dismissed." ""
 }
 
-# settings [<memory GiB> <cores> [<Windows scale>]]: apply next boot.
-# Old two-argument saves preserve scale and all unrelated keys.
+# Print which scale task Windows has, from Lanai's setup record (spec 12):
+# "new" when finished setup recorded the live task (scale_task 2), "old"
+# for a finished setup without that mark, "none" before setup finishes.
+scale_task_kind() {
+  if ! setup_done; then echo none
+  elif [[ $(setup_get scale_task) == 2 ]]; then echo new
+  else echo old; fi
+}
+
+# settings [<memory GiB> <cores> [<Windows scale>]]: show or save settings.
+# Two-argument saves keep the scale, its save number and unrelated keys.
+# Three-argument saves are scale saves: they also count the save number up
+# (spec 27), even for an unchanged step, so the scale task drops a pick.
+# A save's reply carries scale_saved, running and scale_task, and its
+# message is the panel's words for them (panel_words).
 cmd_settings() {
-  local f doc='{}' mem cores scale tmp
+  local f doc='{}' mem cores scale save tmp reply running=false
   f=$(settings_file)
   if [[ -L $f ]] || { [[ -e $f ]] && ! doc=$(jq -ce 'select(type == "object")' "$f"); }; then
     emit false "" "Lanai cannot read its settings file: $f." "repair that file, then try again"
+    return 1
+  fi
+  if ! save=$(scale_save_value "$doc"); then
+    emit false "" "Lanai cannot read the Windows scale save number in its settings file." "repair that file, then try again"
     return 1
   fi
   if (($# == 0)); then
@@ -73,16 +90,31 @@ cmd_settings() {
       emit false "" "Lanai cannot read Windows scale in its settings file." "set auto or a valid Windows scale step"
       return 1
     fi
+    if ! save=$(scale_save_value "$doc"); then
+      emit false "" "Lanai cannot read the Windows scale save number in its settings file." "repair that file, then try again"
+      return 1
+    fi
+    # Below 10^9 (spec 27); the guest treats any change as a save, so the
+    # wrap after a billion saves still counts as one.
+    (($# == 2)) || save=$(((save + 1) % 1000000000))
     if ! mkdir -p -- "${f%/*}" || ! tmp=$(mktemp "$f.XXXXXX"); then return 1; fi
-    if ! jq --argjson m "$mem" --argjson c "$cores" --argjson w "$(scale_json "$scale")" \
-      '. + {memory_gib:$m, cores:$c, windows_scale:$w}' <<<"$doc" >"$tmp" ||
+    if ! jq --argjson m "$mem" --argjson c "$cores" --argjson w "$(scale_json "$scale")" --argjson n "$save" \
+      '. + {memory_gib:$m, cores:$c, windows_scale:$w, scale_save:$n}' <<<"$doc" >"$tmp" ||
       ! mv -f -- "$tmp" "$f"; then
       rm -f -- "$tmp"
       return 1
     fi
   fi
-  emit true "" "VM settings apply at the next start." "" \
-    "$(jq -nc --argjson m "$mem" --argjson c "$cores" --argjson w "$(scale_json "$scale")" '{memory_gib:$m, cores:$c, windows_scale:$w}')"
+  reply=$(jq -nc --argjson m "$mem" --argjson c "$cores" --argjson w "$(scale_json "$scale")" \
+    '{memory_gib:$m, cores:$c, windows_scale:$w}')
+  if (($#)); then
+    [[ $(unit_state 2>/dev/null) != active ]] || running=true
+    reply=$(jq -c --argjson s "$([[ $# == 3 ]] && echo true || echo false)" --argjson r "$running" \
+      --arg t "$(scale_task_kind)" '. + {scale_saved:$s, running:$r, scale_task:$t}' <<<"$reply")
+    emit true "" "$(panel_words settings "$(jq -c '. + {ok:true}' <<<"$reply")")" "" "$reply"
+  else
+    emit true "" "Memory and cores apply the next time Windows starts." "" "$reply"
+  fi
 }
 
 # Atomic result per group; no temporary file is shared between callers.

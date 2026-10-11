@@ -50,6 +50,70 @@ setup() {
   assert_equal "$(jq -r .settings.windows_scale <<<"$output")" 175
 }
 
+@test "panel words: settings saves for a live, stopped, memory-only and old-task save" {
+  local live='Saved. Windows uses the new scale within 5 seconds if you'"'"'re signed in, or when you next sign in.'
+  local stopped='Saved. Changes apply the next time Windows starts.'
+  local memory='Saved. Memory and cores apply the next time Windows starts.'
+  local again='To change the scale while Windows runs, click Run setup again. It also turns the Windows lock off again.'
+  local lost_words='Until then, Windows undoes scale changes made in its own settings, and Match my monitor does not follow the window while Windows runs.'
+  run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"new"}'
+  assert_output "$live"
+  run panel_words settings '{"ok":true,"scale_saved":true,"running":false,"scale_task":"new"}'
+  assert_output "$stopped"
+  run panel_words settings '{"ok":true,"scale_saved":false,"running":true,"scale_task":"new"}'
+  assert_output "$memory"
+  run panel_words settings '{"ok":true,"scale_saved":false,"running":false,"scale_task":"old"}'
+  assert_output "$memory"
+  # The old task: the next start, Run setup again with the lock, and the lost following.
+  run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"old"}'
+  assert_output "Saved. Windows uses the new scale the next time it starts. $again $lost_words"
+  run panel_words settings '{"ok":true,"scale_saved":true,"running":false,"scale_task":"old"}'
+  assert_output "$stopped $again $lost_words"
+  # A first setup expects no mark yet: every scale save uses the stopped words.
+  run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"none"}'
+  assert_output "$stopped"
+}
+
+@test "panel settings: the view names memory and cores, and the scale note shows only while running with the new task" {
+  local note='Saving a scale replaces one you picked in Windows.'
+  state '{"done":true}'
+  run cmd_panel
+  assert_equal "$(jq -r .settings.line <<<"$output")" 'Memory and cores apply the next time Windows starts.'
+  assert_equal "$(jq -r .settings.note <<<"$output")" ''
+  ST=active
+  run cmd_panel
+  assert_equal "$(jq -r .settings.note <<<"$output")" ''
+  state '{"done":true,"scale_task":2}'
+  run cmd_panel
+  assert_equal "$(jq -r .settings.note <<<"$output")" "$note"
+  ST=inactive
+  run cmd_panel
+  assert_equal "$(jq -r .settings.note <<<"$output")" ''
+}
+
+@test "panel settings: save words clear once the VM's invocation differs from the record's" {
+  local reply='{"ok":true,"scale_saved":true,"running":true,"scale_task":"new"}'
+  panel_result_write settings "{\"command\":\"settings\",\"invocation\":\"inv\",\"ended\":1,\"reply\":$reply}"
+  ST=active INV=inv
+  run cmd_panel
+  assert_output --partial 'within 5 seconds'
+  INV=other-inv
+  run cmd_panel
+  assert_equal "$(jq -r .result.settings <<<"$output")" ''
+  # A save while stopped holds until the next start.
+  panel_result_write settings '{"command":"settings","invocation":"","ended":1,"reply":{"ok":true,"scale_saved":true,"running":false,"scale_task":"new"}}'
+  ST=inactive INV=''
+  run cmd_panel
+  assert_equal "$(jq -r .result.settings <<<"$output")" 'Saved. Changes apply the next time Windows starts.'
+  ST=active INV=next-inv
+  run cmd_panel
+  assert_equal "$(jq -r .result.settings <<<"$output")" ''
+  # A refused save keeps its words.
+  panel_result_write settings '{"command":"settings","invocation":"","ended":1,"reply":{"ok":false}}'
+  run cmd_panel
+  assert_output --partial 'Settings could not be saved'
+}
+
 @test "panel scale: invalid persisted scale shows a settings error" {
   local value
   for value in null true '"125"' '{}' '[]' 275 125.5; do
@@ -634,7 +698,7 @@ assert_plan_agreement() {
   state '{"snapshot":"declined","step5":true}'
   version_check() { echo match; }
   log_client_build() { echo "$LG_BUILD"; }
-  qmp_call() { echo '{"return":[{"label":"qga0","frontend-open":true},{"label":"vdagent","frontend-open":true}]}'; }
+  qmp_call() { echo '{"return":[{"label":"qga0","frontend-open":true},{"label":"vdagent","frontend-open":true},{"label":"scale0","frontend-open":true}]}'; }
   qga_reply() { return 0; }
   client_active() { return 0; }
   guest_version_note() { :; }
@@ -1481,7 +1545,7 @@ setup_worker() {
   preflight() { return 0; }
   vm_plan() { return 0; }
   runtime_refresh() { return 0; }
-  host_scale() { echo 100; }
+  host_monitors() { echo '[{"name":"DP-1","focused":true,"scale":1}]'; }
   default_gateway() { echo gateway; }
   local checks
   for checks in true false; do

@@ -34,7 +34,7 @@ if [[ " $* " == *" show "* ]]; then
 fi
 if [[ $2 == kill && -e $XDG_STATE_HOME/lanai/forced ]]; then echo forced-present >>"$T/systemctl.calls"; fi
 [[ ! -f $T/systemctl-fail || $2 != "$(<"$T/systemctl-fail")" ]]'
-  shim hyprctl 'echo "[{\"focused\": false, \"scale\": 1}, {\"focused\": true, \"scale\": 1.5}]"'
+  shim hyprctl 'echo "[{\"name\": \"DP-1\", \"focused\": false, \"scale\": 1}, {\"name\": \"HDMI-A-1\", \"focused\": true, \"scale\": 1.5}]"'
   echo '[{"dst":"default","gateway":"192.168.1.1","dev":"wlan0","flags":[]}]' >"$T/route.json"
   shim ip 'cat "$T/route.json"'
   export PATH=$T/shims:$PATH
@@ -166,6 +166,10 @@ map() {
   map LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running LanaiQga=open \
     LanaiHelpersMissing=shutdown-watch
   assert_equal "$(field next)" "shut Windows down and start it again"
+  map LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running LanaiQga=open \
+    LanaiHelpersMissing=scale-feed
+  run field warning
+  assert_output --partial "the Windows scale does not follow saves or monitors"
 }
 
 @test "status_map: a stop request is stopping, and after 2 minutes offers the forced stop" {
@@ -246,6 +250,8 @@ map() {
   fake_proc 503 /user.slice/user-1000.slice/session-2.scope bash
   fake_proc 504 "$unit_cg" bash
   echo '504 (bash) Z 1 504 504 0 -1' >"$T/proc/504/stat"
+  fake_proc 505 "$unit_cg" bash
+  echo 505 >"$RUN/scale-feed.pid"
   echo 501 >"$RUN/virtiofsd.pid"
   echo 502 >"$RUN/shutdown-watch.pid"
   echo 503 >"$RUN/sleep-watch.pid"
@@ -448,7 +454,7 @@ assert_both_refuse() {
 
 @test "lanai start: installs the runtime copy and unit, records the scale, starts the unit" {
   ready
-  lanai_run start
+  HYPRLAND_INSTANCE_SIGNATURE=sig_1 lanai_run start
   assert_success
   assert_equal "$(field state)" starting
   assert_equal "$(field network)" true
@@ -467,8 +473,10 @@ assert_both_refuse() {
   assert_line "Slice=session.slice"
   assert_line "TimeoutStopSec=2min"
   refute_output --partial "[Install]"
-  # The focused monitor is at 150%.
-  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":150,"setup":false,"window":false}'
+  # The focused monitor is at 150%. The scale feed reads the save number,
+  # the boot monitor and the session's Hyprland instance from boot.json.
+  assert_equal "$(jq -c . "$S/boot.json")" \
+    '{"scale":150,"scale_save":0,"setup":false,"window":false,"boot_monitor":"HDMI-A-1","hyprland_instance_signature":"sig_1"}'
   run cat "$T/systemctl.calls"
   assert_line "--user daemon-reload"
   assert_line "--user start lanai-vm.service"
@@ -567,9 +575,9 @@ assert_both_refuse() {
   assert_equal "$(jq -r .scale "$S/boot.json")" 100
 }
 
-@test "lanai start scale: every fixed step boots without querying a monitor" {
+@test "lanai start scale: every fixed step boots, and a failing monitor read leaves no boot monitor" {
   ready
-  shim hyprctl 'echo queried >>"$T/monitor-query"; exit 1'
+  shim hyprctl 'exit 1'
   local value
   for value in 100 125 150 175 200 225 250 300 350 400 450 500; do
     jq --argjson v "$value" '.windows_scale=$v' "$(settings_file)" >"$T/settings"
@@ -577,8 +585,20 @@ assert_both_refuse() {
     lanai_run start
     assert_success
     assert_equal "$(jq -r .scale "$S/boot.json")" "$value"
+    assert_equal "$(jq -r .boot_monitor "$S/boot.json")" ""
   done
-  assert [ ! -e "$T/monitor-query" ]
+}
+
+@test "lanai start scale: boot.json carries the save number and the focused monitor for a fixed step too" {
+  ready
+  jq '.windows_scale=225 | .scale_save=12' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  lanai_run start
+  assert_success
+  assert_equal "$(jq -c '{scale,scale_save,boot_monitor}' "$S/boot.json")" '{"scale":225,"scale_save":12,"boot_monitor":"HDMI-A-1"}'
+  # The second OEM string carries the same number.
+  run vm_plan 225 "$(jq -r .scale_save "$S/boot.json")" ""
+  assert_line "type=11,value=lanai-scale=225,value=lanai-scale-save=12"
 }
 
 @test "lanai start scale: explicit auto samples the monitor with ties down and fallback" {
@@ -608,6 +628,16 @@ assert_both_refuse() {
     lanai_run start
     assert_failure
     assert_equal "$(field ok)" false
+    assert_output --partial scale
+    refute_started
+    assert [ ! -e "$S/boot.json" ]
+  done
+  # A present but invalid save number refuses the boot too.
+  for value in null '"3"' -1 1.5 1000000000; do
+    jq --argjson v "$value" '.windows_scale=150 | .scale_save=$v' "$(settings_file)" >"$T/settings"
+    mv "$T/settings" "$(settings_file)"
+    lanai_run start
+    assert_failure
     assert_output --partial scale
     refute_started
     assert [ ! -e "$S/boot.json" ]

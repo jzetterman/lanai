@@ -5,6 +5,7 @@
 #                   (runs under systemd-inhibit --mode=delay)
 #   sleep-watch     set the Windows clock after the host resumes
 #   event-log       record QEMU's SHUTDOWN events for the next start
+#   scale-feed      send the latest Windows scale to the scale task
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR source=../lib/lanai.sh
@@ -13,8 +14,9 @@ case ${1:-} in
   shutdown-watch) shutdown_watch ;;
   sleep-watch) sleep_watch ;;
   event-log) event_log ;;
+  scale-feed) scale_feed ;;
   *)
-    echo "usage: lanai-vm-helper shutdown-watch|sleep-watch|event-log" >&2
+    echo "usage: lanai-vm-helper shutdown-watch|sleep-watch|event-log|scale-feed" >&2
     exit 2
     ;;
 esac
