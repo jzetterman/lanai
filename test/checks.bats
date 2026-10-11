@@ -927,28 +927,13 @@ fake_host() {
   assert_output "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
 }
 
-# --- host_scale ---
+# --- scale_percent and host_monitors (boot and the feed share scale_target) ---
 
-@test "host_scale: the focused monitor's scale as a percentage" {
-  run host_scale '[{"name": "DP-1", "focused": false, "scale": 1.00},
- {"name": "HDMI-A-1", "focused": true, "scale": 1.50}]'
-  assert_success
-  assert_output 150
-}
-
-@test "host_scale: fractional scales keep two decimals" {
+@test "scale_percent: fractional scales keep two decimals" {
   local pair
-  for pair in "1.125:112.5" "1.666667:166.67" "1:100" "2.5:250"; do
-    run host_scale "[{\"focused\": true, \"scale\": ${pair%%:*}}]"
+  for pair in "1.125:112.5" "1.666667:166.67" "1:100" "2.5:250" "1.50:150"; do
+    run scale_percent "${pair%%:*}"
     assert_output "${pair#*:}"
-  done
-}
-
-@test "host_scale: fails with no focused monitor, no monitors or no JSON" {
-  local mons
-  for mons in '[{"focused": false, "scale": 2}]' '' 'not json'; do
-    run host_scale "$mons"
-    assert_failure
   done
 }
 

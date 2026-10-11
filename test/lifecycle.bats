@@ -619,6 +619,19 @@ assert_both_refuse() {
   assert_equal "$(jq -r .scale "$S/boot.json")" 100
 }
 
+@test "lanai start scale: with no monitor focused, the first listed counts, as the scale feed's rule says" {
+  ready
+  jq '.windows_scale="auto"' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  shim hyprctl 'echo "[{\"name\":\"DP-1\",\"focused\":false,\"scale\":2},{\"name\":\"DP-2\",\"focused\":false,\"scale\":1}]"'
+  lanai_run start
+  assert_success
+  assert_equal "$(jq -r .scale "$S/boot.json")" 200
+  # The same answer the feed gives for that monitor list.
+  run scale_target auto '[{"name":"DP-1","focused":false,"scale":2},{"name":"DP-2","focused":false,"scale":1}]' "" 100
+  assert_output 200
+}
+
 @test "lanai start scale: invalid persisted types and values refuse before starting" {
   ready
   local value

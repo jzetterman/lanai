@@ -1192,10 +1192,21 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field step)" 6
   assert_equal "$(jq -c .questions <<<"$JSON")" '["share","scale"]'
   run field message
-  assert_output --partial "sign in"
+  assert_output "Windows is set up. If Windows asks for your password, sign in first. Then two last checks, in Windows: does ~/Windows show in Explorer, and does text look the right size?"
+}
+
+@test "lanai setup step 6: with the scale task's port open, the questions carry no sign-in hint" {
+  step6_running "$FIX/client-logs/match.log" 90 90
+  setup_run
+  assert_success
+  assert_equal "$(jq -c .questions <<<"$JSON")" '["share","scale"]'
+  run field message
+  refute_output --partial "sign in"
 }
 
 @test "lanai setup step 6: after the answers, a closed scale task is waited for, then named" {
+  # Its grace defaults to the boot grace.
+  assert_equal "$(bash -c 'source "$1/lib/lanai.sh"; echo "$LANAI_SETUP_SCALE_GRACE"' _ "$REPO")" 60
   step6_running "$FIX/client-logs/match.log" 90 90
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run --share-ok yes --scale-ok yes
@@ -1213,6 +1224,7 @@ exec /usr/bin/mv "$@"'
   setup_run
   assert_failure
   assert_equal "$(field step)" 5
+  assert_equal "$(field reason)" scale-task
   run field message
   assert_output --partial "the display scale task did not start"
   assert_equal "$(jq -r '.scale_task // "unset"' "$S/setup.json")" unset

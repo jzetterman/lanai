@@ -5,12 +5,13 @@
 # The optional current plan step selects visible snapshot-choice retry controls.
 # Offers and waits belong to the durable view and therefore have no result text.
 # A settings save's words come from its scale_saved, running and scale_task
-# fields (cmd_settings, which prints the same words).
+# fields; for a scale save, cmd_settings prints the same words.
 panel_words() {
   jq -r --arg c "$1" --arg step "${3:-}" '
     def log: {setup:"setup log",snapshot:"snapshot log",restore:"restore log"}[$c] // "button actions log";
-    def oldtask: " To change the scale while Windows runs, shut Windows down and click Run setup again. It also turns the Windows lock off again." +
-      " Until you run setup again, Windows undoes scale changes made in its own settings, and Match my monitor does not follow the window while Windows runs.";
+    def oldtask($running): " For scale changes while Windows runs, " + (if $running then "shut Windows down and click" else "click" end) +
+      " Run setup again. It also turns the Windows lock off again. Until then, Windows undoes scale changes made in its own settings," +
+      " and \u201cMatch my monitor\u201d does not follow the window while Windows runs.";
     def reasons: {
       busy:"Lanai is busy with another task. Try again in a moment.",
       session:"Lanai can run setup only while you are signed in to the desktop.",
@@ -31,6 +32,7 @@ panel_words() {
       mismatch:"The display driver in Windows needs an update. Shut down and set up Windows again.",
       agents:"The Windows agents did not answer. Shut down and set up Windows again.",
       answers:"The final checks did not pass. Shut down and set up Windows again.",
+      "scale-task":"The display scale task in Windows did not start. Shut down and set up Windows again. Sign in as the Windows user who ran setup. If it happens again, check C:\\Program Files\\Lanai\\lanai-scale.log in Windows.",
       client:"The Windows window could not open. Check the Windows window log and try again.",
       "restore-unsupported":"The restore was refused because Lanai cannot verify an instant copy in this storage location. Choose storage that supports verified instant copies, then try again.",
       "snapshot-unsupported":"This filesystem cannot make an instant snapshot. Make a backup before continuing without a snapshot.",
@@ -62,9 +64,9 @@ panel_words() {
     elif $c == "settings" and (.scale_saved | type) == "boolean" then
       if .scale_saved | not then "Saved."
       elif .scale_task == "new" and .running == true then
-        "Saved. Windows switches to the saved scale within 5 seconds if you\u0027re signed in, or when you next sign in."
-      elif .scale_task == "old" and .running == true then "Saved. Windows uses the saved scale the next time it starts." + oldtask
-      elif .scale_task == "old" then "Saved. Changes apply the next time Windows starts." + oldtask
+        "Saved. Windows uses the saved scale within 5 seconds if you\u0027re signed in, or when you next sign in."
+      elif .scale_task == "old" and .running == true then "Saved. Windows uses the saved scale the next time it starts." + oldtask(true)
+      elif .scale_task == "old" then "Saved. Changes apply the next time Windows starts." + oldtask(false)
       else "Saved. Changes apply the next time Windows starts." end
     elif $c == "start" and .network == false then "Windows started without a network. Connect Linux to a network, then shut down and start Windows again."
     else "" end' <<<"$2"
@@ -234,7 +236,8 @@ cmd_panel() {
            elif $st.active then "Shut Windows down before continuing setup."
            else "Continue setup to install the drivers in Windows." end),
          "6":(if $st.state == "stopping" then "Wait for Windows to shut down, then click Continue setup."
-           elif ($p.questions|length)>0 then "In Windows, check the shared drive in Explorer and the text size, then send both answers."
+           elif ($p.questions|length)>0 then "In Windows, sign in if Windows asks for your password, then check the shared drive in Explorer and the text size, and send both answers."
+           elif $setupJob and $p.scale_wait == true then "Waiting for the display scale task in Windows, which starts when you sign in."
            elif $setupJob then "Windows is starting or being checked."
            else "Click Continue setup so Lanai can check Windows." end),
          "7":"Setup is finished."}[$p.step] end])},

@@ -693,42 +693,58 @@ scale_send() {
   printf '\n%s\n' "$2" | timeout "$LANAI_SCALE_SEND_TIMEOUT" socat -u - "UNIX-CONNECT:$1" 2>/dev/null
 }
 
-# The feed's state between passes: the last good line and target, the boot
-# monitor and Hyprland instance, and which problems are already logged
-# (each is logged once, and again when it clears).
-SCALE_FEED_LINE="" SCALE_FEED_TARGET="" SCALE_FEED_BOOT_MONITOR="" SCALE_FEED_BOOT_SIG=""
-SCALE_FEED_SEND_FAILED=false SCALE_FEED_HYPR_FAILED=false SCALE_FEED_SETTINGS_BAD=false
+# The feed's state between passes: the last good line and target, the line
+# last logged, the boot monitor and Hyprland instance, the instance last
+# chosen (unset at first), the length of a hyprctl failure streak, and which
+# problems are already logged (each is logged once, and again when it
+# clears).
+SCALE_FEED_LINE="" SCALE_FEED_TARGET="" SCALE_FEED_LOGGED_LINE="" SCALE_FEED_BOOT_MONITOR=""
+SCALE_FEED_BOOT_SIG="" SCALE_FEED_HYPR_SIG="<unset>" SCALE_FEED_HYPR_FAILS=0
+SCALE_FEED_SEND_FAILED=false SCALE_FEED_SETTINGS_BAD=false
+
+# Return 0 when Hyprland instance <sig> is a plain name and answers
+# `hyprctl version` within 1 s. Hyprland leaves the folders and sockets of
+# old instances behind, so a socket file proves nothing.
+hypr_alive() {
+  [[ $1 =~ ^[A-Za-z0-9_]+$ ]] &&
+    HYPRLAND_INSTANCE_SIGNATURE=$1 timeout 1 hyprctl version </dev/null >/dev/null 2>&1
+}
 
 # hypr_signature <candidate>: print the Hyprland instance hyprctl should
-# use: <candidate> (boot.json's) when its socket exists under
-# $XDG_RUNTIME_DIR/hypr, else the inherited HYPRLAND_INSTANCE_SIGNATURE when
-# its socket exists, else the only instance there with a socket. Fails when
-# there is none, or more than one to guess from.
+# use: <candidate> (boot.json's) when it answers, else the inherited
+# HYPRLAND_INSTANCE_SIGNATURE when it answers, else the only instance under
+# $XDG_RUNTIME_DIR/hypr that answers. Fails when none answers, or more than
+# one is left to guess from.
 hypr_signature() {
   local dir=${XDG_RUNTIME_DIR:-/nonexistent}/hypr sig f
-  local -a found=()
+  local -a live=()
   for sig in "$1" "${HYPRLAND_INSTANCE_SIGNATURE:-}"; do
-    if [[ $sig =~ ^[A-Za-z0-9_]+$ && -S $dir/$sig/.socket.sock ]]; then
+    if hypr_alive "$sig"; then
       printf '%s\n' "$sig"
       return 0
     fi
   done
   for f in "$dir"/*/.socket.sock; do
-    [[ ! -S $f ]] || found+=("${f%/.socket.sock}")
+    sig=${f%/.socket.sock}
+    sig=${sig##*/}
+    [[ ! -S $f ]] || ! hypr_alive "$sig" || live+=("$sig")
   done
-  ((${#found[@]} == 1)) || return 1
-  sig=${found[0]##*/}
-  [[ $sig =~ ^[A-Za-z0-9_]+$ ]] || return 1
-  printf '%s\n' "$sig"
+  ((${#live[@]} == 1)) || return 1
+  printf '%s\n' "${live[0]}"
 }
 
-# Export the Hyprland instance hypr_signature finds for boot.json's, and log
-# which one the feed uses, or that it found none (the user manager may lack
-# the session's, and Hyprland may restart under a new one).
+# Export the Hyprland instance hypr_signature finds for boot.json's (the
+# user manager may lack the session's, and Hyprland may restart under a new
+# one). Logs the choice only when it changes. With none found, the inherited
+# one stays.
 scale_feed_hypr() {
-  local sig
+  local sig=""
   if sig=$(hypr_signature "$SCALE_FEED_BOOT_SIG"); then
     export HYPRLAND_INSTANCE_SIGNATURE=$sig
+  fi
+  [[ $sig != "$SCALE_FEED_HYPR_SIG" ]] || return 0
+  SCALE_FEED_HYPR_SIG=$sig
+  if [[ -n $sig ]]; then
     echo "lanai: the scale feed uses Hyprland instance $sig" >&2
   else
     echo "lanai: the scale feed finds no running Hyprland instance (boot.json names ${SCALE_FEED_BOOT_SIG:-none})" >&2
@@ -752,8 +768,10 @@ scale_feed_init() {
 # One pass of the scale feed: read settings.json once (vm_scale_settings);
 # find the client window's monitor and record it in $RUN/scale-monitor when
 # it changes; compute the target, where with no window the recorded monitor
-# counts, else boot.json's; then send the line, changed or not. Unreadable
-# settings keep the last good line.
+# counts, else boot.json's; then send the line, changed or not, logging it
+# when it changes. Unreadable settings keep the last good line. While
+# hyprctl fails, the Hyprland instance is looked for again every 15 passes
+# (about 30 s).
 scale_feed_step() {
   local run settings setting="" save="" pid clients monitors name remembered="" target line
   run=$(run_dir) || return 1
@@ -768,16 +786,15 @@ scale_feed_step() {
   pid=$(timeout 1 systemctl --user show -p MainPID --value "$LANAI_CLIENT_UNIT" 2>/dev/null) || pid=""
   if clients=$(timeout 1 hyprctl clients -j </dev/null 2>/dev/null) &&
     monitors=$(timeout 1 hyprctl monitors -j </dev/null 2>/dev/null); then
-    ! $SCALE_FEED_HYPR_FAILED || echo "lanai: hyprctl answers the scale feed again" >&2
-    SCALE_FEED_HYPR_FAILED=false
+    ((SCALE_FEED_HYPR_FAILS == 0)) || echo "lanai: hyprctl answers the scale feed again" >&2
+    SCALE_FEED_HYPR_FAILS=0
   else
     clients='[]' monitors='[]'
-    if ! $SCALE_FEED_HYPR_FAILED; then
-      echo "lanai: hyprctl does not answer (Hyprland instance ${HYPRLAND_INSTANCE_SIGNATURE:-none}); the Windows scale keeps its last monitor" >&2
-      # Once per failure streak: Hyprland may have restarted as a new instance.
-      scale_feed_hypr
-    fi
-    SCALE_FEED_HYPR_FAILED=true
+    ((SCALE_FEED_HYPR_FAILS > 0)) ||
+      echo "lanai: hyprctl does not answer (instance ${HYPRLAND_INSTANCE_SIGNATURE:-none}); the Windows scale keeps its last monitor" >&2
+    # Hyprland may have restarted as a new instance.
+    ((SCALE_FEED_HYPR_FAILS % 15 != 0)) || scale_feed_hypr
+    SCALE_FEED_HYPR_FAILS=$((SCALE_FEED_HYPR_FAILS + 1))
   fi
   name=$(window_monitor "$clients" "$monitors" "$pid")
   [[ ! -f $run/scale-monitor ]] || read -r remembered <"$run/scale-monitor" || true
@@ -788,6 +805,11 @@ scale_feed_step() {
   if [[ -n $setting ]] && target=$(scale_target "$setting" "$monitors" "$name" "$SCALE_FEED_TARGET") &&
     line=$(scale_line "$target" "$save"); then
     SCALE_FEED_TARGET=$target SCALE_FEED_LINE=$line
+  fi
+  if [[ -n $SCALE_FEED_LINE && $SCALE_FEED_LINE != "$SCALE_FEED_LOGGED_LINE" ]]; then
+    SCALE_FEED_LOGGED_LINE=$SCALE_FEED_LINE
+    read -r _ target save <<<"$SCALE_FEED_LINE"
+    echo "lanai: the scale feed sends $target% (save $save) for ${name:+monitor }${name:-no monitor}" >&2
   fi
   # No socket yet means QEMU is not up: nothing to send, nothing to log.
   [[ -n $SCALE_FEED_LINE && -S $run/scale.sock ]] || return 0

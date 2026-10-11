@@ -40,8 +40,9 @@ scale_task_kind() {
 # Two-argument saves keep the scale, its save number and unrelated keys.
 # Three-argument saves are scale saves: they also count the save number up
 # (spec 27), even for an unchanged step, so the scale task drops a pick.
-# A save's reply carries scale_saved, running and scale_task, and its
-# message is the panel's words for them (panel_words).
+# A save's reply carries scale_saved, running and scale_task. A scale
+# save's message is the panel's words for them (panel_words); a memory and
+# cores save says when those apply, where the panel says only "Saved.".
 cmd_settings() {
   local f doc='{}' mem cores scale save tmp reply running=false
   f=$(settings_file)

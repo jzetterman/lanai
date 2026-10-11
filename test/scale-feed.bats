@@ -18,10 +18,14 @@ setup() {
   mkdir -p "$S" "$XDG_CONFIG_HOME/lanai"
   # hyprctl answers from $T/clients.json and $T/monitors.json (fails when
   # $T/no-hyprland exists, hangs when $T/hyprland-hangs exists, and logs the
-  # instance it was called with to $T/hypr-sigs); systemctl prints the client
-  # unit's MainPID from $T/client-pid (0 when no client runs) only for that
-  # exact query, and 0 for any other.
-  shim hyprctl 'echo "${HYPRLAND_INSTANCE_SIGNATURE-}" >>"$T/hypr-sigs"
+  # instance it was called with to $T/hypr-sigs). `hyprctl version` answers
+  # as Hyprland does: only when its instance's socket has a listener.
+  # systemctl prints the client unit's MainPID from $T/client-pid (0 when no
+  # client runs) only for that exact query, and 0 for any other.
+  shim hyprctl 'if [[ $1 == version ]]; then
+  exec socat -u /dev/null "UNIX-CONNECT:$XDG_RUNTIME_DIR/hypr/${HYPRLAND_INSTANCE_SIGNATURE-}/.socket.sock" 2>/dev/null
+fi
+echo "${HYPRLAND_INSTANCE_SIGNATURE-}" >>"$T/hypr-sigs"
 [[ ! -e $T/hyprland-hangs ]] || exec sleep 10
 [[ ! -e $T/no-hyprland ]] || exit 1
 case $1 in
@@ -175,8 +179,14 @@ step() {
   step
   window_on 0
   step
-  assert_equal "$(received)" $'lanai-scale 200 3\nlanai-scale 150 3'
+  step
+  assert_equal "$(received)" $'lanai-scale 200 3\nlanai-scale 150 3\nlanai-scale 150 3'
   assert_equal "$(<"$RUN/scale-monitor")" DP-1
+  # One log line per changed line, naming the step and the monitor.
+  run grep 'scale feed sends' "$T/feed.log"
+  assert_equal "${#lines[@]}" 2
+  assert_line --index 0 --partial "sends 200% (save 3) for monitor HDMI-A-1"
+  assert_line --index 1 --partial "sends 150% (save 3) for monitor DP-1"
 }
 
 @test "feed pass: with the window closed the remembered monitor counts, else the boot monitor" {
@@ -282,10 +292,11 @@ step() {
 
 @test "feed pass: no scale socket yet is silent; a failed send is logged once, and again when it recovers" {
   settings 150 1
-  # QEMU has not created the socket yet: nothing to log.
+  # QEMU has not created the socket yet: no send problem to log.
   step
   step
-  assert [ ! -s "$T/feed.log" ]
+  run grep -c 'send to Windows' "$T/feed.log"
+  assert_output 0
   # A socket nobody accepts on: logged once.
   python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$RUN/scale.sock"
   step
@@ -298,14 +309,33 @@ step() {
   step
   run grep -c 'sends to Windows again' "$T/feed.log"
   assert_output 1
-  assert_equal "$(wc -l <"$T/feed.log")" 2
+  run grep -c 'to Windows' "$T/feed.log"
+  assert_output 2
   assert_equal "$(received)" $'lanai-scale 150 1\nlanai-scale 150 1'
 }
 
-# Make Hyprland instance <sig>'s socket under $XDG_RUNTIME_DIR/hypr.
-hypr_sock() {
+# Make a live Hyprland instance <sig>: a socket under $XDG_RUNTIME_DIR/hypr
+# with a listener, so `hyprctl version` answers.
+hypr_live() {
   mkdir -p "$XDG_RUNTIME_DIR/hypr/$1"
-  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$XDG_RUNTIME_DIR/hypr/$1/.socket.sock"
+  socat "UNIX-LISTEN:$XDG_RUNTIME_DIR/hypr/$1/.socket.sock,fork" EXEC:/bin/true >/dev/null 2>&1 3>&- &
+  BG_PIDS+=("$!")
+  echo "$!" >"$T/hypr-pid-$1"
+  wait_for_file "$XDG_RUNTIME_DIR/hypr/$1/.socket.sock"
+}
+
+# Make a stale instance <sig>, as Hyprland leaves them: its folder and a
+# socket file with no listener.
+hypr_stale() {
+  local sock=$XDG_RUNTIME_DIR/hypr/$1/.socket.sock
+  if [[ -f $T/hypr-pid-$1 ]]; then
+    kill "$(<"$T/hypr-pid-$1")" 2>/dev/null || true
+    rm -f "$T/hypr-pid-$1"
+    sleep 0.1
+  fi
+  mkdir -p "${sock%/*}"
+  rm -f "$sock"
+  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$sock"
 }
 
 @test "feed init: seeds the line from boot.json" {
@@ -318,19 +348,21 @@ hypr_sock() {
   assert_equal "$(received)" "lanai-scale 175 6"
 }
 
-@test "feed init: boot.json's Hyprland instance counts only when its socket exists" {
-  hypr_sock live_1
-  hypr_sock inherited_2
-  # boot.json's instance with a socket wins over the inherited one.
+@test "feed init: boot.json's Hyprland instance counts only when it answers" {
+  hypr_live live_1
+  hypr_live inherited_2
+  # boot.json's live instance wins over the inherited one.
   echo '{"scale":100,"hyprland_instance_signature":"live_1"}' >"$S/boot.json"
   HYPRLAND_INSTANCE_SIGNATURE=inherited_2
   scale_feed_init 2>>"$T/feed.log"
   assert_equal "$HYPRLAND_INSTANCE_SIGNATURE" live_1
   run cat "$T/feed.log"
   assert_output --partial "live_1"
-  # A stale or invalid one keeps the inherited instance when that has a socket.
+  # A stale one (its socket file left behind), a missing or an invalid one
+  # gives way to the live inherited instance.
+  hypr_stale gone_3
   local sig
-  for sig in gone_3 "" "../x" "a b"; do
+  for sig in gone_3 missing_9 "" "../x" "a b"; do
     HYPRLAND_INSTANCE_SIGNATURE=inherited_2
     jq -nc --arg s "$sig" '{scale:100,hyprland_instance_signature:$s}' >"$S/boot.json"
     scale_feed_init 2>/dev/null
@@ -338,42 +370,54 @@ hypr_sock() {
   done
 }
 
-@test "feed init: with no named socket, the only instance under the runtime folder is used" {
-  hypr_sock only_4
+@test "feed init: among many stale instances, the only live one is used" {
+  local i
+  for i in 1 2 3 4 5 6; do hypr_stale "stale_$i"; done
   mkdir -p "$XDG_RUNTIME_DIR/hypr/empty_5"
-  echo '{"scale":100,"hyprland_instance_signature":"gone_3"}' >"$S/boot.json"
-  unset HYPRLAND_INSTANCE_SIGNATURE
+  hypr_live only_4
+  echo '{"scale":100,"hyprland_instance_signature":"stale_1"}' >"$S/boot.json"
+  HYPRLAND_INSTANCE_SIGNATURE=stale_2
   scale_feed_init 2>>"$T/feed.log"
   assert_equal "$HYPRLAND_INSTANCE_SIGNATURE" only_4
   # Two live instances: no guess, logged.
-  hypr_sock other_6
+  hypr_live other_6
   unset HYPRLAND_INSTANCE_SIGNATURE
   : >"$T/feed.log"
   scale_feed_init 2>>"$T/feed.log"
   assert_equal "${HYPRLAND_INSTANCE_SIGNATURE-unset}" unset
   run cat "$T/feed.log"
-  assert_output --partial "gone_3"
+  assert_output --partial "stale_1"
 }
 
-@test "feed pass: after hyprctl fails, the instance is found again once per failure streak" {
+@test "feed pass: while hyprctl fails, the instance is found again every 15 passes, logged once per change" {
   serve_reader
   settings '"auto"' 1
-  hypr_sock old_7
+  hypr_live old_7
   echo '{"scale":100,"hyprland_instance_signature":"old_7"}' >"$S/boot.json"
   scale_feed_init 2>>"$T/feed.log"
   step
-  # Hyprland restarts under a new instance; the old one is gone.
-  rm -r "$XDG_RUNTIME_DIR/hypr/old_7"
-  hypr_sock new_8
+  # Hyprland dies; its folder and socket file stay. hyprctl fails from now.
+  hypr_stale old_7
   : >"$T/no-hyprland"
-  step
+  local i
+  for ((i = 0; i < 20; i++)); do step; done
+  run grep -c 'Hyprland instance' "$T/feed.log"
+  # "uses old_7" at init, then "finds no running instance" once.
+  assert_output 2
+  # It comes back under a new instance; the next search (pass 31) finds it.
+  hypr_live new_8
+  for ((i = 0; i < 11; i++)); do step; done
   assert_equal "$HYPRLAND_INSTANCE_SIGNATURE" new_8
+  run grep -c 'uses Hyprland instance new_8' "$T/feed.log"
+  assert_output 1
   rm "$T/no-hyprland"
   : >"$T/hypr-sigs"
   step
   assert_equal "$(sort -u "$T/hypr-sigs")" new_8
   run grep -c 'hyprctl does not answer' "$T/feed.log"
   assert_output 1
+  run grep -c 'Hyprland instance' "$T/feed.log"
+  assert_output 3
 }
 
 # --- sending ---
@@ -457,24 +501,29 @@ c = s.accept(); time.sleep(600)' "$RUN/scale.sock" 3>&- &
     fail "mean gap $mean s, longest $max s"
 }
 
-@test "scale feed: a server that never reads keeps the feed's memory flat over 1,000 sends" {
+@test "scale feed: a server that never reads keeps the feed's memory flat over 500 sends" {
   serve_stalled
+  # A fixed step and no Hyprland keep each pass cheap: one failing hyprctl
+  # call, no monitor reads.
   settings 150 4
+  : >"$T/no-hyprland"
   # socat counts each send in $T/sends.
   shim socat 'echo >>"$T/sends"; exec /usr/bin/socat "$@"'
   LANAI_SCALE_INTERVAL=0.01 LANAI_SCALE_SEND_TIMEOUT=0.01 \
     "$REPO/bin/lanai-vm-helper" scale-feed 2>>"$T/feed.log" 3>&- &
-  local pid=$! i first="" now sends start=$SECONDS
+  local pid=$! first="" now sends=0 start=$SECONDS
   BG_PIDS+=("$pid")
-  for ((i = 0; i < 1800; i++)); do
+  # Bounded at 90 s, well inside the 120 s per-test limit, to fail with its
+  # own message.
+  while ((SECONDS - start < 90)); do
     sends=$(wc -l <"$T/sends" 2>/dev/null || echo 0)
     if [[ -z $first ]] && ((sends >= 50)); then
       first=$(awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status")
     fi
-    ((sends >= 1050)) && break
+    ((sends >= 550)) && break
     sleep 0.1
   done
-  ((sends >= 1050)) || fail "only $sends sends in $((SECONDS - start)) s"
+  ((sends >= 550)) || fail "only $sends sends in $((SECONDS - start)) s"
   now=$(awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status")
   ((now - first <= 2048)) || fail "RSS grew from $first kB to $now kB"
   run cat "$T/feed.log"

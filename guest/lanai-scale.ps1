@@ -85,6 +85,22 @@ function ScaleDecision([int]$Want, [int]$MinRel, [int]$CurrentRel, [int]$MaxRel)
     }
 }
 
+# Read the boot baseline from the SMBIOS OEM strings <Oem>: Scale from
+# "lanai-scale=<percent>" and Save from "lanai-scale-save=<n>" ($null when
+# missing or malformed: a host older than the save number sends none, and the
+# first line sets it). Returns $null without a lanai-scale string (not
+# Lanai's VM); throws on a malformed one.
+function Get-OemBaseline([string[]]$Oem) {
+    $entry = $Oem | Where-Object { $_ -like 'lanai-scale=*' } | Select-Object -First 1
+    if (-not $entry) { return $null }
+    if ($entry -cnotmatch '^lanai-scale=([0-9]{1,9})$') { throw "Bad OEM string: $entry" }
+    $scale = [int]$Matches[1]
+    $save = $null
+    $saveEntry = $Oem | Where-Object { $_ -like 'lanai-scale-save=*' } | Select-Object -First 1
+    if ($saveEntry -cmatch '^lanai-scale-save=([0-9]{1,9})$') { $save = [int64]$Matches[1] }
+    return [pscustomobject]@{ Scale = $scale; Save = $save }
+}
+
 # Parse one channel line, "lanai-scale <step> <save>" (spec 27): ASCII
 # digits only, a listed step, a save number below 10^9. Return the step's
 # index and the save number, or $null for anything else.
@@ -129,9 +145,10 @@ function Get-DrainedLine([object[]]$Lines, [double]$Now) {
 # Invoke-ScaleTick) or later while lines keep arriving (LastArrival).
 #   Confirmed  the last step observed
 #   Pending    the step asked for and not yet observed
-#   Requested  every step asked for since a request was confirmed, a
-#              decision needed no change, a pick was seen or the display was
-#              missing
+#   Requested  every step asked for since the last time a request was
+#              confirmed, a decision needed no change, another change (a
+#              pick or not) was seen, the display path changed or the
+#              display was missing
 function New-ScaleState([int]$Want, $LastSave, [double]$Now) {
     return @{
         Want = $Want; LastSave = $LastSave; Pick = $null
@@ -222,7 +239,7 @@ function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
         $d = ScaleDecision $target $Obs.MinRel $Obs.CurRel $Obs.MaxRel
         if (-not $d.change) {
             # Nothing to ask for: an old unapplied request must not make a
-            # later matching pick look like it landing.
+            # later matching pick look like it landed.
             $s.Pending = $null
             $s.Requested = @()
         }
@@ -289,18 +306,20 @@ function Get-DisplayObservation {
 #   State        the scale state (New-ScaleState)
 #   Queue        the reader's queue of {Text; At} lines
 #   Shared       values the reader sets: OpenedAt (when the port first
-#                opened) and PortError (its last open or read error)
+#                opened) and PortError (its last open or read error, empty
+#                once the port opens again)
 #   Lines        queued lines waiting for their quiet gap
 #   NextObserve  the next 2 s display poll
-#   LastError    the last logged display or SetScale error
-#   PortError    the last logged port error
+#   LastError    the last logged display or SetScale error, cleared after
+#                a pass in which nothing failed
+#   LoggedPortError  the last logged port error
 #   PortOpened   whether the port's opening was seen and logged
 #   MalformedLogged  whether a malformed line was logged
 function New-ScaleContext($State, $Queue, $Shared) {
     return @{
         State = $State; Queue = $Queue; Shared = $Shared
         Lines = New-Object 'System.Collections.Generic.List[object]'
-        NextObserve = 0; LastError = ''; PortError = ''; PortOpened = $false; MalformedLogged = $false
+        NextObserve = 0; LastError = ''; LoggedPortError = ''; PortOpened = $false; MalformedLogged = $false
     }
 }
 
@@ -320,15 +339,19 @@ function Write-ErrorOnce($Ctx, [string]$Message) {
 # back (Confirm-ScaleSet).
 function Invoke-ScaleTick($Ctx, [double]$Now) {
     $s = $Ctx.State
+    # Checked before the first open, so the first open is not "again".
+    $portError = [string]$Ctx.Shared.PortError
+    if ($portError -ne $Ctx.LoggedPortError) {
+        try {
+            if ($portError -ne '') { Write-Log "Error: $portError" }
+            elseif ($Ctx.PortOpened) { Write-Log 'The scale port is open again.' }
+        } catch { }
+        $Ctx.LoggedPortError = $portError
+    }
     if ($null -ne $Ctx.Shared.OpenedAt -and -not $Ctx.PortOpened) {
         $Ctx.PortOpened = $true
         $s.ReadyAt = [math]::Min($s.ReadyAt, $Ctx.Shared.OpenedAt + 3000)
         try { Write-Log 'The scale port is open.' } catch { }
-    }
-    $portError = [string]$Ctx.Shared.PortError
-    if ($portError -ne $Ctx.PortError) {
-        $Ctx.PortError = $portError
-        if ($portError -ne '') { try { Write-Log "Error: $portError" } catch { } }
     }
     $item = $null
     while ($Ctx.Queue.TryDequeue([ref]$item)) {
@@ -351,13 +374,14 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
     if ($null -eq $line -and $Now -lt $Ctx.NextObserve -and ($s.Ready -or $Now -lt (Get-ReadyAt $s))) { return }
     $Ctx.NextObserve = $Now + 2000
     $obs = $null
+    $failed = $false
     try {
         $obs = Get-DisplayObservation
         $r = Step-ScaleState $s $obs $line $Now
-        $Ctx.LastError = ''
     }
     catch {
         Write-ErrorOnce $Ctx $_.Exception.Message
+        $failed = $true
         $obs = $null
         $r = Step-ScaleState $s $null $line $Now
     }
@@ -380,8 +404,16 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
             [LanaiDisplay]::SetScale($obs.Path, $r.Relative)
             $Ctx.State = Confirm-ScaleSet $Ctx.State $r.Step ([LanaiDisplay]::GetScale($obs.Path))
         }
-        catch { Write-ErrorOnce $Ctx $_.Exception.Message }
+        catch {
+            Write-ErrorOnce $Ctx $_.Exception.Message
+            $failed = $true
+            # Ask again at the next poll; the log stays quiet (Write-ErrorOnce).
+            $Ctx.State.Pending = $null
+            $Ctx.State.NextRetry = 0
+        }
     }
+    # An error is logged again only after a pass in which nothing failed.
+    if (-not $failed) { $Ctx.LastError = '' }
 }
 
 # Frame the port's bytes into lines: <Partial> is the unfinished line
@@ -631,24 +663,18 @@ public static class LanaiDisplay {
 try {
     $save = $null
     if ($Scale -eq 0) {
-        $oem = @((Get-CimInstance -ClassName Win32_ComputerSystem).OEMStringArray)
-        $entry = $oem | Where-Object { $_ -like 'lanai-scale=*' } | Select-Object -First 1
-        if (-not $entry) {
+        $baseline = Get-OemBaseline @((Get-CimInstance -ClassName Win32_ComputerSystem).OEMStringArray)
+        if ($null -eq $baseline) {
             # Not Lanai's VM (spec 4): change nothing and keep nothing running.
             Write-Log 'No lanai-scale OEM string; the scale stays as it is.'
             exit 0
         }
-        if ($entry -cnotmatch '^lanai-scale=([0-9]+)$') { throw "Bad OEM string: $entry" }
-        $Scale = [int]$Matches[1]
-        # A host older than the save number sends none: the first line sets it.
-        $saveEntry = $oem | Where-Object { $_ -like 'lanai-scale-save=*' } | Select-Object -First 1
-        if ($saveEntry -cmatch '^lanai-scale-save=([0-9]{1,9})$') { $save = [int64]$Matches[1] }
+        $Scale = $baseline.Scale
+        $save = $baseline.Save
     }
     $want = [array]::IndexOf($Steps, $Scale)
     if ($want -lt 0) { throw "Scale $Scale is not a Windows scale step ($($Steps -join ', '))" }
 
-    # A task with an Interactive logon token ends with the user's session.
-    # IgnoreNew prevents duplicates and its zero execution limit permits >72 h.
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
     $shared = [hashtable]::Synchronized(@{ OpenedAt = $null; PortError = '' })

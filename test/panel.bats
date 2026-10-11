@@ -51,10 +51,9 @@ setup() {
 }
 
 @test "panel words: settings saves for a live, stopped, memory-only and old-task save" {
-  local live='Saved. Windows switches to the saved scale within 5 seconds if you'"'"'re signed in, or when you next sign in.'
+  local live='Saved. Windows uses the saved scale within 5 seconds if you'"'"'re signed in, or when you next sign in.'
   local stopped='Saved. Changes apply the next time Windows starts.'
-  local again='To change the scale while Windows runs, shut Windows down and click Run setup again. It also turns the Windows lock off again.'
-  local lost_words='Until you run setup again, Windows undoes scale changes made in its own settings, and Match my monitor does not follow the window while Windows runs.'
+  local tail='It also turns the Windows lock off again. Until then, Windows undoes scale changes made in its own settings, and “Match my monitor” does not follow the window while Windows runs.'
   run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"new"}'
   assert_output "$live"
   run panel_words settings '{"ok":true,"scale_saved":true,"running":false,"scale_task":"new"}'
@@ -64,14 +63,38 @@ setup() {
   assert_output "Saved."
   run panel_words settings '{"ok":true,"scale_saved":false,"running":false,"scale_task":"old"}'
   assert_output "Saved."
-  # The old task: the next start, Run setup again with the lock, and the lost following.
+  # The old task: the next start, Run setup again with the lock, and the
+  # lost following; only a running Windows needs shutting down first.
   run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"old"}'
-  assert_output "Saved. Windows uses the saved scale the next time it starts. $again $lost_words"
+  assert_output "Saved. Windows uses the saved scale the next time it starts. For scale changes while Windows runs, shut Windows down and click Run setup again. $tail"
   run panel_words settings '{"ok":true,"scale_saved":true,"running":false,"scale_task":"old"}'
-  assert_output "$stopped $again $lost_words"
+  assert_output "$stopped For scale changes while Windows runs, click Run setup again. $tail"
   # A first setup expects no mark yet: every scale save uses the stopped words.
   run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"none"}'
   assert_output "$stopped"
+}
+
+@test "panel words: a display scale task that did not start says what to do" {
+  run panel_words setup '{"ok":false,"step":"5","reason":"scale-task","message":"UNTRUSTED"}'
+  assert_output 'The display scale task in Windows did not start. Shut down and set up Windows again. Sign in as the Windows user who ran setup. If it happens again, check C:\Program Files\Lanai\lanai-scale.log in Windows.'
+}
+
+@test "panel: step 6 asks to sign in first, and the wait after both answers names the scale task" {
+  local fd
+  ST=active
+  state '{"snapshot":"declined","step5":true}'
+  echo '{"setup":false}' >"$S/boot.json"
+  : >"$RUN/step6-asked"
+  run cmd_panel
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'In Windows, sign in if Windows asks for your password, then check the shared drive in Explorer and the text size, and send both answers.'
+  # Both answers are in and the setup job waits for the scale task.
+  rm "$RUN/step6-asked"
+  echo "$EPOCHSECONDS" >"$RUN/step6-answered"
+  panel_result_write setup '{"command":"setup","started":1,"reply":{"ok":true,"step":"6"}}'
+  exec {fd}>"$S/panel-job.lock"; flock "$fd"
+  run cmd_panel
+  exec {fd}>&-
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Waiting for the display scale task in Windows, which starts when you sign in.'
 }
 
 @test "panel settings: running save words clear once the unit is no longer active, even with its invocation" {
@@ -444,7 +467,7 @@ assert_plan_agreement() {
 
 @test "panel words: every reason and command branch uses structured keys, never CLI prose" {
   local reason command text
-  for reason in busy session settings layout missing restore share container manager active record no-media nostart incomplete guest-boot idd-missing mismatch agents answers client snapshot-unsupported invalid-reply; do
+  for reason in busy session settings layout missing restore share container manager active record no-media nostart incomplete guest-boot idd-missing mismatch agents answers scale-task client snapshot-unsupported invalid-reply; do
     text=$(panel_words setup "$(jq -nc --arg r "$reason" '{ok:false,step:"1",reason:$r,message:"UNTRUSTED",next:"UNTRUSTED"}')")
     assert [ -n "$text" ]
     refute [ "$text" = 'Setup could not finish. Check the setup log, then continue setup.' ]

@@ -269,7 +269,7 @@ Tests first, against fixture directories, for each function:
 | `container_preparing` | a process in a `docker` cgroup whose argv shows dockur's entry script, with no QEMU yet (best effort; the image lock is the backstop) | 3 |
 | `disk_locked <img>` | from the spike | 3 |
 | `settings_seed` | only `RAM_SIZE` and `CPU_CORES` from a readable compose; else half the host's memory (at most 16 GiB) and half its threads (at most 8); never read `PASSWORD` or the credentials file. Test with a sentinel password in a fixture compose: it never appears in output, files, logs, or (through PATH shims) any child process's arguments or environment | 6 |
-| `host_scale` | focused monitor's scale from `hyprctl monitors -j`, computed at `lanai start` | 12 |
+| `scale_target` (was `host_scale`) | the scale of the window's monitor, else the focused one, else the first listed, from `hyprctl monitors -j`; at `lanai start` and in the scale feed (one rule for both since the live-scale review) | 12 |
 | `scale_step <scale>` | nearest of 100-250 by 25 and 300-500 by 50, ties down, clamped; tested with the spec's matrix | 12 |
 | `dockur_version` | the image version when readable without a prompt, for display only | 5a |
 
@@ -2186,7 +2186,12 @@ panel, so following works with the panel closed and through shell restarts. The
 user manager's environment may lack the session's (`lib/client.sh`), so `boot_vm`
 writes `hyprland_instance_signature` into `boot.json` and the feed checks it
 (`^[A-Za-z0-9_]+$`) and exports it before calling `hyprctl` (an empty or invalid
-one is logged); a failing `hyprctl` is logged once, not silently. Every 2 s, measured start to start (`LANAI_SCALE_INTERVAL`), with a 1 s timeout
+one is logged); a failing `hyprctl` is logged once, not silently. As built
+(implementation review): `hypr_signature` uses the boot record's instance only if
+it answers, else the inherited one if it answers, else the only live instance
+(Hyprland leaves dead instance folders and sockets behind); while `hyprctl` keeps
+failing, the feed looks again about every 30 s and logs only a changed instance.
+Every 2 s, measured start to start (`LANAI_SCALE_INTERVAL`), with a 1 s timeout
 on each `hyprctl` call, it:
 
 1. Reads `settings.json` once and takes the setting and the save number from that
@@ -2243,7 +2248,9 @@ fixture `hyprctl` JSON; the loop is tested against a fake server that never read
   `ConcurrentQueue`. It keeps the handle open across the feed's connects and
   disconnects: a 0-byte read or a read error reads again after 250 ms, and the
   handle is reopened only when it is invalid or the open itself fails (retry every
-  2 s). The main loop never
+  2 s). As built: only error 1450 (no host connected, phase 0 proof 3) reads again
+  after 250 ms; any other read error closes the handle so the open runs again, and
+  open and read errors are logged once each. The main loop never
   touches the port, so a silent port never blocks it. The main loop acts on the
   queue only once no line has arrived for 300 ms (a backlog arrives at full speed,
   so a quiet gap means it is drained), then dequeues everything. The feed sends
@@ -2331,9 +2338,14 @@ stays in `C:\Program Files\Lanai\` (administrator-only writes).
 (`setup_step6`, `lib/setup.sh`) already reads `query-chardev` and checks
 `chardev_open qga0` and `vdagent`; it also checks `chardev_open scale0`, since only
 the new elevated task opens that port. That is QEMU's port state, not data from
-the guest (req 27). A closed port after the grace period adds "the display scale
-task" to `missing`; the message that lists `missing` joins every item (today it
-prints only the first two, `lib/setup.sh`). When setup finishes (`setup_patch '{"done": true, ...}'`) with
+the guest (req 27). As built (implementation review): the task starts only at
+sign-in, so the port is judged after the user answers the two step 6 questions
+(they must be signed in to answer), not at the boot grace; until then the
+questions ask a user with a password to sign in first. With both answers yes and
+the port still closed after `LANAI_SETUP_SCALE_GRACE` (60 s, timed from the
+answers kept in `$RUN/step6-answered`), setup goes back to step 5 with its own
+reason, naming the task, the setup user and the task's log. `missing` keeps its
+two items. When setup finishes (`setup_patch '{"done": true, ...}'`) with
 the port open, it writes `"scale_task": 2`. A user who boots "Run setup again" and
 shuts down without running setup.cmd therefore never gets the marker. A record
 without it means the old task (req 12's last rule).
@@ -2354,8 +2366,10 @@ Windows starts." The reply gains structured fields (`scale_saved`, `running`,
 `scale_task`), `panel_words` maps them to the words below, and the Settings view's
 fixed line becomes "Memory and cores apply the next time Windows starts." The
 settings words clear when the VM unit's invocation differs from the record's
-(`ui_record` stores it), so "within 5 seconds" never outlives the run it was
-about:
+(`ui_record` stores it), or once a running save's unit is no longer active (a
+failed unit keeps its invocation), so "within 5 seconds" never outlives the run it
+was about. The exact words below are as planned; the shipped ones were reworded in
+review (`lib/panel.sh`):
 
 - Scale save, VM running, new task: "Saved. Windows uses the new scale within 5
   seconds if you're signed in, or when you next sign in."
@@ -2479,7 +2493,9 @@ phase B's last step; (1)-(5) run first.
   `test/setup.bats`: `scale_task` written only when the new task opened its port:
   step 6 with `scale0` closed after the grace period
   reports the missing task and writes no marker; with it open, the marker is
-  written (fake QMP); three missing parts are all named.
+  written (fake QMP). As built: a slow sign-in past the boot grace still asks, a
+  closed task after the answers is waited for and then named, and the task opening
+  after the answers finishes setup with its mark.
 - Files: `guest/lanai-scale.ps1`, `guest/setup.cmd`, `lib/setup.sh`, `README.md`
   (live scale, picks, custom scaling, apps that redraw only after restart, "Run
   setup again" for existing installs).
@@ -2658,3 +2674,4 @@ words, which need taste >= 7). Claude verifies, signs, and runs the diff gate.
 | impl (live scale) | a (gpt-6.1-sol) | 2 (full) | 3 should-fix (P2), 0 refuted, 0 downgraded to nit; all integrated test-first: a stale batch before the first line holds the OEM fallback for one feed period; a failed observation resets the baseline so a returning display never makes a pick (a pick survives); every step the task asked for since the last confirmation is never a pick |
 | impl (live scale) | a (gpt-6.1-sol) | 3 (full, cap) | 1 should-fix (P2), 0 refuted, 0 downgraded to nit; integrated test-first: panel setup jobs forward HYPRLAND_INSTANCE_SIGNATURE to the detached worker, so boot_vm records it for the scale feed |
 | impl (live scale) | b panel (opus-5.5) | 1 (full, 6 lenses) | 0 blockers, 13 should-fix, 30 nits, 0 refuted, 0 downgraded to nit; all integrated test-first: setup step 6 judges the scale task after the user answers (a slow password sign-in no longer loops back to step 5); the guest reader retries only error 1450, reopens on other errors and logs open and read errors once; the feed picks a live Hyprland instance (boot record, inherited, or the only one) and finds it again after hyprctl fails; the guest's first-line hold folded into one LastArrival rule and the baseline reset into Step-ScaleState; the dropped-click notice is pinned and stays 2 to 5 s; tests pin the client-unit query, the hyprctl timeout and the real display observation; panel words and README corrected. Security lens: no defects |
+| impl (live scale) | b panel (opus-5.5) | 2 (full, 6 lenses) | 0 blockers, 6 should-fix, 25 nits (after merging duplicates), 0 refuted, 0 downgraded to nit; all integrated but one nit: a Hyprland instance counts only if it answers (dead instance folders and sockets stay behind; John's machine had about 48), with a search every 30 s while hyprctl fails; a SetScale error is logged once and retried at the next poll; boot and feed share one monitor rule (scale_target); the pinned notice swallows clicks and the panel can scroll under it; the RSS test is bounded under the CI limit; the task principal comes from the checked SID; step 6 has its own reason and words for a scale task that did not start; plan design text gets as-built notes. Not taken (nit): a user pick equal to an older of two unapplied requests is undone once; a second pick holds |

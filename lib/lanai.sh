@@ -670,15 +670,6 @@ scale_percent() {
   awk -v s="$1" 'BEGIN { p = sprintf("%.2f", s * 100); sub(/\.?0+$/, "", p); print p }'
 }
 
-# Print the focused monitor's scale as a percentage, from <monitors-json>
-# (`hyprctl monitors -j`). `lanai start` reads it (spec 12). Fails without
-# a focused monitor or readable JSON.
-host_scale() {
-  local scale
-  scale=$(jq -er 'first(.[] | select(.focused == true)) | .scale | numbers' <<<"$1" 2>/dev/null) || return 1
-  scale_percent "$scale"
-}
-
 # Print the focused monitor's name from <monitors-json>, or nothing.
 focused_monitor() {
   jq -r 'first(.[]? | objects | select(.focused == true)) | .name | strings' <<<"$1" 2>/dev/null || true
@@ -1147,9 +1138,9 @@ runtime_refresh() {
 # boot_vm <setup true|false> [<window auto|true|false>] [<step6 true|false>]:
 # the one path that starts the VM unit (lanai start, lanai setup-guest and
 # setup's step 6 boot). Under lanai_flock it runs preflight, rechecks setup
-# state without changing it, resolves fixed scale or the focused monitor's
-# nearest Windows step (100% without Hyprland), checks vm_plan, refreshes the
-# runtime copy, writes the scale, its save number, the focused monitor, the
+# state without changing it, resolves a fixed step, or for "auto" the step
+# scale_target gives (the focused monitor, else the first listed, else
+# 100%), checks vm_plan, refreshes the runtime copy, writes the scale, its save number, the focused monitor, the
 # session's Hyprland instance (for the scale feed) and the boot mode to
 # boot.json, and starts the unit. Setup boots require this disk's snapshot
 # decision; step 6 requires this disk's step5 to be true; ordinary starts
@@ -1160,7 +1151,7 @@ runtime_refresh() {
 # unit starts. The reply includes window, last_run for the panel's forced
 # stop notice, and network false when the host has no default route.
 boot_vm() {
-  local setup=$1 window=${2:-auto} step6=${3:-false} reason settings scale step save monitors monitor s dir media="" last="" next="wait for Windows to start"
+  local setup=$1 window=${2:-auto} step6=${3:-false} reason settings step save monitors monitor s dir media="" last="" next="wait for Windows to start"
   local message="Windows is starting." network=true
   if ! lanai_flock; then
     emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
@@ -1216,8 +1207,9 @@ boot_vm() {
   monitors=$(host_monitors) || monitors=""
   monitor=$(focused_monitor "$monitors")
   if [[ $step == auto ]]; then
-    scale=$(host_scale "$monitors") || scale=100
-    step=$(scale_step "$scale") || step=100
+    # The scale feed's rule (scale_target): the focused monitor, else the
+    # first listed, else 100%.
+    step=$(scale_target auto "$monitors" "$monitor" 100)
   fi
   if ! reason=$(vm_plan "$step" "$save" "$media" "$window"); then
     emit false "" "$reason" ""

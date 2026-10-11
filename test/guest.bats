@@ -354,8 +354,10 @@ guest_ps() {
       static [int] $Sets = 0
       static [int] $Polls = 0
       static [bool] $Apply = $true
+      static [bool] $Fail = $false
       static [void] SetScale([object] $p, [int] $rel) {
         [LanaiDisplay]::Sets++
+        if ([LanaiDisplay]::Fail) { throw "SET_DPI_SCALE failed: 87" }
         if ([LanaiDisplay]::Apply) { [LanaiDisplay]::D.CurRel = $rel }
       }
       static [object] GetScale([object] $p) {
@@ -851,10 +853,50 @@ guest_ps() {
     for (; $t -le 8000; $t += 250) { Invoke-ScaleTick $ctx $t }
     $shared.PortError = "Reading the scale port failed: The device is not ready."
     for (; $t -le 12000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    # The reader reopens the port.
+    $shared.PortError = ""
+    for (; $t -le 14000; $t += 250) { Invoke-ScaleTick $ctx $t }
     $all = $script:Logs -join "`n"
     Assert (@($script:Logs | Where-Object { $_ -match "Access is denied" }).Count -eq 1) "open error: $all"
-    Assert (@($script:Logs | Where-Object { $_ -match "port is open" }).Count -eq 1) "opened: $all"
-    Assert (@($script:Logs | Where-Object { $_ -match "not ready" }).Count -eq 1) "read error: $all"'
+    Assert (@($script:Logs | Where-Object { $_ -match "port is open\.$" }).Count -eq 1) "opened: $all"
+    Assert (@($script:Logs | Where-Object { $_ -match "not ready" }).Count -eq 1) "read error: $all"
+    Assert (@($script:Logs | Where-Object { $_ -match "port is open again" }).Count -eq 1) "open again: $all"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest loop: a SetScale that keeps failing is logged once and retried at each poll" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    $ctx = New-ScaleContext (New-ScaleState 3 5 0) $q @{ OpenedAt = 0 }
+    [LanaiDisplay]::Fail = $true
+    # Ten minutes of 250 ms ticks, with the display answering each poll.
+    for ($t = 0; $t -le 600000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    $errors = @($script:Logs | Where-Object { $_ -match "SET_DPI_SCALE" })
+    Assert ($errors.Count -eq 1) "error lines: $($errors.Count)"
+    # The set from 3 s on, then again at every 2 s poll, not once a minute.
+    Assert ([LanaiDisplay]::Sets -ge 290) "sets: $([LanaiDisplay]::Sets)"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest OEM baseline: the step and save number from the OEM strings" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $b = Get-OemBaseline @("Dell", "lanai-scale=175", "lanai-scale-save=12")
+    Assert ($b.Scale -eq 175 -and $b.Save -eq 12) "both"
+    $b = Get-OemBaseline @("lanai-scale=150")
+    Assert ($b.Scale -eq 150 -and $null -eq $b.Save) "no save"
+    foreach ($bad in "lanai-scale-save=1x", "lanai-scale-save=1234567890", "lanai-scale-save=") {
+      $b = Get-OemBaseline @("lanai-scale=150", $bad)
+      Assert ($b.Scale -eq 150 -and $null -eq $b.Save) "bad save [$bad]"
+    }
+    Assert ($null -eq (Get-OemBaseline @("lanai-scale-save=3", "other"))) "no lanai-scale"
+    Assert ($null -eq (Get-OemBaseline @())) "no strings"
+    $threw = $false
+    try { Get-OemBaseline @("lanai-scale=1x") | Out-Null } catch { $threw = $true }
+    Assert $threw "bad scale"'
   assert_success
   assert_output ok
 }
@@ -943,6 +985,15 @@ guest_ps() {
   assert_output --partial "New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)"
   assert_output --partial '-Settings $s'
   assert_output --partial "New-ScheduledTaskPrincipal -UserId \$u -LogonType Interactive -RunLevel Highest"
+  # The task belongs to the SID the elevated stage verified, by an
+  # environment variable (as LANAI_IDD is), not to a name from the
+  # environment.
+  assert_output --partial "\$u = \$env:LANAI_TASK_SID;"
+  refute_output --partial 'USERDOMAIN'
+  local sid task
+  sid=$(line_is 'set "LANAI_TASK_SID=%HAVE_SID%"')
+  task=$(line_of 'Register-ScheduledTask')
+  ((sid + 1 == task)) || fail "SID line $sid, task line $task"
   assert_output --partial "Register-ScheduledTask -TaskName 'Lanai display scale' -Action \$a -Trigger \$t -Principal \$p -Settings \$s -Force"
   # powershell.exe by absolute path, from the system folder Windows reports
   # (not an environment variable the user can set).

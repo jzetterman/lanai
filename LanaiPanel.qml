@@ -93,6 +93,9 @@ Panel {
         flickableDirection: Flickable.VerticalFlick
         QQC.ScrollBar.vertical: QQC.ScrollBar { policy: QQC.ScrollBar.AsNeeded }
         contentHeight: column.implicitHeight
+        // Room below the content while the click notice covers the bottom,
+        // so covered lines can scroll into view; the controls never move.
+        bottomMargin: clickNoticeBox.visible ? clickNoticeBox.height : 0
         clip: true
         Column {
           id: column
@@ -307,8 +310,10 @@ Panel {
       }
       // A dropped click's notice, pinned over the bottom of the popup and
       // outside the scrolling content: always in view, and it never moves
-      // the controls under it.
+      // the controls under it. A click on it dismisses it and reaches no
+      // control below.
       Rectangle {
+        id: clickNoticeBox
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
@@ -327,6 +332,10 @@ Panel {
           y: Style.space(8)
           width: parent.width - 2 * Style.space(8)
           text: root.model.clickNotice
+        }
+        MouseArea {
+          anchors.fill: parent
+          onClicked: root.model.clickNotice = ""
         }
       }
     }

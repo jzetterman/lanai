@@ -487,18 +487,38 @@ TestCase {
     verify(note !== undefined)
     verify(note.visible)
     for (var p = note.parent; p; p = p.parent) verify(p.contentY === undefined)
+    // The scrolling content gets room below, so nothing stays covered.
+    var flick = objects(panel, function(o) { return o.contentY !== undefined })[0]
+    compare(flick.bottomMargin, note.parent.height)
     // It stays at least 2 s, even when the action ends sooner.
     action.complete('{"ok":true}', 0)
+    wait(1500)
     compare(model.clickNotice, words)
-    tryCompare(model, 'clickNotice', '', 3000)
+    tryCompare(model, 'clickNotice', '', 1500)
     verify(!note.visible)
+    compare(flick.bottomMargin, 0)
     ready(model)
     // A long job launched moments ago drops a second one, and says so too.
     model.run(['setup'], true)
     model.run(['snapshot'], true)
     compare(model.clickNotice, words)
     compare(Quickshell.lastCommand.slice(3).join(' '), 'setup')
+    // A click on the notice dismisses it and reaches nothing under it.
+    mouseClick(note.parent)
+    compare(model.clickNotice, '')
     panel.destroy(); wait(1)
+  }
+  function test_a_dropped_click_notice_goes_after_5_s_while_the_action_still_runs() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    model.run(['stop'], false)
+    var action = process(model, model.cli)
+    model.run(['open'], false)
+    verify(model.clickNotice !== '')
+    wait(4500)
+    verify(model.clickNotice !== '')
+    tryCompare(model, 'clickNotice', '', 1500)
+    verify(action.running)
   }
   function test_finished_setup_reveals_both_display_choices_without_a_bare_job() {
     var model = createTemporaryObject(modelComponent, tests)
