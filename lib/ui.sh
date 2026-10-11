@@ -192,7 +192,9 @@ cmd_ui_job() {
   }
   umask 077
   s=$(state_dir); mkdir -p -- "$s"
-  for v in WAYLAND_DISPLAY XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME XDG_CACHE_HOME; do
+  # The session's display and Hyprland instance: setup's boot_vm records
+  # them for QEMU's window and the scale feed (the user manager may lack them).
+  for v in WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME XDG_CACHE_HOME; do
     [[ -z ${!v:-} ]] || env+=("--setenv=$v=${!v}")
   done
   if ! systemd-run --user --collect --quiet --unit="lanai-panel-$token" \
