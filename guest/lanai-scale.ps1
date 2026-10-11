@@ -128,7 +128,7 @@ function Get-DrainedLine([object[]]$Lines, [double]$Now) {
 function New-ScaleState([int]$Want, $LastSave, [double]$Now) {
     return @{
         Want = $Want; LastSave = $LastSave; Pick = $null
-        Confirmed = $null; Pending = $null; NextRetry = 0
+        Confirmed = $null; Pending = $null; Requested = @(); NextRetry = 0
         Path = $null; Resolution = $null; Recommended = $null; SettledAt = $Now
         Ready = $false; ReadyAt = $Now + 5000
     }
@@ -141,11 +141,13 @@ function New-ScaleState([int]$Want, $LastSave, [double]$Now) {
 # "retry" an unapplied one once a minute), the Step index and its Relative
 # value for SetScale.
 #   Confirmed is the last step observed; Pending a step asked for and not yet
-#   observed. A step equal to neither is a pick only with the same
-#   recommended step and a resolution unchanged for 5 s; otherwise it just
-#   updates Confirmed. The first observation, and the first after the
-#   display path changes, never make a pick. A display change drops an
-#   unapplied request, so the next decision asks again at once.
+#   observed; Requested every step asked for since the last confirmation. A
+#   step in none of them is a pick only with the same recommended step and a
+#   resolution unchanged for 5 s; otherwise it just updates Confirmed. An
+#   older request that lands late is never a pick: the newest is asked for
+#   again. The first observation, and the first after the display path
+#   changes or the display was missing, never make a pick. A display change
+#   drops an unapplied request, so the next decision asks again at once.
 function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
     $s = $State.Clone()
     $action = 'none'
@@ -160,18 +162,21 @@ function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
         $resMoved = -not $first -and $Obs.Resolution -ne $s.Resolution
         $recMoved = -not $first -and $rec -ne $s.Recommended
         if ($first -or $pathMoved -or $resMoved) { $s.SettledAt = $Now }
-        if ($first -or $pathMoved) {
+        if ($first -or $pathMoved -or ($null -ne $s.Pending -and $cur -eq $s.Pending)) {
             $s.Confirmed = $cur
             $s.Pending = $null
+            $s.Requested = @()
         }
-        elseif ($null -ne $s.Pending -and $cur -eq $s.Pending) {
+        elseif ($cur -ne $s.Confirmed -and $s.Requested -contains $cur) {
             $s.Confirmed = $cur
             $s.Pending = $null
+            $s.NextRetry = 0
         }
         elseif ($cur -ne $s.Confirmed) {
             if (-not $recMoved -and -not $resMoved -and $Now - $s.SettledAt -ge 5000) { $s.Pick = $cur }
             $s.Confirmed = $cur
             $s.Pending = $null
+            $s.Requested = @()
         }
         # A request Windows has not applied is asked again at once when the
         # display changes: its relative value may differ now.
@@ -209,6 +214,7 @@ function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
                 $s.Pending = $d.target
                 $s.NextRetry = $Now + 60000
             }
+            if ($action -ne 'none' -and $s.Requested -notcontains $d.target) { $s.Requested = @($s.Requested) + $d.target }
         }
     }
     return [pscustomobject]@{ State = $s; Action = $action; Step = $step; Relative = $rel }
@@ -223,7 +229,21 @@ function Confirm-ScaleSet($State, [int]$Step, $After) {
     if ((- $After.minScaleRel + $After.curScaleRel) -eq $Step) {
         $s.Confirmed = $Step
         $s.Pending = $null
+        $s.Requested = @()
     }
+    return $s
+}
+
+# Forget what the task knew about the display after a pass without an
+# observation (the display was missing): the next observation counts as the
+# first, so a scale the display comes back with is never a pick, and an
+# unapplied request is dropped. An existing pick stays. Returns the new
+# state.
+function Reset-ScaleBaseline($State) {
+    $s = $State.Clone()
+    $s.Path = $null
+    $s.Pending = $null
+    $s.Requested = @()
     return $s
 }
 
@@ -252,12 +272,13 @@ function Get-DisplayObservation {
 
 # The main loop's context: the state, the reader's queue and shared values
 # (OpenedAt, the time the port first opened), lines waiting for their quiet
-# gap, the next display poll, and the last logged error.
+# gap, the next display poll, the last logged error, and HoldUntil, the end
+# of the OEM fallback's delay after a stale batch at startup.
 function New-ScaleContext($State, $Queue, $Shared) {
     return @{
         State = $State; Queue = $Queue; Shared = $Shared
         Pending = New-Object 'System.Collections.Generic.List[object]'
-        NextObserve = 0; LastError = ''; MalformedLogged = $false
+        NextObserve = 0; LastError = ''; MalformedLogged = $false; HoldUntil = 0
     }
 }
 
@@ -288,14 +309,17 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
         }
         if ($drained.Kind -eq 'stale') {
             try { Write-Log "Dropped a stale backlog of $count lines; the next line comes within 2 seconds." } catch { }
+            # Before the first line, wait one feed period and a margin for
+            # the next fresh line rather than apply the OEM step first.
+            if (-not $Ctx.State.Ready) { $Ctx.HoldUntil = $Now + 2500 }
         }
         if ($drained.Kind -eq 'line') { $line = $drained.Line }
     }
     $s = $Ctx.State
     if ($null -ne $Ctx.Shared.OpenedAt) { $s.ReadyAt = [math]::Min($s.ReadyAt, $Ctx.Shared.OpenedAt + 3000) }
-    # A first line waiting for its quiet gap holds the OEM fallback back, so
-    # the line's step applies alone.
-    $hold = -not $s.Ready -and $drained.Kind -eq 'wait'
+    # A first line waiting for its quiet gap, or a stale batch just dropped,
+    # holds the OEM fallback back, so the line's step applies alone.
+    $hold = -not $s.Ready -and ($drained.Kind -eq 'wait' -or $Now -lt $Ctx.HoldUntil)
     if ($null -eq $line -and $Now -lt $Ctx.NextObserve -and ($s.Ready -or $hold -or $Now -lt $s.ReadyAt)) { return }
     $Ctx.NextObserve = $Now + 2000
     $pass = $s
@@ -316,6 +340,7 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
     }
     if ($hold) { $r.State.ReadyAt = $s.ReadyAt }
     $Ctx.State = $r.State
+    if ($null -eq $obs) { $Ctx.State = Reset-ScaleBaseline $Ctx.State }
     try {
         if ($null -ne $line -and $null -ne $s.LastSave -and $r.State.LastSave -ne $s.LastSave) {
             Write-Log "Scale save $($line.Save): target $(StepName $line.Step)."

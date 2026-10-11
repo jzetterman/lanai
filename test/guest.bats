@@ -374,7 +374,7 @@ guest_ps() {
     function Write-Log($Message) { $script:Logs += $Message }
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
     foreach ($name in "StepName", "ScaleDecision", "ConvertFrom-ScaleLine", "Get-DrainedLine", "New-ScaleState",
-      "Step-ScaleState", "Confirm-ScaleSet", "New-ScaleContext", "Write-ErrorOnce", "Invoke-ScaleTick") {
+      "Step-ScaleState", "Confirm-ScaleSet", "Reset-ScaleBaseline", "New-ScaleContext", "Write-ErrorOnce", "Invoke-ScaleTick") {
       $f = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $n.Name -eq $name }, $true) | Select-Object -First 1
       if (-not $f) { throw "missing $name" }
@@ -677,6 +677,87 @@ guest_ps() {
     $ctx = New-ScaleContext (New-ScaleState 3 5 0) $q @{ OpenedAt = 0 }
     for ($t = 0; $t -le 3000; $t += 250) { Invoke-ScaleTick $ctx $t }
     Assert ([LanaiDisplay]::Sets -eq 1 -and [LanaiDisplay]::D.CurRel -eq 2) "fallback at 3 s"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest loop: a stale batch at startup holds the OEM step back for the next fresh line" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    function Run($Fresh) {
+      [LanaiDisplay]::Sets = 0
+      [LanaiDisplay]::D.CurRel = 0
+      $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+      # OEM 175% (index 3); the port opened at 0, so the wait ends at 3 s.
+      $ctx = New-ScaleContext (New-ScaleState 3 5 0) $q @{ OpenedAt = 0 }
+      $first = -1
+      for ($t = 0; $t -le 9000; $t += 250) {
+        # A backlog lands at 2.8 s; its gap ends after the deadline and it is dropped.
+        if ($t -eq 3000) { $q.Enqueue((Q "lanai-scale 150 4" 2800)); $q.Enqueue((Q "lanai-scale 200 6" 2800)) }
+        if ($Fresh -and $t -eq 4250) { $q.Enqueue((Q "lanai-scale 200 6" 4200)) }
+        Invoke-ScaleTick $ctx $t
+        if ($first -lt 0 -and [LanaiDisplay]::Sets -gt 0) { $first = $t }
+      }
+      return @($first, [LanaiDisplay]::Sets, [LanaiDisplay]::D.CurRel)
+    }
+    $r = Run $true
+    Assert ($r[1] -eq 1 -and $r[2] -eq 3) "fresh line: first set at $($r[0]), $($r[1]) sets, now $($r[2])"
+    # With no fresh line, the OEM step still comes, a feed period later.
+    $r = Run $false
+    Assert ($r[1] -eq 1 -and $r[2] -eq 2 -and $r[0] -le 6000) "no fresh line: first set at $($r[0]), $($r[1]) sets, now $($r[2])"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest loop: a display that leaves and returns on the same path makes no pick, and a pick survives it" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $saved = [LanaiDisplay]::D
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    $ctx = New-ScaleContext (New-ScaleState 1 5 0) $q @{ OpenedAt = 0 }
+    for ($t = 0; $t -le 8000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    # The display goes away, then comes back on the same path at 175%.
+    [LanaiDisplay]::D = $null
+    for (; $t -le 12000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    $saved.CurRel = 2
+    [LanaiDisplay]::D = $saved
+    for (; $t -le 20000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ($null -eq $ctx.State.Pick) "pick after a reattach: $($ctx.State.Pick)"
+    Assert ([LanaiDisplay]::D.CurRel -eq 0) "following stopped: $([LanaiDisplay]::D.CurRel)"
+    # The user picks 200% (index 4); a detach and a reset to 125% keep it.
+    [LanaiDisplay]::D.CurRel = 3
+    for (; $t -le 30000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ($ctx.State.Pick -eq 4) "the pick: $($ctx.State.Pick)"
+    [LanaiDisplay]::D = $null
+    for (; $t -le 34000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    $saved.CurRel = 0
+    [LanaiDisplay]::D = $saved
+    for (; $t -le 40000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ($ctx.State.Pick -eq 4 -and [LanaiDisplay]::D.CurRel -eq 3) "pick after a detach: $($ctx.State.Pick), now $([LanaiDisplay]::D.CurRel)"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest pick rule: an older request applied late is not a pick, and the newer one is applied" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $s = New-ScaleState 1 5 0
+    $s.Ready = $true
+    $r = Step-ScaleState $s (Obs 0) $null 0
+    $r = Step-ScaleState $r.State (Obs 0) (L 175 6) 1000
+    Assert ($r.Action -eq "set" -and $r.Step -eq 3) "first request"
+    # Windows has not applied 175% when a second save asks for 200%.
+    $r = Step-ScaleState $r.State (Obs 0) (L 200 7) 3000
+    Assert ($r.Action -eq "set" -and $r.Step -eq 4) "second request"
+    # 175% lands late, settled: not a pick, and 200% is asked for again.
+    $r = Step-ScaleState $r.State (Obs 2) $null 9000
+    Assert ($null -eq $r.State.Pick) "late request became pick $($r.State.Pick)"
+    Assert ($r.Action -eq "set" -and $r.Step -eq 4) "newer request: $($r.Action) $($r.Step)"
+    $r = Step-ScaleState $r.State (Obs 3) $null 11000
+    Assert ($null -eq $r.State.Pick -and $r.Action -eq "none" -and $r.State.Confirmed -eq 4) "applied"
+    # A real pick afterwards still counts.
+    $r = Step-ScaleState $r.State (Obs 1) $null 17000
+    Assert ($r.State.Pick -eq 2) "a later pick: $($r.State.Pick)"'
   assert_success
   assert_output ok
 }
