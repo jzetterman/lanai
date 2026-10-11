@@ -144,7 +144,8 @@ function New-ScaleState([int]$Want, $LastSave, [double]$Now) {
 #   observed. A step equal to neither is a pick only with the same
 #   recommended step and a resolution unchanged for 5 s; otherwise it just
 #   updates Confirmed. The first observation, and the first after the
-#   display path changes, never make a pick.
+#   display path changes, never make a pick. A display change drops an
+#   unapplied request, so the next decision asks again at once.
 function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
     $s = $State.Clone()
     $action = 'none'
@@ -171,6 +172,12 @@ function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
             if (-not $recMoved -and -not $resMoved -and $Now - $s.SettledAt -ge 5000) { $s.Pick = $cur }
             $s.Confirmed = $cur
             $s.Pending = $null
+        }
+        # A request Windows has not applied is asked again at once when the
+        # display changes: its relative value may differ now.
+        if (($pathMoved -or $resMoved -or $recMoved) -and $null -ne $s.Pending) {
+            $s.Pending = $null
+            $s.NextRetry = 0
         }
         $s.Path = $Obs.DevicePath
         $s.Resolution = $Obs.Resolution
@@ -205,6 +212,19 @@ function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
         }
     }
     return [pscustomobject]@{ State = $s; Action = $action; Step = $step; Relative = $rel }
+}
+
+# After SetScale returns, read-back range <After> (GetScale) shows whether
+# Windows applied step <Step>. If it did, the step is confirmed at once, so
+# a pick of the old step before the next poll counts as a pick instead of
+# looking like an unapplied request. Returns the new state.
+function Confirm-ScaleSet($State, [int]$Step, $After) {
+    $s = $State.Clone()
+    if ((- $After.minScaleRel + $After.curScaleRel) -eq $Step) {
+        $s.Confirmed = $Step
+        $s.Pending = $null
+    }
+    return $s
 }
 
 # Observe the Looking Glass display: its path, device path, resolution and
@@ -252,7 +272,8 @@ function Write-ErrorOnce($Ctx, [string]$Message) {
 # One 250 ms tick of the main loop at time <Now> (ms): move queued lines to
 # Pending and drain them once quiet; then, when a line is ready, the 2 s
 # display poll is due, or the first-line wait just ended, run one
-# Step-ScaleState pass and call SetScale for its action.
+# Step-ScaleState pass and call SetScale for its action, then read the
+# scale back (Confirm-ScaleSet).
 function Invoke-ScaleTick($Ctx, [double]$Now) {
     $item = $null
     while ($Ctx.Queue.TryDequeue([ref]$item)) { $Ctx.Pending.Add($item) }
@@ -272,19 +293,28 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
     }
     $s = $Ctx.State
     if ($null -ne $Ctx.Shared.OpenedAt) { $s.ReadyAt = [math]::Min($s.ReadyAt, $Ctx.Shared.OpenedAt + 3000) }
-    if ($null -eq $line -and $Now -lt $Ctx.NextObserve -and ($s.Ready -or $Now -lt $s.ReadyAt)) { return }
+    # A first line waiting for its quiet gap holds the OEM fallback back, so
+    # the line's step applies alone.
+    $hold = -not $s.Ready -and $drained.Kind -eq 'wait'
+    if ($null -eq $line -and $Now -lt $Ctx.NextObserve -and ($s.Ready -or $hold -or $Now -lt $s.ReadyAt)) { return }
     $Ctx.NextObserve = $Now + 2000
+    $pass = $s
+    if ($hold) {
+        $pass = $s.Clone()
+        $pass.ReadyAt = [double]::PositiveInfinity
+    }
     $obs = $null
     try {
         $obs = Get-DisplayObservation
-        $r = Step-ScaleState $s $obs $line $Now
+        $r = Step-ScaleState $pass $obs $line $Now
         $Ctx.LastError = ''
     }
     catch {
         Write-ErrorOnce $Ctx $_.Exception.Message
         $obs = $null
-        $r = Step-ScaleState $s $null $line $Now
+        $r = Step-ScaleState $pass $null $line $Now
     }
+    if ($hold) { $r.State.ReadyAt = $s.ReadyAt }
     $Ctx.State = $r.State
     try {
         if ($null -ne $line -and $null -ne $s.LastSave -and $r.State.LastSave -ne $s.LastSave) {
@@ -300,7 +330,10 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
         }
     } catch { } # A failed log must not prevent the scale attempt.
     if ($r.Action -ne 'none') {
-        try { [LanaiDisplay]::SetScale($obs.Path, $r.Relative) }
+        try {
+            [LanaiDisplay]::SetScale($obs.Path, $r.Relative)
+            $Ctx.State = Confirm-ScaleSet $Ctx.State $r.Step ([LanaiDisplay]::GetScale($obs.Path))
+        }
         catch { Write-ErrorOnce $Ctx $_.Exception.Message }
     }
 }
