@@ -919,6 +919,37 @@ ShellCheck command pass; these environment-limited results need a full rerun
 outside this sandbox before the acceptance gate.
 
 
+## Live-scale channel proof, phase 0 (1)-(5) (2026-10-11)
+
+John ran `proof-kit/proof-scale-port.ps1` in the test copy's Windows (Lanai's
+storage, `~/lanai-proofs/lanai-setup-test`), from the shared folder. Instead of a
+`proof-vm` boot, the port was hotplugged into the running VM over QMP
+(`chardev-add` socket `scale0` at `$XDG_RUNTIME_DIR/lanai/scale.sock`, server,
+no wait; `device_add virtserialport name=io.lanai.scale.0`) and removed after.
+The host sent `proof <seq> <epoch ms>` lines with `socat -u`, one connection per
+line, under a 1 s `timeout`.
+
+1. Access: a normal PowerShell got `open-failed win32=5 (Access is denied)`; an
+   elevated one (same user, john) got `open-ok`. Pass.
+2. Order: 173 lines (seq 16-188) arrived in order, no gaps. Pass.
+3. No host connected: a read fails at once with "Insufficient system resources
+   exist to complete the requested service" (error 1450). It never blocked and
+   never returned 0 bytes. The reader retried every 250 ms (7 or 8 failed reads
+   per 2 s gap) and did not spin.
+4. Guest holding the port open but not reading (90 s hold): the guest kept the
+   first 130 lines of a 10,000-line single-connection burst (about 3 KB), then
+   the host write stalled until its 20 s `timeout` killed it. Five single-line
+   sends after that each reported success on the host and never arrived. When
+   the guest read, it got lines 211-340 within about 1 s, 57 s old. Lines 1-15,
+   sent before any guest opened the port, were never delivered either.
+5. Connection per line every 2 s for 5 minutes: every line arrived; arrival minus
+   send (which includes clock skew) ranged from -328 to -70 ms, a 258 ms spread
+   that matches the retry gap. Each host send took 2-3 ms.
+
+Plan change from (4): a drained batch with more than one line is a stale backlog
+and the task drops it; the next fresh line comes within one feed period.
+Proofs (6) and (7) run after phase B's script exists.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

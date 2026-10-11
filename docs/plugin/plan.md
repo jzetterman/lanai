@@ -2246,9 +2246,12 @@ fixture `hyprctl` JSON; the loop is tested against a fake server that never read
   2 s). The main loop never
   touches the port, so a silent port never blocks it. The main loop acts on the
   queue only once no line has arrived for 300 ms (a backlog arrives at full speed,
-  so a quiet gap means it is drained), then dequeues everything and uses the last
-  valid line only. Empty lines are ignored; malformed ones are dropped (logged
-once).
+  so a quiet gap means it is drained), then dequeues everything. The feed sends
+  one line per connection, so a fresh batch holds one valid line. A batch with
+  more than one valid line is a stale backlog and is dropped whole: after a stall
+  the port delivers its oldest unread lines, and lines sent while its buffer is
+  full are lost (phase 0 proof 4). The next fresh line comes within one feed
+  period. Empty lines are ignored; malformed ones are dropped (logged once).
 - The main loop ticks every 250 ms, so the quiet gap is checked on its own
   clock, never only at a display poll. It observes the display every 2 s, and
   also on any tick that has a drained line to process.
@@ -2387,6 +2390,13 @@ phase B's last step; (1)-(5) run first.
   `proof-vm` that adds the chardev and port. Claude boots the test copy with it and
   drives the host side with `socat`; John runs the script in an elevated and a
   normal PowerShell. Record results in `proofs.md`.
+- Results for (1)-(5), 2026-10-11 (`proofs.md`): all pass. The port was hotplugged
+  into the running test copy over QMP instead of a `proof-vm` boot, so no reboot
+  was needed. A read with no host connected fails at once with "Insufficient
+  system resources" (error 1450), handled by the 250 ms retry above. Lines sent
+  while no guest holds the port open are lost, and so are lines sent while its
+  buffer is full; after a stall the guest gets the oldest unread lines, which is
+  why a multi-line batch is dropped as stale.
 - If (1) fails for the elevated process, stop and bring it to John (the SYSTEM
   relay he declined becomes the fallback). If (5) shows lost or late lines, stop
   and revise the connection model before phase A. (3) and (4) confirm the task's
@@ -2431,7 +2441,8 @@ phase B's last step; (1)-(5) run first.
 - Shape the script so its logic is pure and testable: `Step-ScaleState` takes the
   state, one display observation and the time, and returns the new state and an
   action (none, set a step, or retry); `Get-DrainedLine` takes the queued lines and
-  the time and returns "wait" or the last valid line; `ConvertFrom-ScaleLine`
+  the time and returns "wait", "stale" (more than one valid line) or the one
+  valid line; `ConvertFrom-ScaleLine`
   parses one line. The main loop only wires them to the clock, the reader queue and
   `SetScale`.
 - Tests first: `test/guest.bats` extracts those functions from `lanai-scale.ps1`
@@ -2442,8 +2453,9 @@ phase B's last step; (1)-(5) run first.
   and cap; the baseline from the OEM strings, with a pick before the channel
   connects and a save made in the meantime (the save clears it); a pick right
   after a host-driven change; an unobserved pick followed by a save in the same
-  pass ends with the save applied; draining keeps only the last line, and a line
-  that arrives inside the 300 ms gap delays acting; a resend every 2 s aligned
+  pass ends with the save applied; a drained batch of one valid line is used, a
+  batch of two or more is dropped as stale (empty and malformed lines do not
+  count), and a line that arrives inside the 300 ms gap delays acting; a resend every 2 s aligned
   just after each display poll is still processed within one tick of its gap; a
   set Windows accepts but does not apply is retried and never becomes a pick,
   while a real pick right after it still counts. Pin the task
@@ -2629,4 +2641,4 @@ words, which need taste >= 7). Claude verifies, signs, and runs the diff gate.
 | plan (live scale) | a (gpt-6.1-sol) | 3 (full, cap) | 1 blocker, 3 should-fix, 0 refuted; all integrated: a 250 ms tick checks the quiet gap on its own clock (a 2 s poll could miss every gap); the window's monitor is recorded whatever the setting, and boot_monitor for every boot; pending and confirmed steps kept apart, so a set Windows ignores is never a pick; one settings snapshot for step and save number. Stage closed at the cap with these integrations for stage b to review |
 | plan (live scale) | b single (opus-5.5) | 1 (full) | 0 blockers, 6 should-fix, 9 nits, 0 refuted; all integrated: first observation and in-window changes are never picks; the setup marker needs `chardev_open scale0` in step 6; a steady 2 s resend replaces the QMP event idea (no free QMP socket); a newline on each connection recovers a cut line; the elevated task pins PSModulePath and logs to an admin-only folder, and the HKCU environment residual is recorded for John; the Hyprland signature travels in boot.json; nits (socat -u with timeout, test interval, fixed-boot contract, CreateFile for the device path, settings words cleared per run, CLI words, monitor id mapping, stale socket and helper table, wording) |
 | plan (live scale) | b single (opus-5.5) | 2 (full) | 0 blockers, 3 should-fix, 8 nits, 0 refuted; all integrated: TMP and TEMP pinned to an admin-only folder before Add-Type; setup.cmd removes a planted ProgramData link and sets owner and ACL; one short connection per send, the reader keeps its handle across host disconnects, and phase 0 (5) proves that model; nits (join every missing part, vm_args as the site with a checked save argument, feed seeds and keeps the last good line, a 2.5 s wait for the first line, words for unfinished setup and stopped old installs, a send-timeout test knob, named pure functions for the guest, send failures logged once) |
-| plan (live scale) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 2 should-fix, 7 nits, 0 refuted; all integrated: the log and temp folder move under C:\Program Files\Lanai (ProgramData raced its ACL, as C:\Lanai did in phase 6), dropping the ACL repair; the first-line wait is bounded from task start, so a port that never opens still gets the OEM step; nits (residual reach and absolute powershell.exe path, phase 0 (6) uses the shipped feed, start-to-start cadence and hyprctl timeout, vm_plan signature, qml-lint in phase A, signature check). Stage closed at the cap with these integrations unreviewed; the gate waits for John |
+| plan (live scale) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 2 should-fix, 7 nits, 0 refuted; all integrated: the log and temp folder move under C:\Program Files\Lanai (ProgramData raced its ACL, as C:\Lanai did in phase 6), dropping the ACL repair; the first-line wait is bounded from task start, so a port that never opens still gets the OEM step; nits (residual reach and absolute powershell.exe path, phase 0 (6) uses the shipped feed, start-to-start cadence and hyprctl timeout, vm_plan signature, qml-lint in phase A, signature check). Stage closed at the cap with these integrations unreviewed; John accepted the plan at the cap (2026-10-11). Phase 0 proof 4 then changed the drain rule (a multi-line batch is stale and dropped); the implementation diff gate reviews it |
