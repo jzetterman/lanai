@@ -1183,45 +1183,62 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field window)" false
 }
 
-@test "lanai setup step 6: the scale task's closed port after the grace is a missing part, and no mark" {
+@test "lanai setup step 6: a slow sign-in leaves the scale task closed past the boot grace and still asks" {
+  # The scale task starts only at sign-in, which can come long after boot.
   step6_running "$FIX/client-logs/match.log" 90 90
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
-  setup_run --share-ok yes --scale-ok yes
-  assert_failure
-  assert_equal "$(field step)" 5
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert_equal "$(jq -c .questions <<<"$JSON")" '["share","scale"]'
   run field message
-  assert_output --partial "the display scale task did not answer"
-  assert_equal "$(jq -r '.scale_task // "unset"' "$S/setup.json")" unset
-  run setup_done
-  assert_failure
+  assert_output --partial "sign in"
 }
 
-@test "lanai setup step 6: the scale task's closed port is waited for before the grace" {
-  step6_running "$FIX/client-logs/match.log" 5
+@test "lanai setup step 6: after the answers, a closed scale task is waited for, then named" {
+  step6_running "$FIX/client-logs/match.log" 90 90
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run --share-ok yes --scale-ok yes
   assert_success
   assert_equal "$(field step)" 6
   run field message
-  assert_output --partial "the display scale task"
+  assert_output --partial "display scale task"
+  # The panel stops asking; its follow-ups carry no answers.
+  assert [ ! -e "$RUN/step6-asked" ]
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  # Still closed after the grace from the answers: back to step 5, naming it.
+  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1))" >"$RUN/step6-answered"
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  run field message
+  assert_output --partial "the display scale task did not start"
+  assert_equal "$(jq -r '.scale_task // "unset"' "$S/setup.json")" unset
+  run setup_done
+  assert_failure
 }
 
-@test "lanai setup step 6: finishing with the scale task's port open records the live scale task" {
+@test "lanai setup step 6: the scale task opening after the answers finishes setup with its mark" {
   step6_running "$FIX/client-logs/match.log" 90 90
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run --share-ok yes --scale-ok yes
+  assert_equal "$(field step)" 6
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=true
+  setup_run
   assert_success
   assert_equal "$(field step)" 7
   assert_equal "$(jq -r .scale_task "$S/setup.json")" 2
   assert_equal "$(scale_task_kind)" new
 }
 
-@test "lanai setup step 6: three missing parts are all named" {
+@test "lanai setup step 6: answers with the scale task open finish setup with its mark" {
   step6_running "$FIX/client-logs/match.log" 90 90
-  conf FAKE_QGA_CMD=open FAKE_QMP_VDAGENT=false FAKE_QMP_SCALE=false
-  setup_run
-  assert_failure
-  run field message
-  assert_output --partial "the SPICE agent, the QEMU guest agent with its allow-list and the display scale task did not answer"
+  setup_run --share-ok yes --scale-ok yes
+  assert_success
+  assert_equal "$(field step)" 7
+  assert_equal "$(jq -r .scale_task "$S/setup.json")" 2
 }
 
 @test "lanai setup step 6: an agent that refuses to set the clock sends setup back to step 5" {

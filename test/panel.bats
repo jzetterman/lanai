@@ -51,27 +51,38 @@ setup() {
 }
 
 @test "panel words: settings saves for a live, stopped, memory-only and old-task save" {
-  local live='Saved. Windows uses the new scale within 5 seconds if you'"'"'re signed in, or when you next sign in.'
+  local live='Saved. Windows switches to the saved scale within 5 seconds if you'"'"'re signed in, or when you next sign in.'
   local stopped='Saved. Changes apply the next time Windows starts.'
-  local memory='Saved. Memory and cores apply the next time Windows starts.'
-  local again='To change the scale while Windows runs, click Run setup again. It also turns the Windows lock off again.'
-  local lost_words='Until then, Windows undoes scale changes made in its own settings, and Match my monitor does not follow the window while Windows runs.'
+  local again='To change the scale while Windows runs, shut Windows down and click Run setup again. It also turns the Windows lock off again.'
+  local lost_words='Until you run setup again, Windows undoes scale changes made in its own settings, and Match my monitor does not follow the window while Windows runs.'
   run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"new"}'
   assert_output "$live"
   run panel_words settings '{"ok":true,"scale_saved":true,"running":false,"scale_task":"new"}'
   assert_output "$stopped"
+  # The Settings line already says when memory and cores apply.
   run panel_words settings '{"ok":true,"scale_saved":false,"running":true,"scale_task":"new"}'
-  assert_output "$memory"
+  assert_output "Saved."
   run panel_words settings '{"ok":true,"scale_saved":false,"running":false,"scale_task":"old"}'
-  assert_output "$memory"
+  assert_output "Saved."
   # The old task: the next start, Run setup again with the lock, and the lost following.
   run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"old"}'
-  assert_output "Saved. Windows uses the new scale the next time it starts. $again $lost_words"
+  assert_output "Saved. Windows uses the saved scale the next time it starts. $again $lost_words"
   run panel_words settings '{"ok":true,"scale_saved":true,"running":false,"scale_task":"old"}'
   assert_output "$stopped $again $lost_words"
   # A first setup expects no mark yet: every scale save uses the stopped words.
   run panel_words settings '{"ok":true,"scale_saved":true,"running":true,"scale_task":"none"}'
   assert_output "$stopped"
+}
+
+@test "panel settings: running save words clear once the unit is no longer active, even with its invocation" {
+  panel_result_write settings '{"command":"settings","invocation":"inv","ended":1,"reply":{"ok":true,"scale_saved":true,"running":true,"scale_task":"new"}}'
+  ST=active INV=inv
+  run cmd_panel
+  assert_output --partial 'within 5 seconds'
+  # A failed unit keeps its InvocationID.
+  ST=failed RESULT=exit-code INV=inv
+  run cmd_panel
+  assert_equal "$(jq -r .result.settings <<<"$output")" ''
 }
 
 @test "panel settings: the view names memory and cores, and the scale note shows only while running with the new task" {
@@ -321,10 +332,12 @@ assert_plan_agreement() {
   state '{"snapshot":"declined","step5":true}'
   echo '{"setup":false}' >"$S/boot.json"
   : >"$RUN/step6-asked"
+  echo 1 >"$RUN/step6-answered"
   run setup_plan "$(shared_facts)"
   assert_equal "$(jq -c .questions <<<"$output")" '["share","scale"]'
   event_record '{"event":"RESET"}'
   assert [ ! -e "$RUN/step6-asked" ]
+  assert [ ! -e "$RUN/step6-answered" ]
   : >"$RUN/step6-asked"
   setup_back5 answers 'The answer was no.' >/dev/null
   run setup_plan "$(shared_facts)"
@@ -715,6 +728,7 @@ assert_plan_agreement() {
 
 @test "vm exec: clears the questions at start before running only stubbed helpers" {
   : >"$RUN/step6-asked"
+  echo 1 >"$RUN/step6-answered"
   : >"$RUN/qga-open-since"
   : >"$RUN/qga-closed-since"
   vm_plan() { echo arguments; }
@@ -725,6 +739,7 @@ assert_plan_agreement() {
   INVOCATION_ID=inv run vm_exec
   assert_failure
   assert [ ! -e "$RUN/step6-asked" ]
+  assert [ ! -e "$RUN/step6-answered" ]
   assert [ ! -e "$RUN/qga-open-since" ]
   assert [ ! -e "$RUN/qga-closed-since" ]
 }

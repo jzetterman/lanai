@@ -930,11 +930,8 @@ fake_host() {
 # --- host_scale ---
 
 @test "host_scale: the focused monitor's scale as a percentage" {
-  shim hyprctl 'cat <<EOF
-[{"name": "DP-1", "focused": false, "scale": 1.00},
- {"name": "HDMI-A-1", "focused": true, "scale": 1.50}]
-EOF'
-  PATH=$T/shims:$PATH run host_scale
+  run host_scale '[{"name": "DP-1", "focused": false, "scale": 1.00},
+ {"name": "HDMI-A-1", "focused": true, "scale": 1.50}]'
   assert_success
   assert_output 150
 }
@@ -942,21 +939,26 @@ EOF'
 @test "host_scale: fractional scales keep two decimals" {
   local pair
   for pair in "1.125:112.5" "1.666667:166.67" "1:100" "2.5:250"; do
-    shim hyprctl "echo '[{\"focused\": true, \"scale\": ${pair%%:*}}]'"
-    PATH=$T/shims:$PATH run host_scale
+    run host_scale "[{\"focused\": true, \"scale\": ${pair%%:*}}]"
     assert_output "${pair#*:}"
   done
 }
 
-@test "host_scale: fails with no focused monitor or no Hyprland" {
-  shim hyprctl "echo '[{\"focused\": false, \"scale\": 2}]'"
-  PATH=$T/shims:$PATH run host_scale
-  assert_failure
+@test "host_scale: fails with no focused monitor, no monitors or no JSON" {
+  local mons
+  for mons in '[{"focused": false, "scale": 2}]' '' 'not json'; do
+    run host_scale "$mons"
+    assert_failure
+  done
+}
+
+@test "host_monitors: hyprctl's monitors, and a failure without Hyprland" {
+  shim hyprctl 'echo "[{\"focused\": true}]"'
+  PATH=$T/shims:$PATH run host_monitors
+  assert_success
+  assert_output '[{"focused": true}]'
   shim hyprctl 'echo "HYPRLAND_INSTANCE_SIGNATURE not set" >&2; exit 1'
-  PATH=$T/shims:$PATH run host_scale
-  assert_failure
-  shim hyprctl "echo 'not json'"
-  PATH=$T/shims:$PATH run host_scale
+  PATH=$T/shims:$PATH run host_monitors
   assert_failure
 }
 

@@ -104,7 +104,6 @@ Panel {
           Note { text: root.model.view.notice || "" }
           Note { text: root.model.view.warning || "" }
           Note { text: (root.model.view.busy || {}).line || "" }
-          Note { text: root.model.clickNotice }
           Note { text: root.model.view.result.launch || "" }
           Note { text: root.stopArmed ? root.model.control("stop_confirm").hint || "" : "" }
           Flow {
@@ -304,6 +303,30 @@ Panel {
             model: [root.model.view.logs.vm, root.model.view.logs.client, root.model.view.logs.job, root.model.view.logs.command]
             delegate: Note { required property var modelData; text: modelData || "" }
           }
+        }
+      }
+      // A dropped click's notice, pinned over the bottom of the popup and
+      // outside the scrolling content: always in view, and it never moves
+      // the controls under it.
+      Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        visible: root.model.clickNotice !== ""
+        height: clickNote.implicitHeight + 2 * Style.space(8)
+        // Color.popups is a grouped QtObject the lint metadata does not type.
+        // qmllint disable missing-property
+        color: Color.popups.background
+        // qmllint enable missing-property
+        border.color: Color.accent
+        border.width: 1
+        Note {
+          id: clickNote
+          objectName: "clickNotice"
+          x: Style.space(8)
+          y: Style.space(8)
+          width: parent.width - 2 * Style.space(8)
+          text: root.model.clickNotice
         }
       }
     }

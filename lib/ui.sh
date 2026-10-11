@@ -26,10 +26,13 @@ cmd_notice_seen() {
 
 # Print which scale task Windows has, from Lanai's setup record (spec 12):
 # "new" when finished setup recorded the live task (scale_task 2), "old"
-# for a finished setup without that mark, "none" before setup finishes.
+# for a finished setup without that mark, "none" before setup finishes or
+# while a setup round runs without the mark (setup.cmd may be replacing the
+# task).
 scale_task_kind() {
   if ! setup_done; then echo none
   elif [[ $(setup_get scale_task) == 2 ]]; then echo new
+  elif [[ $(setup_get round) == true ]]; then echo none
   else echo old; fi
 }
 
@@ -111,7 +114,11 @@ cmd_settings() {
     [[ $(unit_state 2>/dev/null) != active ]] || running=true
     reply=$(jq -c --argjson s "$([[ $# == 3 ]] && echo true || echo false)" --argjson r "$running" \
       --arg t "$(scale_task_kind)" '. + {scale_saved:$s, running:$r, scale_task:$t}' <<<"$reply")
-    emit true "" "$(panel_words settings "$(jq -c '. + {ok:true}' <<<"$reply")")" "" "$reply"
+    if (($# == 3)); then
+      emit true "" "$(panel_words settings "$(jq -c '. + {ok:true}' <<<"$reply")")" "" "$reply"
+    else
+      emit true "" "Saved. Memory and cores apply the next time Windows starts." "" "$reply"
+    fi
   else
     emit true "" "Memory and cores apply the next time Windows starts." "" "$reply"
   fi

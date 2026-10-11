@@ -9,8 +9,8 @@
 panel_words() {
   jq -r --arg c "$1" --arg step "${3:-}" '
     def log: {setup:"setup log",snapshot:"snapshot log",restore:"restore log"}[$c] // "button actions log";
-    def oldtask: " To change the scale while Windows runs, click Run setup again. It also turns the Windows lock off again." +
-      " Until then, Windows undoes scale changes made in its own settings, and Match my monitor does not follow the window while Windows runs.";
+    def oldtask: " To change the scale while Windows runs, shut Windows down and click Run setup again. It also turns the Windows lock off again." +
+      " Until you run setup again, Windows undoes scale changes made in its own settings, and Match my monitor does not follow the window while Windows runs.";
     def reasons: {
       busy:"Lanai is busy with another task. Try again in a moment.",
       session:"Lanai can run setup only while you are signed in to the desktop.",
@@ -60,10 +60,10 @@ panel_words() {
       "Snapshot saved at " + .snapshot + ". It shares disk space at first and grows as Windows changes. To delete it, remove that folder in your file manager."
     elif $c == "restore" then "The snapshot was restored."
     elif $c == "settings" and (.scale_saved | type) == "boolean" then
-      if .scale_saved | not then "Saved. Memory and cores apply the next time Windows starts."
+      if .scale_saved | not then "Saved."
       elif .scale_task == "new" and .running == true then
-        "Saved. Windows uses the new scale within 5 seconds if you\u0027re signed in, or when you next sign in."
-      elif .scale_task == "old" and .running == true then "Saved. Windows uses the new scale the next time it starts." + oldtask
+        "Saved. Windows switches to the saved scale within 5 seconds if you\u0027re signed in, or when you next sign in."
+      elif .scale_task == "old" and .running == true then "Saved. Windows uses the saved scale the next time it starts." + oldtask
       elif .scale_task == "old" then "Saved. Changes apply the next time Windows starts." + oldtask
       else "Saved. Changes apply the next time Windows starts." end
     elif $c == "start" and .network == false then "Windows started without a network. Connect Linux to a network, then shut down and start Windows again."
@@ -126,9 +126,11 @@ cmd_panel() {
     doc=$(jq -c --arg g "$group" '.records[$g] // {}' <<<"$records")
     words=''
     if jq -e 'has("reply")' <<<"$doc" >/dev/null; then
-      # A settings save's words hold only for the VM run they were about.
-      if [[ $group == settings ]] &&
-        jq -e --arg i "$inv" '.reply.ok == true and .invocation != $i' <<<"$doc" >/dev/null; then
+      # A settings save's words hold only for the VM run they were about: a
+      # live save's words also go once the unit stops (a failed unit keeps
+      # its InvocationID).
+      if [[ $group == settings ]] && jq -e --arg i "$inv" --argjson a "$(jq '.active' <<<"$status")" \
+        '.reply.ok == true and (.invocation != $i or (.reply.running == true and ($a | not)))' <<<"$doc" >/dev/null; then
         :
       elif [[ $(jq -r '.command' <<<"$doc") != start ]] ||
         [[ $(jq -r '.reply.ok' <<<"$doc") == false ]] ||

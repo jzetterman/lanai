@@ -53,7 +53,7 @@ QtObject {
   function space(n) { return n }
 }
 QML
-  echo 'pragma Singleton; import QtQuick; QtObject { property color foreground: "white"; property color accent: "#4080c0" }' >"$T/qml/imports/TestCommons/Color.qml"
+  echo 'pragma Singleton; import QtQuick; QtObject { property color foreground: "white"; property color accent: "#4080c0"; property color background: "black"; property QtObject popups: QtObject { property color background: "black" } }' >"$T/qml/imports/TestCommons/Color.qml"
   echo 'pragma Singleton; import QtQuick; QtObject { function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) } }' >"$T/qml/imports/TestCommons/Util.qml"
   cat >"$T/qml/imports/TestUi/qmldir" <<'QML'
 module TestUi
@@ -481,9 +481,17 @@ TestCase {
     model.run(['open'], false)
     compare(action.command.slice(3).join(' '), 'stop')
     compare(model.clickNotice, words)
-    verify(objects(panel, function(o) { return o.text === words && o.visible }).length > 0)
+    // Pinned outside the scrolling content, so it is always in view and
+    // never moves the controls.
+    var note = objects(panel, function(o) { return o.objectName === 'clickNotice' })[0]
+    verify(note !== undefined)
+    verify(note.visible)
+    for (var p = note.parent; p; p = p.parent) verify(p.contentY === undefined)
+    // It stays at least 2 s, even when the action ends sooner.
     action.complete('{"ok":true}', 0)
-    compare(model.clickNotice, '')
+    compare(model.clickNotice, words)
+    tryCompare(model, 'clickNotice', '', 3000)
+    verify(!note.visible)
     ready(model)
     // A long job launched moments ago drops a second one, and says so too.
     model.run(['setup'], true)

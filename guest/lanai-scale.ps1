@@ -100,12 +100,13 @@ function ConvertFrom-ScaleLine([string]$Line) {
 # arrives at full speed, so a quiet gap means it is drained); else "line"
 # with the one valid line, "stale" for two or more (after a stall the port
 # delivers its oldest lines, phase 0 proof 4), or "none". Empty lines are
-# ignored; malformed ones are counted in Malformed and dropped.
+# ignored; malformed ones are counted in Malformed and dropped. Valid counts
+# the valid lines.
 function Get-DrainedLine([object[]]$Lines, [double]$Now) {
     $last = $null
     foreach ($l in $Lines) { if ($null -eq $last -or $l.At -gt $last) { $last = $l.At } }
     if ($null -ne $last -and $Now - $last -lt 300) {
-        return [pscustomobject]@{ Kind = 'wait'; Line = $null; Malformed = 0 }
+        return [pscustomobject]@{ Kind = 'wait'; Line = $null; Malformed = 0; Valid = 0 }
     }
     $valid = @()
     $bad = 0
@@ -118,45 +119,64 @@ function Get-DrainedLine([object[]]$Lines, [double]$Now) {
     if ($valid.Count -gt 1) { $kind = 'stale' } elseif ($valid.Count -eq 1) { $kind = 'line' }
     $line = $null
     if ($kind -eq 'line') { $line = $valid[0] }
-    return [pscustomobject]@{ Kind = $kind; Line = $line; Malformed = $bad }
+    return [pscustomobject]@{ Kind = $kind; Line = $line; Malformed = $bad; Valid = $valid.Count }
 }
 
 # The task's state at start: Want (a step index) and LastSave from the OEM
 # strings (LastSave $null without a lanai-scale-save string), no pick, and
-# nothing observed. Ready turns true at the first valid line, or at ReadyAt:
-# 5 s after the start, or 3 s after the port opens (Invoke-ScaleTick).
+# nothing observed. Ready turns true at the first valid line, or at
+# Get-ReadyAt: ReadyAt (5 s after the start, or 3 s after the port opens,
+# Invoke-ScaleTick) or later while lines keep arriving (LastArrival).
+#   Confirmed  the last step observed
+#   Pending    the step asked for and not yet observed
+#   Requested  every step asked for since a request was confirmed, a
+#              decision needed no change, a pick was seen or the display was
+#              missing
 function New-ScaleState([int]$Want, $LastSave, [double]$Now) {
     return @{
         Want = $Want; LastSave = $LastSave; Pick = $null
         Confirmed = $null; Pending = $null; Requested = @(); NextRetry = 0
         Path = $null; Resolution = $null; Recommended = $null; SettledAt = $Now
-        Ready = $false; ReadyAt = $Now + 5000
+        Ready = $false; ReadyAt = $Now + 5000; LastArrival = $null
     }
 }
 
+# Print when the first-line wait of <State> ends: ReadyAt, but no sooner than
+# one feed period and a margin (2.5 s) after the last line arrived, so a line
+# still in its quiet gap, or the fresh line after a dropped stale batch,
+# applies alone instead of after the OEM step.
+function Get-ReadyAt($State) {
+    if ($null -eq $State.LastArrival) { return $State.ReadyAt }
+    return [math]::Max($State.ReadyAt, $State.LastArrival + 2500)
+}
+
 # One pass (spec 12): observe the display and detect a pick, then process
-# the drained line, then apply. <Obs> is one display observation ({DevicePath;
-# Resolution; MinRel; CurRel; MaxRel}, or $null when none), <Line> a parsed
-# line or $null. Returns the new State, an Action ("none", "set" a step, or
-# "retry" an unapplied one once a minute), the Step index and its Relative
-# value for SetScale.
-#   Confirmed is the last step observed; Pending a step asked for and not yet
-#   observed; Requested every step asked for since the last confirmation. A
-#   step in none of them is a pick only with the same recommended step and a
-#   resolution unchanged for 5 s; otherwise it just updates Confirmed. An
-#   older request that lands late is never a pick: the newest is asked for
-#   again. The first observation, and the first after the display path
-#   changes or the display was missing, never make a pick. A display change
+# the drained line, then apply. <Obs> is one display observation
+# (Get-DisplayObservation), or $null when the display is missing; <Line> a
+# parsed line or $null. Returns the new State, an Action ("none", "set" a
+# step, or "retry" an unapplied one once a minute), the Step index and its
+# Relative value for SetScale.
+#   A step in none of Confirmed, Pending and Requested is a pick only with
+#   the same recommended step and a resolution unchanged for 5 s; otherwise
+#   it just updates Confirmed. An older request that lands late is never a
+#   pick: the newest is asked for again. The first observation, and the
+#   first after the display path changes or the display was missing, never
+#   make a pick; a missing display keeps an existing pick. A display change
 #   drops an unapplied request, so the next decision asks again at once.
 function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
     $s = $State.Clone()
     $action = 'none'
     $step = -1
     $rel = 0
-    if (-not $s.Ready -and $Now -ge $s.ReadyAt) { $s.Ready = $true }
-    if ($null -ne $Obs) {
-        $rec = - $Obs.MinRel
-        $cur = $rec + $Obs.CurRel
+    if (-not $s.Ready -and $Now -ge (Get-ReadyAt $s)) { $s.Ready = $true }
+    if ($null -eq $Obs) {
+        $s.Path = $null
+        $s.Pending = $null
+        $s.Requested = @()
+    }
+    else {
+        $rec = $Obs.Recommended
+        $cur = $Obs.Current
         $first = $null -eq $s.Path
         $pathMoved = -not $first -and $Obs.DevicePath -ne $s.Path
         $resMoved = -not $first -and $Obs.Resolution -ne $s.Resolution
@@ -200,7 +220,13 @@ function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
         $target = $s.Want
         if ($null -ne $s.Pick) { $target = $s.Pick }
         $d = ScaleDecision $target $Obs.MinRel $Obs.CurRel $Obs.MaxRel
-        if ($d.change) {
+        if (-not $d.change) {
+            # Nothing to ask for: an old unapplied request must not make a
+            # later matching pick look like it landing.
+            $s.Pending = $null
+            $s.Requested = @()
+        }
+        else {
             $step = $d.target
             $rel = $d.relative
             if ($s.Pending -eq $d.target) {
@@ -234,21 +260,9 @@ function Confirm-ScaleSet($State, [int]$Step, $After) {
     return $s
 }
 
-# Forget what the task knew about the display after a pass without an
-# observation (the display was missing): the next observation counts as the
-# first, so a scale the display comes back with is never a pick, and an
-# unapplied request is dropped. An existing pick stays. Returns the new
-# state.
-function Reset-ScaleBaseline($State) {
-    $s = $State.Clone()
-    $s.Path = $null
-    $s.Pending = $null
-    $s.Requested = @()
-    return $s
-}
-
-# Observe the Looking Glass display: its path, device path, resolution and
-# DPI range. Paths and the range are queried on every call: the IDD can
+# Observe the Looking Glass display: its path, device path, resolution, DPI
+# range (relative to the recommended step) and the Recommended and Current
+# step indices. Paths and the range are queried on every call: the IDD can
 # attach late and Windows can change its recommendation after the
 # resolution has settled. Throws when there is not exactly one.
 function Get-DisplayObservation {
@@ -267,18 +281,26 @@ function Get-DisplayObservation {
         Path = $path; Name = $t.monitorFriendlyDeviceName; DevicePath = $t.monitorDevicePath
         Resolution = [LanaiDisplay]::Resolution($path)
         MinRel = $d.minScaleRel; CurRel = $d.curScaleRel; MaxRel = $d.maxScaleRel
+        Recommended = - $d.minScaleRel; Current = - $d.minScaleRel + $d.curScaleRel
     }
 }
 
-# The main loop's context: the state, the reader's queue and shared values
-# (OpenedAt, the time the port first opened), lines waiting for their quiet
-# gap, the next display poll, the last logged error, and HoldUntil, the end
-# of the OEM fallback's delay after a stale batch at startup.
+# The main loop's context:
+#   State        the scale state (New-ScaleState)
+#   Queue        the reader's queue of {Text; At} lines
+#   Shared       values the reader sets: OpenedAt (when the port first
+#                opened) and PortError (its last open or read error)
+#   Lines        queued lines waiting for their quiet gap
+#   NextObserve  the next 2 s display poll
+#   LastError    the last logged display or SetScale error
+#   PortError    the last logged port error
+#   PortOpened   whether the port's opening was seen and logged
+#   MalformedLogged  whether a malformed line was logged
 function New-ScaleContext($State, $Queue, $Shared) {
     return @{
         State = $State; Queue = $Queue; Shared = $Shared
-        Pending = New-Object 'System.Collections.Generic.List[object]'
-        NextObserve = 0; LastError = ''; MalformedLogged = $false; HoldUntil = 0
+        Lines = New-Object 'System.Collections.Generic.List[object]'
+        NextObserve = 0; LastError = ''; PortError = ''; PortOpened = $false; MalformedLogged = $false
     }
 }
 
@@ -290,57 +312,56 @@ function Write-ErrorOnce($Ctx, [string]$Message) {
     try { Write-Log "Error: $Message" } catch { }
 }
 
-# One 250 ms tick of the main loop at time <Now> (ms): move queued lines to
-# Pending and drain them once quiet; then, when a line is ready, the 2 s
+# One 250 ms tick of the main loop at time <Now> (ms): log the port's
+# opening and errors once each; move queued lines to Lines (stamping
+# LastArrival) and drain them once quiet; then, when a line is ready, the 2 s
 # display poll is due, or the first-line wait just ended, run one
-# Step-ScaleState pass and call SetScale for its action, then read the
-# scale back (Confirm-ScaleSet).
+# Step-ScaleState pass and call SetScale for its action, then read the scale
+# back (Confirm-ScaleSet).
 function Invoke-ScaleTick($Ctx, [double]$Now) {
+    $s = $Ctx.State
+    if ($null -ne $Ctx.Shared.OpenedAt -and -not $Ctx.PortOpened) {
+        $Ctx.PortOpened = $true
+        $s.ReadyAt = [math]::Min($s.ReadyAt, $Ctx.Shared.OpenedAt + 3000)
+        try { Write-Log 'The scale port is open.' } catch { }
+    }
+    $portError = [string]$Ctx.Shared.PortError
+    if ($portError -ne $Ctx.PortError) {
+        $Ctx.PortError = $portError
+        if ($portError -ne '') { try { Write-Log "Error: $portError" } catch { } }
+    }
     $item = $null
-    while ($Ctx.Queue.TryDequeue([ref]$item)) { $Ctx.Pending.Add($item) }
-    $drained = Get-DrainedLine $Ctx.Pending.ToArray() $Now
+    while ($Ctx.Queue.TryDequeue([ref]$item)) {
+        $Ctx.Lines.Add($item)
+        if ($null -eq $s.LastArrival -or $item.At -gt $s.LastArrival) { $s.LastArrival = $item.At }
+    }
+    $drained = Get-DrainedLine $Ctx.Lines.ToArray() $Now
     $line = $null
     if ($drained.Kind -ne 'wait') {
-        $count = $Ctx.Pending.Count
-        $Ctx.Pending.Clear()
+        $Ctx.Lines.Clear()
         if ($drained.Malformed -gt 0 -and -not $Ctx.MalformedLogged) {
             $Ctx.MalformedLogged = $true
             try { Write-Log 'Dropped a malformed line from the scale channel.' } catch { }
         }
         if ($drained.Kind -eq 'stale') {
-            try { Write-Log "Dropped a stale backlog of $count lines; the next line comes within 2 seconds." } catch { }
-            # Before the first line, wait one feed period and a margin for
-            # the next fresh line rather than apply the OEM step first.
-            if (-not $Ctx.State.Ready) { $Ctx.HoldUntil = $Now + 2500 }
+            try { Write-Log "Dropped a stale backlog of $($drained.Valid) lines; the next line comes within 2 seconds." } catch { }
         }
         if ($drained.Kind -eq 'line') { $line = $drained.Line }
     }
-    $s = $Ctx.State
-    if ($null -ne $Ctx.Shared.OpenedAt) { $s.ReadyAt = [math]::Min($s.ReadyAt, $Ctx.Shared.OpenedAt + 3000) }
-    # A first line waiting for its quiet gap, or a stale batch just dropped,
-    # holds the OEM fallback back, so the line's step applies alone.
-    $hold = -not $s.Ready -and ($drained.Kind -eq 'wait' -or $Now -lt $Ctx.HoldUntil)
-    if ($null -eq $line -and $Now -lt $Ctx.NextObserve -and ($s.Ready -or $hold -or $Now -lt $s.ReadyAt)) { return }
+    if ($null -eq $line -and $Now -lt $Ctx.NextObserve -and ($s.Ready -or $Now -lt (Get-ReadyAt $s))) { return }
     $Ctx.NextObserve = $Now + 2000
-    $pass = $s
-    if ($hold) {
-        $pass = $s.Clone()
-        $pass.ReadyAt = [double]::PositiveInfinity
-    }
     $obs = $null
     try {
         $obs = Get-DisplayObservation
-        $r = Step-ScaleState $pass $obs $line $Now
+        $r = Step-ScaleState $s $obs $line $Now
         $Ctx.LastError = ''
     }
     catch {
         Write-ErrorOnce $Ctx $_.Exception.Message
         $obs = $null
-        $r = Step-ScaleState $pass $null $line $Now
+        $r = Step-ScaleState $s $null $line $Now
     }
-    if ($hold) { $r.State.ReadyAt = $s.ReadyAt }
     $Ctx.State = $r.State
-    if ($null -eq $obs) { $Ctx.State = Reset-ScaleBaseline $Ctx.State }
     try {
         if ($null -ne $line -and $null -ne $s.LastSave -and $r.State.LastSave -ne $s.LastSave) {
             Write-Log "Scale save $($line.Save): target $(StepName $line.Step)."
@@ -351,7 +372,7 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
         if ($r.Action -eq 'set') {
             Write-Log ("Display '{0}' at {1}: raw minScaleRel {2}, curScaleRel {3}, maxScaleRel {4}; recommended {5}, current {6}, applying {7}" -f `
                 $obs.Name, $obs.Resolution, $obs.MinRel, $obs.CurRel, $obs.MaxRel,
-                (StepName (- $obs.MinRel)), (StepName (- $obs.MinRel + $obs.CurRel)), (StepName $r.Step))
+                (StepName $obs.Recommended), (StepName $obs.Current), (StepName $r.Step))
         }
     } catch { } # A failed log must not prevent the scale attempt.
     if ($r.Action -ne 'none') {
@@ -363,42 +384,89 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
     }
 }
 
+# Frame the port's bytes into lines: <Partial> is the unfinished line
+# carried from the last read, <Chunk> the new text. Returns the complete
+# Lines (CR trimmed) and the new Partial. Lanai's lines are short, so a
+# Partial over 256 characters is dropped.
+function Split-PortChunk {
+    param([string]$Partial, [string]$Chunk)
+    $parts = ($Partial + $Chunk).Split("`n")
+    $lines = @()
+    for ($i = 0; $i -lt $parts.Count - 1; $i++) { $lines += , $parts[$i].TrimEnd("`r") }
+    $rest = $parts[$parts.Count - 1]
+    if ($rest.Length -gt 256) { $rest = '' }
+    return [pscustomobject]@{ Lines = $lines; Partial = $rest }
+}
+
+# Return $true when read error <Err> (or one it wraps) is
+# ERROR_NO_SYSTEM_RESOURCES (1450, HResult 0x800705AA): what a read gets
+# while no host is connected (phase 0 proof 3), so read again later. Any
+# other error means the handle broke (a device reset, a resume): reopen.
+function Test-PortIdle {
+    param($Err)
+    for ($e = $Err; $null -ne $e; $e = $e.InnerException) {
+        if ($e.HResult -eq -2147023446) { return $true }
+    }
+    return $false
+}
+
+# The text of the functions the reader runspace calls: a runspace has its
+# own function table.
+function Get-ReaderFunctions {
+    return (@('Split-PortChunk', 'Test-PortIdle') | ForEach-Object {
+            "function $_ {`n$((Get-Item "function:$_").ScriptBlock)`n}"
+        }) -join "`n"
+}
+
 # The reader runspace's loop: open the port with CreateFile (a FileStream
 # cannot open a \\.\ path in PowerShell 5.1), stamp $Shared.OpenedAt once,
 # and queue each complete line with its arrival time. The handle stays open
-# across the feed's connects: a failed or 0-byte read (no host connected
-# fails at once, phase 0 proof 3) reads again after 250 ms, and only an
-# invalid handle or a failed open is retried, every 2 s.
+# across the feed's connects: a 0-byte read or error 1450 (no host
+# connected) reads again after 250 ms. Any other read error closes the
+# handle, and a failed open is retried every 2 s. Open and read errors go to
+# $Shared.PortError for the main loop to log.
 $ReaderScript = {
-    param($Queue, $Shared, $Clock, $PortName)
+    param($Queue, $Shared, $Clock, $PortName, $Functions)
+    . ([scriptblock]::Create($Functions))
     $handle = $null
     $stream = $null
     $buf = New-Object byte[] 4096
     $partial = ''
     while ($true) {
         try {
-            if ($null -eq $handle -or $handle.IsInvalid -or $handle.IsClosed) {
-                $handle = [LanaiPort]::Open($PortName)
-                if ($handle.IsInvalid) { Start-Sleep -Seconds 2; continue }
+            if ($null -eq $handle) {
+                $err = 0
+                $handle = [LanaiPort]::Open($PortName, [ref]$err)
+                if ($handle.IsInvalid) {
+                    $handle = $null
+                    $Shared.PortError = "Cannot open the scale port: $((New-Object ComponentModel.Win32Exception $err).Message) (error $err)"
+                    Start-Sleep -Seconds 2
+                    continue
+                }
                 $stream = New-Object IO.FileStream($handle, [IO.FileAccess]::Read, 4096, $false)
                 $partial = ''
+                $Shared.PortError = ''
                 if ($null -eq $Shared.OpenedAt) { $Shared.OpenedAt = $Clock.Elapsed.TotalMilliseconds }
             }
-            $n = -1
-            try { $n = $stream.Read($buf, 0, $buf.Length) } catch { $n = -1 }
+            $n = 0
+            try { $n = $stream.Read($buf, 0, $buf.Length) }
+            catch {
+                if (-not (Test-PortIdle $_.Exception)) {
+                    $Shared.PortError = "Reading the scale port failed: $($_.Exception.Message)"
+                    $stream.Dispose()
+                    $handle = $null
+                }
+            }
             if ($n -le 0) { Start-Sleep -Milliseconds 250; continue }
             $now = $Clock.Elapsed.TotalMilliseconds
-            $partial += [Text.Encoding]::ASCII.GetString($buf, 0, $n)
-            $i = $partial.IndexOf("`n")
-            while ($i -ge 0) {
-                $Queue.Enqueue([pscustomobject]@{ Text = $partial.Substring(0, $i).TrimEnd("`r"); At = $now })
-                $partial = $partial.Substring($i + 1)
-                $i = $partial.IndexOf("`n")
-            }
-            # Lanai's lines are short: drop an oversize fragment.
-            if ($partial.Length -gt 256) { $partial = '' }
+            $r = Split-PortChunk $partial ([Text.Encoding]::ASCII.GetString($buf, 0, $n))
+            $partial = $r.Partial
+            foreach ($l in $r.Lines) { $Queue.Enqueue([pscustomobject]@{ Text = $l; At = $now }) }
         }
-        catch { Start-Sleep -Seconds 2 }
+        catch {
+            $Shared.PortError = "The scale port reader failed: $($_.Exception.Message)"
+            Start-Sleep -Seconds 2
+        }
     }
 }
 
@@ -416,9 +484,12 @@ public static class LanaiPort {
     private static extern SafeFileHandle CreateFile(string name, uint access, uint share,
         IntPtr security, uint disposition, uint flags, IntPtr template);
 
-    // Open a port for reading (GENERIC_READ, OPEN_EXISTING).
-    public static SafeFileHandle Open(string name) {
-        return CreateFile(name, 0x80000000, 0, IntPtr.Zero, 3, 0, IntPtr.Zero);
+    // Open a port for reading (GENERIC_READ, OPEN_EXISTING). On failure the
+    // handle is invalid and error holds the Win32 error.
+    public static SafeFileHandle Open(string name, out int error) {
+        SafeFileHandle h = CreateFile(name, 0x80000000, 0, IntPtr.Zero, 3, 0, IntPtr.Zero);
+        error = h.IsInvalid ? Marshal.GetLastWin32Error() : 0;
+        return h;
     }
 }
 
@@ -580,9 +651,9 @@ try {
     # IgnoreNew prevents duplicates and its zero execution limit permits >72 h.
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
-    $shared = [hashtable]::Synchronized(@{ OpenedAt = $null })
+    $shared = [hashtable]::Synchronized(@{ OpenedAt = $null; PortError = '' })
     $reader = [PowerShell]::Create()
-    $reader.AddScript($ReaderScript).AddArgument($queue).AddArgument($shared).AddArgument($clock).AddArgument($PortName) | Out-Null
+    $reader.AddScript($ReaderScript).AddArgument($queue).AddArgument($shared).AddArgument($clock).AddArgument($PortName).AddArgument((Get-ReaderFunctions)) | Out-Null
     $reader.BeginInvoke() | Out-Null
     $ctx = New-ScaleContext (New-ScaleState $want $save 0) $queue $shared
     while ($true) {

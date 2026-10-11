@@ -65,6 +65,23 @@ setup_finished() {
   done
 }
 
+@test "settings save number: a save after 999999999 wraps to 0" {
+  jq '.scale_save=999999999' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  lanai_run settings 8 4 150
+  assert_success
+  assert_equal "$(jq -r .scale_save "$(settings_file)")" 0
+}
+
+@test "scale task kind: a running setup round counts as none until it records the live task" {
+  setup_finished
+  assert_equal "$(scale_task_kind)" old
+  jq '.round=true' "$(state_dir)/setup.json" >"$T/setup" && mv "$T/setup" "$(state_dir)/setup.json"
+  assert_equal "$(scale_task_kind)" none
+  jq '.scale_task=2' "$(state_dir)/setup.json" >"$T/setup" && mv "$T/setup" "$(state_dir)/setup.json"
+  assert_equal "$(scale_task_kind)" new
+}
+
 @test "settings reply: structured fields say what was saved, whether Windows runs, and which task" {
   lanai_run settings 8 4 150
   assert_equal "$(jq -c '{scale_saved,running,scale_task}' <<<"$JSON")" '{"scale_saved":true,"running":false,"scale_task":"none"}'

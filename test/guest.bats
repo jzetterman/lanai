@@ -368,20 +368,20 @@ guest_ps() {
       $d = [LanaiDisplay]::D
       if ($null -eq $d) { throw "Found 0 Looking Glass displays among 0; expected one" }
       [pscustomobject]@{ Path = 1; Name = "LGIDD"; DevicePath = $d.DevicePath; Resolution = $d.Resolution
-        MinRel = $d.MinRel; CurRel = $d.CurRel; MaxRel = $d.MaxRel }
+        MinRel = $d.MinRel; CurRel = $d.CurRel; MaxRel = $d.MaxRel
+        Recommended = - $d.MinRel; Current = - $d.MinRel + $d.CurRel }
     }
     $script:Logs = @()
     function Write-Log($Message) { $script:Logs += $Message }
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
-    foreach ($name in "StepName", "ScaleDecision", "ConvertFrom-ScaleLine", "Get-DrainedLine", "New-ScaleState",
-      "Step-ScaleState", "Confirm-ScaleSet", "Reset-ScaleBaseline", "New-ScaleContext", "Write-ErrorOnce", "Invoke-ScaleTick") {
-      $f = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-        $n.Name -eq $name }, $true) | Select-Object -First 1
-      if (-not $f) { throw "missing $name" }
-      . ([scriptblock]::Create($f.Extent.Text))
-    }
+    # Every top-level function but the two that need Windows (faked above).
+    $fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $n.Name -notin "Write-Log", "Get-DisplayObservation" }, $false)
+    if (@($fns).Count -lt 10) { throw "only $(@($fns).Count) functions" }
+    foreach ($f in $fns) { . ([scriptblock]::Create($f.Extent.Text)) }
     function Obs($Cur, $Min = -1, $Max = 5, $Res = "1920x1080", $Path = "lg") {
-      [pscustomobject]@{ Path = 1; Name = "LGIDD"; DevicePath = $Path; Resolution = $Res; MinRel = $Min; CurRel = $Cur; MaxRel = $Max }
+      [pscustomobject]@{ Path = 1; Name = "LGIDD"; DevicePath = $Path; Resolution = $Res; MinRel = $Min; CurRel = $Cur; MaxRel = $Max
+        Recommended = - $Min; Current = - $Min + $Cur }
     }
     function L($Step, $Save) { ConvertFrom-ScaleLine "lanai-scale $Step $Save" }
     function Q($Text, $At) { [pscustomobject]@{ Text = $Text; At = $At } }
@@ -762,6 +762,140 @@ guest_ps() {
   assert_output ok
 }
 
+@test "guest pick rule: a decision that needs no change forgets an unapplied request" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $s = New-ScaleState 1 5 0
+    $s.Ready = $true
+    $r = Step-ScaleState $s (Obs 0) $null 0
+    # A save asks for 175% (index 3); Windows does not apply it.
+    $r = Step-ScaleState $r.State (Obs 0) (L 175 6) 1000
+    Assert ($r.Action -eq "set" -and $r.State.Pending -eq 3) "request"
+    # The next save asks for 125%, which Windows already shows: nothing to do.
+    $r = Step-ScaleState $r.State (Obs 0) (L 125 7) 3000
+    Assert ($r.Action -eq "none" -and $null -eq $r.State.Pending -and @($r.State.Requested).Count -eq 0) "request kept"
+    # Later the user picks 175% in Windows: a pick, not the old request landing.
+    $r = Step-ScaleState $r.State (Obs 2) $null 9000
+    Assert ($r.State.Pick -eq 3 -and $r.Action -eq "none") "pick: $($r.State.Pick), action $($r.Action)"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest log: a stale batch counts its valid lines, and a malformed line is logged once" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    $ctx = New-ScaleContext (New-ScaleState 1 5 0) $q @{ OpenedAt = 0 }
+    foreach ($text in "", "lanai-scale 150 4", "", "lanai-scale 175 5", "junk") { $q.Enqueue((Q $text 1000)) }
+    for ($t = 1000; $t -le 2000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    $q.Enqueue((Q "junk" 2100))
+    $q.Enqueue((Q "lanai-scale 150 6" 2100))
+    for (; $t -le 4000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    $all = $script:Logs -join "`n"
+    Assert ($all -match "stale backlog of 2 lines") "stale count: $all"
+    Assert (@($script:Logs | Where-Object { $_ -match "malformed" }).Count -eq 1) "malformed logs: $all"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest port: lines are framed across reads, CR trimmed, an oversize fragment dropped" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $r = Split-PortChunk "" "lanai-sca"
+    Assert (@($r.Lines).Count -eq 0 -and $r.Partial -eq "lanai-sca") "first half"
+    $r = Split-PortChunk $r.Partial "le 150 3`r`n`nlanai-scale 1"
+    Assert (@($r.Lines).Count -eq 2 -and $r.Lines[0] -eq "lanai-scale 150 3" -and $r.Lines[1] -eq "" -and $r.Partial -eq "lanai-scale 1") "split line: $($r.Lines -join "|") / $($r.Partial)"
+    $r = Split-PortChunk "" ("x" * 300)
+    Assert (@($r.Lines).Count -eq 0 -and $r.Partial -eq "") "oversize fragment"
+    $r = Split-PortChunk "" ("x" * 256)
+    Assert ($r.Partial.Length -eq 256) "fragment at the limit"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest port: only error 1450 means read again later; any other read error reopens" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $idle = New-Object System.IO.IOException("Insufficient system resources", -2147023446)
+    Assert (Test-PortIdle $idle) "1450"
+    $wrapped = New-Object System.Management.Automation.MethodInvocationException("Read failed", $idle)
+    Assert (Test-PortIdle $wrapped) "wrapped 1450"
+    $broken = New-Object System.IO.IOException("The device is not ready", -2147024875)
+    Assert (-not (Test-PortIdle $broken)) "another error"
+    Assert (-not (Test-PortIdle (New-Object System.InvalidOperationException("closed")))) "no HResult match"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest port: the reader runspace gets the framing and error functions it calls" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $ps = [PowerShell]::Create()
+    $ps.AddScript("param(`$f) . ([scriptblock]::Create(`$f)); (Split-PortChunk `"a`" `"b`nc`").Lines; (Test-PortIdle `$null)").AddArgument((Get-ReaderFunctions)) | Out-Null
+    $out = $ps.Invoke()
+    Assert ($ps.HadErrors -eq $false -and $out[0] -eq "ab" -and $out[1] -eq $false) "runspace: $($out -join "|") $($ps.Streams.Error)"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest port: open and read errors are logged once each, and the port opening once" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    $shared = @{ OpenedAt = $null; PortError = "" }
+    $ctx = New-ScaleContext (New-ScaleState 1 5 0) $q $shared
+    $shared.PortError = "Cannot open the scale port: Access is denied."
+    for ($t = 0; $t -le 4000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    $shared.PortError = ""
+    $shared.OpenedAt = 4100
+    for (; $t -le 8000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    $shared.PortError = "Reading the scale port failed: The device is not ready."
+    for (; $t -le 12000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    $all = $script:Logs -join "`n"
+    Assert (@($script:Logs | Where-Object { $_ -match "Access is denied" }).Count -eq 1) "open error: $all"
+    Assert (@($script:Logs | Where-Object { $_ -match "port is open" }).Count -eq 1) "opened: $all"
+    Assert (@($script:Logs | Where-Object { $_ -match "not ready" }).Count -eq 1) "read error: $all"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest display: the real observation picks the Looking Glass path and reads its fields" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  PS1=$REPO/guest/lanai-scale.ps1 run pwsh -NoProfile -NonInteractive -Command '
+    $ErrorActionPreference = "Stop"
+    class LanaiDisplay {
+      static [object[]] $Paths = @()
+      static [object[]] ActivePaths() { return [LanaiDisplay]::Paths }
+      static [object] GetTargetName([object] $p) { return [pscustomobject]@{ monitorFriendlyDeviceName = $p.Name; monitorDevicePath = $p.Device } }
+      static [string] Resolution([object] $p) { return $p.Res }
+      static [object] GetScale([object] $p) { return [pscustomobject]@{ minScaleRel = -2; curScaleRel = 1; maxScaleRel = 4 } }
+    }
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
+    $f = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Get-DisplayObservation" }, $true) | Select-Object -First 1
+    . ([scriptblock]::Create($f.Extent.Text))
+    function Assert($Ok, $Why) { if (-not $Ok) { throw "failed: $Why" } }
+    $other = [pscustomobject]@{ Name = "DELL U2720Q"; Device = "\\?\DISPLAY#DEL1"; Res = "3840x2160" }
+    $lg = [pscustomobject]@{ Name = ""; Device = "\\?\SWD#LGIDD#1"; Res = "2560x1440" }
+    [LanaiDisplay]::Paths = @($other, $lg)
+    $o = Get-DisplayObservation
+    Assert ($o.Path -eq $lg -and $o.DevicePath -eq "\\?\SWD#LGIDD#1" -and $o.Resolution -eq "2560x1440") "LG among two"
+    Assert ($o.MinRel -eq -2 -and $o.CurRel -eq 1 -and $o.MaxRel -eq 4 -and $o.Recommended -eq 2 -and $o.Current -eq 3) "range"
+    # One display that does not name Looking Glass: the only one counts.
+    [LanaiDisplay]::Paths = @($other)
+    Assert ((Get-DisplayObservation).Resolution -eq "3840x2160") "single path"
+    [LanaiDisplay]::Paths = @()
+    $threw = $false
+    try { Get-DisplayObservation | Out-Null } catch { $threw = $_.Exception.Message -match "Found 0" }
+    Assert $threw "none"
+    [LanaiDisplay]::Paths = @($other, ([pscustomobject]@{ Name = "Generic"; Device = "x"; Res = "1x1" }))
+    $threw = $false
+    try { Get-DisplayObservation | Out-Null } catch { $threw = $true }
+    Assert $threw "two without Looking Glass"
+    "ok"'
+  assert_success
+  assert_output ok
+}
+
 @test "guest loop: a late display is logged once, then set; a failed log never stops a set" {
   command -v pwsh >/dev/null || skip "pwsh is not installed"
   run guest_ps '
@@ -769,7 +903,7 @@ guest_ps() {
     $ctx = New-ScaleContext (New-ScaleState 3 5 0) $q @{ OpenedAt = 0 }
     [LanaiDisplay]::D = $null
     for ($t = 0; $t -le 8000; $t += 250) { Invoke-ScaleTick $ctx $t }
-    Assert ($script:Logs.Count -eq 1 -and $script:Logs[0] -match "Found 0") "one error line: $($script:Logs -join "|")"
+    Assert (@($script:Logs | Where-Object { $_ -match "^Error" }).Count -eq 1 -and ($script:Logs -join "|") -match "Found 0") "one error line: $($script:Logs -join "|")"
     [LanaiDisplay]::D = @{ DevicePath = "lg"; Resolution = "1920x1080"; MinRel = -1; CurRel = 0; MaxRel = 5 }
     for (; $t -le 10000; $t += 250) { Invoke-ScaleTick $ctx $t }
     Assert ([LanaiDisplay]::Sets -eq 1 -and [LanaiDisplay]::D.CurRel -eq 2) "late display set"
@@ -804,14 +938,16 @@ guest_ps() {
   assert_failure
 }
 
-@test "setup scale task: elevated, one task by name, no execution limit, duplicates ignored" {
+@test "setup scale task: elevated, one task by name, no execution limit, duplicates ignored, restarts" {
   run setup_code
-  assert_output --partial "New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew"
+  assert_output --partial "New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)"
   assert_output --partial '-Settings $s'
   assert_output --partial "New-ScheduledTaskPrincipal -UserId \$u -LogonType Interactive -RunLevel Highest"
   assert_output --partial "Register-ScheduledTask -TaskName 'Lanai display scale' -Action \$a -Trigger \$t -Principal \$p -Settings \$s -Force"
-  # powershell.exe by absolute path, expanded by cmd when setup.cmd registers it.
-  assert_output --partial "New-ScheduledTaskAction -Execute '%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe'"
+  # powershell.exe by absolute path, from the system folder Windows reports
+  # (not an environment variable the user can set).
+  assert_output --partial "New-ScheduledTaskAction -Execute ([Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\powershell.exe')"
+  refute_output --partial '%SystemRoot%'
   run grep -c 'Register-ScheduledTask' "$SETUP_CMD"
   assert_output 1
   run cat "$REPO/guest/lanai-scale.ps1"

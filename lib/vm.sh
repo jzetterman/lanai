@@ -612,7 +612,7 @@ clock_sync() {
 event_record() {
   local rec s run
   if jq -e '.event == "RESET"' <<<"$1" >/dev/null 2>&1; then
-    if run=$(run_dir); then rm -f -- "$run/step6-asked"; fi
+    if run=$(run_dir); then rm -f -- "$run/step6-asked" "$run/step6-answered"; fi
     return 0
   fi
   rec=$(jq -c --arg inv "${INVOCATION_ID:-}" 'select(.event == "SHUTDOWN") |
@@ -694,28 +694,59 @@ scale_send() {
 }
 
 # The feed's state between passes: the last good line and target, the boot
-# monitor, and which problems are already logged (each is logged once, and
-# again when it clears).
-SCALE_FEED_LINE="" SCALE_FEED_TARGET="" SCALE_FEED_BOOT_MONITOR=""
+# monitor and Hyprland instance, and which problems are already logged
+# (each is logged once, and again when it clears).
+SCALE_FEED_LINE="" SCALE_FEED_TARGET="" SCALE_FEED_BOOT_MONITOR="" SCALE_FEED_BOOT_SIG=""
 SCALE_FEED_SEND_FAILED=false SCALE_FEED_HYPR_FAILED=false SCALE_FEED_SETTINGS_BAD=false
+
+# hypr_signature <candidate>: print the Hyprland instance hyprctl should
+# use: <candidate> (boot.json's) when its socket exists under
+# $XDG_RUNTIME_DIR/hypr, else the inherited HYPRLAND_INSTANCE_SIGNATURE when
+# its socket exists, else the only instance there with a socket. Fails when
+# there is none, or more than one to guess from.
+hypr_signature() {
+  local dir=${XDG_RUNTIME_DIR:-/nonexistent}/hypr sig f
+  local -a found=()
+  for sig in "$1" "${HYPRLAND_INSTANCE_SIGNATURE:-}"; do
+    if [[ $sig =~ ^[A-Za-z0-9_]+$ && -S $dir/$sig/.socket.sock ]]; then
+      printf '%s\n' "$sig"
+      return 0
+    fi
+  done
+  for f in "$dir"/*/.socket.sock; do
+    [[ ! -S $f ]] || found+=("${f%/.socket.sock}")
+  done
+  ((${#found[@]} == 1)) || return 1
+  sig=${found[0]##*/}
+  [[ $sig =~ ^[A-Za-z0-9_]+$ ]] || return 1
+  printf '%s\n' "$sig"
+}
+
+# Export the Hyprland instance hypr_signature finds for boot.json's, and log
+# which one the feed uses, or that it found none (the user manager may lack
+# the session's, and Hyprland may restart under a new one).
+scale_feed_hypr() {
+  local sig
+  if sig=$(hypr_signature "$SCALE_FEED_BOOT_SIG"); then
+    export HYPRLAND_INSTANCE_SIGNATURE=$sig
+    echo "lanai: the scale feed uses Hyprland instance $sig" >&2
+  else
+    echo "lanai: the scale feed finds no running Hyprland instance (boot.json names ${SCALE_FEED_BOOT_SIG:-none})" >&2
+  fi
+}
 
 # Seed the feed from boot.json: the boot's step and save number as the last
 # good line, the focused monitor at boot, and the session's Hyprland
-# instance, exported for hyprctl when it is a plain name (the user manager
-# may lack it). An empty or invalid one is logged.
+# instance (scale_feed_hypr).
 scale_feed_init() {
-  local f save sig
+  local f save
   f=$(state_dir)/boot.json
   SCALE_FEED_TARGET=$(jq -r '.scale | numbers' "$f" 2>/dev/null) || SCALE_FEED_TARGET=""
   save=$(jq -r '.scale_save // 0 | numbers' "$f" 2>/dev/null) || save=""
   SCALE_FEED_LINE=$(scale_line "$SCALE_FEED_TARGET" "$save") || SCALE_FEED_LINE="" SCALE_FEED_TARGET=""
   SCALE_FEED_BOOT_MONITOR=$(jq -r '.boot_monitor | strings' "$f" 2>/dev/null) || SCALE_FEED_BOOT_MONITOR=""
-  sig=$(jq -r '.hyprland_instance_signature | strings' "$f" 2>/dev/null) || sig=""
-  if [[ $sig =~ ^[A-Za-z0-9_]+$ ]]; then
-    export HYPRLAND_INSTANCE_SIGNATURE=$sig
-  else
-    echo "lanai: boot.json names no valid Hyprland instance; the scale feed may not reach Hyprland" >&2
-  fi
+  SCALE_FEED_BOOT_SIG=$(jq -r '.hyprland_instance_signature | strings' "$f" 2>/dev/null) || SCALE_FEED_BOOT_SIG=""
+  scale_feed_hypr
 }
 
 # One pass of the scale feed: read settings.json once (vm_scale_settings);
@@ -741,8 +772,11 @@ scale_feed_step() {
     SCALE_FEED_HYPR_FAILED=false
   else
     clients='[]' monitors='[]'
-    $SCALE_FEED_HYPR_FAILED ||
-      echo "lanai: hyprctl does not answer; the Windows scale keeps its last monitor" >&2
+    if ! $SCALE_FEED_HYPR_FAILED; then
+      echo "lanai: hyprctl does not answer (Hyprland instance ${HYPRLAND_INSTANCE_SIGNATURE:-none}); the Windows scale keeps its last monitor" >&2
+      # Once per failure streak: Hyprland may have restarted as a new instance.
+      scale_feed_hypr
+    fi
     SCALE_FEED_HYPR_FAILED=true
   fi
   name=$(window_monitor "$clients" "$monitors" "$pid")
@@ -755,7 +789,8 @@ scale_feed_step() {
     line=$(scale_line "$target" "$save"); then
     SCALE_FEED_TARGET=$target SCALE_FEED_LINE=$line
   fi
-  [[ -n $SCALE_FEED_LINE ]] || return 0
+  # No socket yet means QEMU is not up: nothing to send, nothing to log.
+  [[ -n $SCALE_FEED_LINE && -S $run/scale.sock ]] || return 0
   if scale_send "$run/scale.sock" "$SCALE_FEED_LINE"; then
     ! $SCALE_FEED_SEND_FAILED || echo "lanai: the scale feed sends to Windows again" >&2
     SCALE_FEED_SEND_FAILED=false
@@ -769,13 +804,16 @@ scale_feed_step() {
 # LANAI_SCALE_INTERVAL seconds, measured start to start, for the VM's life
 # (spec 12, 27). It needs no shell or panel.
 scale_feed() {
-  local start period t
+  local start period left
   period=$(awk -v s="$LANAI_SCALE_INTERVAL" 'BEGIN { printf "%d", s * 1000000 }')
   scale_feed_init
   while :; do
     start=$(now_us)
     scale_feed_step || true
-    if t=$(time_left $((start + period))); then sleep "$t"; fi
+    left=$((start + period - $(now_us)))
+    # Never more than a period, should the wall clock step back.
+    ((left <= period)) || left=$period
+    ((left <= 0)) || sleep "$((left / 1000000)).$(printf '%06d' $((left % 1000000)))"
   done
 }
 
@@ -886,9 +924,9 @@ vm_plan() {
 
 # lanai-vm-exec, the unit's ExecStart (plan: Architecture). It reads the
 # scale, its save number and the boot mode boot_vm left in
-# <state>/boot.json, builds QEMU's
-# arguments with vm_plan, removes stale sockets and shared memory, empties
-# client.log, starts the helpers in the background (in the unit's cgroup;
+# <state>/boot.json, builds QEMU's arguments with vm_plan, removes stale
+# sockets, run stamps and shared memory, empties client.log, starts the
+# helpers in the background (in the unit's cgroup;
 # systemd stops them after ExecStop): virtiofsd once, the others under
 # supervise. It waits for virtiofsd's fresh socket, writes the "running"
 # marker with $INVOCATION_ID, and execs QEMU. Only for a boot that shows
@@ -933,7 +971,7 @@ vm_exec() {
   done
   # Setup's step 6 times the guest agent's open and closed port per boot,
   # and the scale feed's window monitor belongs to one run.
-  rm -f -- "$run/ivshmem" "$run/qga-open-since" "$run/qga-closed-since" "$run/step6-asked" "$run/scale-monitor"
+  rm -f -- "$run/ivshmem" "$run/qga-open-since" "$run/qga-closed-since" "$run/step6-asked" "$run/step6-answered" "$run/scale-monitor"
   : >"$run/client.log"
 
   run_once virtiofsd "$LANAI_VIRTIOFSD" --sandbox namespace --shared-dir "$HOME/Windows" \

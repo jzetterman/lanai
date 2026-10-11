@@ -11,8 +11,10 @@ Item {
   property string pendingToken: ""
   property double pendingAt: 0
   property bool refreshAgain: false
-  // Set when run() drops a click because the last action still runs.
+  // Set when run() drops a click because the last action still runs; shown
+  // for at least 2 s (clickNoticeAt, ms) and at most 5 s.
   property string clickNotice: ""
+  property double clickNoticeAt: 0
   signal panelRequested()
   signal settingsSaved(int memoryGib, int cores, var windowsScale)
   readonly property string tooltip: ["Lanai", view.label, view.headline, view.cause, view.next, view.notice, view.warning, view.right_click_tooltip].filter(function(s) { return !!s }).join("\n")
@@ -38,6 +40,8 @@ Item {
     var now = Math.floor(Date.now() / 1000)
     if (actionProcess.running || (longJob && pendingToken && now - pendingAt < 10)) {
       clickNotice = "The last action is still running. Try again in a moment."
+      clickNoticeAt = Date.now()
+      clickNoticeTimer.interval = 5000
       clickNoticeTimer.restart()
       return
     }
@@ -61,7 +65,8 @@ Item {
     onTriggered: root.refresh()
   }
   onPanelOpenChanged: if (panelOpen) refresh()
-  // A dropped-click notice lasts a few seconds, or until the action ends.
+  // A dropped-click notice lasts until the action ends, at least 2 s and at
+  // most 5 s.
   Timer {
     id: clickNoticeTimer
     interval: 5000
@@ -94,7 +99,13 @@ Item {
     id: actionProcess
     stdout: StdioCollector { id: actionOutput; waitForEnd: true }
     onExited: function(code) {
-      root.clickNotice = ""
+      if (root.clickNotice !== "") {
+        var left = 2000 - (Date.now() - root.clickNoticeAt)
+        if (left > 0) {
+          clickNoticeTimer.interval = left
+          clickNoticeTimer.restart()
+        } else root.clickNotice = ""
+      }
       try {
         var reply = JSON.parse(actionOutput.text)
         if (reply.panel_requested === true) root.panelRequested()

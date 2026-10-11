@@ -197,14 +197,14 @@ You can also pick a scale in Windows, under Settings > System > Display > Scale.
 Your pick holds until your next scale save, a sign-out, a Windows restart or the VM
 stopping, and the panel notes that saving a scale replaces it. A pick never changes
 Lanai's setting. Windows changes its recommended scale when the resolution changes;
-the scale task sets those changes back to Lanai's scale. The scale holds as the
-window resizes: Windows caps it at its limit for the current resolution, and it
-goes back up when the window grows.
+the scale task sets it back to your pick, or to Lanai's scale when you have no
+pick. The scale holds as the window resizes: Lanai caps it at Windows' limit for
+the current resolution, and it goes back up when the window grows.
 
 This is Windows' display scale, separate from its “Text size” setting. While
-Windows' custom scaling is on (a percentage that applies at sign-out), it overrides
-Lanai's scale; turn it off under Settings > System > Display > Scale, then sign
-out. Some Windows apps redraw at a new scale only after they restart. If Windows
+Windows' custom scaling is on (a percentage that needs a sign-out to apply), it
+overrides Lanai's scale; turn it off under Settings > System > Display > Scale,
+then sign out. Some Windows apps redraw at a new scale only after they restart. If Windows
 accepts a change but leaves the scale unchanged, the scale task tries again once a
 minute. Its log is `C:\Program Files\Lanai\lanai-scale.log`.
 
@@ -250,8 +250,9 @@ a save number, and Lanai never reads what Windows writes to it.
 Windows opens the scale channel only to administrators, so the scale task runs at
 your sign-in with your administrator rights and no prompt. Its script, log and temp
 folder sit in `C:\Program Files\Lanai`, where only administrators can write. Such a
-task still starts with your Windows user's environment variables, so malware
-already running as that user could use it to gain administrator rights. With UAC
+task still starts with your Windows user's environment variables and registry
+settings, so malware already running as that user could use it to gain
+administrator rights. With UAC
 on, that malware has other ways to the same end.
 
 ## Networking and coexistence

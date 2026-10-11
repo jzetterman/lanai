@@ -671,13 +671,11 @@ scale_percent() {
 }
 
 # Print the focused monitor's scale as a percentage, from <monitors-json>
-# (`hyprctl monitors -j`), or from host_monitors without an argument.
-# `lanai start` reads it (spec 12). Fails without Hyprland or a focused
-# monitor.
+# (`hyprctl monitors -j`). `lanai start` reads it (spec 12). Fails without
+# a focused monitor or readable JSON.
 host_scale() {
-  local mons=${1-} scale
-  (($#)) || mons=$(host_monitors) || return 1
-  scale=$(jq -er 'first(.[] | select(.focused == true)) | .scale | numbers' <<<"$mons" 2>/dev/null) || return 1
+  local scale
+  scale=$(jq -er 'first(.[] | select(.focused == true)) | .scale | numbers' <<<"$1" 2>/dev/null) || return 1
   scale_percent "$scale"
 }
 
@@ -1155,15 +1153,14 @@ runtime_refresh() {
 # session's Hyprland instance (for the scale feed) and the boot mode to
 # boot.json, and starts the unit. Setup boots require this disk's snapshot
 # decision; step 6 requires this disk's step5 to be true; ordinary starts
-# require setup_done
-# under the same lock. A setup boot guesses QEMU's window
+# require setup_done under the same lock. A setup boot guesses QEMU's window
 # when no guest version is recorded, else the client; <window> overrides
 # that guess. A window boot needs WAYLAND_DISPLAY, carried in boot.json.
 # Setup boots open a round before starting and set step5 false once the
 # unit starts. The reply includes window, last_run for the panel's forced
 # stop notice, and network false when the host has no default route.
 boot_vm() {
-  local setup=$1 window=${2:-auto} step6=${3:-false} reason scale step save monitors monitor s dir media="" last="" next="wait for Windows to start"
+  local setup=$1 window=${2:-auto} step6=${3:-false} reason settings scale step save monitors monitor s dir media="" last="" next="wait for Windows to start"
   local message="Windows is starting." network=true
   if ! lanai_flock; then
     emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
@@ -1208,11 +1205,11 @@ boot_vm() {
   else
     window=false
   fi
-  if ! step=$(vm_scale_settings); then
+  if ! settings=$(vm_scale_settings); then
     emit false "" "Lanai cannot read Windows scale or its save number in its settings file." "set auto or a valid Windows scale step"
     return 1
   fi
-  read -r step save <<<"$step"
+  read -r step save <<<"$settings"
   # The focused monitor counts for "match my monitor" at start, and the
   # scale feed falls back to it until the window first opens. A failed
   # read never blocks a boot.

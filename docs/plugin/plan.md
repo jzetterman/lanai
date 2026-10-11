@@ -2264,7 +2264,10 @@ fixture `hyprctl` JSON; the loop is tested against a fake server that never read
   does not change the scale twice. The wait ends at the first valid line, or one
   feed period plus the send deadline after the port opens (3 s by default), or 5 s
   after the task starts, whichever comes first; a port that never opens (an older
-  host, or a failed open) still gets the OEM step within 5 s. The OEM values
+  host, or a failed open) still gets the OEM step within 5 s. As built: any
+  arrival before the first line (a line waiting for its quiet gap, or a stale
+  batch) moves the fallback to 2.5 s after it, so a fresh line applies alone
+  and the boot step never flashes first. The OEM values
   give the baseline before any pick and before the channel connects. A line whose
   save number differs from `lastSave` is a scale save: set `want`, clear `pick`, set
   `lastSave`. A line with the same number updates `want` (a follow update) and
@@ -2279,7 +2282,12 @@ fixture `hyprctl` JSON; the loop is tested against a fake server that never read
   least 5 s, is a pick: `pick` = it, `confirmed` = it, `pending` = null. A moved
   recommended step or resolution is never a pick; the task updates `confirmed` and
   reapplies the applied scale. A pick right after the task's own change counts,
-  since that change is already in `confirmed`.
+  since that change is already in `confirmed`. As built (implementation review):
+  the task reads the scale back right after each set and confirms it at once; it
+  also keeps `requested`, every step asked for since the last confirmation, and a
+  step in it is never a pick (an older request that lands late); a display change,
+  a missing display, or a decision that needs no change drops an unapplied
+  request.
 - The first observation after the task starts, and the first after the Looking
   Glass display path appears or changes (`monitorDevicePath`), sets `confirmed`
   and is never a pick. A step that equals neither value, seen within 5 s of a
@@ -2336,7 +2344,11 @@ them into words (below), and the CLI's own message says the same. `LanaiPanel.qm
 counts as a scale save) and runs `settings <mem> <cores>` when
 untouched, `settings <mem> <cores> <scale>` when touched. `lib/panel.sh` adds a note
 under the scale list while Windows runs with the new task: "Saving a scale replaces
-one you picked in Windows." The panel shows `result.settings`. Today `panel_words` (`lib/panel.sh`) returns nothing for
+one you picked in Windows." The panel shows `result.settings`. Added in the
+implementation (John's 2026-10-11 test): a click the model drops because another
+action still runs shows "The last action is still running. Try again in a
+moment." in a notice pinned over the panel's bottom edge for 2 to 5 s; before,
+such a click (a scale save among them) vanished with no word. Today `panel_words` (`lib/panel.sh`) returns nothing for
 a settings reply, and the Settings view hardcodes "Changes apply the next time
 Windows starts." The reply gains structured fields (`scale_saved`, `running`,
 `scale_task`), `panel_words` maps them to the words below, and the Settings view's
@@ -2645,3 +2657,4 @@ words, which need taste >= 7). Claude verifies, signs, and runs the diff gate.
 | impl (live scale) | a (gpt-6.1-sol) | 1 (full) | 3 should-fix (P2), 0 refuted, 0 downgraded to nit; all integrated test-first: a set is read back and confirmed at once, so a pick of the old step before the next poll holds; a display change drops an unapplied request so it is asked again at once; a first line waiting for its quiet gap holds back the OEM fallback |
 | impl (live scale) | a (gpt-6.1-sol) | 2 (full) | 3 should-fix (P2), 0 refuted, 0 downgraded to nit; all integrated test-first: a stale batch before the first line holds the OEM fallback for one feed period; a failed observation resets the baseline so a returning display never makes a pick (a pick survives); every step the task asked for since the last confirmation is never a pick |
 | impl (live scale) | a (gpt-6.1-sol) | 3 (full, cap) | 1 should-fix (P2), 0 refuted, 0 downgraded to nit; integrated test-first: panel setup jobs forward HYPRLAND_INSTANCE_SIGNATURE to the detached worker, so boot_vm records it for the scale feed |
+| impl (live scale) | b panel (opus-5.5) | 1 (full, 6 lenses) | 0 blockers, 13 should-fix, 30 nits, 0 refuted, 0 downgraded to nit; all integrated test-first: setup step 6 judges the scale task after the user answers (a slow password sign-in no longer loops back to step 5); the guest reader retries only error 1450, reopens on other errors and logs open and read errors once; the feed picks a live Hyprland instance (boot record, inherited, or the only one) and finds it again after hyprctl fails; the guest's first-line hold folded into one LastArrival rule and the baseline reset into Step-ScaleState; the dropped-click notice is pinned and stays 2 to 5 s; tests pin the client-unit query, the hyprctl timeout and the real display observation; panel words and README corrected. Security lens: no defects |
