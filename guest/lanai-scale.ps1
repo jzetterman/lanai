@@ -196,8 +196,9 @@ function Get-ReadyAt($State) {
 # step, or "retry" an unapplied one once a minute), the Step index and its
 # Relative value for SetScale, and the uncapped Target index ($null when the
 # pass made no decision: not ready yet, or no display).
-#   A step in none of Confirmed, Pending and Requested is a pick only with
-#   the same recommended step and a resolution unchanged for 5 s; otherwise
+#   A step in none of Confirmed, Pending and Requested is a pick only when
+#   it is a listed step, with the same recommended step and a resolution
+#   unchanged for 5 s; otherwise
 #   it just updates Confirmed. An older request that lands late is never a
 #   pick: the newest is asked for again. The first observation, and the
 #   first after the display path changes or the display was missing, never
@@ -234,7 +235,10 @@ function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
             $s.NextRetry = 0
         }
         elseif ($cur -ne $s.Confirmed) {
-            if (-not $recMoved -and -not $resMoved -and $Now - $s.SettledAt -ge 5000) { $s.Pick = $cur }
+            # Only a listed step: with custom scaling on, Windows reports
+            # values outside its range (phase C), and a pick of one would
+            # make every decision throw until the next save.
+            if (-not $recMoved -and -not $resMoved -and $Now - $s.SettledAt -ge 5000 -and $cur -ge 0 -and $cur -lt $Steps.Count) { $s.Pick = $cur }
             $s.Confirmed = $cur
             $s.Pending = $null
             $s.Requested = @()

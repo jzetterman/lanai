@@ -1077,6 +1077,23 @@ guest_ps() {
   assert_output ok
 }
 
+@test "guest pick rule: an out-of-range current that moves at a settled resolution makes no pick and no throw" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    # Custom scaling: Windows reports values outside its range, and they move.
+    $r = Step-ScaleState (New-ScaleState 3 5 0) (Obs 1234568) $null 0
+    foreach ($step in @(@(-3, 6000), @(1234569, 12000), @(-40, 18000))) {
+      $r = Step-ScaleState $r.State (Obs $step[0]) $null $step[1]
+      Assert ($null -eq $r.State.Pick) "curScaleRel $($step[0]) made pick $($r.State.Pick)"
+      Assert ($r.Action -ne "none" -and $r.Step -eq 3) "curScaleRel $($step[0]): action $($r.Action), step $($r.Step)"
+    }
+    # An in-list change after it is still a pick.
+    $r = Step-ScaleState $r.State (Obs 3) $null 24000
+    Assert ($r.State.Pick -eq 4) "in-list pick: $($r.State.Pick)"'
+  assert_success
+  assert_output ok
+}
+
 @test "guest exit: an exit line the log already ends with is not added again" {
   command -v pwsh >/dev/null || skip "pwsh is not installed"
   run guest_ps '

@@ -2558,6 +2558,10 @@ of this goes into it.
   `Step-ScaleState` runs, so the custom scaling line is logged even when that
   pass then fails. `minScaleRel` and `maxScaleRel` themselves are in range. A
   new out-of-range value does not log again; only an in-range one rearms it.
+- As built: a pick must be a listed step (0 <= current < `$Steps.Count`).
+  Before, an out-of-range current that moved at a settled resolution became a
+  pick outside the list, and `ScaleDecision` threw on every pass until the
+  next save.
 - As built: `Write-ExitLog` compares the text after the timestamp on the log's
   last line, exactly. A skipped line still goes to the console, for a run by
   hand. An unreadable log counts as a different line.
