@@ -2675,7 +2675,8 @@ implementer's call):
     void resize_init   (ResizeState *, ResizeSendFn, ResizeLogFn, void * opaque);
     void resize_session(ResizeState *);  /* a new display session */
     void resize_window (ResizeState *, unsigned w, unsigned h, uint64_t now);
-    void resize_frame  (ResizeState *, unsigned w, unsigned h, uint64_t now);
+    void resize_frame  (ResizeState *, unsigned w, unsigned h, unsigned changes,
+                        uint64_t now);
     void resize_update (ResizeState *, uint64_t now, bool responding);
 
 State: the window size (kept across sessions; 0 until known), Windows' size and
@@ -2689,10 +2690,12 @@ Rules, each from req 12:
 - `resize_session` clears Windows' size, the frame flag and the sequence, and
   forgets the last ask. The first `resize_frame` after it is the session's first
   frame: it records Windows' size and starts a new sequence.
-- A later `resize_frame` at another size is a change of Windows' size. Within 60 s
-  of the last ask it continues the sequence (`asks` and the last ask stay);
-  otherwise it starts a new one. The same size again (a replug at the same size)
-  is no change.
+- `changes` is how many format changes the frame thread accepted since the last
+  call. A later `resize_frame` is a change of Windows' size when the size differs
+  from the last one it saw, or when `changes` >= 2 (Windows left a size and came
+  back between two polls). Within 60 s of the last ask it continues the sequence
+  (`asks` and the last ask stay); otherwise it starts a new one. A call at the
+  same size with `changes` < 2 is no change.
 - `resize_update` asks when all hold: a frame was seen this session, the window
   size is known, Windows' size differs from it, `responding` is true, `asks` < 5,
   and either `asks` is 0 or `now` >= last ask + wait, where the wait after ask
@@ -2711,9 +2714,10 @@ So a sequence asks at most 5 times, at 0, 5, 15, 35 and 75 s when Windows never
 answers with the size, and a Windows that keeps leaving the size cannot cause a
 loop.
 
-**The glue (`core.c`, patch 0002).** It owns the static state, one control token
-and an `atomic_uint_least64_t` that holds Windows' size as `w << 32 | h` (0: no
-frame this session).
+**The glue (`core.c`, patch 0002).** It owns the static state, one control token,
+an `atomic_uint_least64_t` that holds Windows' size as `w << 32 | h` (0: no
+frame this session), and an `atomic_uint` count of accepted format changes, so a
+size that changes and changes back between two polls is not lost.
 
 - `core_resizeInit()`: called once in `main()`, beside `lgMessage_init()`.
 - `core_resizeSession()`: called at the `restart:` label of `lg_run`, which
@@ -2723,15 +2727,16 @@ frame this session).
   driver restarting each come through here (phase 0 confirms the last two).
 - `core_resizeFrame(w, h)`: called in `main_frameThread` where a changed format is
   accepted (beside the `Format:` log), with `rendererFormat.screenWidth` and
-  `screenHeight`, the size the old code compared through `srcSize`. It only stores
-  the atomic. The first frame of a session always changes the format, since
+  `screenHeight`, the size the old code compared through `srcSize`. It stores the
+  size, then adds 1 to the count. The first frame of a session always changes the format, since
   `lgInit` clears `formatValid`.
 - `core_onWindowSizeChanged(w, h)`: now only calls
   `resize_window(..., microtime())`, with no transport check, so no size is lost
   while Windows is away.
 - `core_resizeUpdate()`: called in the main loop beside
   `frameScheduler_update()`, about every 100 ms and only while the session is
-  valid. It loads the atomic and, when it holds a size, calls `resize_frame`.
+  valid. It loads the size and the count and, when the count moved since its last
+  poll, calls `resize_frame` with the difference as `changes`.
   `responding` is true when the transport handle is set, the session has
   `LG_TRANSPORT_FEATURE_WINDOW_SIZE`, and there is no token or
   `controlStatus(token)` returns `LG_TRANSPORT_OK` (the IDD read the last ask), as
@@ -2753,7 +2758,9 @@ carries them:
   name, as Looking Glass's tests do, and lists its cases with `--list`.
 - `config_message_test.c` (already a synthetic transport with a fake
   `clock_gettime`) gains `controlStatus` in its fake and covers the glue: no ask
-  before a frame, one unread ask at a time, the token read, a session reset.
+  before a frame, one unread ask at a time, the token read, a session reset, and
+  two format changes (away and back to the same size) between two polls after an
+  exhausted sequence, more than 60 s after the last ask, starting a new sequence.
   Its existing cases change where the rule changed: a send now waits for a frame,
   and a failed send is not counted.
 
@@ -3154,3 +3161,4 @@ signs, and runs the diff gate. Phase D and the upstream offer: John.
 | impl (live scale) | b panel (opus-5.5) | 3 (full, 6 lenses, cap) | 0 blockers, 5 should-fix, 28 nits, 0 refuted, 0 downgraded to nit; all integrated: a SetScale that keeps failing logs its applying line once (the round 2 retry had made it log every 2 s); an old-task install gets a standing note under the scale list, so the Run setup again step survives shutdown; old-task words no longer use "scale changes" two ways; tests now pin the 5 s settle after a resolution change and the remembered monitor over several closed-window passes; nits (reader reopens after any throw, restarted feed resends its last line, opaque notice, step 6 words, names, host_monitors timeout). Stage closed at the cap with these integrations unreviewed; stage a has no round left for the final-diff rerun. John (2026-10-11): accept the gate, do the hands-on session (phase 0 (6)-(7), phase C) first, then one extra stage a round on the final diff, hands-on fixes included |
 | impl (live scale) | a (gpt-6.1-sol) | 4 (full final diff at 71a9b71, hands-on fixes and phase D included; the extra round John called) | 0 findings, 0 refuted, 0 downgraded to nit: "The committed diff appears sound". Its sandbox could not create the test sockets, so it ran targeted tests (97 passed, 1 skipped) and ShellCheck; the full suite passed outside it (786 ok). Gate closed |
 | plan (resize) | a (gpt-6.1-sol) | 1 (full) | 2 should-fix, 0 refuted; both integrated: each patch is made against the tree with the earlier patches applied (0002 holds only the hooks), and the README keeps the no-change promise for the build step, not Run setup again |
+| plan (resize) | a (gpt-6.1-sol) | 2 (full) | 1 should-fix, 0 refuted; integrated: the frame thread also counts accepted format changes, so a size that changes and changes back between two main-loop polls still counts as a change of Windows' size (`resize_frame` takes the count), with a glue test |
