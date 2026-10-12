@@ -1016,6 +1016,109 @@ guest_ps() {
   assert_output ok
 }
 
+@test "guest log: a capped target is logged once per target, step and resolution, and again after an uncapped pass" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    # Lanai wants 175% (index 3); Windows allows at most 150% here, and 150%
+    # is already applied.
+    [LanaiDisplay]::D = @{ DevicePath = "lg"; Resolution = "1901x1046"; MinRel = -1; CurRel = 1; MaxRel = 1 }
+    $ctx = New-ScaleContext (New-ScaleState 3 5 0) $q @{ OpenedAt = 0 }
+    function Caps { @($script:Logs | Where-Object { $_ -like "Windows allows*" }) }
+    for ($t = 0; $t -le 4000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ([LanaiDisplay]::Sets -eq 0) "capped and applied: $([LanaiDisplay]::Sets) sets"
+    Assert (@(Caps).Count -eq 1 -and @(Caps)[0] -eq "Windows allows at most 150% at 1901x1046; using 150% until the window grows (target 175%).") "first: $(Caps)"
+    for (; $t -le 12000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert (@(Caps).Count -eq 1) "unchanged passes: $(Caps)"
+    # A new resolution with the same cap.
+    [LanaiDisplay]::D.Resolution = "1724x1045"
+    for (; $t -le 16000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert (@(Caps).Count -eq 2 -and @(Caps)[1] -match "at 1724x1045;") "new resolution: $(Caps)"
+    # The window grows: 175% applies, no cap.
+    [LanaiDisplay]::D.Resolution = "3816x2106"; [LanaiDisplay]::D.MaxRel = 5
+    for (; $t -le 20000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ([LanaiDisplay]::Sets -eq 1 -and [LanaiDisplay]::D.CurRel -eq 2 -and @(Caps).Count -eq 2) "uncapped: $(Caps)"
+    # It shrinks again, and Windows falls back to 125%: capped, with a set.
+    [LanaiDisplay]::D.Resolution = "1724x1045"; [LanaiDisplay]::D.MaxRel = 1; [LanaiDisplay]::D.CurRel = 0
+    for (; $t -le 24000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert ([LanaiDisplay]::Sets -eq 2 -and [LanaiDisplay]::D.CurRel -eq 1) "capped set: $([LanaiDisplay]::Sets)"
+    Assert (@(Caps).Count -eq 3 -and @(Caps)[2] -match "at 1724x1045;") "after an uncapped pass: $(Caps)"
+    # A save of 200% while capped names the new target.
+    $q.Enqueue((Q "lanai-scale 200 6" $t))
+    for ($i = 0; $i -lt 4; $i++) { $t += 250; Invoke-ScaleTick $ctx $t }
+    Assert (@(Caps).Count -eq 4 -and @(Caps)[3] -match "\(target 200%\)\.$") "new target: $(Caps)"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest log: a current scale out of Windows' range is logged once, and again after an in-range pass" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $q = New-Object "System.Collections.Concurrent.ConcurrentQueue[object]"
+    # Custom scaling: Windows reports a value outside its range and ignores sets.
+    [LanaiDisplay]::D = @{ DevicePath = "lg"; Resolution = "1920x1080"; MinRel = -1; CurRel = 1234568; MaxRel = 5 }
+    [LanaiDisplay]::Apply = $false
+    $ctx = New-ScaleContext (New-ScaleState 3 5 0) $q @{ OpenedAt = 0 }
+    function Customs { @($script:Logs | Where-Object { $_ -like "Windows reports*" }) }
+    for ($t = 0; $t -le 20000; $t += 250) { Invoke-ScaleTick $ctx $t }
+    Assert (@(Customs).Count -eq 1 -and @(Customs)[0] -eq "Windows reports the current scale out of range (curScaleRel 1234568). Custom scaling is probably on (Settings > System > Display); Lanai'"'"'s scale has no effect until it is off.") "first: $(Customs)"
+    Assert ([LanaiDisplay]::Sets -ge 1) "the task still tries to set"
+    # The ends of the range are in range.
+    foreach ($cur in -1, 5) {
+      [LanaiDisplay]::D.CurRel = $cur
+      for ($i = 0; $i -lt 8; $i++) { $t += 250; Invoke-ScaleTick $ctx $t }
+    }
+    Assert (@(Customs).Count -eq 1) "in range: $(Customs)"
+    # Below minScaleRel counts too.
+    [LanaiDisplay]::D.CurRel = -3
+    for ($i = 0; $i -lt 40; $i++) { $t += 250; Invoke-ScaleTick $ctx $t }
+    Assert (@(Customs).Count -eq 2 -and @(Customs)[1] -match "\(curScaleRel -3\)") "below: $(Customs)"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest exit: an exit line the log already ends with is not added again" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    # The real Write-Log, writing to a scratch log that does not exist yet.
+    $LogFile = Join-Path ([IO.Path]::GetTempPath()) "lanai-exit-$PID.log"
+    Remove-Item -LiteralPath $LogFile -ErrorAction SilentlyContinue
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
+    $f = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Write-Log" }, $false) | Select-Object -First 1
+    . ([scriptblock]::Create($f.Extent.Text))
+    function Count { @(Get-Content -LiteralPath $LogFile).Count }
+    $none = "No lanai-scale OEM string; the scale stays as it is."
+    Write-ExitLog $none | Out-Null
+    Write-ExitLog $none | Out-Null
+    Assert ((Count) -eq 1) "same twice: $(Count)"
+    Write-ExitLog "Error: Bad OEM string: lanai-scale=1x" | Out-Null
+    Write-ExitLog "Error: Bad OEM string: lanai-scale=1x" | Out-Null
+    Assert ((Count) -eq 2) "a different one: $(Count)"
+    Write-ExitLog "Error: Bad OEM string: lanai-scale=2x" | Out-Null
+    Write-ExitLog $none | Out-Null
+    Assert ((Count) -eq 4) "changed again: $(Count)"
+    # Only the last line counts, and only its whole message.
+    Write-Log "The scale port is open." | Out-Null
+    Write-ExitLog $none | Out-Null
+    Write-ExitLog "the scale stays as it is." | Out-Null
+    Assert ((Count) -eq 7) "after another line: $(Count)"
+    # A run by hand still sees the message.
+    Assert ((Write-ExitLog "the scale stays as it is.") -eq "the scale stays as it is.") "console"
+    Remove-Item -LiteralPath $LogFile'
+  assert_success
+  assert_output ok
+}
+
+@test "lanai-scale.ps1: both exit paths log through Write-ExitLog" {
+  local f=$REPO/guest/lanai-scale.ps1
+  run grep -cE '^[[:space:]]*Write-ExitLog ' "$f"
+  assert_output 2
+  run grep -F "Write-ExitLog 'No lanai-scale OEM string; the scale stays as it is.'" "$f"
+  assert_success
+  run grep -F 'Write-ExitLog "Error: $($_.Exception.Message)"' "$f"
+  assert_success
+}
+
 @test "lanai-scale.ps1: pins its module path and temp folder before the first cmdlet or Add-Type" {
   local f=$REPO/guest/lanai-scale.ps1 first pins
   # The first line that runs a cmdlet (Verb-Noun) or Add-Type, outside the
@@ -1038,8 +1141,16 @@ guest_ps() {
 
 @test "setup scale task: elevated, one task by name, no execution limit, duplicates ignored, restarts" {
   run setup_code
-  assert_output --partial "New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)"
+  assert_output --partial "New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew;"
   assert_output --partial '-Settings $s'
+  # The sign-in trigger repeats every 5 minutes with no end, so a task that
+  # died comes back (IgnoreNew makes a start a no-op while it runs).
+  # RestartCount covers only a failed start (phase C), so it is gone.
+  assert_output --partial "\$t = New-ScheduledTaskTrigger -AtLogOn -User \$u; \$r = Get-CimClass -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClassName 'MSFT_TaskRepetitionPattern' | New-CimInstance -ClientOnly; \$r.Interval = 'PT5M'; \$t.Repetition = \$r;"
+  refute_output --partial 'Duration'
+  refute_output --partial 'StopAtDurationEnd'
+  refute_output --partial 'RestartCount'
+  refute_output --partial 'RestartInterval'
   assert_output --partial "New-ScheduledTaskPrincipal -UserId \$u -LogonType Interactive -RunLevel Highest"
   # The task belongs to the SID the elevated stage verified, by an
   # environment variable (as LANAI_IDD is), not to a name from the

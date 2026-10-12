@@ -145,13 +145,15 @@ if not "%RC%"=="0" goto :failed
 rem An interactive task for the SID the check above verified, which stores no
 rem password. It runs elevated (highest privileges, no prompt): Windows
 rem opens the scale port only to administrators. -Force replaces it on a
-rem rerun, so there is one task. Task Scheduler retries a failed start up
-rem to three times (not yet checked on Windows, phase C).
+rem rerun, so there is one task. The sign-in trigger repeats every 5 minutes
+rem with no end (a repetition pattern with no Duration), and IgnoreNew makes
+rem a start a no-op while the task runs, so a task that died is back within
+rem 5 minutes. RestartCount would cover only a failed start (phase C).
 rem powershell.exe by absolute path, from the system folder Windows
 rem reports, not an environment variable. [char]34 quotes the script's
 rem path, which holds a space, without nested quotes for cmd.
 set "LANAI_TASK_SID=%HAVE_SID%"
-powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $u = $env:LANAI_TASK_SID; $a = New-ScheduledTaskAction -Execute ([Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\powershell.exe') -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + [char]34 + 'C:\Program Files\Lanai\lanai-scale.ps1' + [char]34); $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $u = $env:LANAI_TASK_SID; $a = New-ScheduledTaskAction -Execute ([Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\powershell.exe') -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + [char]34 + 'C:\Program Files\Lanai\lanai-scale.ps1' + [char]34); $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $r = Get-CimClass -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClassName 'MSFT_TaskRepetitionPattern' | New-CimInstance -ClientOnly; $r.Interval = 'PT5M'; $t.Repetition = $r; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew; Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 

@@ -24,8 +24,8 @@
   Windows caps it at what the current resolution allows; the target recovers
   when the window grows. A set Windows leaves unapplied is retried once a
   minute. The port opens only to administrators, so the scale task runs
-  elevated. Changes and distinct errors go to
-  C:\Program Files\Lanai\lanai-scale.log.
+  elevated. Changes, caps, a current scale outside Windows' range (custom
+  scaling) and distinct errors go to C:\Program Files\Lanai\lanai-scale.log.
 
 .PARAMETER Scale
   Use this percentage instead of the SMBIOS string. For testing.
@@ -60,6 +60,17 @@ function Write-Log([string]$Message) {
     Write-Output $Message
 }
 
+# Log <Message> on the way out, unless the log's last line already carries
+# it: the sign-in trigger starts the task every 5 minutes, and a start that
+# ends the same way as the one before must not grow the log. An unreadable
+# log counts as a different last line.
+function Write-ExitLog([string]$Message) {
+    $last = $null
+    try { $last = Get-Content -LiteralPath $LogFile -Tail 1 -ErrorAction Stop } catch { }
+    if ("$last" -cmatch '^\S+ (.*)$' -and $Matches[1] -ceq $Message) { Write-Output $Message; return }
+    Write-Log $Message
+}
+
 # Name step <i> of $Steps, as "150%", or "unknown" when <i> is outside the
 # list. Every lookup goes through here: PowerShell wraps a negative index
 # silently (index -1 gives 500), and Windows' relative values can point
@@ -83,6 +94,17 @@ function ScaleDecision([int]$Want, [int]$MinRel, [int]$CurrentRel, [int]$MaxRel)
         recommended = $recommended; current = $current; target = $target
         relative = $target - $recommended; change = $current -ne $target
     }
+}
+
+# Name the cap when Windows' range at observation <Obs> holds target step
+# <Target> below itself, or return '' when it does not. The line names the
+# target, the capped step and the resolution, so a change in any of them
+# makes a new line.
+function Get-CapLine([int]$Target, $Obs) {
+    $d = ScaleDecision $Target $Obs.MinRel $Obs.CurRel $Obs.MaxRel
+    if ($d.target -ge $Target) { return '' }
+    $at = StepName $d.target
+    return "Windows allows at most $at at $($Obs.Resolution); using $at until the window grows (target $(StepName $Target))."
 }
 
 # Read the boot baseline from the SMBIOS OEM strings <Oem>: Scale from
@@ -172,7 +194,8 @@ function Get-ReadyAt($State) {
 # (Get-DisplayObservation), or $null when the display is missing; <Line> a
 # parsed line or $null. Returns the new State, an Action ("none", "set" a
 # step, or "retry" an unapplied one once a minute), the Step index and its
-# Relative value for SetScale.
+# Relative value for SetScale, and the uncapped Target index ($null when the
+# pass made no decision: not ready yet, or no display).
 #   A step in none of Confirmed, Pending and Requested is a pick only with
 #   the same recommended step and a resolution unchanged for 5 s; otherwise
 #   it just updates Confirmed. An older request that lands late is never a
@@ -185,6 +208,7 @@ function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
     $action = 'none'
     $step = -1
     $rel = 0
+    $target = $null
     if (-not $s.Ready -and $Now -ge (Get-ReadyAt $s)) { $s.Ready = $true }
     if ($null -eq $Obs) {
         $s.Path = $null
@@ -260,7 +284,7 @@ function Step-ScaleState($State, $Obs, $Line, [double]$Now) {
             if ($action -ne 'none' -and $s.Requested -notcontains $d.target) { $s.Requested = @($s.Requested) + $d.target }
         }
     }
-    return [pscustomobject]@{ State = $s; Action = $action; Step = $step; Relative = $rel }
+    return [pscustomobject]@{ State = $s; Action = $action; Step = $step; Relative = $rel; Target = $target }
 }
 
 # After SetScale returns, read-back range <After> (GetScale) shows whether
@@ -315,13 +339,18 @@ function Get-DisplayObservation {
 #   LoggedPortError  the last logged port error
 #   LoggedSet    the last "applying" line logged, so a set retried at each
 #                poll while SetScale fails is logged once
+#   LoggedCap    the last cap line logged (Get-CapLine), cleared after a
+#                decision without a cap
+#   RangeLogged  whether an out-of-range current scale was logged, cleared
+#                after an observation in range
 #   PortOpened   whether the port's opening was seen and logged
 #   MalformedLogged  whether a malformed line was logged
 function New-ScaleContext($State, $Queue, $Shared) {
     return @{
         State = $State; Queue = $Queue; Shared = $Shared
         Lines = New-Object 'System.Collections.Generic.List[object]'
-        NextObserve = 0; LastError = ''; LoggedPortError = ''; LoggedSet = ''; PortOpened = $false; MalformedLogged = $false
+        NextObserve = 0; LastError = ''; LoggedPortError = ''; LoggedSet = ''; LoggedCap = ''
+        RangeLogged = $false; PortOpened = $false; MalformedLogged = $false
     }
 }
 
@@ -333,12 +362,25 @@ function Write-ErrorOnce($Ctx, [string]$Message) {
     try { Write-Log "Error: $Message" } catch { }
 }
 
+# Log once that observation <Obs> reports the current scale outside Windows'
+# own range: custom scaling is on (phase C), and no set takes effect.
+# Logged again only after an observation in range. Never throws.
+function Write-RangeOnce($Ctx, $Obs) {
+    if ($Obs.CurRel -ge $Obs.MinRel -and $Obs.CurRel -le $Obs.MaxRel) { $Ctx.RangeLogged = $false; return }
+    if ($Ctx.RangeLogged) { return }
+    try {
+        Write-Log "Windows reports the current scale out of range (curScaleRel $($Obs.CurRel)). Custom scaling is probably on (Settings > System > Display); Lanai's scale has no effect until it is off."
+        $Ctx.RangeLogged = $true
+    } catch { }
+}
+
 # One 250 ms tick of the main loop at time <Now> (ms): log the port's
 # opening and errors once each; move queued lines to Lines (stamping
 # LastArrival) and drain them once quiet; then, when a line is ready, the 2 s
 # display poll is due, or the first-line wait just ended, run one
 # Step-ScaleState pass and call SetScale for its action, then read the scale
-# back (Confirm-ScaleSet).
+# back (Confirm-ScaleSet). An out-of-range current scale and a capped target
+# are logged once each, whether or not a set follows.
 function Invoke-ScaleTick($Ctx, [double]$Now) {
     $s = $Ctx.State
     # Checked before the first open, so the first open is not "again".
@@ -379,6 +421,7 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
     $failed = $false
     try {
         $obs = Get-DisplayObservation
+        Write-RangeOnce $Ctx $obs
         $r = Step-ScaleState $s $obs $line $Now
     }
     catch {
@@ -394,6 +437,11 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
         }
         if ($null -ne $r.State.Pick -and $r.State.Pick -ne $s.Pick) {
             Write-Log "Pick: $(StepName $r.State.Pick) chosen in Windows; it holds until the next scale save."
+        }
+        if ($null -ne $r.Target) {
+            $cap = Get-CapLine $r.Target $obs
+            if ($cap -ne '' -and $cap -ne $Ctx.LoggedCap) { Write-Log $cap }
+            $Ctx.LoggedCap = $cap
         }
         if ($r.Action -eq 'set') {
             $text = "Display '{0}' at {1}: raw minScaleRel {2}, curScaleRel {3}, maxScaleRel {4}; recommended {5}, current {6}, applying {7}" -f `
@@ -676,7 +724,7 @@ try {
         $baseline = Get-OemBaseline @((Get-CimInstance -ClassName Win32_ComputerSystem).OEMStringArray)
         if ($null -eq $baseline) {
             # Not Lanai's VM (spec 4): change nothing and keep nothing running.
-            Write-Log 'No lanai-scale OEM string; the scale stays as it is.'
+            Write-ExitLog 'No lanai-scale OEM string; the scale stays as it is.'
             exit 0
         }
         $Scale = $baseline.Scale
@@ -698,6 +746,6 @@ try {
     }
 }
 catch {
-    Write-Log "Error: $($_.Exception.Message)"
+    Write-ExitLog "Error: $($_.Exception.Message)"
     exit 1
 }

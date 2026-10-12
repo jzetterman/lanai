@@ -2550,6 +2550,24 @@ of this goes into it.
 - Hands-on (John): Run setup again; `(Get-ScheduledTask -TaskName 'Lanai display
   scale').Triggers.Repetition` shows `PT5M` and no duration; a task killed with
   `Stop-Process` is back within 5 minutes and applies the latest save.
+- As built: `Get-CapLine` (pure, through `ScaleDecision`) builds the cap line,
+  and `Step-ScaleState` returns the uncapped `Target`. Only a pass that made a
+  decision logs or clears the cap (`LoggedCap`); a pass before the first-line
+  wait ends, or with no display, does neither.
+- As built: `Write-RangeOnce` checks every display observation before
+  `Step-ScaleState` runs, so the custom scaling line is logged even when that
+  pass then fails. `minScaleRel` and `maxScaleRel` themselves are in range. A
+  new out-of-range value does not log again; only an in-range one rearms it.
+- As built: `Write-ExitLog` compares the text after the timestamp on the log's
+  last line, exactly. A skipped line still goes to the console, for a run by
+  hand. An unreadable log counts as a different line.
+- As built: setup.cmd builds the repetition as a client-only
+  `MSFT_TaskRepetitionPattern` CIM instance with `Interval = 'PT5M'` and no
+  `Duration` (Task Scheduler's schema: no duration repeats indefinitely). It
+  does not copy the pattern from `New-ScheduledTaskTrigger -Once
+  -RepetitionInterval`, since what that cmdlet writes for an omitted
+  `-RepetitionDuration` has differed across Windows versions. Not yet run on
+  Windows: the hands-on check above settles it.
 
 ### Routing
 
