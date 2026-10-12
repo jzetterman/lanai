@@ -2714,10 +2714,13 @@ So a sequence asks at most 5 times, at 0, 5, 15, 35 and 75 s when Windows never
 answers with the size, and a Windows that keeps leaving the size cannot cause a
 loop.
 
-**The glue (`core.c`, patch 0002).** It owns the static state, one control token,
-an `atomic_uint_least64_t` that holds Windows' size as `w << 32 | h` (0: no
-frame this session), and an `atomic_uint` count of accepted format changes, so a
-size that changes and changes back between two polls is not lost.
+**The glue (`core.c`, patch 0002).** It owns the static state, one control token
+and one `atomic_uint_least64_t` that holds Windows' size and a count of accepted
+format changes together, as `w << 48 | h << 32 | count` (size 0: no frame this
+session). One value means the main thread always reads a size with its own count,
+and a size that changes and changes back between two polls still moves the
+count. Only the frame thread writes it; the count wraps, and the main thread uses
+the difference modulo 2^32.
 
 - `core_resizeInit()`: called once in `main()`, beside `lgMessage_init()`.
 - `core_resizeSession()`: called at the `restart:` label of `lg_run`, which
@@ -2728,15 +2731,15 @@ size that changes and changes back between two polls is not lost.
 - `core_resizeFrame(w, h)`: called in `main_frameThread` where a changed format is
   accepted (beside the `Format:` log), with `rendererFormat.screenWidth` and
   `screenHeight`, the size the old code compared through `srcSize`. It stores the
-  size, then adds 1 to the count. The first frame of a session always changes the format, since
+  new size with the count plus 1, in one store. The first frame of a session always changes the format, since
   `lgInit` clears `formatValid`.
 - `core_onWindowSizeChanged(w, h)`: now only calls
   `resize_window(..., microtime())`, with no transport check, so no size is lost
   while Windows is away.
 - `core_resizeUpdate()`: called in the main loop beside
   `frameScheduler_update()`, about every 100 ms and only while the session is
-  valid. It loads the size and the count and, when the count moved since its last
-  poll, calls `resize_frame` with the difference as `changes`.
+  valid. It loads the value once and, when the count moved since its last poll,
+  calls `resize_frame` with that size and the difference as `changes`.
   `responding` is true when the transport handle is set, the session has
   `LG_TRANSPORT_FEATURE_WINDOW_SIZE`, and there is no token or
   `controlStatus(token)` returns `LG_TRANSPORT_OK` (the IDD read the last ask), as
@@ -2760,7 +2763,9 @@ carries them:
   `clock_gettime`) gains `controlStatus` in its fake and covers the glue: no ask
   before a frame, one unread ask at a time, the token read, a session reset, and
   two format changes (away and back to the same size) between two polls after an
-  exhausted sequence, more than 60 s after the last ask, starting a new sequence.
+  exhausted sequence, more than 60 s after the last ask, starting a new sequence;
+  and a size and count written between two polls reaching `resize_frame` together
+  (the packed value, never a size with another write's count).
   Its existing cases change where the rule changed: a send now waits for a frame,
   and a failed send is not counted.
 
@@ -3162,3 +3167,4 @@ signs, and runs the diff gate. Phase D and the upstream offer: John.
 | impl (live scale) | a (gpt-6.1-sol) | 4 (full final diff at 71a9b71, hands-on fixes and phase D included; the extra round John called) | 0 findings, 0 refuted, 0 downgraded to nit: "The committed diff appears sound". Its sandbox could not create the test sockets, so it ran targeted tests (97 passed, 1 skipped) and ShellCheck; the full suite passed outside it (786 ok). Gate closed |
 | plan (resize) | a (gpt-6.1-sol) | 1 (full) | 2 should-fix, 0 refuted; both integrated: each patch is made against the tree with the earlier patches applied (0002 holds only the hooks), and the README keeps the no-change promise for the build step, not Run setup again |
 | plan (resize) | a (gpt-6.1-sol) | 2 (full) | 1 should-fix, 0 refuted; integrated: the frame thread also counts accepted format changes, so a size that changes and changes back between two main-loop polls still counts as a change of Windows' size (`resize_frame` takes the count), with a glue test |
+| plan (resize) | a (gpt-6.1-sol) | 3 (full, cap) | 1 should-fix, 0 refuted; integrated: size and change count are one packed 64-bit atomic (w << 48, h << 32, count), written only by the frame thread, so the main thread never pairs a size with another write's count. Stage closed at the cap; the fix is reviewed by stage b |
