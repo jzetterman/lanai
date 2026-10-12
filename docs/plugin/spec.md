@@ -287,14 +287,14 @@ Neither needs GPU acceleration.
     - An install whose client was built without the current patches keeps working with
       that client. The panel says that Windows may start at, or change to, the wrong
       size until the user runs the one step that builds the fixed client, and names the
-      step. When the scale task is also old, "Run setup again" is that one step: it
-      builds the client too. The step
-      changes nothing in Windows: no administrator prompt, no Windows restart and no
-      change to the Windows lock. The fixed client takes over the next time the window
-      opens, and the step's last message says to close and reopen the Windows window.
-      Until then the bar and the panel start and show Windows as before. When the
-      client in use is an older pin's build (requirement 8), requirement 8's update
-      message is the one next step instead.
+      step. That build step changes nothing in Windows: no administrator prompt, no
+      Windows restart and no change to the Windows lock. The fixed client takes over
+      the next time the window opens, and the build step's last message says to close
+      and reopen the Windows window. When the scale task is also old, "Run setup again"
+      is the one step instead: it builds the client too, and its own restart of Windows
+      brings up the fixed client. Until then the bar and the panel start and show
+      Windows as before. When the client in use is an older pin's build (requirement 8),
+      requirement 8's update message is the one next step instead.
 13. Keyboard, mouse, clipboard (both ways) and audio output work in the Windows window.
 14. When Windows asks for a password (dockur normally signs in automatically), the user
     types the one they chose when `omarchy-windows-vm` installed Windows. Lanai never
@@ -523,3 +523,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | resize amendment review b single (opus-5.5) | 2026-10-12 | Round 3 (full, cap): 0 blockers, 5 should-fix, 5 nits, 0 refuted. Each ask the IDD takes replugs Windows' monitor (a flicker), and a too-large one shows a Windows notice, so John changed the retry (at the cap): ask at once, then 5, 10, 20 and 40 s, then stop until the window's size, a new display session or Windows' size changes; a Windows change within 60 s of the last ask continues the sequence. Integrated: the 5 s promise holds for every size Windows allows; triggers and reset stated; at most one unread ask; the patches change only when the client sends its existing message; GPL-2.0-or-later named; the log names window size changes; row 12b times from the event, spaces the picks and names a refused size in the plan; one step when the scale task is old too; 'start at, or change to'. John asked for one more round on the result |
 | spec | resize amendment review b single (opus-5.5) | 2026-10-12 | Round 4 (full; the extra round John called after the cap): 0 blockers, 3 should-fix, 6 nits, 0 refuted; verdict sound. All integrated: waits count from the previous ask, and row 12b's 5 s timings hold for events more than 60 s after the last ask (a continued sequence keeps its schedule); the quick-pick test spaces its picks; the GPL-2.0 text ships beside the patches and the README says Lanai is MIT except them; nits (log lines count as a patch change, wording of stop and minimum, when the 'did not take' line comes, a too-large case, scale holds through refused asks, a repeatable upgrade fixture, req 7 names the patches) |
 | spec | John | 2026-10-12 | Resize amendment: accepted the gate after review b round 4 with that round's wording fixes unreviewed; the plan's gate checks them against the plan |
+| spec | Claude (flagged to John) | 2026-10-12 | From plan writing: the upgrade bullet's 'changes nothing in Windows' and 'close and reopen' apply to the build step; 'Run setup again', named when the scale task is old too, restarts Windows itself and brings up the fixed client |
