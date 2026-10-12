@@ -2703,7 +2703,9 @@ Rules, each from req 12:
 
 - `resize_window` with a new size logs `Resize: window is <w>x<h>` and starts a
   new sequence (`asks` = 0, "did not take" cleared). The same size again does
-  nothing.
+  nothing. Under the floor (`w < 640 || h < 480`), the line reads `Resize:
+  window is <w>x<h>, under 640x480, not asking`, and `resize_update` never asks
+  while the window size stays there.
 - `resize_session` clears Windows' size, the frame flag and the sequence, and
   forgets the last ask. The first `resize_frame` after it is the session's first
   frame: it records Windows' size and starts a new sequence.
@@ -2714,7 +2716,10 @@ Rules, each from req 12:
   example an HDR switch and back) also count; that is accepted, since it costs at
   most one ask sequence, bounded like any other. Within 60 s of the last ask it
   continues the sequence (`asks` and the last ask stay); otherwise it starts a
-  new one. A call at the same size with `changes` < 2 is no change.
+  new one. A call at the same size with `changes` < 2 is no change. Phase 0 saw
+  most resizes show a short-lived frame of another size 50-100 ms before the
+  asked one, so one taken ask often reaches here as `changes` = 2; Windows then
+  matches the window, so nothing is asked.
 - `resize_update` asks when all hold: a frame was seen this session, the window
   size is known, Windows' size differs from it, `responding` is true, `asks` < 5,
   and either `asks` is 0 or `now` >= last ask + wait, where the wait after ask
@@ -2895,12 +2900,13 @@ The IDD keeps each ask in one `ExtraMode` registry value (`CSettings::SetExtraMo
 `idd/LGIdd/config/CSettings.cpp` about 96-121), so a refused ask replaces the window's previous
 mode. `LoadModes` then drops the 600x400 mode (`ParseModeString`'s floor, about
 line 338), and the replug leaves only the default list, whose preferred mode is
-1920x1080 (`DefaultPreferredDisplayMode`, `idd/LGCommon/DefaultDisplayModes.h:37`). So Windows
-may not keep its size: it may move to 1920x1080. Phase 0 (4) measures what
-happens. If Windows keeps its size, this design, the README words and phase D
-(6) stand. If it does not, stop: the spec says Windows keeps its last size, so
-that wording goes to John before any code, and the README words and phase D
-(6)'s pass rule follow his call. Too large: the IDD's
+1920x1080 (`DefaultPreferredDisplayMode`, `idd/LGCommon/DefaultDisplayModes.h:37`). Phase 0
+(4) confirmed it: Windows moved to 1920x1080 (`proofs.md`, "Resize phase 0").
+John's call: the client never asks for a size under the IDD's floor, 640 wide
+or 480 high (`width < 640 || height < 480`, the same per-side test as
+`CSettings.cpp:338`), so Windows keeps its size and the client scales the
+picture into the window. Phase 0 found 640x480, 720x540 and 800x600 all taken
+exactly, so the floor is the IDD's, not Windows' 800x600. Too large: the IDD's
 `SetResolution` returns `TOO_LARGE` when the mode does not fit the frame memory
 (128 MiB in `vm_args`; a 4K frame takes about 32 MiB of it;
 `idd/LGIdd/display/CDisplayConfiguration.cpp:180`), and
@@ -3005,7 +3011,9 @@ another size than before (the spec wording, per "Refused sizes"). Row 12b's
   `responding` false holds the ask and a later true sends it at once, with the next
   wait counted from that send; a window size that changes while an ask waits is
   the size sent, in one ask; a failed `send` is not counted; a new window size
-  starts over (asks at once, 1 of 5); a session reset starts over at its first
+  starts over (asks at once, 1 of 5); a window of 639x800 or 800x479 never asks
+  and logs the "not asking" line once, 640x480 asks, and growing from under the
+  floor to an allowed size asks at once; a session reset starts over at its first
   frame; the six-pick case from row 12b (asks 5, 10, 20 and 40 s apart, the sixth
   pick stays and logs "did not take"); a Windows change more than 60 s after the
   last ask starts over; the same frame size twice with `changes` < 2 is no
@@ -3066,11 +3074,10 @@ another size than before (the spec wording, per "Refused sizes"). Row 12b's
   a Note for `view.result.client` in the top column, about lines 110-133, beside
   `result.vm`; `logs.build` in the Logs Repeater's model, about line 308),
   `README.md` (Daily use: Windows follows the window, and to change Windows'
-  resolution, resize the window; for a window smaller than Windows allows or a
-  fullscreen too large for its frame memory, what Windows does as phase 0 (4) and
-  John's call settle it (Design, "Refused sizes"), may flicker or show a notice
-  while Lanai asks, and resizing the window or leaving fullscreen
-  fixes it; for installs from before this change, "Update the Windows window",
+  resolution, resize the window; for a window under 640x480 or a fullscreen too
+  large for Windows' frame memory, Windows keeps its last size and the picture is
+  scaled to fit, the too-large case may flicker or show a notice while Lanai asks,
+  and resizing the window or leaving fullscreen fixes it; for installs from before this change, "Update the Windows window",
   which changes nothing in Windows, then close and reopen the window; or, when the
   panel names it instead, Run setup again, which restarts Windows as setup always
   does), `CLAUDE.md` (layout:
@@ -3103,10 +3110,9 @@ after the last ask, so each starts a fresh sequence, except the quick picks in
    the last ask; then the 6 quick picks: the first more than 60 s after the last
    ask, and each later one before the next wait ends, or the intervals stretch.
 5. Scale: 300% target, large window, driver restart.
-6. Refusal: a floating window of 600x400 monitor pixels; at most 5 asks on
-   schedule, one "did not take" line, no ask until the window changes, the scale
-   holds; then resize to an allowed size. Where Windows ends during the asks is
-   judged by the rule phase 0 (4) and "Refused sizes" settle.
+6. Refusal: a floating window of 600x400 monitor pixels; the log names the size
+   with "not asking" and shows no ask, Windows keeps its size and the scale holds
+   for a minute; then resize to an allowed size, which matches within 5 s.
 7. Driver disabled: no ask until enabled.
 8. Repeatable upgrade fixture: add a word to 0002's header (the text before its
    first diff line, following the header rule in Design, "Patches"); the resize
@@ -3317,3 +3323,4 @@ signs, and runs the diff gate. Phase D and the upstream offer: John.
 | plan (resize) | b single (opus-5.5) | 2 (full) | 0 blockers, 4 should-fix, 9 nits, 0 refuted; all integrated: build tests on client.bats lg_source with a fixture patch, and a helper for the setup.bats stamps; phase C names the QML result Note, the build log key and both group loops; a refused small ask may erase the IDD's one custom mode, so phase 0 probes where Windows ends and the spec words go to John if it does not keep its size; phase 0 requires exact pixel matches (odd width, fractional scale) or a rounding rule from John; nits (patch id in its own build-patches file so rollback is silent, client words gated on a stale client, one CLI message, non-size format changes accepted, more module cases, LC_ALL=C patch and basenames and .gitattributes, phase D timing notes, setup message, out-of-tree builds, upstream gate note) |
 | plan (resize) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 2 should-fix, 9 nits, 0 refuted; all integrated: phase 0 compares each Format size to round(hyprctl size × scale), the size the client asks for; phase D gains a patches review step; nits (a session restart from a refused ask is a stop rule, test locations, setup_command, absolute patch paths, header lines that look like diffs, making 0001 cold, resize warning naming and tooltip, done words until the next client starts, phase D monitor and pick timing, IDD anchors, a busy-build reply, the CI pin-drift gap under Risks). Stage closed at the cap with these integrations unreviewed |
 | plan (resize) | John | 2026-10-12: accepted the plan gate at the cap with round 3's integrations unreviewed; phase 0 runs next |
+| plan (resize) | John | 2026-10-12: phase 0 ran; (1)-(3) pass, (4) fired its stop rule (Windows moved to 1920x1080). John's call: never ask under 640x480. Design "Refused sizes", the module rule and tests, the README words and phase D (6) changed to match; the spec changed with it |

@@ -1007,6 +1007,37 @@ while it was down one second later. Pass.
 Still to run: row 12's two-monitor cases (needs a second monitor), and row 4's
 RDP check in phase 8.
 
+## Resize phase 0: log proof (2026-10-12)
+
+Test copy, today's unpatched client (B7-826), one 3840x2160 monitor. Claude
+resized the floating window with `hyprctl` and read `client.log`; John ran (2)
+and (3) in an admin PowerShell with `pnputil /restart-device` and
+`Disable-PnpDevice`/`Enable-PnpDevice`. Windows' own scale stayed at 125%.
+
+- (1) Pass, 14:52-14:56 EDT. At scale 1: 1600x900, 1201x801 and 2000x1200 each
+  gave that exact `Format:` line. At scale 1.25: 2000x1200 gave 2500x1500 and
+  1601x901 gave 2001x1126 (round of 2001.25x1126.25). Back at scale 1: 1601x901.
+  No session restart. Most resizes also showed one short-lived frame of another
+  size (1280x960, 2560x1440, 2560x1600 or 3200x2400) 50-100 ms before the asked
+  size, so one resize can give two frame-size changes.
+- (2) Pass, 16:21:30 EDT. `Waiting for the host to restart`, then a new session
+  whose first frame was 1901x2000, the window's size.
+- (3) Pass, 16:22:05-16:22:14 EDT. The same, again at 1901x2000. Both restarts
+  came back at the last asked size, so neither reproduced the 1920x1080 start
+  seen at boot.
+- (4) Stop rule fires, 16:23:20 EDT. 1601x901 to 600x400: frames 3200x2400,
+  1601x901, then 1920x1080 3 s later, and no further change in a minute. No
+  session restart. Windows did not keep its size.
+- Extra sizes, same window: 1200x800, 720x540, 800x600 and 640x480 each gave
+  that exact frame, so the floor is the IDD's 640x480, not Windows' 800x600.
+  From 640x480, an ask for 1000x470 gave no new frame: Windows stayed at
+  640x480. The IDD's default mode list (`DefaultDisplayModes.h`) ends at
+  1024x768 and holds neither 1601x901 nor 640x480, so the list does not explain
+  the difference. The IDD's floor is per side (`width < 640 || height < 480`,
+  `CSettings.cpp:338`), so 1000x470 is under it too. Not yet known: why the two
+  refused asks ended differently.
+- The window went back to tiled at 16:26:25 EDT; the frame followed (1901x993).
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with
