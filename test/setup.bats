@@ -80,6 +80,12 @@ setup_json() {
   jq -c --arg l "$STORE" 'if has("location") then . else {location: $l} + . end' <<<"$1" >"$S/setup.json"
 }
 
+# Print boot.json without the scale feed's fields (lifecycle.bats tests
+# those), for the boot mode checks here.
+boot_mode() {
+  jq -c 'del(.scale_save, .boot_monitor, .hyprland_instance_signature)' "$S/boot.json"
+}
+
 # Leave the markers of a run that started and ended: ran <invocation>
 # <setup true|false> <clean|forced|panel|crash>. crash leaves no shutdown
 # record or forced marker; panel is a clean guest shutdown that the
@@ -295,7 +301,7 @@ boot() {
   boot true auto
   assert_success
   assert_equal "$(field window)" true
-  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":100,"setup":true,"window":true,"wayland_display":"wayland-3"}'
+  assert_equal "$(boot_mode)" '{"scale":100,"setup":true,"window":true,"wayland_display":"wayland-3"}'
   # Step 5 has started and not ended.
   assert_equal "$(jq -r .step5 "$S/setup.json")" false
   assert [ ! -e "$T/systemd-run.args" ]
@@ -319,7 +325,7 @@ boot() {
   assert_success
   assert_equal "$(field window)" false
   assert_equal "$(field next)" "open the Windows window"
-  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":100,"setup":true,"window":false}'
+  assert_equal "$(boot_mode)" '{"scale":100,"setup":true,"window":false}'
   lanai_run open
   assert_success
   run tail -n 1 "$T/systemd-run.args"
@@ -405,7 +411,7 @@ boot() {
   export WAYLAND_DISPLAY=wayland-3
   lanai_run start
   assert_success
-  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":100,"setup":false,"window":false}'
+  assert_equal "$(boot_mode)" '{"scale":100,"setup":false,"window":false}'
 }
 
 @test "lanai status: reports window and active" {
@@ -887,7 +893,7 @@ exec /usr/bin/mv "$@"'
   assert_success
   assert_equal "$(field step)" 6
   assert_equal "$(jq -r .step5 "$S/setup.json")" true
-  assert_equal "$(jq -c . "$S/boot.json")" '{"scale":100,"setup":false,"window":false,"step6":true}'
+  assert_equal "$(boot_mode)" '{"scale":100,"setup":false,"window":false,"step6":true}'
   # The pinned client, not the build that matches the old record.
   run tail -n 1 "$T/systemd-run.args"
   assert_output "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"
@@ -1177,6 +1183,76 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field window)" false
 }
 
+@test "lanai setup step 6: a slow sign-in leaves the scale task closed past the boot grace and still asks" {
+  # The scale task starts only at sign-in, which can come long after boot.
+  step6_running "$FIX/client-logs/match.log" 90 90
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert_equal "$(jq -c .questions <<<"$JSON")" '["share","scale"]'
+  run field message
+  assert_output "Windows is set up. If Windows asks for your password, sign in first. Then two last checks, in Windows: does ~/Windows show in Explorer, and does text look the right size?"
+}
+
+@test "lanai setup step 6: with the scale task's port open, the questions carry no sign-in hint" {
+  step6_running "$FIX/client-logs/match.log" 90 90
+  setup_run
+  assert_success
+  assert_equal "$(jq -c .questions <<<"$JSON")" '["share","scale"]'
+  run field message
+  refute_output --partial "sign in"
+}
+
+@test "lanai setup step 6: after the answers, a closed scale task is waited for, then named" {
+  # Its grace defaults to the boot grace.
+  assert_equal "$(bash -c 'source "$1/lib/lanai.sh"; echo "$LANAI_SETUP_SCALE_GRACE"' _ "$REPO")" 60
+  step6_running "$FIX/client-logs/match.log" 90 90
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run --share-ok yes --scale-ok yes
+  assert_success
+  assert_equal "$(field step)" 6
+  run field message
+  assert_output --partial "display scale task"
+  # The panel stops asking; its follow-ups carry no answers.
+  assert [ ! -e "$RUN/step6-asked" ]
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  # Still closed after the grace from the answers: back to step 5, naming it.
+  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1))" >"$RUN/step6-answered"
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  assert_equal "$(field reason)" scale-task
+  run field message
+  assert_output --partial "the display scale task did not start"
+  assert_equal "$(jq -r '.scale_task // "unset"' "$S/setup.json")" unset
+  run setup_done
+  assert_failure
+}
+
+@test "lanai setup step 6: the scale task opening after the answers finishes setup with its mark" {
+  step6_running "$FIX/client-logs/match.log" 90 90
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run --share-ok yes --scale-ok yes
+  assert_equal "$(field step)" 6
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=true
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 7
+  assert_equal "$(jq -r .scale_task "$S/setup.json")" 2
+  assert_equal "$(scale_task_kind)" new
+}
+
+@test "lanai setup step 6: answers with the scale task open finish setup with its mark" {
+  step6_running "$FIX/client-logs/match.log" 90 90
+  setup_run --share-ok yes --scale-ok yes
+  assert_success
+  assert_equal "$(field step)" 7
+  assert_equal "$(jq -r .scale_task "$S/setup.json")" 2
+}
+
 @test "lanai setup step 6: an agent that refuses to set the clock sends setup back to step 5" {
   step6_running "$FIX/client-logs/match.log" 90 90
   conf FAKE_QGA_CMD=notime
@@ -1441,7 +1517,7 @@ exec /usr/bin/mv "$@"'
   setup_run --share-ok yes --scale-ok yes
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" '{"snapshot":"declined","done":true}'
+  assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" '{"snapshot":"declined","done":true,"scale_task":2}'
   setup_run
   assert_equal "$(field step)" 7
 }

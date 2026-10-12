@@ -8,6 +8,101 @@ setup() {
   source "$REPO/lib/lanai.sh"
   mkdir -p "$XDG_CONFIG_HOME/lanai"
   printf '{"storage":"/test-copy","memory_gib":12,"cores":6,"extra":true}\n' >"$(settings_file)"
+  # systemctl: the VM unit's ActiveState is $T/unit-state (default inactive),
+  # so no test reaches the real user manager.
+  # shellcheck disable=SC2016
+  shim systemctl 'cat "$T/unit-state" 2>/dev/null || echo inactive'
+  export T PATH=$T/shims:$PATH
+}
+
+# Record finished setup for the fixture's storage, with [<scale_task>].
+setup_finished() {
+  mkdir -p "$(state_dir)"
+  jq -nc --argjson t "${1:-null}" '{location:"/test-copy",done:true} + (if $t == null then {} else {scale_task:$t} end)' \
+    >"$(state_dir)/setup.json"
+}
+
+@test "settings save number: three-argument saves count up, also for an unchanged step" {
+  lanai_run settings 8 4 150
+  assert_success
+  assert_equal "$(jq -r .scale_save "$(settings_file)")" 1
+  lanai_run settings 8 4 150
+  assert_success
+  assert_equal "$(jq -r .scale_save "$(settings_file)")" 2
+  assert_equal "$(jq -r .windows_scale "$(settings_file)")" 150
+  lanai_run settings 8 4 auto
+  assert_equal "$(jq -r .scale_save "$(settings_file)")" 3
+}
+
+@test "settings save number: two-argument saves keep it, and a missing key counts as 0" {
+  lanai_run settings 8 4
+  assert_success
+  assert_equal "$(jq -r .scale_save "$(settings_file)")" 0
+  jq '.scale_save=41' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  lanai_run settings 16 8
+  assert_success
+  assert_equal "$(jq -r .scale_save "$(settings_file)")" 41
+  lanai_run settings 16 8 200
+  assert_equal "$(jq -r .scale_save "$(settings_file)")" 42
+  assert_equal "$(jq -c '{storage,extra}' "$(settings_file)")" '{"storage":"/test-copy","extra":true}'
+}
+
+@test "settings save number: an invalid value refuses every save and leaves the file intact" {
+  local value before
+  for value in null true '"3"' -1 1.5 1000000000 '[]' '{}'; do
+    jq --argjson v "$value" '.scale_save=$v' "$(settings_file)" >"$T/settings"
+    mv "$T/settings" "$(settings_file)"
+    before=$(cat "$(settings_file)")
+    lanai_run settings 8 4 150
+    assert_failure
+    assert_equal "$(field ok)" false
+    lanai_run settings 8 4
+    assert_failure
+    lanai_run settings
+    assert_failure
+    assert_equal "$(cat "$(settings_file)")" "$before"
+  done
+}
+
+@test "settings save number: a save after 999999999 wraps to 0" {
+  jq '.scale_save=999999999' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  lanai_run settings 8 4 150
+  assert_success
+  assert_equal "$(jq -r .scale_save "$(settings_file)")" 0
+}
+
+@test "scale task kind: a running setup round counts as none until it records the live task" {
+  setup_finished
+  assert_equal "$(scale_task_kind)" old
+  jq '.round=true' "$(state_dir)/setup.json" >"$T/setup" && mv "$T/setup" "$(state_dir)/setup.json"
+  assert_equal "$(scale_task_kind)" none
+  jq '.scale_task=2' "$(state_dir)/setup.json" >"$T/setup" && mv "$T/setup" "$(state_dir)/setup.json"
+  assert_equal "$(scale_task_kind)" new
+}
+
+@test "settings reply: structured fields say what was saved, whether Windows runs, and which task" {
+  lanai_run settings 8 4 150
+  assert_equal "$(jq -c '{scale_saved,running,scale_task_kind}' <<<"$JSON")" '{"scale_saved":true,"running":false,"scale_task_kind":"none"}'
+  lanai_run settings 8 4
+  assert_equal "$(jq -c '{scale_saved,running,scale_task_kind}' <<<"$JSON")" '{"scale_saved":false,"running":false,"scale_task_kind":"none"}'
+  setup_finished
+  echo active >"$T/unit-state"
+  lanai_run settings 8 4 150
+  assert_equal "$(jq -c '{scale_saved,running,scale_task_kind}' <<<"$JSON")" '{"scale_saved":true,"running":true,"scale_task_kind":"old"}'
+  # The CLI has no standing note, so it adds the note's instruction.
+  assert_equal "$(field message)" "$(panel_words settings "$JSON") $(old_task_note true)"
+  run field message
+  assert_output --partial "shut Windows down and click Run setup again"
+  setup_finished 2
+  lanai_run settings 8 4 150
+  assert_equal "$(jq -c '{scale_saved,running,scale_task_kind}' <<<"$JSON")" '{"scale_saved":true,"running":true,"scale_task_kind":"new"}'
+  # The CLI says what the panel says.
+  assert_equal "$(field message)" "$(panel_words settings "$JSON")"
+  echo deactivating >"$T/unit-state"
+  lanai_run settings 8 4 150
+  assert_equal "$(field running)" false
 }
 
 @test "settings: reads current sizing and preserves storage and unknown keys on save" {
@@ -83,13 +178,13 @@ setup() {
     lanai_run settings "$mem" 4
     assert_failure
     assert_equal "$(field ok)" false
-    run vm_args /test-copy 02:00:00:00:00:01 "$mem" 4 100 ""
+    run vm_args /test-copy 02:00:00:00:00:01 "$mem" 4 100 7 ""
     assert_failure
   done
   for cores in 0 65 01 1.5 -1 garbage; do
     lanai_run settings 12 "$cores"
     assert_failure
-    run vm_args /test-copy 02:00:00:00:00:01 12 "$cores" 100 ""
+    run vm_args /test-copy 02:00:00:00:00:01 12 "$cores" 100 7 ""
     assert_failure
   done
   assert_equal "$(cat "$(settings_file)")" "$before"

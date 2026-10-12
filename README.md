@@ -124,7 +124,7 @@ update or an unfinished setup round is pending. Setup shows the pending step bes
 them. When the usual controls are hidden and the Windows window closes, use
 **Reopen the Windows window** in Setup.
 **Snapshots** is hidden while Windows runs during setup and returns when Windows is
-off. Settings stay available and apply at the next start. The Setup section uses
+off. Settings stay available. The Setup section uses
 your theme's accent color when it needs you to act and clears the highlight while
 Lanai works by itself. Its inset stays the same. During the setup boot, **Shut down**
 asks for a second click:
@@ -158,12 +158,14 @@ and **Shut down** controls. Panel controls support Tab, Shift+Tab, Enter and Spa
 Escape closes it.
 If starting or opening fails, the glyph opens the panel to explain why. It also
 opens the panel when a start reports that the previous run was forced to stop.
-Settings accept whole numbers: 1–512 GiB and 1–64 cores. Windows scale is
-“Match my monitor” (the default) or a fixed percentage: 100–250 in steps of 25,
-then 300–500 in steps of 50. All three apply at the next start. Reopening the
-panel discards unsaved settings edits.
-The CLI equivalent is `bin/lanai settings <GiB> <cores> [auto|percentage]`.
-Omitting the third argument preserves the scale choice.
+Settings accept whole numbers: 1–512 GiB and 1–64 cores. Memory and cores apply
+at the next start. Windows scale is “Match my monitor” (the default) or a fixed
+percentage: 100–250 in steps of 25, then 300–500 in steps of 50. **Save settings**
+saves the scale only when you chose an entry in the scale list since you opened
+the panel, even the entry already shown; otherwise it saves memory and cores only.
+Reopening the panel discards unsaved settings edits.
+The CLI equivalent is `bin/lanai settings <GiB> <cores> [auto|percentage]`. Three
+arguments always save the scale; two keep the scale choice.
 
 Shut down is available while Windows starts and shuts down. It asks Windows to
 shut down cleanly and returns immediately. If Windows ignores the request while
@@ -177,18 +179,44 @@ Omarchy's Super shortcuts and Ctrl+Alt+Del do **not** reach Windows; use Windows
 onscreen menus. The shared folder is `~/Windows` on Linux and the virtiofs drive in
 Windows Explorer.
 
-“Match my monitor” resolves to the Windows step nearest the focused monitor's
-scale at VM start, with ties rounded down and 100% when no monitor can be read.
-A fixed step skips that monitor check. Both choices resolve to one target at boot.
-The guest keeps that target as the window resizes, caps it at Windows' limit for
-the current resolution, and restores it when the window grows. This is Windows'
-display scale, separate from its “Text size” setting. The guest checks every 2 s
-and reverts manual scale changes in Windows Settings within 2 s for both choices.
-If Windows accepts a change but leaves the scale unchanged, Lanai retries the same
-change once a minute without repeating its log lines. A new display, range or
-target applies promptly. A log write failure does not stop the loop.
-Existing users must click **Run setup again** after this update to install the
-persistent scale script and its task. The [rehearsal checklist](docs/plugin/proofs.md)
+Windows' display scale changes while Windows runs, without a restart or sign-out.
+“Match my monitor” uses the Windows step nearest the scale of the monitor the
+Windows window is on, with ties rounded down. When the window moves to a monitor
+with another scale, or that monitor's scale changes, Windows follows within 5
+seconds, also while the panel is closed or the shell restarts. While the window is
+closed, the monitor it was last on counts; before it first opens, the monitor
+focused at start. If that monitor is gone, the focused monitor counts, then the
+first one Hyprland lists. Without any monitor the scale stays as it was (100% at
+start).
+
+A scale save while Windows runs reaches Windows within 5 seconds if you are signed
+in, or when you next sign in. Lanai cannot see which, so the panel says both. A
+save while Windows is stopped applies at the next start.
+
+You can also pick a scale in Windows, under Settings > System > Display > Scale.
+Your pick holds until your next scale save, a sign-out, a Windows restart or the VM
+stopping, and the panel notes that saving a scale replaces it. While it holds,
+“Match my monitor” does not follow the window. A pick never changes Lanai's
+setting. Windows changes its recommended scale when the resolution changes;
+the scale task sets it back to your pick, or to the scale you saved in Lanai when
+you have no pick. The scale holds as the window resizes: Lanai caps it at
+Windows' limit for the current resolution, and it goes back up when the window
+grows.
+
+This is Windows' display scale, separate from its “Text size” setting. While
+Windows' custom scaling is on (a percentage that needs a sign-out to apply), it
+overrides the scale Lanai sets; turn it off under Settings > System > Display >
+Scale, then sign out. Some Windows apps redraw at a new scale only after they restart. If Windows
+accepts a change but leaves the scale unchanged, the scale task tries again once a
+minute. Its log is `C:\Program Files\Lanai\lanai-scale.log`.
+
+Installs set up before live scale keep the old scale task: a scale save applies at
+the next start, the old task undoes scale changes made in Windows, and “Match my
+monitor” does not follow the window while Windows runs. The panel says so under
+the scale list and after a save. To get live scale, shut Windows down and click **Run setup again**; it also
+turns the Windows lock off again. After you update Lanai while Windows runs, the
+panel may say some of Lanai's helpers stopped until Windows next starts. The
+[rehearsal checklist](docs/plugin/proofs.md)
 covers resizing, scale limits and reconnecting the display.
 Host locking, suspend and session shutdown are covered by the
 [phase 8 checks](docs/plugin/plan.md#phase-8-acceptance), which remain pending.
@@ -219,7 +247,17 @@ While the Windows window runs, Windows can read **anything copied on Linux,
 including files**. Files copied in Windows appear on Linux in a read-only folder
 under your runtime directory. This is an accepted guest-to-host exposure alongside
 Looking Glass's frames and cursor, SPICE input/audio/clipboard, the network backend,
-the confined `~/Windows` share and the clock-only QEMU guest agent channel.
+the confined `~/Windows` share, the clock-only QEMU guest agent channel and the
+scale channel. The scale channel runs one way: each message holds a scale step and
+a save number, and Lanai never reads what Windows writes to it.
+
+Windows opens the scale channel only to administrators, so the scale task runs at
+your sign-in with your administrator rights and no prompt. Its script, log and temp
+folder sit in `C:\Program Files\Lanai`, where only administrators can write. Such a
+task still starts with your Windows user's environment variables and registry
+settings, so malware already running as that user could use it to gain
+administrator rights. With UAC
+on, that malware has other ways to the same end.
 
 ## Networking and coexistence
 
@@ -303,8 +341,10 @@ Windows test copy.
    ```
 
    A service already stopped needs no further stop. This removes Lanai's
-   `virtiofs.exe`, `lanai-scale.ps1` and the service's auto-start, dependency and
-   executable-path settings. If another workflow depended on a pre-existing
+   `virtiofs.exe`, `lanai-scale.ps1` with its log and temp folder, and the
+   service's auto-start, dependency and executable-path settings. An install set
+   up before live scale also kept the scale log in `%LOCALAPPDATA%\Lanai`; delete
+   that folder too. If another workflow depended on a pre-existing
    `VirtioFsSvc`, reinstall/configure its own virtiofs tools before using it;
    setup did not save its previous settings. WinFsp and the newer signed `viofs`
    driver can stay: without that service they do not create Lanai's share, and

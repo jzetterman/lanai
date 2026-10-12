@@ -22,7 +22,7 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   `systemd/` (the VM unit template), `guest/` (what runs in
   Windows: `setup.cmd`, `lanai-lock.cmd`, `lanai-scale.ps1`) and `test/` (bats; fake
   QMP and guest agent servers and trimmed client logs in `test/fixtures/`).
-  `docs/plugin/proof-kit/` holds the phase 1 proof scripts and
+  `docs/plugin/proof-kit/` holds the phase 1 and live-scale proof scripts and
   `count-image-extents.py`, the read-only extent census.
 - QML lint: `test/qml-lint` (or `test/qml-lint <file>`). It makes a temporary
   repository-local import root with `qs` linked to `/usr/share/omarchy/shell`,

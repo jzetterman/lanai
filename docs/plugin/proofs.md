@@ -919,6 +919,94 @@ ShellCheck command pass; these environment-limited results need a full rerun
 outside this sandbox before the acceptance gate.
 
 
+## Live-scale channel proof, phase 0 (1)-(5) (2026-10-11)
+
+John ran `proof-kit/proof-scale-port.ps1` in the test copy's Windows (Lanai's
+storage, `~/lanai-proofs/lanai-setup-test`), from the shared folder. Instead of a
+`proof-vm` boot, the port was hotplugged into the running VM over QMP
+(`chardev-add` socket `scale0` at `$XDG_RUNTIME_DIR/lanai/scale.sock`, server,
+no wait; `device_add virtserialport name=io.lanai.scale.0`) and removed after.
+The host sent `proof <seq> <epoch ms>` lines with `socat -u`, one connection per
+line, under a 1 s `timeout`.
+
+1. Access: a normal PowerShell got `open-failed win32=5 (Access is denied)`; an
+   elevated one (same user, john) got `open-ok`. Pass.
+2. Order: 173 lines (seq 16-188) arrived in order, no gaps. Pass.
+3. No host connected: a read fails at once with "Insufficient system resources
+   exist to complete the requested service" (error 1450). It never blocked and
+   never returned 0 bytes. The reader retried every 250 ms (7 or 8 failed reads
+   per 2 s gap) and did not spin.
+4. Guest holding the port open but not reading (90 s hold): the guest kept the
+   first 130 lines of a 10,000-line single-connection burst (about 3 KB), then
+   the host write stalled until its 20 s `timeout` killed it. Five single-line
+   sends after that each reported success on the host and never arrived. When
+   the guest read, it got lines 211-340 within about 1 s, 57 s old. Lines 1-15,
+   sent before any guest opened the port, were never delivered either.
+5. Connection per line every 2 s for 5 minutes: every line arrived; arrival minus
+   send (which includes clock skew) ranged from -328 to -70 ms, a 258 ms spread
+   that matches the retry gap. Each host send took 2-3 ms.
+
+Plan change from (4): a drained batch with more than one line is a stale backlog
+and the task drops it; the next fresh line comes within one feed period.
+Proofs (6) and (7) run after phase B's script exists.
+
+## Live-scale hands-on, phase 0 (6)-(7) and phase C (2026-10-11)
+
+John ran these on the test copy (`~/lanai-proofs/lanai-setup-test`) with the
+installed plugin on `plugin/live-scale` (d3a827e), after Run setup again. One
+monitor: HDMI-A-1, 3840x2160, Hyprland scale 1. Times are EDT.
+
+- Upgrade: Run setup again installed the new task (`scale_task: 2`) and the panel
+  note changed to "Saving a scale replaces one you picked in Windows." The shell
+  runs with its file watcher off, so the switch needed `omarchy-restart-shell`.
+- Custom scaling: John's Windows had it on. The Scale list was greyed out and
+  `GET_DPI_SCALE` returned `curScaleRel 1234568` (outside the 0 to max range),
+  so the task logged the current scale as unknown and never confirmed a set.
+  After "Turn off custom scaling and sign out", `curScaleRel` read true values
+  and every check below used them. Phase 1's blank current-scale logs likely had
+  the same cause.
+- Cap: a 175% save with the window at 1901x1046 (Windows allows up to 150%,
+  `maxScaleRel 2`) changed nothing and logged nothing beyond the save, because
+  150% was already set. Growing the window to 3816x2106 applied 175% at once.
+- Live save: saved 150% at 22:19:26; the feed sent it at 22:19:28.05; Windows
+  dropped a 200% pick and applied 150% at 22:19:28.64. Pass.
+- Pick: a 200% pick was logged as a pick. Shrinking the window to 1724x1045
+  capped it to 150%; growing it back restored 200%. Pass.
+- Match my monitor: saved, Windows went to 100% and dropped the pick. Hyprland
+  scale 1 to 1.25 at 22:57:43 reached Windows (125%) at 22:57:44.04, and back to
+  1 at 22:58:07 reached it (100%) at 22:58:08.22. Pass.
+- VM restart: a 150% pick, then Shut down and Start Windows. Windows came up at
+  150% (its own last setting); 2 s after the port opened, the task applied the
+  saved 100%. Pass. The guest's first frame matched the window (3816x2106).
+- Proof 6: with the task suspended in Resource Monitor, saves of 125%, 175% and
+  225%, then resume: the task dropped 29 lines as one stale batch and applied
+  225% only. Pass. Backlog variant (7 min suspended, 125% at 1 min, 200% at
+  6 min): it dropped 128 lines (the buffer filled after about 4 minutes; later
+  lines were lost) and applied 200% only, never 125%. The host never stalled.
+  Pass.
+- Proof 7: with the task running, an elevated `proof-scale-flood.ps1` got
+  `open-failed win32=5`: the task holds the port to itself. With the task ended,
+  the flood opened the port, wrote 4,093 bytes, and every later write (9,575 in
+  10 minutes) failed with "cannot continue without blocking"; nothing on the host
+  reads guest writes. Over 22:32-22:45, QEMU's RSS moved under 1 MB, the feed
+  stayed at 2-6 MB and the shell fell from 486 to 439 MB. The feed sent three
+  saves on time. Pass.
+- Restart: a task killed with `Stop-Process` (exit -1) did not restart within
+  4 minutes. Task Scheduler's restart on failure covers a failed start only.
+  Ending the task in Task Scheduler does not restart it either. Fix in the plan's
+  Phase D.
+- A normal PowerShell cannot read the elevated task's command line
+  (`Get-CimInstance Win32_Process` returns nothing for it).
+
+Phase D check (2026-10-12, plugin at 238e799): Run setup again passed step 6
+with the new trigger. `Triggers.Repetition` showed `Interval PT5M`, no
+`Duration` and `StopAtDurationEnd False`. A task killed with `Stop-Process` came
+back by itself and opened the port at 12:43:17; it applied a 125% save made
+while it was down one second later. Pass.
+
+Still to run: row 12's two-monitor cases (needs a second monitor), and row 4's
+RDP check in phase 8.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

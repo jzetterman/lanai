@@ -62,6 +62,15 @@ SH
   assert_output --partial $'ui-job-worker\nlaunch\nsetup\n--window'
 }
 
+@test "ui job: the worker gets the session's display and Hyprland instance for boot_vm" {
+  WAYLAND_DISPLAY=wayland-4 HYPRLAND_INSTANCE_SIGNATURE=sig_9 run cmd_ui_job launch setup
+  assert_success
+  run cat "$T/launch"
+  assert_line -- --setenv=WAYLAND_DISPLAY=wayland-4
+  assert_line -- --setenv=HYPRLAND_INSTANCE_SIGNATURE=sig_9
+  assert_line -- "--setenv=XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+}
+
 @test "ui job: setup never starts outside the graphical session" {
   echo inactive >"$T/session"
   run cmd_ui_job_worker token setup --window

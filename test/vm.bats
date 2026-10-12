@@ -56,6 +56,10 @@ socket,id=qga0,path=$1/qga.sock,server=on,wait=off
 -device
 virtserialport,chardev=qga0,name=org.qemu.guest_agent.0
 -chardev
+socket,id=scale0,path=$1/scale.sock,server=on,wait=off
+-device
+virtserialport,chardev=scale0,name=io.lanai.scale.0
+-chardev
 spicevmc,id=usbredir0,name=usbredir
 -device
 usb-redir,chardev=usbredir0
@@ -70,12 +74,12 @@ unix:$1/qmp-events.sock,server=on,wait=off
 -qmp
 unix:$1/qmp-cli.sock,server=on,wait=off
 -smbios
-type=11,value=lanai-scale=$2
+type=11,value=lanai-scale=$2,value=lanai-scale-save=${3:-7}
 EOF
 }
 
 @test "vm_args: the template filled from settings plus Lanai's devices, and nothing else" {
-  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 192.168.1.1
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 7 192.168.1.1
   assert_success
   local want
   want=$(
@@ -91,7 +95,7 @@ EOF
 @test "vm_args: keeps every item of the captured dockur command line that spec req 2 covers" {
   # Walk the real capture: every option and value must reach Lanai's line,
   # apart from the rewrites the plan lists.
-  run vm_args /vm/store 02:4B:81:73:3C:96 16 6 100 192.168.1.1
+  run vm_args /vm/store 02:4B:81:73:3C:96 16 6 100 7 192.168.1.1
   assert_success
   local -a cap
   local i opt val out=$'\n'$output$'\n'
@@ -119,7 +123,7 @@ EOF
 }
 
 @test "vm_args: memory and cores come from the settings" {
-  run vm_args /vm/store 02:4b:81:73:3c:96 12 3 100 10.0.0.1
+  run vm_args /vm/store 02:4b:81:73:3c:96 12 3 100 7 10.0.0.1
   assert_success
   assert_line "12G"
   assert_line "memory-backend-memfd,id=mem,size=12G,share=on"
@@ -129,7 +133,7 @@ EOF
 }
 
 @test "vm_args: no listener, port forward, container path or serial monitor" {
-  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 192.168.1.1
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 7 192.168.1.1
   assert_success
   refute_output --partial hostfwd
   refute_output --partial tcp-ports
@@ -152,23 +156,23 @@ EOF
   )
   local disk=(-drive "if=none,id=setup,file=fat:/media/dir,format=raw,readonly=on" -device "usb-storage,drive=setup")
   # The disk and no window: a setup boot on a guest that has the IDD.
-  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 192.168.1.1 /media/dir false
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 7 192.168.1.1 /media/dir false
   assert_success
   want=$(printf '%s\n' "$base" "${disk[@]}" -vga none -display none)
   assert_output "$want"
   # Both: a setup boot on a fresh install.
-  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 192.168.1.1 /media/dir true
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 7 192.168.1.1 /media/dir true
   assert_success
   want=$(printf '%s\n' "$base" "${disk[@]}" -vga virtio -display gtk,window-close=off)
   assert_output "$want"
   # Neither: a normal boot.
-  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 192.168.1.1
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 7 192.168.1.1
   want=$(printf '%s\n' "$base" -vga none -display none)
   assert_output "$want"
 }
 
 @test "vm_args: refuses a window choice that is not true or false" {
-  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 192.168.1.1 /media/dir yes
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 7 192.168.1.1 /media/dir yes
   assert_failure
   assert_output --partial "window"
 }
@@ -176,7 +180,7 @@ EOF
 @test "vm_args: refuses a storage path with a comma, a newline, or no leading slash" {
   local bad
   for bad in /vm/a,b $'/vm/a\nb' vm/store ""; do
-    run vm_args "$bad" 02:4B:81:73:3C:96 8 4 100 192.168.1.1
+    run vm_args "$bad" 02:4B:81:73:3C:96 8 4 100 7 192.168.1.1
     assert_failure
     assert_output --partial "storage"
   done
@@ -186,7 +190,7 @@ EOF
   local bad
   for bad in 02:4B:81:73:3C 02:4B:81:73:3C:96:00 02-4B-81-73-3C-96 02:4B:81:73:3C:9G \
     "02:4B:81:73:3C:96,x=1" " 02:4B:81:73:3C:96" ""; do
-    run vm_args /vm/store "$bad" 8 4 100 192.168.1.1
+    run vm_args /vm/store "$bad" 8 4 100 7 192.168.1.1
     assert_failure
     assert_output --partial "MAC"
   done
@@ -195,37 +199,56 @@ EOF
 @test "vm_args: refuses memory or cores out of range or not an integer" {
   local bad
   for bad in 0 513 8G 8,share=off -1 "" 08x; do
-    run vm_args /vm/store 02:4B:81:73:3C:96 "$bad" 4 100 192.168.1.1
+    run vm_args /vm/store 02:4B:81:73:3C:96 "$bad" 4 100 7 192.168.1.1
     assert_failure
     assert_output --partial "memory"
   done
   for bad in 0 65 4,sockets=2 "" 1.5; do
-    run vm_args /vm/store 02:4B:81:73:3C:96 8 "$bad" 100 192.168.1.1
+    run vm_args /vm/store 02:4B:81:73:3C:96 8 "$bad" 100 7 192.168.1.1
     assert_failure
     assert_output --partial "cores"
   done
-  run vm_args /vm/store 02:4B:81:73:3C:96 512 64 100 192.168.1.1
+  run vm_args /vm/store 02:4B:81:73:3C:96 512 64 100 7 192.168.1.1
   assert_success
-  run vm_args /vm/store 02:4B:81:73:3C:96 1 1 100 192.168.1.1
+  run vm_args /vm/store 02:4B:81:73:3C:96 1 1 100 7 192.168.1.1
   assert_success
 }
 
 @test "vm_args: refuses a scale that is not a Windows step, and a bad gateway" {
   local bad
   for bad in 137 275 50 550 "150,x" ""; do
-    run vm_args /vm/store 02:4B:81:73:3C:96 8 4 "$bad" 192.168.1.1
+    run vm_args /vm/store 02:4B:81:73:3C:96 8 4 "$bad" 7 192.168.1.1
     assert_failure
     assert_output --partial "scale"
   done
   for bad in 192.168.1 "192.168.1.1,hostfwd=tcp::1-:1" fe80::1; do
-    run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 "$bad"
+    run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 7 "$bad"
     assert_failure
     assert_output --partial "gateway"
   done
 }
 
+@test "vm_args: the scale channel's socket is inside \$RUN and the save number reaches the OEM string" {
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 175 999999999 192.168.1.1
+  assert_success
+  assert_line "socket,id=scale0,path=$RUN/scale.sock,server=on,wait=off"
+  assert_line "virtserialport,chardev=scale0,name=io.lanai.scale.0"
+  assert_line "type=11,value=lanai-scale=175,value=lanai-scale-save=999999999"
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 175 0 192.168.1.1
+  assert_line "type=11,value=lanai-scale=175,value=lanai-scale-save=0"
+}
+
+@test "vm_args: refuses a save number that is not a whole number below 10^9" {
+  local bad
+  for bad in "7,value=x" "" -1 1.5 1000000000 " 7" $'7\n' abc; do
+    run vm_args /vm/store 02:4B:81:73:3C:96 8 4 150 "$bad" 192.168.1.1
+    assert_failure
+    assert_output --partial "save number"
+  done
+}
+
 @test "vm_args: without a gateway, passt runs without the DNS forward" {
-  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 ""
+  run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 7 ""
   assert_success
   assert_line "passt,id=hostnet0,ipv6=off,map-host-loopback=none"
 }
@@ -252,11 +275,11 @@ EOF
 @test "vm_args: refuses a setup media path with a colon, comma, newline or no slash, and a runtime comma" {
   local media
   for media in /media/a,b /media/a:b $'/media/a\nb' relative; do
-    run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 192.168.1.1 "$media"
+    run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 7 192.168.1.1 "$media"
     assert_failure
     assert_output --partial "setup media"
   done
-  XDG_RUNTIME_DIR=/run/a,b run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 192.168.1.1
+  XDG_RUNTIME_DIR=/run/a,b run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 7 192.168.1.1
   assert_failure
   assert_output --partial "runtime"
 }
@@ -268,7 +291,7 @@ EOF
     '-chardev\nsocket,id=x,path=/run/shm/x.sock' '-netdev\nuser,id=n2' \
     '-device\nfoo,tcp-ports=2222' '-device\nfoo,udp-ports=53' '-object\nfoo,param=--tcp-ports=22'; do
     { cat "$REPO/lib/dockur-6.05.args"; printf '%b\n' "$extra"; } >"$T/args"
-    LANAI_ARGS_TEMPLATE=$T/args run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 192.168.1.1
+    LANAI_ARGS_TEMPLATE=$T/args run vm_args /vm/store 02:4B:81:73:3C:96 8 4 100 7 192.168.1.1
     assert_failure
     assert_output --partial "refusing"
   done
@@ -277,7 +300,7 @@ EOF
 @test "vm_args: the user's own storage path may contain storage or run/shm" {
   local p
   for p in /mnt/storage/win /home/u/run/shm/win /storage2/win; do
-    run vm_args "$p" 02:4B:81:73:3C:96 8 4 100 192.168.1.1
+    run vm_args "$p" 02:4B:81:73:3C:96 8 4 100 7 192.168.1.1
     assert_success
     assert_line "file=$p/data.img,id=data3,format=raw,cache=none,aio=native,discard=unmap,detect-zeroes=on,if=none"
   done
@@ -907,6 +930,8 @@ for a; do [[ $a != --socket-path=* ]] || p=${a#*=}; done
 exec socat "UNIX-LISTEN:$p,fork" EXEC:/bin/true'
   shim systemd-inhibit 'printf "%s\n" "$@" >"$T/inhibit.args"; exec sleep 30'
   shim dbus-monitor 'exec sleep 30'
+  # The scale feed asks Hyprland for windows and monitors: none here.
+  shim hyprctl 'echo "[]"'
   echo '[{"dst":"default","gateway":"192.168.1.1","dev":"wlan0","flags":[]}]' >"$T/route.json"
   shim ip 'cat "$T/route.json"'
   export T LANAI_VIRTIOFSD=$T/shims/virtiofsd INVOCATION_ID=inv-exec
@@ -939,33 +964,46 @@ start_exec() {
   exec_shims
   mkdir -m 700 "$RUN"
   : >"$RUN/qmp.sock"
+  : >"$RUN/scale.sock"
   : >"$RUN/ivshmem"
   echo "old client log" >"$RUN/client.log"
   echo 1700000000 >"$RUN/qga-open-since"
   echo 1700000000 >"$RUN/qga-closed-since"
+  # The window's monitor from the last run must not carry over.
+  echo DP-9 >"$RUN/scale-monitor"
   mkdir -p "$S"
-  echo '{"scale": 150, "setup": false}' >"$S/boot.json"
+  echo '{"scale": 150, "scale_save": 7, "setup": false}' >"$S/boot.json"
   start_exec
   wait_for_file "$T/qemu.args" "QEMU never started: $(cat "$T/exec.out")"
   # The stale files are gone and the log is empty. Setup's step 6 times the
   # guest agent's port from this boot only.
   assert [ ! -e "$RUN/qmp.sock" ]
+  assert [ ! -e "$RUN/scale.sock" ]
+  assert [ ! -e "$RUN/scale-monitor" ]
   assert [ ! -e "$RUN/ivshmem" ]
   assert [ ! -s "$RUN/client.log" ]
   assert [ ! -e "$RUN/qga-open-since" ]
   assert [ ! -e "$RUN/qga-closed-since" ]
   assert_equal "$(stat -c %a "$RUN")" 700
   # QEMU runs as the unit's main process, with the arguments vm_args builds.
-  assert_equal "$(<"$T/qemu.args")" "$(vm_args "$T/win" 02:4B:81:73:3C:96 8 4 150 192.168.1.1)"
+  assert_equal "$(<"$T/qemu.args")" "$(vm_args "$T/win" 02:4B:81:73:3C:96 8 4 150 7 192.168.1.1)"
   assert_equal "$(<"$T/qemu.tmpdir")" "$RUN"
   assert_equal "$(tr '\0' ' ' </proc/"$EXEC_PID"/cmdline)" "sleep 30 "
   assert_equal "$(<"$S/running")" inv-exec
   # Each helper's pid (virtiofsd's own runner, the others' supervisors) is in $RUN.
   local name
-  for name in virtiofsd shutdown-watch sleep-watch event-log; do
+  for name in virtiofsd shutdown-watch sleep-watch event-log scale-feed; do
     [[ -s $RUN/$name.pid ]] || fail "no pid file for $name"
     kill -0 "$(<"$RUN/$name.pid")" || fail "$name is not running"
   done
+  # The scale feed runs under its supervisor, so it restarts if it dies.
+  local i
+  for ((i = 0; i < 50; i++)); do
+    run ps --ppid "$(<"$RUN/scale-feed.pid")" -o args=
+    [[ $output == *"lanai-vm-helper scale-feed"* ]] && break
+    sleep 0.05
+  done
+  assert_output --partial "lanai-vm-helper scale-feed"
   assert_equal "$(paste -sd' ' "$T/virtiofsd.args")" \
     "--sandbox namespace --shared-dir $HOME/Windows --socket-path=$RUN/virtiofs.sock"
   run cat "$T/inhibit.args"

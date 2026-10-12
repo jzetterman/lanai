@@ -927,37 +927,30 @@ fake_host() {
   assert_output "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
 }
 
-# --- host_scale ---
+# --- scale_percent and host_monitors (boot and the feed share scale_target) ---
 
-@test "host_scale: the focused monitor's scale as a percentage" {
-  shim hyprctl 'cat <<EOF
-[{"name": "DP-1", "focused": false, "scale": 1.00},
- {"name": "HDMI-A-1", "focused": true, "scale": 1.50}]
-EOF'
-  PATH=$T/shims:$PATH run host_scale
-  assert_success
-  assert_output 150
-}
-
-@test "host_scale: fractional scales keep two decimals" {
+@test "scale_percent: fractional scales keep two decimals" {
   local pair
-  for pair in "1.125:112.5" "1.666667:166.67" "1:100" "2.5:250"; do
-    shim hyprctl "echo '[{\"focused\": true, \"scale\": ${pair%%:*}}]'"
-    PATH=$T/shims:$PATH run host_scale
+  for pair in "1.125:112.5" "1.666667:166.67" "1:100" "2.5:250" "1.50:150"; do
+    run scale_percent "${pair%%:*}"
     assert_output "${pair#*:}"
   done
 }
 
-@test "host_scale: fails with no focused monitor or no Hyprland" {
-  shim hyprctl "echo '[{\"focused\": false, \"scale\": 2}]'"
-  PATH=$T/shims:$PATH run host_scale
-  assert_failure
+@test "host_monitors: hyprctl's monitors, and a failure without Hyprland" {
+  shim hyprctl 'echo "[{\"focused\": true}]"'
+  PATH=$T/shims:$PATH run host_monitors
+  assert_success
+  assert_output '[{"focused": true}]'
   shim hyprctl 'echo "HYPRLAND_INSTANCE_SIGNATURE not set" >&2; exit 1'
-  PATH=$T/shims:$PATH run host_scale
+  PATH=$T/shims:$PATH run host_monitors
   assert_failure
-  shim hyprctl "echo 'not json'"
-  PATH=$T/shims:$PATH run host_scale
+  # An optional timeout in seconds; the scale feed passes 1.
+  shim hyprctl 'exec sleep 10'
+  local start=$SECONDS
+  PATH=$T/shims:$PATH run host_monitors 1
   assert_failure
+  ((SECONDS - start <= 3)) || fail "host_monitors 1 took $((SECONDS - start)) s"
 }
 
 # --- scale_step ---
@@ -1007,22 +1000,38 @@ assert_steps() {
 
 # --- dockur_version ---
 
-@test "vm_windows_scale: validates JSON types without conflating absent and null" {
+@test "vm_scale_settings: validates JSON types without conflating absent and null" {
   mkdir -p "$(dirname "$(settings_file)")"
   local value
   for value in '"auto"' 100 125 150 175 200 225 250 300 350 400 450 500; do
     printf '{"windows_scale":%s}\n' "$value" >"$(settings_file)"
-    run vm_windows_scale
+    run vm_scale_settings
     assert_success
-    assert_equal "$output" "$(jq -r .windows_scale "$(settings_file)")"
+    assert_equal "$output" "$(jq -r .windows_scale "$(settings_file)") 0"
   done
   printf '{}\n' >"$(settings_file)"
-  run vm_windows_scale
+  run vm_scale_settings
   assert_success
-  assert_output auto
+  assert_output "auto 0"
   for value in null true false '"125"' '"AUTO"' '{}' '[]' 99 126 275 550 125.5; do
     printf '{"windows_scale":%s}\n' "$value" >"$(settings_file)"
-    run vm_windows_scale
+    run vm_scale_settings
+    assert_failure
+  done
+}
+
+@test "vm_scale_settings: the save number is a whole number below 10^9, absent counts as 0" {
+  mkdir -p "$(dirname "$(settings_file)")"
+  local value
+  for value in 0 1 41 999999999; do
+    printf '{"windows_scale":150,"scale_save":%s}\n' "$value" >"$(settings_file)"
+    run vm_scale_settings
+    assert_success
+    assert_output "150 $value"
+  done
+  for value in null true '"3"' -1 1.5 1000000000 1e12 '[]' '{}'; do
+    printf '{"windows_scale":150,"scale_save":%s}\n' "$value" >"$(settings_file)"
+    run vm_scale_settings
     assert_failure
   done
 }
