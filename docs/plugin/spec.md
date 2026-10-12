@@ -153,7 +153,8 @@ Neither needs GPU acceleration.
    - asks the user to restart Windows once after the guest install. The spike showed that
      Looking Glass input does not work until that restart.
 8. The Looking Glass client on the host and the IDD in the guest come from the same
-   pinned build. Lanai detects a mismatch and says how to fix it. When a Lanai update
+   pinned build (a client built from the pinned source with Lanai's patches counts;
+   requirement 12). Lanai detects a mismatch and says how to fix it. When a Lanai update
    changes the pin, the update keeps the user with a working Windows window throughout,
    or shows the exact steps to restore one. When Looking Glass cannot show Windows at all
    (a failed IDD, a mismatch, a recovery screen), the fallback is to stop Lanai and use
@@ -221,9 +222,10 @@ Neither needs GPU acceleration.
       The scale task changes any other scale change back to the applied scale. The scale
       applies to the Windows user who ran setup, as the lock change does (requirement
       7).
-    - A resize never changes the target. Within 5 seconds of the last size change, the
-      applied scale is the target capped for the new resolution: it drops when the
-      window shrinks below what the target needs and goes back up when it grows.
+    - A resolution change never changes the target, whatever its cause (a resize, or
+      the size rule below). Within 5 seconds of the last resolution change, the applied
+      scale is the target capped for the new resolution: it drops when the resolution
+      falls below what the target needs and goes back up when it grows.
     - The channel runs one way, from Lanai to Windows (requirement 27), so the panel
       cannot see whether anyone is signed in or what Windows applied. Near the scale
       list, the panel says that saving a scale replaces one picked in Windows. After a
@@ -238,23 +240,35 @@ Neither needs GPU acceleration.
       does not apply. Lanai decides this from its own setup record; a record without
       the new task's mark counts as old.
     - Size (John, 2026-10-12). While the window is open, Windows' resolution matches
-      the window's size in the monitor's pixels, with no resize by the user, within 5
-      seconds of the later of each event below and the first frame Windows shows after
-      it: the window opens or reopens; Windows starts, restarts or signs in; Windows'
-      display driver restarts; Windows changes its resolution on its own (the window
-      wins over a resolution picked in Windows' settings); the window tiles, goes
-      fullscreen, leaves fullscreen or resizes; the window moves to a monitor with
-      another scale. Before this change, a driver restart during boot left
-      Windows at the driver's default size until the user resized the window by hand.
-    - When Windows refuses a size (for example, a window smaller than Windows allows),
-      Lanai asks for that size at most 3 times, then waits for the next size change or
-      driver restart. It never asks in a loop, and the client's log says once that
-      Windows refused the size.
+      the window's size in the monitor's pixels, with no resize by the user. An event
+      that starts a new display session (the window opens or reopens; Windows starts or
+      restarts; Windows' display driver restarts) is matched within 5 seconds of the
+      session's first frame. An event during a session (the window tiles, goes
+      fullscreen, leaves fullscreen or resizes; it moves to a monitor with another scale;
+      Windows' resolution changes for any other reason, including a sign-in or a
+      resolution picked in Windows' Display settings) is matched within 5 seconds of the
+      event. The window always wins; the README tells users to resize the window to
+      change Windows' resolution.
+    - Windows refuses a size when, after Lanai asks for it, Windows does not show that
+      size within 5 seconds, or leaves it again within 60 seconds. Examples: a window
+      smaller than Windows allows, or one too large for the frame memory Lanai gives
+      Windows (fullscreen on a very high-resolution monitor). Lanai asks for one size at
+      most 3 times in a round. A round ends when the window's size changes, the display
+      driver restarts, or Windows has held the asked size for 60 seconds. The client's
+      log names each request and its size, and says once per round that Windows refused
+      the size. Lanai never asks in a loop.
     - The fix may change the Looking Glass client only through patches kept in this
-      repository and applied to the pinned source at build time. Windows' side (the
-      IDD) stays the pinned build, unchanged. Each patch is offered upstream.
-    - An install whose client was built before the fix keeps working. The panel names
-      the one step that builds the fixed client, and the old client runs until then.
+      repository and applied exactly to the pinned source when Lanai builds the client;
+      a patch that does not apply exactly stops the build. A client built this way
+      counts as the pinned build for requirement 8. The patches change nothing that the
+      client and the IDD send each other, and the IDD stays the pinned build. Lanai
+      records which patches built the installed client.
+    - An install whose client was built without the current patches keeps working with
+      that client. The panel says that Windows may start at the wrong size until the
+      user runs the one step that builds the fixed client, and names the step. The step
+      changes nothing in Windows: no administrator prompt, no Windows restart and no
+      change to the Windows lock. The fixed client takes over the next time the window
+      opens. Until then the bar and the panel start and show Windows as before.
 13. Keyboard, mouse, clipboard (both ways) and audio output work in the Windows window.
 14. When Windows asks for a password (dockur normally signs in automatically), the user
     types the one they chose when `omarchy-windows-vm` installed Windows. Lanai never
@@ -390,7 +404,7 @@ stopped; Windows then resumes, boots after a restart, and `chkdsk` reports no er
 | 9 | Interrupting setup at each step, then rerunning it, ends in a working install |
 | 10-17, 20 | Each passes a scripted or checklist test (list in the plan); requirement 12 is checked with a scale matrix: each step, a value just above and below each boundary, a tie (for example 112.5% gives 100%, 275% gives 250%), the 250-300 gap, and values below 100% and above 500% (clamped to the nearest end). If requirement 15 is moved to v2 (recorded in this spec before the release gate), its check and the requirement 28 check are skipped. Requirement 11's clicks: in each state requirement 10 lists, plus during setup, a snapshot or restore, and an unfinished restore, a left click, Enter and Space on the icon open the panel (and close it when open), and a right click starts Windows only when stopped with nothing blocking a start, opens its window only when running after setup with the window closed, and otherwise opens the panel |
 | 12 | On two monitors with different scales, with "match my monitor": the step at start comes from the focused monitor; moving the window between the monitors changes Windows' scale within 5 seconds each way, and so does changing the window's monitor's scale, with the panel closed; with the window closed, changing its last monitor's scale applies, moving focus to the other monitor leaves the scale alone, and unplugging the last monitor applies the focused monitor's step; a move made while the shell is down applies within 5 seconds; with the window closed and the shell restarted, a scale change on its last monitor still applies; with no monitor focused, the first monitor Hyprland lists counts. A save of "match my monitor" from a fixed step starts following within 5 seconds. A panel save of a fixed step applies within 5 seconds and survives a VM restart; `lanai settings` with three arguments does the same, and a three-argument save of the current step drops a pick; a `lanai settings` scale save made while the shell is down applies within 5 seconds. Picks: a pick holds through a resize, a monitor move, a follow update and a shell restart with its catch-up; a panel save that changes memory with the scale list untouched leaves it; after a shell restart, a pick holds and the next scale save drops it; a save of the scale the panel already shows drops it, and so does a second save of the same step; a sign-out, a Windows restart and a VM restart each end it, and the latest target applies within 5 seconds of the next sign-in, including a panel save made after the VM started; a resize that moves Windows' recommended scale, including a recommendation that moves seconds after the resolution, is not a pick and leaves the applied scale at the target capped for the new size; a guest that stops reading the channel, gets several saves and follow updates, then resumes, applies only the latest target, and a save among them drops a pick. Cap: with a 300% target, shrinking the window until Windows allows at most 200% applies 200% within 5 seconds of the last size change, and growing it back applies 300%, with the setting still 300%; a 250% pick behaves the same way; a panel save or monitor move while capped applies the capped scale, then the new target once the window grows. Panel words: the note near the scale list, and the same after-save message whether or not the user is signed in; a save while the VM is stopped applies at the next start. Upgrade: on an install set up before this change, a panel save names Run setup again with the lock note and applies at the next start; after Run setup again, Windows has one scale task, a panel save applies live and a pick holds. Channel: a review shows each message carries only a step and a save number from host to guest, and that Lanai never parses or acts on what the guest writes to it; with a guest that never reads the channel and with one that floods it, the panel, the bar and following stay responsive, and over a 10-minute flood no Lanai or shell process grows by more than 20 MB. With Windows' custom scaling on, the README's words match what happens |
-| 12b | Size, with the window tiled, floating and fullscreen at different sizes: across 10 Windows starts from the bar, Windows' resolution matches the window within 5 seconds of the first frame each time (the clock for every check in this row is req 12's: the later of the event and the first frame after it), with no resize by hand; the same after a sign-out and sign-in, after a Windows restart, after closing and reopening the window, and after restarting the Looking Glass display driver in Device Manager while the window is open. A resolution Windows sets on its own (another size chosen in Windows' Display settings) returns to the window's size within 5 seconds. Moving the window to a monitor with another scale matches within 5 seconds. A window smaller than Windows allows: the client's log shows at most 3 requests for that size and one line saying Windows refused it, then nothing more until the window's size changes or the display driver restarts; restarting the driver then gives a fresh round of at most 3 requests, with no resize by hand. A review shows the client changes only through patches in this repository applied to the pinned source, and the IDD is the pinned build. On an install built before the fix, the panel names the step that builds the fixed client, the old client still opens the window, and after the step the checks above pass |
+| 12b | Size, with the window tiled, floating and fullscreen at different sizes. Session starts: across 10 Windows starts from the bar, Windows' resolution matches the window within 5 seconds of the session's first frame (its "Format:" line in the client's log), with no resize by hand; the same after a Windows restart, after closing and reopening the window, and after restarting the Looking Glass display driver in Device Manager while the window is open. During a session: after a sign-out and sign-in, a resolution picked in Windows' Display settings, tiling, fullscreen and back, a resize, and a move to a monitor with another scale, Windows matches within 5 seconds of the event. Scale: with a 300% target and a large window, a start that first shows the driver's default size ends at 300% within 5 seconds of the corrected resolution. Refusal: with a window smaller than Windows allows, the client's log shows 1 to 3 requests for that size and one line saying Windows refused it, then no request until the window's size changes; restarting the driver then gives a new round of 1 to 3 requests and one refusal line, with no resize by hand. Patches: a review shows the client changes only through this repository's patches applied to the pinned source, that they change nothing the client and the IDD send each other, and that the IDD is the pinned build; a patch that does not apply exactly stops the build. Upgrade: on an install whose client was built before the fix, the panel names the step and says what it fixes, starting and using Windows still works, the step shows no Windows prompt and does not restart Windows, and after the window reopens the checks above pass |
 | 18 | Shell restart, plugin reload, plugin update and plugin disable each leave Windows running, and the bar shows its true state afterwards |
 | 19 | Logout ends in a clean shutdown, with lingering both enabled and disabled, including with row 7b's 1-minute screen saver still set (no longer secure) and running at logout; a guest that ignores shutdown at logout (fixture: turn the Windows lock back on and lock Windows, or leave open a security screen that row 7b recorded as ignoring shutdown, then log out) is force-stopped after 2 minutes and reported at the next start, naming a locked Windows, an open security screen, or a shutdown that did not finish in time as likely causes; on reboot and power-off, with lingering both enabled and disabled and an idle, unlocked Windows, Windows' shutdown starts when the host's does, the time Windows took is measured and written in the README, and the next start reports no forced stop; with the logout fixture above, a reboot whose wait expires ends in a forced stop that the next start reports |
 | 21 | After suspend and resume, the requirement 20 check passes, and the guest clock is within 2 s of the host's within 60 s |
@@ -478,3 +492,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | amendment | 2026-10-12 | From the live-scale hands-on (John): Windows sometimes starts at the display driver's default size and stays there until the user resizes the window by hand. The client's log shows why: the driver restarts during boot, and the client sends its window size once per size, so it never sends it again. On 2026-10-11, Windows also changed its resolution on its own 0.7 s after a session started, and the client never corrected it. Req 12 gets the size rule (every case within 5 s, at most 3 asks for a size Windows refuses), the client-patch constraint, the upgrade rule; row 12b tests them |
 | spec | resize amendment review a (gpt-6.1-sol) | 2026-10-12 | Round 1 (full): 2 should-fix, 0 refuted; both integrated: one clock for every size case (the later of the event and the first frame after it), and row 12b lets a driver restart start a fresh round of at most 3 requests |
 | spec | resize amendment review a (gpt-6.1-sol) | 2026-10-12 | Round 2 (full): 0 findings: "the amendment is sound". Stage closed |
+| spec | resize amendment review b single (opus-5.5) | 2026-10-12 | Round 1 (full): 0 blockers, 6 should-fix, 4 nits, 0 refuted; all integrated: refusal defined by what the client sees (no frame at the size within 5 s, or left again within 60 s) with rounds that end on a size change, driver restart or 60 s held, so a reverting Windows cannot cause a loop; the client logs each request; a new session's clock starts at its first frame, an in-session event's at the event (reconciles a round 1); the cap rule follows any resolution change, with a 12b case for a start through the driver's default size; a patched client counts as the pinned build for req 8, patches change no client-IDD messages and Lanai records which patches built the client; upgrade words say what the user loses, that the step changes nothing in Windows and when the new client takes over; nits (exact apply stops the build; upstream offer moves to the plan; a sign-in or a picked resolution is not 'on its own'; once per round; no history in the requirement; the too-large example) |
