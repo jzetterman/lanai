@@ -2610,8 +2610,9 @@ size Windows changes on its own is never corrected either.
 and applied in name order (`LC_ALL=C`), each made with `diff -Naur` between a
 pristine and a working copy of the pinned tree, so `-p1` strips the top folder.
 Each starts with a short header: subject, what it changes and why, and
-`SPDX-License-Identifier: GPL-2.0-or-later`. `patch` ignores the header. Two
-patches:
+`SPDX-License-Identifier: GPL-2.0-or-later`. `patch` ignores the header, so no
+header line may look like the start of a diff: none begins with `--- `, `+++ `,
+`*** `, `diff `, `Index:` or `Prereq:`. Two patches:
 
 - `0001-client-resize-module.patch` adds new files only: `client/src/resize.h`,
   `client/src/resize.c` and `client/tests/resize_test.c`. Because it creates
@@ -2674,7 +2675,9 @@ patch id goes in its own file beside it, `build-patches`, holding the id alone.
   it), then write `build-stamp` and `build-patches`, using the id it computed
   before applying.
 - `LANAI_PATCHES` (default `$LANAI_LIB/../patches/looking-glass`) lets tests
-  point at fixture patches.
+  point at fixture patches. `patches_apply` resolves it to an absolute path and
+  passes each patch to `-i` by absolute path, since GNU patch changes to `-d`'s
+  folder before it opens the `-i` file.
 - Rollback: a Lanai from before this change never reads `build-patches` and
   keeps the patched client, because its `build_client` stamps any binary that
   reports the pin. That is harmless (the client still matches the IDD) and
@@ -2822,9 +2825,12 @@ use the installed client. `cmd_panel` computes `clientOld`: setup finished (the
 plan's step 7, `$p.finished`), `build_stamp_current`, not `build_patches_current`, and `guest_version_behind`
 empty. When `guest_version_behind` is not empty (an older pin's build is in use),
 req 8's existing words ("The Windows display driver needs an update. Shut down
-and continue setup.") are the one next step, and the resize notice stays hidden.
+and continue setup.") are the one next step, and the resize warning stays hidden.
+"The resize warning" names the new line; "the notice" stays the forced-stop
+notice. The resize warning joins `.warning` on purpose, so it also shows in the
+bar's tooltip, which `LanaiModel.qml` builds from `view.warning`.
 
-- New scale task (`scale_task_kind` new): the panel shows the notice and a button,
+- New scale task (`scale_task_kind` new): the panel shows the resize warning and a button,
   Update the Windows window, which runs `lanai build-client` as a panel job
   (`ui-job` and `ui-job-worker` accept `build-client`). `panel_group` maps it to
   a new `client` group (added to `panel_records`' groups), so an interrupted
@@ -2835,14 +2841,16 @@ and continue setup.") are the one next step, and the resize notice stays hidden.
   so. It works whether
   Windows runs or not, and changes nothing in Windows: no administrator prompt,
   no restart, no lock change. The running client keeps its open binary; the next
-  `lanai open` runs the new one. The panel shows the done words only while a
-  stale client still runs: `client_active` and `/proc/<client MainPID>/exe`
-  ends in ` (deleted)` (the build replaced the folder). `cmd_build_client`
-  always ends with "If the Windows window is open, close it and open it again."
-  Failure words
-  name `build-client.log`, which joins the panel's logs block; `panel-job.log`
-  holds nothing useful for it.
-- Old scale task: the notice names Run setup again only, and no update button
+  `lanai open` runs the new one. The panel shows the done words until a client
+  starts after the job's `ended` time (`client.log`'s first line holds the
+  client's start epoch), so a success with the window closed still shows its
+  words. `cmd_build_client` always ends with "If the Windows window is open,
+  close it and open it again." Its failure next step names `build-client.log`,
+  not "run setup again". Failure words name `build-client.log`, which joins the
+  panel's logs block; `panel-job.log` holds nothing useful for it.
+  `build_client_locked`'s rc 3 (another build running) replies with its own
+  reason, `build-busy`, and its own panel words.
+- Old scale task: the resize warning names Run setup again only, and no update button
   shows. `setup_plan`'s step 4 check becomes `! build_stamp_current || !
   build_patches_current`. The "done" check above it stays pin-only, so only a
   setup round (Run setup again, or a first setup) reaches step 4 and builds. Run
@@ -2852,14 +2860,16 @@ and continue setup.") are the one next step, and the resize notice stays hidden.
 Draft words (the phase C implementer has the taste bar and may sharpen them,
 keeping each fact):
 
-- Notice, new task: "Windows may start at, or change to, the wrong size until
+- Resize warning, new task: "Windows may start at, or change to, the wrong size until
   you click Update the Windows window. This changes nothing in Windows."
-- Notice, old task, varying on running state as `old_task_note` does: "Windows
+- Resize warning, old task, varying on running state as `old_task_note` does: "Windows
   may start at, or change to, the wrong size until you click Run setup again."
   While Windows runs: "... until you shut Windows down and click Run setup
   again."
-- Busy line: "Updating the Windows window. This may take several minutes. Start
-  Windows waits until it finishes. You can close this panel."
+- Busy line: "Updating the Windows window. This may take several minutes. You
+  can start Windows when it finishes. You can close this panel."
+- Another build running (`build-busy`): "Another build is running. Try again
+  when it finishes."
 - Done (panel and `lanai build-client`): "The Windows window is updated. If the
   Windows window is open, close it and open it again."
 - Interrupted: "The update did not finish. Click Update the Windows window
@@ -2882,19 +2892,21 @@ installed shell never reads it), and an SPDX expression is as close as it can sa
 **Refused sizes.** The hands-on uses a floating window of 600x400 monitor pixels:
 below Windows' 800x600 minimum and below the pinned IDD's own 640x480 mode floor.
 The IDD keeps each ask in one `ExtraMode` registry value (`CSettings::SetExtraMode`,
-`CSettings.cpp` about 96-121), so a refused ask replaces the window's previous
+`idd/LGIdd/config/CSettings.cpp` about 96-121), so a refused ask replaces the window's previous
 mode. `LoadModes` then drops the 600x400 mode (`ParseModeString`'s floor, about
 line 338), and the replug leaves only the default list, whose preferred mode is
-1920x1080 (`DefaultPreferredDisplayMode`, `DefaultDisplayModes.h:37`). So Windows
+1920x1080 (`DefaultPreferredDisplayMode`, `idd/LGCommon/DefaultDisplayModes.h:37`). So Windows
 may not keep its size: it may move to 1920x1080. Phase 0 (4) measures what
 happens. If Windows keeps its size, this design, the README words and phase D
 (6) stand. If it does not, stop: the spec says Windows keeps its last size, so
 that wording goes to John before any code, and the README words and phase D
 (6)'s pass rule follow his call. Too large: the IDD's
 `SetResolution` returns `TOO_LARGE` when the mode does not fit the frame memory
-(128 MiB in `vm_args`; a 4K frame takes about 32 MiB of it), sends
-`ResolutionRejected` to the helper (the Windows notice) and does not replug
-(`CDeviceContext.cpp`). Reaching that needs a monitor well past 4K or a smaller
+(128 MiB in `vm_args`; a 4K frame takes about 32 MiB of it;
+`idd/LGIdd/display/CDisplayConfiguration.cpp:180`), and
+`CDeviceContext::SetResolution` (`idd/LGIdd/display/CDeviceContext.cpp:490`)
+sends `ResolutionRejected` to the helper (the Windows notice) and does not
+replug. Reaching that needs a monitor well past 4K or a smaller
 frame memory, a test-only change to the VM's hardware, so this case is checked by
 review: the IDD path above, plus the client's generic refusal path, which the unit
 tests cover (Windows' size never changes, so at most 5 asks and one "did not
@@ -2910,18 +2922,22 @@ there gets its own fix phase.
 With today's client, on the test copy: (1) resize the floating window three
 times, one of them to an odd width, and once on a monitor with a fractional scale
 (such as 1.5 or 1.25); (2) restart the Looking Glass display driver in Device
-Manager; (3) disable it, wait 10 s, enable it; (4) float the window at 600x400
-monitor pixels and wait a minute. Read `client.log`. Pass: (1) gives a `Format:`
-line per size, each equal exactly to `hyprctl` size times the monitor's scale,
-and no `Waiting for the host to restart`; (2) and (3) each give `Waiting for the
+Manager; (3) disable it, wait 10 s, enable it; (4) on a monitor at scale 1,
+float the window at 600x400 monitor pixels and wait a minute. Read `client.log`.
+Pass: (1) gives a `Format:` line per size, each equal to round(`hyprctl` size ×
+scale), the size the client asks for (`core_updatePositionInfo`, `core.c` about
+459-466), and no `Waiting for the host to restart`; (2) and (3) each give `Waiting for the
 host to restart`, then a new session's `Format:` line. (4) records the `Format:`
 lines, any session restart, and the size Windows ends at; "Refused sizes" in
 Design depends on it. Stop rules, each to John before phase B: (1) restarts the
 session (an ask Windows refuses would then start a new session and a new
-sequence every time); (1)'s sizes are not exact (bring a tolerance or rounding
-rule); (2) or (3) does not restart the session (the session hook would miss the
-driver restart); (4) ends with Windows at another size than before (the spec
-wording, per "Refused sizes"). Record results in `proofs.md`.
+sequence every time); a (1) size is not that rounded size (the module would
+never see a match; bring a tolerance or rounding rule); (2) or (3) does not
+restart the session (the session hook would miss the driver restart); (4)
+restarts the session (an endless ask loop otherwise); (4) ends with Windows at
+another size than before (the spec wording, per "Refused sizes"). Row 12b's
+1 px allowance applies only to phase D's evidence. Record results in
+`proofs.md`.
 
 ### Phase A: exact apply, patch id and stamp (TDD)
 
@@ -2957,7 +2973,8 @@ wording, per "Refused sizes"). Record results in `proofs.md`.
   setup round (`--no-window`) with stale patches plans step 4 `build`.
 - Files: `lib/client.sh` (`LANAI_PATCHES`, `patches_list`, `patches_apply`,
   `patches_id`, `build_patches_current`, `build_client`), `lib/setup.sh` (step 4
-  check), `lib/lanai.sh` (`cmd_setup`'s second-build message, about line 1467,
+  check), `lib/lanai.sh` (`setup_command`'s second-build message, about lines
+1466-1468,
   fits a step 4 repeated for patches: "The Looking Glass client still is not
   built from $LG_BUILD with Lanai's current patches."), `test/helpers.bash`, `lib/pins.sh` (comment: on a pin change, the patches must apply
   exactly to the new source), `.github/workflows/test.yml` (`gcc patch`). The
@@ -2975,9 +2992,11 @@ wording, per "Refused sizes"). Record results in `proofs.md`.
   `verify_sha256`. Unpack it twice under `spike/work/` (pristine and working),
   and build only out of tree (`cmake -B` outside both), so `diff -Naur` picks up
   no build output. Each patch is made against the tree with the patches before it
-  applied: make 0001 with `diff -Naur pristine working` from their parent folder,
-  then apply 0001 to pristine (exactly, as the build does) before making 0002 the
-  same way, so 0002 holds only the hook edits. Add the header to each. Check the
+  applied: write the three new files into working first and make 0001 with
+  `diff -Naur pristine working` from their parent folder while working holds only
+  those files as changes (or diff only those three files); then apply 0001 to
+  pristine (exactly, as the build does), add the hooks in working, and make 0002
+  the same way, so 0002 holds only the hook edits. Add the header to each. Check the
   pair by applying both, in order, to a fresh unpack.
 - Tests first, in `resize_test.c`: no ask before a frame or before the window size
   is known; a first frame that differs asks at once, one that matches asks
@@ -3016,15 +3035,17 @@ wording, per "Refused sizes"). Record results in `proofs.md`.
 
 ### Phase C: panel, upgrade words and README (TDD)
 
-- Tests first: `test/panel.bats`: with `clientOld` and the new task, the notice
-  and an enabled Update the Windows window button, while Windows runs and while
-  stopped; with the old task, the notice names Run setup again and no update
+- Tests first: `test/panel.bats`: with `clientOld` and the new task, the resize
+  warning (also in the tooltip text) and an enabled Update the Windows window
+  button, while Windows runs and while stopped; with the old task, the resize
+  warning names Run setup again and no update
   button shows; with an older pin's build in use, only req 8's words; with current
   patches or an unfinished setup, neither; while busy, the button shows disabled;
-  the old-task notice while running and while stopped; `panel_words` for a
-  `build-client` reply, ok and failed (the failure names `build-client.log`, and
-  the logs block lists it); the done words show while the client's
-  `/proc/<pid>/exe` is deleted and go once it is not or the client stops; an
+  the old-task resize warning while running and while stopped; `panel_words`
+  for a `build-client` reply, ok, failed (the failure names `build-client.log`,
+  and the logs block lists it) and `build-busy`; the done words show after a
+  success with the window closed, and go once a client starts after the job's
+  `ended` time; an
   interrupted `build-client` record shows the interrupted words and does not arm
   `$interruptedSetup` or Run setup again; the failed and interrupted words go once
   `clientOld` no longer holds; the busy line for a `build-client` job.
@@ -3032,13 +3053,16 @@ wording, per "Refused sizes"). Record results in `proofs.md`.
   record it in the `client` group, and refuse other commands as before.
   `test/panel-qml.bats`: the button runs `["build-client"]` as a long job; a
   Note shows `view.result.client`; the Logs list shows the build log line.
-  `test/lanai.bats`: `lanai build-client`'s last message.
-- Files: `lib/panel.sh` (`clientOld`; the notice joins `.warning`; the button,
-  words, busy line, stale-client check; `client` in both group loops,
+  `lanai build-client`'s CLI tests, in `test/client.bats` (about lines 876-895)
+  and `test/setup.bats` (about line 1733): its last message, its failure next
+  step, and the rc 3 reason.
+- Files: `lib/panel.sh` (`clientOld`; the resize warning joins `.warning`; the
+  button, words, busy line, the done words' client-start check; `client` in both group loops,
   `panel_records`' and `cmd_panel`'s `for group in vm setup settings snapshots`,
   about lines 92 and 135; a `build` key for `build-client.log` in the logs
   block), `lib/ui.sh` (job allow-lists, `panel_group`), `lib/lanai.sh`
-  (`cmd_build_client` message), `LanaiPanel.qml` (the button beside the notice;
+  (`cmd_build_client` message, failure next step and rc 3 reason),
+  `LanaiPanel.qml` (the button beside the resize warning;
   a Note for `view.result.client` in the top column, about lines 110-133, beside
   `result.vm`; `logs.build` in the Logs Repeater's model, about line 308),
   `README.md` (Daily use: Windows follows the window, and to change Windows'
@@ -3066,16 +3090,18 @@ after the last ask, so each starts a fresh sequence, except the quick picks in
 (4), which test the continued one.
 
 1. Upgrade first, while the old client is still installed (the real pre-fix
-   case): the panel shows the notice and the button; start and open still work;
+   case): the panel shows the resize warning and the button; start and open still work;
    click it: no Windows prompt, no restart, the last message says to close and
    reopen; reopen.
 2. Session starts: a driver restart with the window open (the deterministic
    case), 10 starts from the bar, a Windows restart, closing and reopening the
    window. Each matches within 5 s of the session's first frame.
 3. During a session: sign-out and sign-in, tile, fullscreen and back, a resize, a
-   move to a monitor with another scale (when the second monitor is set up).
+   move to a monitor with another scale. If no second monitor is set up, record
+   the move as not run and bring it to John.
 4. Picks: 5 resolutions picked in Display settings, each more than a minute after
-   the last ask; then the 6 quick picks.
+   the last ask; then the 6 quick picks: the first more than 60 s after the last
+   ask, and each later one before the next wait ends, or the intervals stretch.
 5. Scale: 300% target, large window, driver restart.
 6. Refusal: a floating window of 600x400 monitor pixels; at most 5 asks on
    schedule, one "did not take" line, no ask until the window changes, the scale
@@ -3083,9 +3109,15 @@ after the last ask, so each starts a fresh sequence, except the quick picks in
    judged by the rule phase 0 (4) and "Refused sizes" settle.
 7. Driver disabled: no ask until enabled.
 8. Repeatable upgrade fixture: add a word to 0002's header (the text before its
-   first diff line); the notice comes back; with an old scale task fixture
+   first diff line, following the header rule in Design, "Patches"); the resize
+   warning comes back; with an old scale task fixture
    (`scale_task` removed from the test copy's setup record), only Run setup again
    is named. Restore both after.
+9. Patches review, recorded in `proofs.md`: the files 0001 and 0002 touch show no
+   new `LG_TransportControl` type and no KVMFR or LGMP struct change; the IDD pin
+   in `lib/pins.sh` is unchanged; `COPYING`'s SHA-256 matches the one in Design,
+   "Licensing"; the README license paragraph and `manifest.json`'s license read
+   as planned.
 
 The too-large case is reviewed, not run (Design, "Refused sizes"). Fixes found
 here get their own phase, planned from the results, before the diff gate closes.
@@ -3101,6 +3133,12 @@ here. For the pull request, consider also dropping the `transportFeatures` gate 
 set the features. Lanai is unaffected: its VM runs `-vga none`, so no fallback
 display shows frames before the session. If upstream takes an equivalent fix, the next pin that includes it drops
 the patch.
+
+### Risks
+
+- Known gap: CI never applies the patches to the real pinned source (the
+  tarball case runs only locally), so a pin bump that breaks 0002 shows only in
+  a local run or a real build.
 
 ### Routing
 
