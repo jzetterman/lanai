@@ -2510,6 +2510,47 @@ RDP check on the test install when phase 8 reaches it. Record results in
 never-read feed. The hands-on adds the two-monitor, pick, cap, sign-out and
 restart cases.
 
+Results (2026-10-11): `proofs.md`, "Live-scale hands-on". All one-monitor cases
+passed; the two-monitor cases and RDP wait. Three fixes follow (Phase D).
+
+### Phase D: hands-on fixes (TDD where pwsh runs)
+
+From the hands-on (John's calls, 2026-10-11). The README stays a user manual: none
+of this goes into it.
+
+1. **Cap line.** When Windows' range caps the target (target step above
+   `maxIdx`), the task logs one line naming the target, the capped step and the
+   resolution, for example "Windows allows at most 150% at 1901x1046; using 150%
+   until the window grows (target 175%)." It logs whether or not a set follows,
+   once per change of (target, capped step, resolution), and again only after a
+   pass without a cap. Today a capped target that is already applied logs
+   nothing.
+2. **Custom scaling line.** When `curScaleRel` falls outside `minScaleRel` to
+   `maxScaleRel`, the task logs once: "Windows reports the current scale out of
+   range (curScaleRel <n>). Custom scaling is probably on (Settings > System >
+   Display); Lanai's scale has no effect until it is off." Logged again only after
+   a pass with an in-range value. Behavior stays as it is.
+3. **Restart a dead task.** Task Scheduler's `RestartCount` covers a failed start
+   only (hands-on). Give the sign-in trigger a 5-minute repetition with no end;
+   `MultipleInstances IgnoreNew` already makes a start a no-op while the task
+   runs, so a dead task comes back within 5 minutes. Drop `RestartCount` and
+   `RestartInterval`, which do nothing here. A start that ends the same way as the
+   run before must not grow the log every 5 minutes: the "No lanai-scale OEM
+   string" exit and the "Error:" exit skip their line when the log's last line
+   carries the same message.
+
+- Tests first (`test/guest.bats`, pwsh): the cap line (capped and already
+  applied, capped with a set, unchanged on the next pass, again after an uncapped
+  pass, a new resolution); the custom scaling line (out of range once, quiet
+  while it stays, again after an in-range pass; a value below `minScaleRel` counts);
+  the repeated exit lines (the same message twice adds one line; a different one
+  adds it). Pin the trigger's repetition in `setup.cmd` (5 minutes, no
+  duration) and the absence of `RestartCount`.
+- Files: `guest/lanai-scale.ps1`, `guest/setup.cmd`, `test/guest.bats`, this plan.
+- Hands-on (John): Run setup again; `(Get-ScheduledTask -TaskName 'Lanai display
+  scale').Triggers.Repetition` shows `PT5M` and no duration; a task killed with
+  `Stop-Process` is back within 5 minutes and applies the latest save.
+
 ### Routing
 
 Phase 0: Claude with John. Phases A and B: an Opus 5.5 implementer in a worktree
