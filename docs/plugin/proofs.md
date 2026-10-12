@@ -998,6 +998,12 @@ monitor: HDMI-A-1, 3840x2160, Hyprland scale 1. Times are EDT.
 - A normal PowerShell cannot read the elevated task's command line
   (`Get-CimInstance Win32_Process` returns nothing for it).
 
+Phase D check (2026-10-12, plugin at 238e799): Run setup again passed step 6
+with the new trigger. `Triggers.Repetition` showed `Interval PT5M`, no
+`Duration` and `StopAtDurationEnd False`. A task killed with `Stop-Process` came
+back by itself and opened the port at 12:43:17; it applied a 125% save made
+while it was down one second later. Pass.
+
 Still to run: row 12's two-monitor cases (needs a second monitor), and row 4's
 RDP check in phase 8.
 
