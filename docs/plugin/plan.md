@@ -2630,8 +2630,9 @@ stays the pinned build. No KVMFR or LGMP message is added or changed; the glue
 sends the same `LG_TRANSPORT_CONTROL_WINDOW_SIZE` control the client sends today.
 
 **Exact apply.** `patches_apply <src> <log>` (`lib/client.sh`) runs, for each
-patch, `patch -d <src> -p1 --forward --batch --fuzz=0 --no-backup-if-mismatch
---reject-file=- -i <patch>`, appending its output to the build log. A patch
+patch, `LC_ALL=C patch -d <src> -p1 --forward --batch --fuzz=0
+--no-backup-if-mismatch --reject-file=- -i <patch>` (`LC_ALL=C` keeps the
+`Hunk` text English), appending its output to the build log. A patch
 fails when `patch` exits non-zero or prints any line starting with `Hunk `:
 GNU patch 2.8 prints nothing per hunk for an exact apply, and `Hunk #n succeeded
 at L (offset k lines).` for an offset (checked on 2026-10-12; `--fuzz=0` makes a
@@ -2640,8 +2641,8 @@ fuzzed hunk fail outright). A failure stops the build with "the Lanai patch
 with `base-devel`, already a host package.
 
 **Identity and the stamp.** `patches_list` is the one list both use: the
-`[0-9][0-9][0-9][0-9]-*.patch` files in `LANAI_PATCHES`, found with `nullglob`
-and sorted with `LC_ALL=C`. No folder or no match is an empty list, checked
+basenames of the `[0-9][0-9][0-9][0-9]-*.patch` files in `LANAI_PATCHES`, found
+with `nullglob` and sorted with `LC_ALL=C`. No folder or no match is an empty list, checked
 explicitly, never left to fail under `pipefail`. `patches_apply` applies that
 list in order. `patches_id` prints the hash of
 
@@ -2654,29 +2655,30 @@ Looking Glass patches are missing from <dir>; reinstall Lanai"), so a broken
 install never stamps an unpatched client as current. The
 build folder stays `<data>/looking-glass/<build>/`, and the client still reports
 the pinned build, so `lg_same_build`, `build_select` and `builds_prune` (req 8's
-same-build check) do not change. `build-stamp` gains a second line:
+same-build check) do not change. `build-stamp` does not change either. The
+patch id goes in its own file beside it, `build-patches`, holding the id alone.
 
-    B7-826-236efcb1
-    patches <sha256>
-
-- `build_stamp_current` compares only the first line, so a one-line stamp from
-  before this change still counts as the pinned build: setup stays finished and
-  the window keeps working (req 12's upgrade rule).
-- `build_patches_current` (new) is true only when the second line is
-  `patches $(patches_id)`. A one-line stamp is false.
-- `build_client` returns early only when both are true and the binary reports the
-  pin. Today it writes a fresh stamp for any binary that reports the pin; that
-  path would mark an unpatched client as current, so it goes. Otherwise it
+- `build_stamp_current` does not change, so an install from before this change
+  still counts as the pinned build: setup stays finished and the window keeps
+  working (req 12's upgrade rule).
+- `build_patches_current` (new) is true only when `build-patches` holds
+  `$(patches_id)`. A missing file is false.
+- `build_client` returns early only when `build_patches_current` holds and the
+  binary reports the pin. Today it writes a fresh stamp for any binary that
+  reports the pin; without `build-patches` that path would mark an unpatched
+  client as current, so it now needs the file too. Otherwise it
   rebuilds in this order: unpack, check submodules, start `build-client.log`
   once (`: >"$log"`), `patches_apply`, cmake configure (now `>>"$log"`, so the
   apply lines survive; `usb_audio_enabled` still reads the same log), build,
-  install through `.partial`, then write both stamp lines, using the id it
-  computed before applying.
+  install through `.partial` (the old folder, and its `build-patches`, go with
+  it), then write `build-stamp` and `build-patches`, using the id it computed
+  before applying.
 - `LANAI_PATCHES` (default `$LANAI_LIB/../patches/looking-glass`) lets tests
   point at fixture patches.
-- Rollback: a Lanai from before this change keeps the patched client, because
-  its `build_client` stamps any binary that reports the pin. That is harmless (the
-  client still matches the IDD), and the next upgrade's patch line rebuilds it.
+- Rollback: a Lanai from before this change never reads `build-patches` and
+  keeps the patched client, because its `build_client` stamps any binary that
+  reports the pin. That is harmless (the client still matches the IDD) and
+  silent; upgrading again finds `build-patches` still current.
 
 **The module (`resize.c`).** Pure C: standard headers only, no `g_state`, no
 transport, no clock. Its caller passes the time in microseconds, a `send`
@@ -2705,9 +2707,11 @@ Rules, each from req 12:
 - `changes` is how many format changes the frame thread accepted since the last
   call. A later `resize_frame` is a change of Windows' size when the size differs
   from the last one it saw, or when `changes` >= 2 (Windows left a size and came
-  back between two polls). Within 60 s of the last ask it continues the sequence
-  (`asks` and the last ask stay); otherwise it starts a new one. A call at the
-  same size with `changes` < 2 is no change.
+  back between two polls). Two format changes that are not size changes (for
+  example an HDR switch and back) also count; that is accepted, since it costs at
+  most one ask sequence, bounded like any other. Within 60 s of the last ask it
+  continues the sequence (`asks` and the last ask stay); otherwise it starts a
+  new one. A call at the same size with `changes` < 2 is no change.
 - `resize_update` asks when all hold: a frame was seen this session, the window
   size is known, Windows' size differs from it, `responding` is true, `asks` < 5,
   and either `asks` is 0 or `now` >= last ask + wait, where the wait after ask
@@ -2825,14 +2829,17 @@ and continue setup.") are the one next step, and the resize notice stays hidden.
   (`ui-job` and `ui-job-worker` accept `build-client`). `panel_group` maps it to
   a new `client` group (added to `panel_records`' groups), so an interrupted
   update never arms `$interruptedSetup` or Run setup again; it says "The update
-  did not finish. Click Update the Windows window again." It works whether
+  did not finish. Click Update the Windows window again." The failed and
+  interrupted words show only while `clientOld` holds. While the job runs, its
+  panel lock disables Start Windows, as any panel job does; the busy line says
+  so. It works whether
   Windows runs or not, and changes nothing in Windows: no administrator prompt,
   no restart, no lock change. The running client keeps its open binary; the next
   `lanai open` runs the new one. The panel shows the done words only while a
   stale client still runs: `client_active` and `/proc/<client MainPID>/exe`
-  ends in ` (deleted)` (the build replaced the folder). `cmd_build_client`'s
-  message varies on `client_active`: running, close and reopen the window;
-  otherwise, the update is used the next time the window opens. Failure words
+  ends in ` (deleted)` (the build replaced the folder). `cmd_build_client`
+  always ends with "If the Windows window is open, close it and open it again."
+  Failure words
   name `build-client.log`, which joins the panel's logs block; `panel-job.log`
   holds nothing useful for it.
 - Old scale task: the notice names Run setup again only, and no update button
@@ -2851,12 +2858,10 @@ keeping each fact):
   may start at, or change to, the wrong size until you click Run setup again."
   While Windows runs: "... until you shut Windows down and click Run setup
   again."
-- Busy line: "Updating the Windows window. This may take several minutes. You can
-  close this panel."
-- Done (panel, and `lanai build-client` while the client runs): "The Windows
-  window is updated. If the Windows window is open, close it and open it again."
-  CLI, no client running: "The Windows window is updated. The update is used the
-  next time you open the Windows window."
+- Busy line: "Updating the Windows window. This may take several minutes. Start
+  Windows waits until it finishes. You can close this panel."
+- Done (panel and `lanai build-client`): "The Windows window is updated. If the
+  Windows window is open, close it and open it again."
 - Interrupted: "The update did not finish. Click Update the Windows window
   again."
 - Failed: "The Windows window could not be updated. Check the Windows window
@@ -2875,9 +2880,17 @@ installed shell never reads it), and an SPDX expression is as close as it can sa
 "except". The root `LICENSE` stays the MIT text.
 
 **Refused sizes.** The hands-on uses a floating window of 600x400 monitor pixels:
-below Windows' 800x600 minimum and below the pinned IDD's own 640x480 mode floor
-(`CSettings::ParseModeString`), so the IDD drops the mode whatever Windows would
-do, then replugs (a flicker) and Windows keeps its size. Too large: the IDD's
+below Windows' 800x600 minimum and below the pinned IDD's own 640x480 mode floor.
+The IDD keeps each ask in one `ExtraMode` registry value (`CSettings::SetExtraMode`,
+`CSettings.cpp` about 96-121), so a refused ask replaces the window's previous
+mode. `LoadModes` then drops the 600x400 mode (`ParseModeString`'s floor, about
+line 338), and the replug leaves only the default list, whose preferred mode is
+1920x1080 (`DefaultPreferredDisplayMode`, `DefaultDisplayModes.h:37`). So Windows
+may not keep its size: it may move to 1920x1080. Phase 0 (4) measures what
+happens. If Windows keeps its size, this design, the README words and phase D
+(6) stand. If it does not, stop: the spec says Windows keeps its last size, so
+that wording goes to John before any code, and the README words and phase D
+(6)'s pass rule follow his call. Too large: the IDD's
 `SetResolution` returns `TOO_LARGE` when the mode does not fit the frame memory
 (128 MiB in `vm_args`; a 4K frame takes about 32 MiB of it), sends
 `ResolutionRejected` to the helper (the Windows notice) and does not replug
@@ -2894,15 +2907,21 @@ there gets its own fix phase.
 
 ### Phase 0: log proof (John and Claude, test copy)
 
-With today's client, on the test copy: (1) resize the floating window three times;
-(2) restart the Looking Glass display driver in Device Manager; (3) disable it,
-wait 10 s, enable it. Read `client.log`. Pass: (1) gives a `Format:` line per size
+With today's client, on the test copy: (1) resize the floating window three
+times, one of them to an odd width, and once on a monitor with a fractional scale
+(such as 1.5 or 1.25); (2) restart the Looking Glass display driver in Device
+Manager; (3) disable it, wait 10 s, enable it; (4) float the window at 600x400
+monitor pixels and wait a minute. Read `client.log`. Pass: (1) gives a `Format:`
+line per size, each equal exactly to `hyprctl` size times the monitor's scale,
 and no `Waiting for the host to restart`; (2) and (3) each give `Waiting for the
-host to restart`, then a new session's `Format:` line. If (1) restarts the session,
-an ask Windows refuses would start a new session and a new sequence every time:
-stop and bring it to John before phase B. If (2) or (3) does not restart the
-session, the session hook misses the driver restart: stop and bring it to John.
-Record results in `proofs.md`.
+host to restart`, then a new session's `Format:` line. (4) records the `Format:`
+lines, any session restart, and the size Windows ends at; "Refused sizes" in
+Design depends on it. Stop rules, each to John before phase B: (1) restarts the
+session (an ask Windows refuses would then start a new session and a new
+sequence every time); (1)'s sizes are not exact (bring a tolerance or rounding
+rule); (2) or (3) does not restart the session (the session hook would miss the
+driver restart); (4) ends with Windows at another size than before (the spec
+wording, per "Refused sizes"). Record results in `proofs.md`.
 
 ### Phase A: exact apply, patch id and stamp (TDD)
 
@@ -2913,30 +2932,34 @@ Record results in `proofs.md`.
   the names; a patch that only creates files applies to an empty folder.
   `patches_id`: stable for the same files; changes when a patch's content changes,
   when one is renamed, added or removed; ignores `COPYING`.
-  `build_stamp_current`: true for a one-line and a two-line stamp of the pin, false
-  for another build. `build_patches_current`: false for a one-line stamp, a stale
-  id, or a missing binary; true for the current id. `patches_list`: no folder
-  and no match are empty lists without an error under `set -euo pipefail`.
-  `test/panel.bats`' build test (today's "an installed binary reporting the pin
-  needs no download") becomes: a current two-line stamp needs no download; a
-  one-line stamp rebuilds and writes both lines; a patch that does not apply
-  stops the build with its message and leaves no `.partial` or work folder;
-  `build-client.log` keeps the apply lines and the configure output. These
-  reach `patches_apply` through stubs inside the `bash -c` that sources
-  `lib/lanai.sh`: `fetch_verified` copies a fixture tarball made in the test
-  (`looking-glass-$LG_BUILD/client/CMakeLists.txt`, one file in each
-  `LG_SUBMODULES` folder, and the file the fixture patch changes); `cmake`
-  prints `test/fixtures/cmake-features.txt` for configure, does nothing for
-  `--build`, and creates `<prefix>/bin/looking-glass-client` for `--install`;
-  `client_version` prints the pin. Wherever `build_stamp_current` is stubbed
-  today (`test/panel.bats`, `test/panel-jobs.bats`, `test/setup.bats`), stub
+  `build_patches_current`: false for a missing `build-patches`, a stale id, or a
+  missing binary; true for the current id. `patches_list`: basenames only; no
+  folder and no match are empty lists without an error under `set -euo
+  pipefail`. New `build_client` cases go in `test/client.bats` on its
+  `lg_source` helper, which already makes a fixture tarball behind `curl` and
+  `cmake` shims; `lg_source` also writes a fixture patch that applies exactly to
+  its tree and points `LANAI_PATCHES` at it. Cases: an installed binary with a
+  current `build-patches` needs no download; one without it rebuilds and writes
+  `build-stamp` and `build-patches`; a patch that does not apply stops the build
+  with its message and leaves no `.partial` or work folder; `build-client.log`
+  keeps the apply lines and the configure output. `test/panel.bats`' "client
+  stamp: an installed unstamped client takes a quick build check before setup
+  continues" changes with the rule: an unstamped client without
+  `build-patches` now rebuilds, so the case writes the current files first, or
+  moves to `client.bats` on `lg_source`. A new `test/helpers.bash` helper writes
+  the current `build-stamp` and `build-patches`; `test/setup.bats` uses it where
+  it writes a one-line stamp today (about lines 607, 851 inside its
+  `build_client` stub, and 1543). Wherever `build_stamp_current` is stubbed
+  (`test/panel.bats`, `test/panel-jobs.bats`, `test/setup.bats`), stub
   `build_patches_current` beside it, true unless the case is about stale
   patches.
   `test/setup.bats`: a finished setup with stale patches still plans step 7; a
   setup round (`--no-window`) with stale patches plans step 4 `build`.
-- Files: `lib/client.sh` (`LANAI_PATCHES`, `patches_apply`, `patches_id`,
-  `build_patches_current`, `build_stamp_current`, `build_client`), `lib/setup.sh`
-  (step 4 check), `lib/pins.sh` (comment: on a pin change, the patches must apply
+- Files: `lib/client.sh` (`LANAI_PATCHES`, `patches_list`, `patches_apply`,
+  `patches_id`, `build_patches_current`, `build_client`), `lib/setup.sh` (step 4
+  check), `lib/lanai.sh` (`cmd_setup`'s second-build message, about line 1467,
+  fits a step 4 repeated for patches: "The Looking Glass client still is not
+  built from $LG_BUILD with Lanai's current patches."), `test/helpers.bash`, `lib/pins.sh` (comment: on a pin change, the patches must apply
   exactly to the new source), `.github/workflows/test.yml` (`gcc patch`). The
   patches folder comes in phase B; until then `patches_id` hashes an empty list
   (no folder, or no patches, is the hash of empty input).
@@ -2949,7 +2972,9 @@ Record results in `proofs.md`.
   there: copy `~/.cache/lanai/downloads/looking-glass-$LG_BUILD-source.tar.gz`
   if it exists, else download it with `fetch_verified "$LG_SOURCE_URL" <dst>
   "$LG_SOURCE_SHA"` (sourcing `lib/lanai.sh`); either way check it with
-  `verify_sha256`. Unpack it twice under `spike/work/` (pristine and working). Each patch is made against the tree with the patches before it
+  `verify_sha256`. Unpack it twice under `spike/work/` (pristine and working),
+  and build only out of tree (`cmake -B` outside both), so `diff -Naur` picks up
+  no build output. Each patch is made against the tree with the patches before it
   applied: make 0001 with `diff -Naur pristine working` from their parent folder,
   then apply 0001 to pristine (exactly, as the build does) before making 0002 the
   same way, so 0002 holds only the hook edits. Add the header to each. Check the
@@ -2964,24 +2989,29 @@ Record results in `proofs.md`.
   starts over (asks at once, 1 of 5); a session reset starts over at its first
   frame; the six-pick case from row 12b (asks 5, 10, 20 and 40 s apart, the sixth
   pick stays and logs "did not take"); a Windows change more than 60 s after the
-  last ask starts over; the same frame size twice is no change; log lines: one
-  per new window size, one per ask with its size and number. In
-  `config_message_test.c`: the glue sends nothing before `core_resizeFrame`; sends
-  the window size after it; holds a second ask while `controlStatus` reports the
-  token unread; sends it once read; `core_resizeSession` drops the token and waits
-  for a new frame; features without `WINDOW_SIZE` or no handle sends nothing.
-  `test/panel.bats`: with an empty `LANAI_PATCHES` folder, `build_client` fails
-  with the missing-patches message and writes no stamp.
+  last ask starts over; the same frame size twice with `changes` < 2 is no
+  change, and with `changes` >= 2 is a change; a sequence replaced before its
+  fifth ask logs no "did not take"; log lines: one per new window size, one per
+  ask with its size and number. In `config_message_test.c`: the glue sends
+  nothing before `core_resizeFrame`; sends the window size after it; holds a
+  second ask while `controlStatus` reports the token unread; sends it once read;
+  `core_resizeSession` drops the token and waits for a new frame; features
+  without `WINDOW_SIZE` or no handle sends nothing; plus every glue case in
+  Design, "Tests of the C change". `test/client.bats` (on `lg_source`): with an
+  empty `LANAI_PATCHES` folder, `build_client` fails with the missing-patches
+  message and writes no `build-stamp` or `build-patches`.
 - Then `test/client-patches.bats` as in Design (the CI case and the tarball case).
 - Files: `patches/looking-glass/0001-client-resize-module.patch`,
   `patches/looking-glass/0002-client-resize-hooks.patch`,
   `patches/looking-glass/COPYING`, `lib/client.sh` (empty list is an error),
-  `test/client-patches.bats`, `test/panel.bats`, `manifest.json`
+  `test/client-patches.bats`, `test/client.bats`, `.gitattributes`
+  (`patches/** -text`, so git never rewrites a patch's bytes), `manifest.json`
   (license), `README.md` (license paragraph).
 - Verify: `bats test spike/test`; `LANAI_TEST_LG_TARBALL=<tarball> bats
   test/client-patches.bats`; one real build into scratch folders
   (`XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` under `spike/work/`):
-  `bin/lanai build-client` succeeds, the stamp has both lines, the binary reports
+  `bin/lanai build-client` succeeds, `build-stamp` and `build-patches` are
+  written, the binary reports
   the pin, and `build-client.log` shows each patch applied with no `Hunk ` line.
 
 ### Phase C: panel, upgrade words and README (TDD)
@@ -2996,20 +3026,26 @@ Record results in `proofs.md`.
   the logs block lists it); the done words show while the client's
   `/proc/<pid>/exe` is deleted and go once it is not or the client stops; an
   interrupted `build-client` record shows the interrupted words and does not arm
-  `$interruptedSetup` or Run setup again; the busy line for a `build-client` job.
+  `$interruptedSetup` or Run setup again; the failed and interrupted words go once
+  `clientOld` no longer holds; the busy line for a `build-client` job.
   `test/panel-jobs.bats`: `ui-job` and `ui-job-worker` accept `build-client`,
   record it in the `client` group, and refuse other commands as before.
-  `test/panel-qml.bats`: the button runs `["build-client"]` as a long job.
-  `test/lanai.bats`: `lanai build-client`'s message with the client running and
-  without.
+  `test/panel-qml.bats`: the button runs `["build-client"]` as a long job; a
+  Note shows `view.result.client`; the Logs list shows the build log line.
+  `test/lanai.bats`: `lanai build-client`'s last message.
 - Files: `lib/panel.sh` (`clientOld`; the notice joins `.warning`; the button,
-  words, busy line, `client` group, logs block, stale-client check),
-  `lib/ui.sh` (job allow-lists, `panel_group`), `lib/lanai.sh`
-  (`cmd_build_client` message), `LanaiPanel.qml` (the button beside the notice),
+  words, busy line, stale-client check; `client` in both group loops,
+  `panel_records`' and `cmd_panel`'s `for group in vm setup settings snapshots`,
+  about lines 92 and 135; a `build` key for `build-client.log` in the logs
+  block), `lib/ui.sh` (job allow-lists, `panel_group`), `lib/lanai.sh`
+  (`cmd_build_client` message), `LanaiPanel.qml` (the button beside the notice;
+  a Note for `view.result.client` in the top column, about lines 110-133, beside
+  `result.vm`; `logs.build` in the Logs Repeater's model, about line 308),
   `README.md` (Daily use: Windows follows the window, and to change Windows'
-  resolution, resize the window; Windows keeps its last size for a window smaller
-  than it allows or a fullscreen too large for its frame memory, may flicker or
-  show a notice while Lanai asks, and resizing the window or leaving fullscreen
+  resolution, resize the window; for a window smaller than Windows allows or a
+  fullscreen too large for its frame memory, what Windows does as phase 0 (4) and
+  John's call settle it (Design, "Refused sizes"), may flicker or show a notice
+  while Lanai asks, and resizing the window or leaving fullscreen
   fixes it; for installs from before this change, "Update the Windows window",
   which changes nothing in Windows, then close and reopen the window; or, when the
   panel names it instead, Run setup again, which restarts Windows as setup always
@@ -3023,7 +3059,11 @@ Record results in `proofs.md`.
 Walk row 12b on the rehearsal copy and record it in `proofs.md`, "Resize
 hands-on". Evidence: `client.log`'s `Resize:` and `Format:` lines (their times
 count from the client's start, written on the log's first line) against
-`hyprctl clients -j` size times the monitor's scale.
+`hyprctl clients -j` size times the monitor's scale. Each `Resize: window is`
+line lands at least 0.5 s after the real window event (`message.c`'s debounce).
+Windows-side events (sign-in, picks, driver restarts) are made more than 60 s
+after the last ask, so each starts a fresh sequence, except the quick picks in
+(4), which test the continued one.
 
 1. Upgrade first, while the old client is still installed (the real pre-fix
    case): the panel shows the notice and the button; start and open still work;
@@ -3039,7 +3079,8 @@ count from the client's start, written on the log's first line) against
 5. Scale: 300% target, large window, driver restart.
 6. Refusal: a floating window of 600x400 monitor pixels; at most 5 asks on
    schedule, one "did not take" line, no ask until the window changes, the scale
-   holds; then resize to an allowed size.
+   holds; then resize to an allowed size. Where Windows ends during the asks is
+   judged by the rule phase 0 (4) and "Refused sizes" settle.
 7. Driver disabled: no ask until enabled.
 8. Repeatable upgrade fixture: add a word to 0002's header (the text before its
    first diff line); the notice comes back; with an old scale task fixture
@@ -3055,7 +3096,10 @@ After the hands-on passes, offer each patch to Looking Glass (github.com/gnif/
 LookingGlass): one issue that shows the bug with the client log excerpt, and the
 two patches rebased onto upstream's current `master` as a pull request, the
 tests included. John posts it, or gives Claude a go to post it. Record the link
-here. If upstream takes an equivalent fix, the next pin that includes it drops
+here. For the pull request, consider also dropping the `transportFeatures` gate in
+`core_updatePositionInfo`, which posts the window size only once a session has
+set the features. Lanai is unaffected: its VM runs `-vga none`, so no fallback
+display shows frames before the session. If upstream takes an equivalent fix, the next pin that includes it drops
 the patch.
 
 ### Routing
