@@ -2882,8 +2882,11 @@ Record results in `proofs.md`.
 ### Phase B: the client patches (TDD, C)
 
 - Set up: unpack the verified pinned tarball twice under `spike/work/` (pristine
-  and working). Make each patch with `diff -Naur pristine working` from their
-  parent folder, then add the header.
+  and working). Each patch is made against the tree with the patches before it
+  applied: make 0001 with `diff -Naur pristine working` from their parent folder,
+  then apply 0001 to pristine (exactly, as the build does) before making 0002 the
+  same way, so 0002 holds only the hook edits. Add the header to each. Check the
+  pair by applying both, in order, to a fresh unpack.
 - Tests first, in `resize_test.c`: no ask before a frame or before the window size
   is known; a first frame that differs asks at once, one that matches asks
   nothing; Windows never taking the size gives asks at 0, 5, 15, 35 and 75 s,
@@ -2932,8 +2935,10 @@ Record results in `proofs.md`.
   resolution, resize the window; Windows keeps its last size for a window smaller
   than it allows or a fullscreen too large for its frame memory, may flicker or
   show a notice while Lanai asks, and resizing the window or leaving fullscreen
-  fixes it; for installs from before this change, the update step or Run setup
-  again, and that it changes nothing in Windows), `CLAUDE.md` (layout:
+  fixes it; for installs from before this change, "Update the Windows window",
+  which changes nothing in Windows, then close and reopen the window; or, when the
+  panel names it instead, Run setup again, which restarts Windows as setup always
+  does), `CLAUDE.md` (layout:
   `patches/looking-glass/`, `test/client-patches.bats`; Tests: `LANAI_TEST_LG_TARBALL`;
   rule: the client changes only through those patches, applied exactly), this plan.
 - Verify: `bats test spike/test`, ShellCheck, `test/qml-lint`.
