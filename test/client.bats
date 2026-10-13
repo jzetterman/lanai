@@ -899,6 +899,27 @@ esac'
   assert [ ! -e "$XDG_CACHE_HOME/lanai/build-$LG_BUILD" ]
 }
 
+@test "build_client: no patches is an error that stamps nothing, even for an installed client" {
+  lg_source
+  LANAI_PATCHES=$T/no-patches
+  mkdir -p "$LANAI_PATCHES"
+  run build_client
+  assert_failure
+  assert_output "Lanai's Looking Glass patches are missing from $T/no-patches; reinstall Lanai"
+  assert [ ! -e "$T/curl.calls" ]
+  assert [ ! -e "$LGDIR/$LG_BUILD/build-stamp" ]
+  assert [ ! -e "$LGDIR/$LG_BUILD/build-patches" ]
+
+  # An installed client whose build-patches holds the empty list's id is
+  # not taken as current either.
+  fake_build "$LG_BUILD"
+  patches_id >"$LGDIR/$LG_BUILD/build-patches"
+  run build_client
+  assert_failure
+  assert_output --partial "patches are missing"
+  assert [ ! -e "$LGDIR/$LG_BUILD/build-stamp" ]
+}
+
 @test "build_client.log: exact patch output and configure output both survive" {
   lg_source
   run build_client

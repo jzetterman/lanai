@@ -16,8 +16,9 @@ LANAI_CLIENT_UNIT=lanai-client.service
 LANAI_CLIENT_WAIT=${LANAI_CLIENT_WAIT:-60}
 LANAI_IDD_WAIT=30
 
-# The Looking Glass patches are kept with the plugin. Tests may point this at
-# a fixture folder; the phase B source tree adds the repository patches.
+# The Looking Glass client patches (patches/looking-glass/NNNN-*.patch, GPL;
+# COPYING beside them) are kept with the plugin. Tests may point this at a
+# fixture folder.
 LANAI_PATCHES=${LANAI_PATCHES:-$LANAI_LIB/../patches/looking-glass}
 
 # The first line lanai-client-exec writes to client.log, before the client's
@@ -232,8 +233,8 @@ build_stamp_current() {
   [[ -x $d/bin/looking-glass-client && -f $d/build-stamp && $(<"$d/build-stamp") == "$LG_BUILD" ]]
 }
 
-# Print the ordered patch basenames. A missing or empty folder is a valid
-# empty list through phase A, before the client patches are added.
+# Print the ordered patch basenames. A missing or empty folder prints an
+# empty list without failing; build_client treats that list as an error.
 patches_list() {
   local dir=$LANAI_PATCHES
   local nullglob_was_set=false
@@ -428,16 +429,22 @@ builds_prune() {
 
 # Build and install the pinned client (plan phase 5): fetch the source
 # tarball into <cache>/lanai/downloads, verify its SHA-256 (which covers
-# every submodule, spec 26), unpack it, check the submodule folders, build
-# the client with -DENABLE_X11=no, fail if USB audio is off, and install
+# every submodule, spec 26), unpack it, check the submodule folders, apply
+# Lanai's patches exactly (none is an error), build the client with
+# -DENABLE_X11=no, fail if USB audio is off, and install
 # into <data>/looking-glass/<build>/ through a .partial folder. The
 # installed binary must report the pinned build. Keeps other builds until
 # the guest's IDD matches the pin. Build output goes to <state>/build-client.log.
 # Prints the client binary; on failure prints why. Does nothing when the
-# pinned build is already installed.
+# pinned build is already installed with the current patches.
 build_client() {
   local cache dl dest work src log part out patch_id
   dest=$(client_builds)/$LG_BUILD
+  # No patches means a broken install: never stamp an unpatched client.
+  if [[ -z $(patches_list) ]]; then
+    echo "Lanai's Looking Glass patches are missing from $LANAI_PATCHES; reinstall Lanai"
+    return 1
+  fi
   patch_id=$(patches_id) || return 1
   if build_patches_current && [[ $(client_version "$dest/bin/looking-glass-client" 2>/dev/null) == "$LG_BUILD" ]]; then
     printf '%s\n' "$LG_BUILD" >"$dest/build-stamp" || return 1

@@ -4,7 +4,7 @@
   "name": "Lanai",
   "version": "0.1.0",
   "author": "John Zetterman",
-  "license": "MIT",
+  "license": "MIT AND GPL-2.0-or-later",
   "description": "Run your omarchy-windows-vm Windows install in plain QEMU and see it in a Looking Glass window.",
   "kinds": ["bar-widget"],
   "entryPoints": {

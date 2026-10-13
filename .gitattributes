@@ -1,3 +1,7 @@
 # Windows batch files run in cmd, which can misread labels and goto in a
 # file with bare LF endings: check them out with CRLF everywhere.
 guest/*.cmd text eol=crlf
+
+# The Looking Glass patches must keep their exact bytes, or they stop applying
+# exactly to the pinned source.
+patches/** -text

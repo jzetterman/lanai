@@ -413,4 +413,7 @@ launch pending. Other controls preserve a failed launch notice until the next
 setup, snapshot or restore starts. The Windows window log has its own
 path; the Windows VM log is in your user journal, under lanai-vm.
 
-Lanai is MIT licensed; see [LICENSE](LICENSE).
+Lanai is MIT licensed (see [LICENSE](LICENSE)), except the patches to the
+Looking Glass client in `patches/looking-glass/`. Those carry Looking Glass's
+license, GPL-2.0-or-later, and its full text is in
+[COPYING](patches/looking-glass/COPYING) beside them.
