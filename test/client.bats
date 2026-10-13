@@ -672,6 +672,118 @@ smap() {
 
 # --- lanai build-client (spec 7, 26) ---
 
+patch_fixture() {
+  local kind=$1 base=$T/patch-base work=$T/patch-work patchdir=$T/patches
+  rm -rf "$base" "$work" "$patchdir" "$T/empty"
+  mkdir -p "$base/tree" "$work" "$patchdir"
+  printf 'alpha\nbeta\ngamma\n' >"$base/tree/one"
+  printf 'one\ntwo\nthree\n' >"$base/tree/two"
+  cp -a "$base/tree" "$work/tree"
+  case $kind in
+    exact) sed -i 's/beta/BETA/' "$work/tree/one" ;;
+    offset) sed -i 's/beta/BETA/' "$work/tree/one"; sed -i '1i extra' "$base/tree/one" ;;
+    fuzz) sed -i 's/beta/BETA/' "$work/tree/one" ;;
+    failed) sed -i 's/beta/BETA/' "$work/tree/one"; sed -i 's/beta/OTHER/' "$base/tree/one" ;;
+    already) sed -i 's/beta/BETA/' "$work/tree/one" ;;
+  esac
+  (cd "$T" && diff -Naur patch-base/tree patch-work/tree) >"$patchdir/0001-one.patch" || [[ $? == 1 ]]
+  if [[ $kind == fuzz ]]; then sed -i 's/ gamma/ GAMA/' "$patchdir/0001-one.patch"; fi
+  LANAI_PATCHES=$patchdir
+}
+
+@test "patches_apply: applies an exact patch and orders patches by their names" {
+  patch_fixture exact
+  mkdir -p "$T/patch-base2/tree" "$T/patch-work2/tree"
+  printf 'alpha\nBETA\ngamma\n' >"$T/patch-base2/tree/one"
+  printf 'alpha\nFINAL\ngamma\n' >"$T/patch-work2/tree/one"
+  (cd "$T" && diff -Naur patch-base2/tree/one patch-work2/tree/one) >"$LANAI_PATCHES/0002-two.patch" || [[ $? == 1 ]]
+  mkdir -p "$T/empty/tree"
+  cp "$T/patch-base/tree/one" "$T/empty/tree/one"
+  cp "$T/patch-base/tree/two" "$T/empty/tree/two"
+  patches_apply "$T/empty" "$T/apply.log"
+  assert_equal "$(sed -n '2p' "$T/empty/tree/one")" FINAL
+}
+
+@test "patches_apply: a patch that only creates files applies to an empty folder" {
+  patch_fixture exact
+  rm "$T/patch-base/tree/one" "$T/patch-base/tree/two"
+  (cd "$T" && diff -Naur patch-base/tree patch-work/tree) >"$LANAI_PATCHES/0001-one.patch" || [[ $? == 1 ]]
+  mkdir "$T/empty"
+  patches_apply "$T/empty" "$T/apply.log"
+  assert_equal "$(cat "$T/empty/tree/one")" $'alpha\nBETA\ngamma'
+}
+
+@test "patches_apply: offset, fuzzed, failed and already-applied patches fail with their name" {
+  local kind
+  for kind in offset fuzz failed already; do
+    patch_fixture "$kind"
+    mkdir -p "$T/empty/tree"
+    printf 'alpha\nbeta\ngamma\n' >"$T/empty/tree/one"
+    if [[ $kind == already ]]; then sed -i 's/beta/BETA/' "$T/empty/tree/one"; fi
+    run patches_apply "$T/empty" "$T/apply.log"
+    [[ $status != 0 ]] || fail "$kind patch unexpectedly applied"
+    assert_failure
+    assert_output --partial '0001-one.patch'
+  done
+}
+
+@test "patches_list and patches_id: handle missing or empty folders and identify patch names, content and set" {
+  local empty_hash first second
+  LANAI_PATCHES=$T/no-patches
+  run patches_list
+  assert_success
+  assert_output ""
+  empty_hash=$(printf '' | sha256sum | cut -d' ' -f1)
+  assert_equal "$(patches_id)" "$empty_hash"
+  run bash -c 'set -euo pipefail; source "$1/lib/lanai.sh"; LANAI_PATCHES=$2; [[ -z $(patches_list) ]]; patches_id' \
+    _ "$REPO" "$LANAI_PATCHES"
+  assert_success
+  assert_output "$empty_hash"
+  mkdir -p "$LANAI_PATCHES"
+  run patches_list
+  assert_success
+  assert_output ""
+  printf patch-a >"$LANAI_PATCHES/0002-b.patch"
+  local one_patch_id
+  one_patch_id=$(patches_id)
+  printf patch-b >"$LANAI_PATCHES/0001-a.patch"
+  printf ignored >"$LANAI_PATCHES/COPYING"
+  run patches_list
+  assert_output $'0001-a.patch\n0002-b.patch'
+  first=$(patches_id)
+  [[ $first != "$one_patch_id" ]]
+  assert_equal "$(patches_id)" "$first"
+  printf changed >"$LANAI_PATCHES/0001-a.patch"
+  second=$(patches_id)
+  [[ $second != "$first" ]]
+  mv "$LANAI_PATCHES/0001-a.patch" "$LANAI_PATCHES/0003-a.patch"
+  [[ $(patches_id) != "$second" ]]
+  rm "$LANAI_PATCHES/0002-b.patch"
+  second=$(patches_id)
+  printf ignored-too >"$LANAI_PATCHES/COPYING"
+  assert_equal "$(patches_id)" "$second"
+}
+
+@test "build_patches_current: requires a binary and a current patch id file" {
+  LANAI_PATCHES=$T/patches
+  mkdir -p "$LANAI_PATCHES"
+  local d=$LGDIR/$LG_BUILD
+  mkdir -p "$d/bin"
+  printf '#!/bin/sh\nexit 0\n' >"$d/bin/looking-glass-client"
+  chmod +x "$d/bin/looking-glass-client"
+  run build_patches_current
+  assert_failure
+  patches_id >"$d/build-patches"
+  run build_patches_current
+  assert_success
+  echo stale >"$d/build-patches"
+  run build_patches_current
+  assert_failure
+  rm "$d/build-patches" "$d/bin/looking-glass-client"
+  run build_patches_current
+  assert_failure
+}
+
 # Build a small stand-in for the pinned source tarball in $T/lg.tar.gz, with
 # every submodule folder populated, and pin its SHA-256. `curl` copies it to
 # the -o path and logs the URL; `cmake` configures (its feature summary from
@@ -686,6 +798,15 @@ lg_source() {
     mkdir -p "$top/$d"
     echo x >"$top/$d/file"
   done
+  mkdir -p "$T/patchdiff/original" "$T/patchdiff/patched"
+  cp -a "$top/." "$T/patchdiff/original/"
+  cp -a "$top/." "$T/patchdiff/patched/"
+  : >"$T/patchdiff/original/client/lanai-patched.txt"
+  echo patched >"$T/patchdiff/patched/client/lanai-patched.txt"
+  mkdir -p "$T/fixture-patches"
+  (cd "$T/patchdiff" && diff -Naur original patched) \
+    >"$T/fixture-patches/0001-fixture.patch" || [[ $? == 1 ]]
+  LANAI_PATCHES=$T/fixture-patches
   tar -czf "$T/lg.tar.gz" -C "$T/src" "looking-glass-$LG_BUILD"
   LG_SOURCE_SHA=$(sha256sum "$T/lg.tar.gz" | cut -d' ' -f1)
   # With $T/curl-fails, curl leaves half a file and exits 22 (HTTP error).
@@ -701,6 +822,7 @@ done'
   shim cmake 'echo "$*" >>"$T/cmake.calls"
 case $1 in
   -S)
+    [[ -f $2/lanai-patched.txt ]] || { echo "patch was not applied"; exit 1; }
     [[ ! -e $T/configure-fails ]] || { echo "CMake Error: boom"; exit 1; }
     mkdir -p "$4"
     if [[ -e $T/no-usb ]]; then
@@ -729,6 +851,7 @@ esac'
   assert_success
   assert_output "$LGDIR/$LG_BUILD/bin/looking-glass-client"
   assert_equal "$(client_version "$LGDIR/$LG_BUILD/bin/looking-glass-client")" "$LG_BUILD"
+  assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
   run cat "$T/curl.calls"
   assert_output --partial "--proto =https"
   assert_output --partial "$LG_SOURCE_URL"
@@ -743,6 +866,49 @@ esac'
   run build_client
   assert_success
   assert [ ! -e "$T/cmake.calls" ]
+}
+
+@test "build_client: current patches take the quick path and missing patches rebuild the client" {
+  lg_source
+  mkdir -p "$LGDIR/$LG_BUILD/bin"
+  printf '#!/bin/sh\necho "00:00:00.000 [I] main.c:4303 | main | Looking Glass (%s)" >&2\n' \
+    "$LG_BUILD" >"$LGDIR/$LG_BUILD/bin/looking-glass-client"
+  chmod +x "$LGDIR/$LG_BUILD/bin/looking-glass-client"
+  patches_id >"$LGDIR/$LG_BUILD/build-patches"
+  rm -rf "$T/curl.calls" "$T/cmake.calls"
+  run build_client
+  assert_success
+  assert [ ! -e "$T/curl.calls" ]
+  rm "$LGDIR/$LG_BUILD/build-patches"
+  run build_client
+  assert_success
+  assert [ -e "$T/curl.calls" ]
+  assert_equal "$(<"$LGDIR/$LG_BUILD/build-stamp")" "$LG_BUILD"
+  assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
+}
+
+@test "build_client: an unapplied fixture patch fails before installation and cleans its work" {
+  lg_source
+  sed -i 's#+++ patched/client/lanai-patched.txt#+++ patched/client#' \
+    "$T/fixture-patches/0001-fixture.patch"
+  run build_client
+  assert_failure
+  assert_output --partial 'does not apply exactly'
+  assert_output --partial '0001-fixture.patch'
+  assert [ ! -e "$LGDIR/$LG_BUILD.partial" ]
+  assert [ ! -e "$XDG_CACHE_HOME/lanai/build-$LG_BUILD" ]
+}
+
+@test "build_client.log: exact patch output and configure output both survive" {
+  lg_source
+  run build_client
+  assert_success
+  assert [ -s "$S/build-client.log" ]
+  assert [ -f "$T/src/looking-glass-$LG_BUILD/client/CMakeLists.txt" ]
+  run grep -F 'lanai-patched.txt' "$S/build-client.log"
+  assert_success
+  run grep -F 'features have been enabled:' "$S/build-client.log"
+  assert_success
 }
 
 @test "build_client: a wrong checksum deletes the download and builds nothing" {
@@ -877,6 +1043,7 @@ esac'
   # bin/lanai reads the real pins, so this uses an installed build (the
   # functions above cover the build itself).
   fake_build "$LG_BUILD"
+  patches_id >"$LGDIR/$LG_BUILD/build-patches"
   lanai_run build-client
   assert_success
   assert_equal "$(field client)" "$LGDIR/$LG_BUILD/bin/looking-glass-client"

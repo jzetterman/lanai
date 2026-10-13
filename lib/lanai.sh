@@ -1464,7 +1464,7 @@ setup_command() {
     case $out in
       build)
         if $built; then
-          setup_reply false 4 "The Looking Glass client still does not report $LG_BUILD." "run lanai build-client"
+          setup_reply false 4 "The Looking Glass client still is not built from $LG_BUILD with Lanai's current patches." "run lanai build-client"
           return 1
         fi
         built=true

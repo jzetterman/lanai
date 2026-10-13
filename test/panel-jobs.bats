@@ -302,6 +302,7 @@ shared_facts() { printf 'ActiveState=inactive\nLanaiStorage=%s/storage\n' "$T"; 
 share_check() { :; }
 host_packages_missing() { :; }
 build_stamp_current() { :; }
+build_patches_current() { :; }
 guest_version_behind() { :; }
 setup_follow() { :; }
 lanai_flock() { [[ ! -e $T/resume-locked ]] && touch "$T/resume-locked"; }

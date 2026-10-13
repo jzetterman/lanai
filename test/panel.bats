@@ -28,6 +28,7 @@ setup() {
   qmp_call() { printf '{"return":{"status":"running"}}\n'; }
   helper_alive() { return 0; }
   build_stamp_current() { return 0; }
+  build_patches_current() { return 0; }
   expected_base() { echo fixture.iso; }
   settings_seed() { echo '{"memory_gib":8,"cores":4}'; }
   export T
@@ -855,6 +856,7 @@ assert_plan_agreement() {
   mkdir -p "$d/bin"
   printf '#!/bin/bash\necho "00:00:00.000 [I] main.c:4303 | main | Looking Glass (%s)" >&2\n' "$LG_BUILD" >"$d/bin/looking-glass-client"
   chmod +x "$d/bin/looking-glass-client"
+  patches_id >"$d/build-patches"
   state '{"snapshot":"declined"}'
   run setup_plan "$(shared_facts)"
   assert_success

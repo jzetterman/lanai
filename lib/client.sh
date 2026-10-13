@@ -16,6 +16,10 @@ LANAI_CLIENT_UNIT=lanai-client.service
 LANAI_CLIENT_WAIT=${LANAI_CLIENT_WAIT:-60}
 LANAI_IDD_WAIT=30
 
+# The Looking Glass patches are kept with the plugin. Tests may point this at
+# a fixture folder; the phase B source tree adds the repository patches.
+LANAI_PATCHES=${LANAI_PATCHES:-$LANAI_LIB/../patches/looking-glass}
+
 # The first line lanai-client-exec writes to client.log, before the client's
 # own output: the client's start time, which version_check needs to time
 # the IDD wait. And the line it writes instead when QEMU never answered.
@@ -228,6 +232,64 @@ build_stamp_current() {
   [[ -x $d/bin/looking-glass-client && -f $d/build-stamp && $(<"$d/build-stamp") == "$LG_BUILD" ]]
 }
 
+# Print the ordered patch basenames. A missing or empty folder is a valid
+# empty list through phase A, before the client patches are added.
+patches_list() {
+  local dir=$LANAI_PATCHES
+  local nullglob_was_set=false
+  local -a files=()
+  [[ -d $dir ]] || return 0
+  shopt -q nullglob && nullglob_was_set=true
+  shopt -s nullglob
+  files=("$dir"/[0-9][0-9][0-9][0-9]-*.patch)
+  [[ $nullglob_was_set == true ]] || shopt -u nullglob
+  ((${#files[@]})) || return 0
+  printf '%s\n' "${files[@]##*/}" | LC_ALL=C sort
+}
+
+# Hash each ordered name and its contents; COPYING and other files are not
+# part of the client identity.
+patches_id() {
+  local -a list=()
+  mapfile -t list < <(patches_list)
+  if ((${#list[@]} == 0)); then
+    printf '' | sha256sum | cut -d' ' -f1
+  else
+    (cd "$LANAI_PATCHES" && sha256sum -- "${list[@]}") | sha256sum | cut -d' ' -f1
+  fi
+}
+
+# Apply each patch exactly. GNU patch can succeed with an offset, so its
+# Hunk diagnostics are treated as failure as well as a nonzero status.
+patches_apply() {
+  local src=$1 log=$2 patch_file output rc patch_dir
+  local -a list=()
+  patch_dir=$(cd "$LANAI_PATCHES" 2>/dev/null && pwd -P) || patch_dir=""
+  mapfile -t list < <(patches_list)
+  for patch_file in "${list[@]}"; do
+    if output=$(LC_ALL=C patch -d "$src" -p1 --forward --batch --fuzz=0 \
+      --no-backup-if-mismatch --reject-file=- -i "$patch_dir/$patch_file" 2>&1); then
+      rc=0
+    else
+      rc=$?
+    fi
+    printf '%s\n' "$output" >>"$log"
+    if ((rc != 0)) || grep -q '^Hunk ' <<<"$output"; then
+      echo "the Lanai patch $patch_file does not apply exactly to Looking Glass $LG_BUILD; see $log"
+      return 1
+    fi
+  done
+}
+
+# True only for an installed binary carrying the current patch identity.
+build_patches_current() {
+  local d id
+  d=$(client_builds)/$LG_BUILD
+  [[ -x $d/bin/looking-glass-client && -f $d/build-patches ]] || return 1
+  id=$(patches_id) || return 1
+  [[ $(<"$d/build-patches") == "$id" ]]
+}
+
 # Print the build a client binary reports: the "Looking Glass (<build>)"
 # line it logs first, also for --help. Fails when it prints none.
 client_version() {
@@ -374,9 +436,10 @@ builds_prune() {
 # Prints the client binary; on failure prints why. Does nothing when the
 # pinned build is already installed.
 build_client() {
-  local cache dl dest work src log part out
+  local cache dl dest work src log part out patch_id
   dest=$(client_builds)/$LG_BUILD
-  if [[ $(client_version "$dest/bin/looking-glass-client" 2>/dev/null) == "$LG_BUILD" ]]; then
+  patch_id=$(patches_id) || return 1
+  if build_patches_current && [[ $(client_version "$dest/bin/looking-glass-client" 2>/dev/null) == "$LG_BUILD" ]]; then
     printf '%s\n' "$LG_BUILD" >"$dest/build-stamp" || return 1
     builds_prune
     printf '%s\n' "$dest/bin/looking-glass-client"
@@ -409,7 +472,9 @@ build_client() {
       echo "the source tarball is missing submodule folders: ${out//$'\n'/, }"
       exit 1
     }
-    cmake -S "$src/client" -B "$work/build" -DENABLE_X11=no >"$log" 2>&1 || {
+    : >"$log"
+    patches_apply "$src" "$log" || exit 1
+    cmake -S "$src/client" -B "$work/build" -DENABLE_X11=no >>"$log" 2>&1 || {
       echo "cmake could not configure the client; see $log"
       exit 1
     }
@@ -440,6 +505,7 @@ build_client() {
     }
   ) || return 1
   printf '%s\n' "$LG_BUILD" >"$dest/build-stamp" || return 1
+  printf '%s\n' "$patch_id" >"$dest/build-patches" || return 1
   builds_prune
   printf '%s\n' "$dest/bin/looking-glass-client"
 }

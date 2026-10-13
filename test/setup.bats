@@ -604,7 +604,7 @@ through_step4() {
   install
   setup_json '{"snapshot": "declined"}'
   fake_build "$LG_BUILD"
-  printf '%s\n' "$LG_BUILD" >"$(client_builds)/$LG_BUILD/build-stamp"
+  write_client_stamps
   pinned_files
 }
 
@@ -848,7 +848,7 @@ exec /usr/bin/mv "$@"'
   export WAYLAND_DISPLAY=wayland-3
   build_client() {
     fake_build "$LG_BUILD"
-    printf '%s\n' "$LG_BUILD" >"$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/build-stamp"
+    write_client_stamps
     echo "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"
   }
   setup_run
@@ -864,6 +864,21 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field step)" 4
   run field message
   assert_output --partial "USB audio"
+}
+
+@test "setup plan: stale patches rebuild during a setup round but do not unset a finished install" {
+  through_step4
+  echo stale >"$(client_builds)/$LG_BUILD/build-patches"
+  # No activity override is intentional; setup_plan gathers its own facts.
+  # shellcheck disable=SC2119
+  run setup_plan "$(shared_facts)" auto true
+  assert_success
+  assert_equal "$(jq -r .step <<<"$output")" 4
+  setup_json '{"done":true,"snapshot":"declined"}'
+  # shellcheck disable=SC2119
+  run setup_plan "$(shared_facts)" auto true
+  assert_success
+  assert_equal "$(jq -r .step <<<"$output")" 7
 }
 
 @test "lanai setup step 5: starts the setup boot, then reports it while it runs" {
@@ -1540,7 +1555,7 @@ exec /usr/bin/mv "$@"'
   fake_build "$LG_BUILD"
   # A completed step 4 now includes its verified stamp, which the read-only
   # planner requires without running the client (panel-view amendment).
-  printf '%s\n' "$LG_BUILD" >"$(client_builds)/$LG_BUILD/build-stamp"
+  write_client_stamps
   setup_run
   assert_equal "$(field step)" 5
   assert_equal "$(field window)" true
@@ -1578,6 +1593,7 @@ exec /usr/bin/mv "$@"'
   assert_failure
   assert_equal "$(field ok)" false
   assert_equal "$(field step)" 4
+  assert_output --partial "still is not built from $LG_BUILD with Lanai's current patches"
   assert_equal "$(wc -l <"$T/build.calls")" 1
   ! grep -q -- '--user start' "$T/systemctl.calls" || fail "the unit was started"
 }

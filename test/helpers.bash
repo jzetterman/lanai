@@ -138,6 +138,15 @@ make_install() {
   echo 6.05 >"$1/windows.ver"
 }
 
+# Write both pinned-client identity files used by setup and panel fixtures.
+write_client_stamps() {
+  local d
+  d=$(client_builds)/$LG_BUILD
+  mkdir -p "$d"
+  printf '%s\n' "$LG_BUILD" >"$d/build-stamp"
+  patches_id >"$d/build-patches"
+}
+
 # Set B to a new temp dir under LANAI_TEST_BTRFS_DIR. Skips the test when
 # that variable is unset or does not point at btrfs. Call it directly, not in
 # $(...), or the skip is lost.

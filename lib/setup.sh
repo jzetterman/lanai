@@ -492,7 +492,7 @@ setup_plan() {
     else setup_decision 3 snapshot; return; fi
   fi
   if $stopped && [[ ! -s $dir/windows.base ]]; then setup_decision 3a base; return; fi
-  if ! build_stamp_current; then setup_decision 4 build; return; fi
+  if ! build_stamp_current || ! build_patches_current; then setup_decision 4 build; return; fi
   step5=$(jq -r 'if has("step5") then .step5 else "" end' <<<"$doc")
   if ! $stopped; then
     if jq -e '.setup == true' "$(state_dir)/boot.json" >/dev/null 2>&1; then
