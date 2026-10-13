@@ -1031,12 +1031,90 @@ and (3) in an admin PowerShell with `pnputil /restart-device` and
 - Extra sizes, same window: 1200x800, 720x540, 800x600 and 640x480 each gave
   that exact frame, so the floor is the IDD's 640x480, not Windows' 800x600.
   From 640x480, an ask for 1000x470 gave no new frame: Windows stayed at
-  640x480. The IDD's default mode list (`DefaultDisplayModes.h`) ends at
-  1024x768 and holds neither 1601x901 nor 640x480, so the list does not explain
-  the difference. The IDD's floor is per side (`width < 640 || height < 480`,
+  640x480. The IDD's default mode list (`LGCommon/DefaultDisplayModes.h`, 38
+  modes) ends at 640x480 and does not hold 1601x901 (corrected 2026-10-13: this
+  line first said it ends at 1024x768). The IDD's floor is per side (`width < 640 || height < 480`,
   `CSettings.cpp:338`), so 1000x470 is under it too. Not yet known: why the two
   refused asks ended differently.
 - The window went back to tiled at 16:26:25 EDT; the frame followed (1901x993).
+
+## Resize hands-on (2026-10-13)
+
+Phase D on the test copy with the patched client (patch id `415fcb25...d014`,
+plugin at 2833af9). Monitor HDMI-A-1, 3840x2160 at scale 1 (DP-3 is a dummy
+plug). Windows scale 100% except in (5). John ran the actions; Claude read
+`client.log` against `hyprctl` and ran (6) to (9). Times are EDT. Client log
+times count from the client's start.
+
+- (1) Pass. The setup round left open on 2026-10-12 was closed on
+  plugin/live-scale first, then the plugin went to plugin/resize. The panel
+  showed the resize warning and Update the Windows window. Open worked. The
+  build at 12:08:53 patched all 9 files, and `build-patches` matched
+  `patches_id`. Warning and button then hidden. On reopen (12:11:25): first
+  frame 1901x2106, window 946x1046, ask 1 at 0.787 s, match at 0.988 s.
+- (2) Pass. Driver restart (12:13:36), close and reopen (12:15:23), Windows
+  restart (12:16:03) and 10 starts from the bar (12:17:43-12:25:03) each
+  matched, at 941x1046 or 946x1046. Only the reopen needed an ask (match
+  0.6 s after the first frame). Windows started at the window's size every
+  time, so these starts tested nothing hard. Most starts first showed a
+  session that lost the host about 1 s in, with no frame.
+- (2b) **Fail**, added. 3 starts from the bar after the window's size changed
+  while Windows was off (12:27:42, 12:29:00, 12:41:07). Each time ask 1 came
+  0.5 s after the first frame, and Windows went to another size and stayed:
+  1400x1050, 3840x2160 and 1600x1200. Ask 2, 5 s later, was taken. Matched
+  5.75, 5.82 and 5.80 s after the first frame, past the 5 s bar.
+- Cause of (2b). The driver takes the ask and replugs its monitor. Windows
+  then shows the smallest mode in the default list that fits the old desktop
+  (946x1046 to 1400x1050, 3816x2106 to 3840x2160, 1591x1096 to 1600x1200, all
+  three exact), and the driver's helper in Windows switches the desktop to the
+  asked size. After a boot, that switch does not happen for ask 1. During a
+  session it happens within 0.1 s, which is the short-lived frame seen in
+  phase 0. Fix: phase E (first wait 2 s).
+- (3) Pass, client of 12:28:55. Sign-out and sign-in at 12:32:38: no size
+  change, no ask needed. Tile change, fullscreen and back, float and three
+  resizes (12:33:05-12:33:24): each one ask, matched within 0.25 s. The move
+  to a monitor with another scale was not run: no second real monitor.
+- (4) Partly run. First try (12:41:40-12:42:40): John's 4 picks came about
+  20 s apart, within 60 s of the boot's asks, so they continued that sequence
+  (asks 3 to 5 with waits of 10, 20 and 40 s). Pick 3 (2880x1620) stayed until
+  Windows reverted it itself at 12:42:33; ask 5 at 12:42:40 changed the size
+  during pick 4's "Keep these display settings?" countdown, and that dialog
+  froze. Windows stayed responsive (Start menu, guest agent); minimize and
+  restore cleared it. One slow pick (12:47:53, 1600x900): undone in 0.18 s.
+  The other 4 slow picks were not run. Quick picks (12:49:23-12:50:17, 7
+  picks): asks at once, then after 5, 10 and 20 s; three picks went back
+  without an ask (the dialog's revert) before ask 5 was due, so the 5-ask stop
+  was not reached (phase 0 (4) showed it). John: after the second pick the
+  size seemed not to reset anymore, which is the growing wait.
+- Lock to the window's size (John's question, prototype). With `Modes` set to
+  the one unparseable entry `none` under `HKLM\SOFTWARE\LookingGlass\IDD`,
+  the driver offered only the window's size. A start at 12:56:43 then showed
+  a 946x1246 output but a 941x846 desktop, centered with black bars, and the
+  helper logged `Failed to apply Looking Glass display mode 946x1246@60 (-1)`.
+  Rejected: it needs a driver change, and the IDD stays pinned. Undone with a
+  driver restart at 13:04:17: the first frame was 1152x864 (the smallest
+  default mode that fits the 941x846 desktop), the ask went out at once, and
+  946x1246 came 1.26 s later, the slowest switch after a taken ask today.
+- (5) Pass. 300% from 13:05:21. Fullscreen 3840x2160 matched in 0.29 s.
+  Driver restarts at 13:06:04 and 13:06:33 came back at 3840x2160 with text
+  still at 300% (John).
+- (6) Pass. Claude set the floating window to 600x400 at 13:08:43: the log
+  said `Resize: window is 600x400, under 640x480, not asking`, and for 63 s
+  there was no ask and no frame change. Windows kept 1790x1748, scaled down
+  with side bars. 1200x800 at 13:09:46 matched in 0.21 s.
+- (7) Pass. Driver disabled at 13:11:12. A resize to 1400x900 at 13:11:22
+  gave no ask. Enabled: session at 13:11:57, ask at once, matched 0.64 s
+  after the first frame.
+- (8) Pass, 13:13. A word added to 0002's subject line brought back the
+  warning and button. With `scale_task` also removed from the setup record,
+  the warning named only Run setup again. Both restored byte for byte.
+- (9) Pass. 0001 adds `resize.c`, `resize.h` and `resize_test.c`. 0002
+  touches `client/CMakeLists.txt`, `core.c`, `core.h`, `main.c`,
+  `tests/CMakeLists.txt` and `config_message_test.c`. No new
+  `LG_TransportControl` type (0002 uses the existing
+  `LG_TransportControlToken`). No KVMFR or LGMP struct change. `lib/pins.sh`
+  has no diff from main. `COPYING` SHA-256 `8177f975...0643` matches the
+  plan. The README license paragraph and `manifest.json` read as planned.
 
 ## After the proofs
 

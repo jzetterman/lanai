@@ -2723,8 +2723,9 @@ Rules, each from req 12:
 - `resize_update` asks when all hold: a frame was seen this session, the window
   size is known, Windows' size differs from it, `responding` is true, `asks` < 5,
   and either `asks` is 0 or `now` >= last ask + wait, where the wait after ask
-  1, 2, 3 and 4 is 5, 10, 20 and 40 s. An ask sends the window size as it is now,
-  so a newer size replaces a waiting one. When `send` returns true: `asks`++,
+  1, 2, 3 and 4 is 2, 5, 10 and 20 s (phase E; it was 5, 10, 20 and 40 s). An
+  ask sends the window size as it is now, so a newer size replaces a waiting
+  one. When `send` returns true: `asks`++,
   last ask = now, and it logs `Resize: asking Windows for <w>x<h> (<n> of 5)`.
   When it returns false, nothing counts and the next update tries again.
 - A match (Windows' size equals the window's) asks nothing. It does not clear
@@ -2734,7 +2735,7 @@ Rules, each from req 12:
   seconds after its last ask" is read as after the fifth ask; a sequence that a
   trigger replaces earlier logs nothing.
 
-So a sequence asks at most 5 times, at 0, 5, 15, 35 and 75 s when Windows never
+So a sequence asks at most 5 times, at 0, 2, 7, 17 and 37 s when Windows never
 answers with the size, and a Windows that keeps leaving the size cannot cause a
 loop.
 
@@ -3006,15 +3007,16 @@ another size than before (the spec wording, per "Refused sizes"). Row 12b's
   pair by applying both, in order, to a fresh unpack.
 - Tests first, in `resize_test.c`: no ask before a frame or before the window size
   is known; a first frame that differs asks at once, one that matches asks
-  nothing; Windows never taking the size gives asks at 0, 5, 15, 35 and 75 s,
-  "did not take" once at 80 s, then nothing for 10 minutes; a match stops the asks;
+  nothing; Windows never taking the size gives asks at 0, 2, 7, 17 and 37 s
+  (phase E's times; phase B built 0, 5, 15, 35 and 75 s), "did not take" once
+  at 42 s, then nothing for 10 minutes; a match stops the asks;
   `responding` false holds the ask and a later true sends it at once, with the next
   wait counted from that send; a window size that changes while an ask waits is
   the size sent, in one ask; a failed `send` is not counted; a new window size
   starts over (asks at once, 1 of 5); a window of 639x800 or 800x479 never asks
   and logs the "not asking" line once, 640x480 asks, and growing from under the
   floor to an allowed size asks at once; a session reset starts over at its first
-  frame; the six-pick case from row 12b (asks 5, 10, 20 and 40 s apart, the sixth
+  frame; the six-pick case from row 12b (asks 2, 5, 10 and 20 s apart, the sixth
   pick stays and logs "did not take"); a Windows change more than 60 s after the
   last ask starts over; the same frame size twice with `changes` < 2 is no
   change, and with `changes` >= 2 is a change; a sequence replaced before its
@@ -3108,14 +3110,17 @@ after the last ask, so each starts a fresh sequence, except the quick picks in
    click it: no Windows prompt, no restart, the last message says to close and
    reopen; reopen.
 2. Session starts: a driver restart with the window open (the deterministic
-   case), 10 starts from the bar, a Windows restart, closing and reopening the
-   window. Each matches within 5 s of the session's first frame.
+   case), 10 starts from the bar, 3 starts from the bar after the window's size
+   changed while Windows was off, a Windows restart (once with the window's
+   size changed while Windows restarts), closing and reopening the window.
+   Each matches within 5 s of the session's first frame.
 3. During a session: sign-out and sign-in, tile, fullscreen and back, a resize, a
    move to a monitor with another scale. If no second monitor is set up, record
    the move as not run and bring it to John.
 4. Picks: 5 resolutions picked in Display settings, each more than a minute after
    the last ask; then the 6 quick picks: the first more than 60 s after the last
-   ask, and each later one before the next wait ends, or the intervals stretch.
+   ask, and each later one after Windows has taken the previous ask and within
+   60 s of it, kept with "Keep changes" (row 12b; phase E runs this case again).
 5. Scale: 300% target, large window, driver restart.
 6. Refusal: a floating window of 600x400 monitor pixels; the log names the size
    with "not asking" and shows no ask, Windows keeps its size and the scale holds
@@ -3134,6 +3139,82 @@ after the last ask, so each starts a fresh sequence, except the quick picks in
 
 The too-large case is reviewed, not run (Design, "Refused sizes"). Fixes found
 here get their own phase, planned from the results, before the diff gate closes.
+
+### Phase E: first wait 2 s (TDD, C)
+
+From the hands-on (John's call, 2026-10-13; `proofs.md`, "Resize hands-on").
+Three starts from the bar after the window's size changed while Windows was off
+each matched 5.8 s after the session's first frame, past the 5 s bar. After a
+boot, Windows' display helper does not switch the desktop to the first ask's
+size: Windows shows the smallest built-in mode that fits the old desktop
+(1400x1050, 3840x2160 and 1600x1200 in the three starts) and stays there, and
+the ask 5 s later works. The slowest switch after a taken ask was 1.26 s, so the
+first wait becomes 2 s, not 1 s.
+
+- `resizeWait` in `resize.c` becomes 2, 5, 10 and 20 s. The comments in
+  `resize.c` and `resize.h` and 0001's header text that name the waits change to
+  match. Nothing else changes: at most 5 asks, the 60 s continuation, and the
+  5 s "did not take" wait after the fifth ask.
+- Tests first, in `resize_test.c` (line numbers are 0001's). With only the
+  waits changed, 8 of the 16 cases fail (review b found it by building them),
+  so retime each one to the new schedule, comments included:
+  - `never-takes`: asks at 0, 2, 7, 17 and 37 s, "did not take" once at 42 s.
+  - `six-picks` (688-729): asks 2, 5, 10 and 20 s apart (`askAt` 0, 2, 7, 17,
+    37); Windows takes each ask 0.5 s after it and the next pick lands 1 s
+    after it (today 1 s and 3 s, which lands after the new 2 s wait), so every
+    pick comes before its wait ends; "did not take" at t1+42 and the final run
+    to t1+37+600.
+  - `match-stops` (517): the match comes at 1 s, before ask 2 is due at 2 s.
+  - `responding` (540-556): rebuild the hold-while-due part around asks at 0,
+    2, 7, 17 and 37 s from the send.
+  - `send-fails` (591-599): the next ask 2 s after the first.
+  - `new-window` (609-619), `session` (681-684) and `replaced` (786-796): their
+    counts and times follow the new schedule.
+  - `late-change` (742-753), and 0002's `testResizeReturn`, still pass but
+    drift far past the 60 s boundary; retime them to 61 s after the new
+    last-ask times so they keep testing near it (in `late-change`, the check at
+    746 moves with 742; the second boundary becomes T0+63+37+61).
+  Then add two cases. The boot case: the first ask is answered at 0.5 s by a
+  frame at another size (`changes` 1, no match), ask 2 goes out at 2 s, and a
+  match then stops the asks; it fails against the old waits. The slow switch: a
+  taken ask whose match arrives 1.3 s later sends no second ask; it already
+  passes against the old waits and guards against a first wait under 1.3 s.
+  Keep today's six-pick timing (take at +1 s, pick at +3 s) as a third case:
+  each pick after the first lands after its wait ends, so its ask goes out at
+  once with the next number, as row 12b expects for picks made by hand. Name
+  cases with lowercase letters and hyphens only (for example `boot`,
+  `slow-switch`, `late-picks`): `test/client-patches.bats` reads
+  `RESIZE_CASES` with `[a-z-]*`. The other cases pass unchanged.
+- Register the new cases in `RESIZE_CASES` (`client/tests/CMakeLists.txt`,
+  patch 0002), since the tarball test checks that `resize-tests --list` names
+  the same cases. Regenerate 0001 against the pinned source and 0002 against
+  the tree with 0001 applied, as in phase B. Check the pair on a fresh unpack,
+  and run `test/client-patches.bats` with `LANAI_TEST_LG_TARBALL`. The patch id
+  changes, so the installed copy shows the update warning again.
+- In 0002's `config_message_test.c`, `testControl` asserts that the ask after
+  the first one of a sequence waits 5 s; make it 2 s, with its comment.
+- Files: `patches/looking-glass/0001-client-resize-module.patch`,
+  `0002-client-resize-hooks.patch` (the case list and `testControl`), this
+  plan, `proofs.md`.
+- Hands-on (John, test copy): click Update the Windows window, then reopen. 3
+  starts from the bar, each after the window's size changed while Windows was
+  off, to a smaller, a larger and a differently shaped size: each matches
+  within 5 s of the session's first frame, with ask 2 about 2 s after ask 1
+  when ask 1 does not take. Record each start's ask 2 time and match time.
+  One Windows restart with the window's size changed while Windows restarts:
+  it matches within 5 s of the session's first frame. A start that still
+  misses 5 s goes to John, as in phase D.
+  Then row 12b's full pick case, which phase D only partly ran: 5 picks in
+  Display settings, each more than a minute after the last ask, each undone
+  within 5 s; then 6 picks: the first more than a minute after the last ask,
+  each later one after Windows has taken the previous ask (the size snapped
+  back) and within 60 s of it, each kept with "Keep changes" before its
+  countdown ends while no ask has undone it. Expected: ask 1 at once, and
+  each later ask when its wait (2, 5, 10, 20 s) ends or at once for a pick
+  made after that, so ask 5 comes at least 37 s after ask 1; the sixth pick
+  gets no ask and its size holds for at least 60 s. A dialog frozen by an ask
+  does not fail the case: minimize and restore Settings. Record in
+  `proofs.md`, "Resize hands-on".
 
 ### Upstream offer (John)
 
@@ -3159,7 +3240,9 @@ Phase 0: Claude with John. Phase A: the bulk implementer (gpt-6-luna, `codex
 exec`) in a worktree: clear, mechanical bash. Phase B: the step-up (opus-5.5) in a
 worktree: a state machine across two threads, and README license words. Phase C:
 opus-5.5 in a worktree: panel and README words need taste >= 7. Claude verifies,
-signs, and runs the diff gate. Phase D and the upstream offer: John.
+signs, and runs the diff gate. Phase D and the upstream offer: John. Phase E:
+opus-5.5 in a worktree: eleven C test cases to retime with care, and both patches
+regenerated and checked against the pinned source.
 
 ## Phase 8: Acceptance
 
@@ -3331,3 +3414,9 @@ signs, and runs the diff gate. Phase D and the upstream offer: John.
 | plan (resize) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 2 should-fix, 9 nits, 0 refuted; all integrated: phase 0 compares each Format size to round(hyprctl size × scale), the size the client asks for; phase D gains a patches review step; nits (a session restart from a refused ask is a stop rule, test locations, setup_command, absolute patch paths, header lines that look like diffs, making 0001 cold, resize warning naming and tooltip, done words until the next client starts, phase D monitor and pick timing, IDD anchors, a busy-build reply, the CI pin-drift gap under Risks). Stage closed at the cap with these integrations unreviewed |
 | plan (resize) | John | 2026-10-12: accepted the plan gate at the cap with round 3's integrations unreviewed; phase 0 runs next |
 | plan (resize) | John | 2026-10-12: phase 0 ran; (1)-(3) pass, (4) fired its stop rule (Windows moved to 1920x1080). John's call: never ask under 640x480. Design "Refused sizes", the module rule and tests, the README words and phase D (6) changed to match; the spec changed with it |
+| plan (resize) | John | 2026-10-13: phase D ran (`proofs.md`, "Resize hands-on"): starts with a changed window size fail (5.8 s, 3 of 3); the monitor move with another scale was not run (no second real monitor); the pick case was partly run (1 of 5 slow picks; the quick picks never reached the fifth ask); the other steps pass. John's call: first wait 2 s (waits 2, 5, 10 and 20 s). Design's wait rule and sequence times, the module tests and phase D (2) and (4) changed to match; phase E added |
+| plan (resize, phase E) | a (gpt-6.1-sol) | 1 (full) | 0 blockers, 3 should-fix, 0 nits, 0 refuted; all integrated: the six-pick fixture's match and pick events are retimed so picks land before the 2 s wait ends; new cases are registered in `RESIZE_CASES` and 0002 is regenerated; phase E's hands-on runs row 12b's full pick case, and the phase D log row states what was not run |
+| plan (resize, phase E) | a (gpt-6.1-sol) | 2 (full) | 0 blockers, 2 should-fix, 0 nits, 0 refuted; both integrated: 0002's `testControl` asserts the old 5 s wait and is retimed to 2 s; the hands-on quick picks each follow Windows taking the previous ask, as row 12b says, not a fixed 3 s apart. (A first round-2 run used a stale live-scale prompt by Claude's error and was discarded; it is not counted) |
+| plan (resize, phase E) | a (gpt-6.1-sol) | 3 (full, cap) | 0 findings: "The amendment is sound". Stage closed |
+| plan (resize, phase E) | b single (opus-5.5) | 1 (full) | 0 blockers, 1 should-fix, 6 nits, 0 refuted; all integrated. The reviewer built 0001 and both patches with the new waits: 8 of 16 resize cases fail, 6 of them not named; phase E now lists every case with its new times, retimes two boundary cases, says the slow-switch case passes before the change, gives the Windows restart an expected result and a stop rule, carries the restart case into phase D (2), and states the routing reason |
+| plan (resize, phase E) | b single (opus-5.5) | 2 (full) | 0 blockers, 0 should-fix, 6 nits, 0 refuted; nits only, stage stopped and all 6 integrated (case count, the late-change check at 746, a late-picks case for picks after their wait, phase B's times marked as phase E's, phase D (4) in the log row, case names the bats list check reads). The reviewer built both patches as phase E says: all resize and config-message tests pass with the new waits |
