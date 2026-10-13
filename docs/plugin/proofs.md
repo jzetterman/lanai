@@ -1116,6 +1116,70 @@ times count from the client's start.
   has no diff from main. `COPYING` SHA-256 `8177f975...0643` matches the
   plan. The README license paragraph and `manifest.json` read as planned.
 
+## Resize hands-on, phase E (2026-10-13)
+
+John ran the steps on the test copy, Claude read the client log, all times
+EDT. Windows signs in on its own. Phase E's client (asks at 0, 2, 7, 17 and
+37 s) was built at 16:45:05 with the patch id `a9602f51...` and the warning
+cleared.
+
+- Start 1 from the bar, larger window, 16:52:18. Fail, and a gap in phase E.
+  First frame 965x1265, ask 1 for 1908x1305 0.5 s later, and a 1908x1305
+  output 0.15 s after that. Lanai saw a match and asked no more. John's
+  screenshot showed the desktop still near 946 wide, centered with black
+  bars, and Settings showed 946x1246 picked with 1908x1305 "Recommended".
+  Cause: the client sees only the output size. The smallest mode that fit
+  the old desktop was the asked size itself, so the output matched while
+  Windows' helper had not switched the desktop. A resize by hand fixed it.
+- Restart from the Start menu at 17:00:35 with the desktop already matched:
+  first frame 1908x1305, no ask, desktop full (screenshot).
+- Starts from the bar at 17:02:23 (946x1246), 18:13:06 (946x613),
+  18:14:25 (3816x2106) and a restart at 18:15:18 (1593x990). Each matched
+  7.4 to 7.8 s after the first frame. Ask 1 (0.5 s) gave the smallest
+  built-in mode that fits the old desktop (1920x1440, 1920x1440, 1024x768,
+  3840x2160). Ask 2 (2.5 s) changed nothing. Ask 3 (7.5 s) took in 0.2 to
+  0.3 s. The helper connected (`Using Clipboard: LGMP`) about 2.4 s after
+  the first frame, and Windows' audio started (the desktop is up) about
+  6.6 to 6.8 s after it. So Windows' helper cannot switch the desktop
+  before the signed-in desktop is up, and no ask timing meets 5 s from the
+  first frame on a boot: that frame is the sign-in screen.
+- The IDD source (pinned build) shows a repeat ask for the same size has no
+  shortcut: `SetResolution` stores the mode, replugs, and the next ready
+  swap chain sends `SETDISPLAYMODE` again (`CDeviceContext.cpp:456-487`,
+  `CMonitorManager.cpp:313-346`). The helper retries each mode 20 times,
+  100 ms apart, then logs `Failed to apply` and drops it
+  (`CPipeClient.cpp`, `DisplayModeThread`).
+- Sign-in backstop prototype (`display-backstop.ps1`, a logon task for
+  John's user, run level highest). It reads `ExtraMode` from
+  `HKLM\SOFTWARE\LookingGlass\IDD` and, while the Looking Glass display's
+  desktop differs, calls `ChangeDisplaySettingsEx` with
+  `CDS_UPDATEREGISTRY`, every 0.5 s for up to 120 s. On the 4 starts above
+  from 18:13 it started 14 to 20 s after boot, about 5 s after the desktop
+  came up, found the desktop already matched by ask 3, and did nothing.
+- Stuck case, made on purpose, 18:18:57. Desktop 1594x990, then Claude set
+  the window to exactly 1600x1000 while Windows restarted (the smallest
+  built-in mode that fits 1594x990 is 1600x1024). First frame 1594x990, ask
+  1, a 1600x1000 output 0.12 s later, and no more asks: the trap of start 1.
+  The desktop came up at about 18:19:01. The backstop started at
+  18:19:05.18, found desktop 1594x990 against `ExtraMode` 1600x1000@60*,
+  switched (result 0), and saw 1600x1000 at 18:19:05.75. John's call: build
+  the backstop into Lanai.
+- The lock prototype's failure at 12:56 above matches this boot failure (a
+  start, an output at the window's size, the desktop at the old size,
+  `Failed to apply`). So it does not prove that a lock needs a driver
+  change. A lock may work with the backstop; retest it after the build.
+- Resize while signed out (John's question). Signed out at 18:21:26 (the
+  clipboard fell back to SPICE: the helper stopped). John resized the
+  window to 1312x1207 at the sign-in screen at 18:21:34: ask 1 gave a
+  1600x1024 output, asks 2 to 5 changed nothing, and `Windows did not take
+  1312x1207` came at 18:22:16. Nothing changed at the sign-in screen
+  (John). Signed in: the backstop started at 18:22:33.01 and found the
+  desktop already at 1312x1207, the helper connected at 18:22:33.48, and
+  the client's first 1312x1207 frame came at 18:22:33.96, with no new ask.
+  So after a sign-out the helper applies Lanai's last ask as it starts;
+  the failure is after a boot only. John: "adjusted immediately after I
+  signed in. Very fast."
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

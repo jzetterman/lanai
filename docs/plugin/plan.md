@@ -2126,6 +2126,16 @@ spec, plan and review gates before it is built.
   setup" reads as unclear to new users. Rename the button, and every panel line and
   README step that tells the user to click it, in one change; decide then whether "Run
   setup again" follows the same wording.
+- **Resize at the sign-in screen.** John's call (2026-10-13): worth adding in a later
+  PR. While no one is signed in to Windows, Looking Glass runs no display helper (its
+  service starts the helper only with a signed-in user's token,
+  `LGIddHelper/main.cpp:1806`), so Lanai's asks change the frame but not the sign-in
+  screen's size, and small sign-in fields can be hard to read (`proofs.md`, "Resize
+  hands-on, phase E", the signed-out case). Wanted: a privileged SYSTEM service in
+  Windows that sets the Looking Glass display to the driver's stored size on the
+  sign-in desktop. It is new security surface inside Windows (requirement 27), so it
+  gets its own spec, plan and gates. Offer the same fix upstream first: the helper
+  could run on the sign-in desktop as SYSTEM, as Looking Glass's capture host does.
 
 ## Follow-on: live scale (John, 2026-10-10)
 
