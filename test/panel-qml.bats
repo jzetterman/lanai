@@ -811,6 +811,39 @@ TestCase {
     verify(objects(section, function(o) { return o.text === model.view.result.setup && o.visible }).length > 0)
     panel.destroy(); wait(1)
   }
+  function test_update_button_runs_build_client_as_a_long_job_with_its_result_and_log() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    var warning = 'Windows may start at, or change to, the wrong size until you click Update the Windows window. This changes nothing in Windows.'
+    var done = 'The Windows window is updated. If the Windows window is open, close it and open it again.'
+    function view(enable) {
+      return {warning:warning,buttons:{update_client:{show:true,enable:enable,label:'Update the Windows window'}},
+        setup:{},settings:{},snapshots:{names:[]},result:{client:done},
+        logs:{vm:'Windows VM log: in your user journal, under lanai-vm',build:'Windows window build log: /state/build-client.log'}}
+    }
+    model.view = view(true)
+    var panel = createTemporaryObject(panelComponent, tests, {model:model, opened:true})
+    wait(1)
+    verify(model.tooltip.indexOf(warning) !== -1)
+    var update = objects(panel, function(o) { return o.control === 'update_client' })[0]
+    verify(update !== undefined)
+    verify(update.visible)
+    verify(update.enabled)
+    compare(update.text, 'Update the Windows window')
+    verify(objects(panel, function(o) { return o.text === done && o.visible }).length > 0)
+    verify(objects(panel, function(o) { return o.text === model.view.logs.build && o.visible }).length > 0)
+    var count = Quickshell.launchCount
+    update.clicked()
+    compare(Quickshell.launchCount, count + 1)
+    compare(Quickshell.lastCommand[1], 'ui-job')
+    compare(Quickshell.lastCommand[2], model.pendingToken)
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'build-client')
+    verify(!process(model, model.cli))
+    model.view = view(false)
+    verify(update.visible)
+    verify(!update.enabled)
+    panel.destroy(); wait(1)
+  }
   function test_force_stop_two_clicks() {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)

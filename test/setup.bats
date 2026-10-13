@@ -1756,6 +1756,7 @@ exec /usr/bin/mv "$@"'
   run --separate-stderr cmd_build_client
   assert_failure
   assert_output --partial 'Another Looking Glass client build is running'
+  assert_equal "$(jq -r .reason <<<"$output")" build-busy
   setup_run
   assert_failure
   assert_equal "$(field step)" 4

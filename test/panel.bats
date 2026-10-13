@@ -1880,3 +1880,147 @@ exec /usr/bin/python3 "$@"'
   assert_equal "$(cat "$T/layout-calls")" structural
   assert_equal "$(jq -r .progress.label <<<"$output")" 'Restoring Windows: replacing the disk'
 }
+
+# --- the resize upgrade: a client built without the current patches (req 12) ---
+
+RESIZE_NEW='Windows may start at, or change to, the wrong size until you click Update the Windows window. This changes nothing in Windows.'
+RESIZE_OLD='Windows may start at, or change to, the wrong size until you click Run setup again.'
+RESIZE_OLD_RUNNING='Windows may start at, or change to, the wrong size until you shut Windows down and click Run setup again.'
+CLIENT_DONE='The Windows window is updated. If the Windows window is open, close it and open it again.'
+CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window again.'
+
+@test "panel resize: an old client with the live scale task warns and offers the update, stopped or running" {
+  state '{"done":true,"scale_task":2}'
+  build_patches_current() { return 1; }
+  for ST in inactive active; do
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .setup.finished <<<"$output")" true
+    # The warning is the bar tooltip's source too (LanaiModel.qml).
+    assert_equal "$(jq -r .warning <<<"$output")" "$RESIZE_NEW"
+    assert_equal "$(jq -c '.buttons.update_client | [.show,.enable,.label]' <<<"$output")" '[true,true,"Update the Windows window"]'
+  done
+  # Start stays available beside the warning.
+  ST=inactive
+  run cmd_panel
+  assert_equal "$(jq -r '.buttons.start.show and .buttons.start.enable' <<<"$output")" true
+}
+
+@test "panel resize: an old client with the old scale task names only Run setup again" {
+  state '{"done":true}'
+  build_patches_current() { return 1; }
+  ST=inactive
+  run cmd_panel
+  assert_equal "$(jq -r .warning <<<"$output")" "$RESIZE_OLD"
+  assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+  ST=active
+  run cmd_panel
+  assert_equal "$(jq -r .warning <<<"$output")" "$RESIZE_OLD_RUNNING"
+  assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+}
+
+@test "panel resize: an older pin's build in use shows only the driver update words" {
+  state '{"done":true,"scale_task":2}'
+  build_patches_current() { return 1; }
+  guest_version_behind() { echo B7-801-g1a2b3c4d5e; }
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .warning <<<"$output")" 'The Windows display driver needs an update. Shut down and continue setup.'
+  assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+}
+
+@test "panel resize: current patches or an unfinished setup show neither the warning nor the button" {
+  state '{"done":true,"scale_task":2}'
+  run cmd_panel
+  assert_equal "$(jq -r .warning <<<"$output")" ''
+  assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+  build_patches_current() { return 1; }
+  state '{"snapshot":"declined"}'
+  run cmd_panel
+  assert_equal "$(jq -r .setup.finished <<<"$output")" false
+  assert_equal "$(jq -r .warning <<<"$output")" ''
+  assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+}
+
+@test "panel resize: the update button shows disabled while a panel job runs, and the busy line names the update" {
+  local fd
+  state '{"done":true,"scale_task":2}'
+  build_patches_current() { return 1; }
+  panel_result_write client '{"token":"t","command":"build-client","args":[],"started":5}'
+  exec {fd}>"$S/panel-job.lock"; flock "$fd"
+  ST=inactive
+  run cmd_panel
+  assert_equal "$(jq -c '.buttons.update_client | [.show,.enable]' <<<"$output")" '[true,false]'
+  assert_equal "$(jq -r .buttons.start.enable <<<"$output")" false
+  assert_equal "$(jq -r .busy.line <<<"$output")" 'Updating the Windows window. This may take several minutes. You can start Windows when it finishes. You can close this panel.'
+  # A running Windows has no Start button to wait for.
+  ST=active
+  run cmd_panel
+  assert_equal "$(jq -r .busy.line <<<"$output")" 'Updating the Windows window. This may take several minutes. You can close this panel.'
+  exec {fd}>&-
+}
+
+@test "panel words: build-client replies, and the logs block names the build log" {
+  run panel_words build-client '{"ok":true,"client":"/x","build":"B7"}'
+  assert_output "$CLIENT_DONE"
+  run panel_words build-client '{"ok":false,"message":"UNTRUSTED","next":"UNTRUSTED"}'
+  assert_output 'The Windows window could not be updated. Check the Windows window build log (build-client.log), then try again.'
+  run panel_words build-client '{"ok":false,"reason":"build-busy","message":"UNTRUSTED"}'
+  assert_output 'Another build of the Windows window is running. Try again when it finishes.'
+  run panel_words build-client '{"ok":false,"reason":"invalid-reply"}'
+  assert_output 'Lanai did not give a readable reply. Check the Windows window build log and try again.'
+  run cmd_panel
+  assert_equal "$(jq -r .logs.build <<<"$output")" "Windows window build log: $S/build-client.log"
+}
+
+@test "panel resize: the done words stay until a client starts after the update ended" {
+  state '{"done":true,"scale_task":2}'
+  panel_result_write client '{"token":"t","command":"build-client","args":[],"started":1000.25,"ended":1100.5,"reply":{"ok":true}}'
+  # No client since: the window was closed when the update finished.
+  rm -f "$RUN/client.log"
+  run cmd_panel
+  assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_DONE"
+  # The client that ran during the update is still the old one.
+  printf '%s 1100\nlog\n' "$LANAI_CLIENT_START" >"$RUN/client.log"
+  run cmd_panel
+  assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_DONE"
+  # A VM start empties the log before its client starts.
+  : >"$RUN/client.log"
+  run cmd_panel
+  assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_DONE"
+  printf '%s 1101\nlog\n' "$LANAI_CLIENT_START" >"$RUN/client.log"
+  run cmd_panel
+  assert_equal "$(jq -r .result.client <<<"$output")" ''
+}
+
+@test "panel resize: an interrupted update has its own words and never arms Continue setup" {
+  state '{"done":true,"scale_task":2}'
+  build_patches_current() { return 1; }
+  panel_result_write client '{"token":"t","command":"build-client","args":[],"started":1}'
+  run cmd_panel
+  assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_INTERRUPTED"
+  assert_equal "$(jq -r .result.setup <<<"$output")" ''
+  assert_equal "$(jq -r .setup.attention <<<"$output")" false
+  assert_equal "$(jq -r .buttons.update_client.enable <<<"$output")" true
+  # On an unfinished setup the same record arms nothing either: setup's
+  # interrupted words and its interrupted-setup button stay off.
+  state '{"snapshot":"declined"}'
+  build_stamp_current() { return 1; }
+  run cmd_panel
+  assert_equal "$(jq -r .setup.step <<<"$output")" 4
+  assert_equal "$(jq -r .result.setup <<<"$output")" ''
+}
+
+@test "panel resize: failed and interrupted update words go once the client is current" {
+  state '{"done":true,"scale_task":2}'
+  build_patches_current() { return 1; }
+  panel_result_write client '{"token":"t","command":"build-client","args":[],"started":1,"ended":2,"reply":{"ok":false}}'
+  run cmd_panel
+  assert_equal "$(jq -r .result.client <<<"$output")" 'The Windows window could not be updated. Check the Windows window build log (build-client.log), then try again.'
+  build_patches_current() { return 0; }
+  run cmd_panel
+  assert_equal "$(jq -r .result.client <<<"$output")" ''
+  panel_result_write client '{"token":"t","command":"build-client","args":[],"started":1}'
+  run cmd_panel
+  assert_equal "$(jq -r .result.client <<<"$output")" ''
+}

@@ -179,6 +179,28 @@ Omarchy's Super shortcuts and Ctrl+Alt+Del do **not** reach Windows; use Windows
 onscreen menus. The shared folder is `~/Windows` on Linux and the virtiofs drive in
 Windows Explorer.
 
+Windows' resolution follows the Windows window. When the window opens, resizes,
+tiles, goes fullscreen or moves to a monitor with another scale, Windows matches it
+within 5 seconds. This also holds after Windows restarts or its display driver
+restarts. To change Windows' resolution, resize the window. A resolution you pick
+in Windows' Display settings does not stay: Lanai sets the window's size again.
+
+Two sizes are exceptions. Lanai never asks for a size under 640 wide or 480 high,
+the smallest Windows' display driver takes. Windows also refuses a size too large
+for the display memory Lanai gives it, such as fullscreen on a very high-resolution
+monitor. Lanai asks a few times, so the screen may flicker or Windows may show a
+notice, and then stops. In both cases Windows keeps its last size and the picture
+is scaled to fit the window. Resize the window or leave fullscreen to fix it.
+
+Installs set up with an earlier version of Lanai keep working, but Windows may start at, or
+change to, the wrong size until you update the Windows window. The panel says so
+and names one step. Usually it is **Update the Windows window**. It takes a few
+minutes, works whether Windows runs or not, and changes nothing in Windows. When it
+finishes, close the Windows window and open it again. If the
+update fails, the panel points to the Windows window build log. When the install
+also has the old scale task, the panel names **Run setup again** instead. It
+updates the window too, and restarts Windows as setup always does.
+
 Windows' display scale changes while Windows runs, without a restart or sign-out.
 “Match my monitor” uses the Windows step nearest the scale of the monitor the
 Windows window is on, with ties rounded down. When the window moves to a monitor
@@ -290,13 +312,6 @@ window; logout allows up to two minutes. **Phase 8 measurement pending: Lanai's 
 Windows shutdown time on John's machine at reboot.** Earlier proof 4 sessions with
 idle Windows took 7 seconds at reboot and 11–13 seconds at logout. They do not replace
 the final measurement. If the wait expires, the next start reports the forced stop.
-
-Known issue: when the Windows window first opens, Windows can stay at its boot
-resolution (for example 1920x1080) instead of matching the window. Make the window
-fullscreen and tile it again, and Windows follows. The Looking Glass client sends the
-window size once, and a display driver restart during Windows' boot loses it; a fix
-is planned. The resize-drag and scale-timing checks still need a person and a running
-Windows test copy.
 
 ## Removal
 

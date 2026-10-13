@@ -20,8 +20,11 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   reflink copy helpers, `ficlone.py` the in-place clone, `image-proof.py` the
   one-read image hash, FIEMAP proof and progress record),
   `systemd/` (the VM unit template), `guest/` (what runs in
-  Windows: `setup.cmd`, `lanai-lock.cmd`, `lanai-scale.ps1`) and `test/` (bats; fake
-  QMP and guest agent servers and trimmed client logs in `test/fixtures/`).
+  Windows: `setup.cmd`, `lanai-lock.cmd`, `lanai-scale.ps1`), `patches/looking-glass/`
+  (Lanai's Looking Glass client patches, `NNNN-<topic>.patch`, with the GPL-2.0 text
+  in `COPYING`) and `test/` (bats; fake
+  QMP and guest agent servers and trimmed client logs in `test/fixtures/`;
+  `test/client-patches.bats` builds and runs the patches' C tests).
   `docs/plugin/proof-kit/` holds the phase 1 and live-scale proof scripts and
   `count-image-extents.py`, the read-only extent census.
 - QML lint: `test/qml-lint` (or `test/qml-lint <file>`). It makes a temporary
@@ -34,7 +37,9 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   `.btrfs-test/` works). Keep `TMPDIR` short (for example a folder under
   `$XDG_RUNTIME_DIR`): socket paths over 108 characters make the fake QMP and guest
   agent tests fail. CI runs the same in an Arch container
-  (`.github/workflows/test.yml`).
+  (`.github/workflows/test.yml`). `test/client-patches.bats` also applies every patch
+  to the pinned source and runs the client's tests when `LANAI_TEST_LG_TARBALL` names
+  the pinned source tarball (local only; CI skips it).
 
 ## Rules
 
@@ -47,6 +52,10 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   plugin's own state directory, never world-writable paths.
 - Pin every file we fetch ourselves by exact build and SHA-256 (system packages come from
   the signed Arch repos). The Looking Glass client and IDD must come from the same build.
+- Lanai changes the Looking Glass client only through the patches in
+  `patches/looking-glass/`, applied exactly to the pinned source (no offset or fuzz);
+  the IDD stays the pinned build. A pin change needs patches that apply exactly to
+  the new source.
 - The spike (`spike/`) never writes to the live `omarchy-windows-vm` disk; it works on a
   reflink copy. Lanai boots the live disk only after its adoption checks pass
   (docs/plugin/spec.md, requirements 1-5).

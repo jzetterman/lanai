@@ -108,6 +108,9 @@ Panel {
           Note { text: root.model.view.next || "" }
           Note { text: root.model.view.notice || "" }
           Note { text: root.model.view.warning || "" }
+          // Shown with the resize warning: rebuilds the client as a panel job.
+          Action { control: "update_client"; onClicked: root.model.run(["build-client"], true) }
+          Note { text: root.model.view.result.client || "" }
           Note { text: (root.model.view.busy || {}).line || "" }
           Note { text: root.model.view.result.launch || "" }
           Note { text: root.stopArmed ? root.model.control("stop_confirm").hint || "" : "" }
@@ -305,7 +308,7 @@ Panel {
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader { text: "Logs"; foreground: root.foreground; fontFamily: root.fontFamily }
           Repeater {
-            model: [root.model.view.logs.vm, root.model.view.logs.client, root.model.view.logs.job, root.model.view.logs.command]
+            model: [root.model.view.logs.vm, root.model.view.logs.client, root.model.view.logs.build, root.model.view.logs.job, root.model.view.logs.command]
             delegate: Note { required property var modelData; text: modelData || "" }
           }
         }

@@ -146,6 +146,7 @@ panel_group() {
     setup|setup-host) echo setup ;;
     settings) echo settings ;;
     snapshot|restore) echo snapshots ;;
+    build-client) echo client ;;
     *) return 1 ;;
   esac
 }
@@ -198,7 +199,7 @@ cmd_ui_run() {
 cmd_ui_job() {
   local token=${1:-} command=${2:-} v s
   local -a env=()
-  [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore)$ ]] || {
+  [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore|build-client)$ ]] || {
     emit false "" "Invalid panel job." ""; return 2;
   }
   umask 077
@@ -254,7 +255,7 @@ ui_setup_next() {
 # their reason to the job log, so a pending launch failure has a diagnostic.
 cmd_ui_job_worker() {
   local token=${1:-} command=${2:-} group args s fd out started inv at reply
-  [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore)$ ]] || {
+  [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore|build-client)$ ]] || {
     emit false "" "Invalid panel job." ""; return 2;
   }
   shift 2

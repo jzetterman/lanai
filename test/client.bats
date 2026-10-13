@@ -1069,6 +1069,21 @@ esac'
   assert_success
   assert_equal "$(field client)" "$LGDIR/$LG_BUILD/bin/looking-glass-client"
   assert_equal "$(field build)" "$LG_BUILD"
+  # A running client keeps its open binary, so the last word is to reopen.
+  assert_equal "$(field message)" 'The Windows window is updated. If the Windows window is open, close it and open it again.'
+}
+
+@test "lanai build-client: a failed build's next step names its build log, not setup" {
+  build_client() { echo "the client did not build; see $S/build-client.log"; return 1; }
+  run --separate-stderr cmd_build_client
+  assert_failure
+  JSON=$output
+  run field message
+  assert_output --partial 'the client did not build'
+  run field next
+  assert_output --partial "$S/build-client.log"
+  refute_output --partial setup
+  assert_equal "$(field reason)" null
 }
 
 @test "lanai build-client: refuses while another build runs" {
@@ -1079,6 +1094,7 @@ esac'
   wait_for_file "$T/locked"
   lanai_run build-client
   assert_failure
+  assert_equal "$(field reason)" build-busy
   run field message
   assert_output --partial "Another Looking Glass client build is running"
 }

@@ -1345,19 +1345,24 @@ build_client_locked() (
   build_client
 )
 
-# build-client: build and install the pinned Looking Glass client (spec 7,
-# 26). It takes about a minute; the panel runs it detached (phases 6-7).
+# build-client: build and install the pinned Looking Glass client with
+# Lanai's patches (spec 7, 12, 26). It takes a few minutes and changes
+# nothing in Windows. The panel runs it as a panel job (Update the Windows
+# window, the client group). A running client keeps its open binary, so the
+# message always ends by saying to reopen the window. Another build holding
+# build.lock replies with reason build-busy.
 cmd_build_client() {
   local out rc=0
   out=$(build_client_locked) || rc=$?
   if ((rc == 3)); then
-    emit false "" "Another Looking Glass client build is running." "wait for it to finish"
+    emit false "" "Another Looking Glass client build is running." "wait for it to finish" '{"reason":"build-busy"}'
     return 1
   elif ((rc != 0)); then
-    emit false "" "The Looking Glass client was not built: $out" "fix the cause, then run setup again"
+    emit false "" "The Looking Glass client was not built: $out" \
+      "check the build log, $(state_dir)/build-client.log, then run lanai build-client again"
     return 1
   fi
-  emit true "" "The Looking Glass client $LG_BUILD is ready." "" \
+  emit true "" "The Windows window is updated. If the Windows window is open, close it and open it again." "" \
     "$(jq -n -c --arg c "$out" --arg b "$LG_BUILD" '{client: $c, build: $b}')"
 }
 

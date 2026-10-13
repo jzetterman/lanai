@@ -3084,6 +3084,13 @@ another size than before (the spec wording, per "Refused sizes"). Row 12b's
   `patches/looking-glass/`, `test/client-patches.bats`; Tests: `LANAI_TEST_LG_TARBALL`;
   rule: the client changes only through those patches, applied exactly), this plan.
 - Verify: `bats test spike/test`, ShellCheck, `test/qml-lint`.
+- As built: the button is `buttons.update_client`. `result.client` shows right under
+  it, above the busy line, not beside `result.vm`, so the update's words sit with its
+  button. The busy line drops "You can start Windows when it finishes." while
+  Windows runs. `build-busy` reads "Another build of the Windows window is running.
+  Try again when it finishes." `lanai build-client`'s success message is the done
+  words; its failure next step names `build-client.log`. The README's "Known issue"
+  paragraph about the boot resolution is gone.
 
 ### Phase D: hands-on (John, test copy)
 
