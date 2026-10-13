@@ -3215,6 +3215,16 @@ first wait becomes 2 s, not 1 s.
   gets no ask and its size holds for at least 60 s. A dialog frozen by an ask
   does not fail the case: minimize and restore Settings. Record in
   `proofs.md`, "Resize hands-on".
+- As built: 10 of the 19 cases fail against the old waits (`never-takes`,
+  `boot`, `responding`, `send-fails`, `new-window`, `session`, `six-picks`,
+  `late-picks`, `late-change`, `replaced`), and so do 0002's `control` and
+  `resize-return`. `match-stops` and `slow-switch` pass against both. Today's
+  six-pick timing (take at +1 s, pick at +3 s) does not put each pick after
+  its wait under the new waits: only the 2 s wait ends before +3 s. So
+  `late-picks` keeps the take at +1 s and puts each later pick 1 s after its
+  wait ends (picks at 0, 3, 9, 20 and 41 s, each asked at once with the next
+  number; the sixth at 44 s, "did not take" at 46 s). `resize-return` asks 5
+  times in 37 s, then its frames come 61 s after the last ask.
 
 ### Upstream offer (John)
 
