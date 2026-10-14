@@ -2137,6 +2137,12 @@ spec, plan and review gates before it is built.
   gets its own spec, plan and gates. Offer the same fix upstream first: the helper
   could run on the sign-in desktop as SYSTEM, as Looking Glass's capture host does.
 
+- **Move the scale script into the start program.** John's call (2026-10-14):
+  the scale script still loads in PowerShell 10 to 14 s after the sign-in, so
+  scale work that starts at a sign-in has a 20 s bar (spec 12). Moving it into
+  `lanai-start.cs` would bring that to about 7 s and drop the run-time
+  `Add-Type`. About 1,000 lines of PowerShell; its own plan and gates.
+
 ## Follow-on: live scale (John, 2026-10-10)
 
 This implements the spec amendment of 2026-10-10: reqs 2, 4, 6, 7, 9, 12 and 27,
@@ -3444,6 +3450,44 @@ describe the sign-in step.
 
 ### Phase G: hands-on (John and Claude, test copy)
 
+Paused after step 2's first three starts (2026-10-14): phase F's step loaded
+too slowly at sign-in and showed a window (`proofs.md`, "Resize hands-on,
+phase G"). It resumes from step 1 on phase H's build, with these changes:
+the step's log is `C:\Program Files\Lanai\lanai-signin.log`; step 1 upgrades
+from phase F's record (`signin_step` 1), so the warning shows first; then Run
+setup again once more on that build, so the rename meets a running program
+(spec row 9), and after the restart the new program runs (the running
+`lanai-start` process's path ends in `lanai-start.exe`, not `old-<n>`, and
+that file's last write time is after the rerun); at every timed sign-in John
+also confirms that no window appeared, and more than 10 minutes after one
+sign-in Claude has John list the scale task's processes (one
+`lanai-start.exe`, one `powershell.exe` running `lanai-scale.ps1`, and the
+hidden `conhost.exe` under it, which has no window); the start delay comes
+from the `Start program: started` line; step 5's plain sign-out and sign-in
+(no resize, no ask) takes its evidence from the client log (no new frame size
+since before the sign-out) plus the step's `matches after 0 switches` line,
+since the program's own start delay can put that line more than 5 s after
+the sign-in; the record ends at `signin_step` 2; step
+3's scale check counts from the later of 5 s after the switch and 20 s after
+the sign-in (spec 12); step 8's guard review reads `lanai-start.cs`. Also, by
+fixture (spec row 7b): make Windows refuse to start
+`C:\Program Files\Lanai\lanai-start.exe` on the test copy, then Run setup
+again: setup stops at step 6 with the blocked-program message; remove the
+fixture and run setup again. The fixture is an Image File Execution Options
+`Debugger` value for `lanai-start.exe` that names a missing file (every start
+then fails, as a policy block does); if that does not stop the start, an
+AppLocker executable deny rule (with AppIDSvc running); if neither works,
+record that and review the check instead. Before resuming, John removes the probe
+tasks in an admin PowerShell: `powershell -NoProfile -ExecutionPolicy Bypass
+-File <share>\lanai-proof\probe-exe.ps1 -Remove` (a scratch probe in the
+share, not in the proof kit). The process list: `$all = Get-CimInstance
+Win32_Process; $s = $all | Where-Object { $_.CommandLine -like
+'*lanai-scale.ps1*' }; $all | Where-Object { $_.Name -like 'lanai-start*' -or
+$s.ProcessId -contains $_.ProcessId -or ($_.Name -eq 'conhost.exe' -and
+$s.ProcessId -contains $_.ParentProcessId) } | Select-Object ProcessId,
+ParentProcessId, Name, CommandLine` (the admin PowerShell it runs in is not
+listed, and a running `lanai-start.old-<n>.exe` is).
+
 Before it: Claude confirms that the installed Lanai's storage location (from
 `lanai status` or the panel) is the rehearsal copy, not `~/.windows`, and
 stops otherwise; phase G boots Windows about 20 times and reruns setup. John
@@ -3542,6 +3586,283 @@ in Display settings. A start that misses 15 s goes to John. Record each step in 
 hands-on, phase G". If the cold-start stuck case takes more than about 12 s,
 bring the 15 s bar back to John (spec review log).
 
+### Phase H: the start program (TDD, C#, PowerShell and bash)
+
+From phase G's first starts (spec amendment 4, John's call, 2026-10-14;
+`proofs.md`, "Resize hands-on, phase G"). At sign-in, Windows PowerShell took
+10.2 to 12.8 s to load in the scale task, so phase F's sign-in step first
+checked the desktop 11.3 to 14.1 s after the sign-in, at or past the 15 s bar.
+On the same boot a small C# program built with Windows' `csc.exe` reached its
+code 6.7 s after the sign-in, and `cmd.exe` ran at 4.5 s. The task's console
+window also showed until PowerShell loaded and hid it (`-WindowStyle Hidden`
+acts only then). Phase G resumes from step 1 on this phase's build.
+
+**What.** A small windowless program, `guest/lanai-start.cs`, that setup
+builds into `C:\Program Files\Lanai\lanai-start.exe`. The scale task runs it,
+with no arguments, instead of `powershell.exe`. Build it `/target:winexe`, so
+Windows gives it no console. `Main` is one call: `return Run(args,
+RealDeps())`. `Run(string[] args, Deps deps)` holds everything below, and its
+whole body is one `try`; its `catch (Exception e)` logs `Start program:
+error: <msg>` and returns 1. An unhandled exception would go to Windows Error
+Reporting, which can show a "stopped working" dialog (a window, spec 7) and
+keep the process, and so the job, alive while it collects a dump. No static
+initializers and nothing else in `Main`: a type-load failure there would
+escape the `try`. `Deps` holds delegates for the OEM read, the job, the
+script start, the step, the wait and the log, so tests drive every path with
+fakes. `Run`, in order:
+1. With the one argument `/check`: return 0 at once, before any log or
+   start. Setup's self-check (spec 7, row 7b): it changes nothing and starts
+   nothing. Any other argument: return 2.
+2. Requirement 4: read the SMBIOS table (below) and look for a type 11 string
+   that starts with `lanai-scale=`, ignoring case
+   (`StringComparison.OrdinalIgnoreCase`), as `Get-OemBaseline`'s `-like
+   'lanai-scale=*'` does. The script keeps the only copy of the value's
+   validation, so a malformed value still reaches the script, which throws on
+   it as today.
+   - Read and parsed, no such string: log `Start program: not Lanai's VM;
+     changed nothing` and return 0, with no job, no script and no step, so
+     under `omarchy-windows-vm` each task start ends within seconds (row 4),
+     not after PowerShell's 10 s load. The 5-minute repetition would add a
+     line each time, so this line follows `Write-ExitLog`'s rule: it is not
+     written when the log's last line already carries it.
+   - A failed read: log `Start program: error: <msg>`, skip the step (step 5),
+     and still start the script (step 4); it reads the OEM strings itself and
+     exits when they are not Lanai's.
+3. Log `Start program: started <s> s after the process started at <time>`
+   (`Process.GetCurrentProcess().StartTime.ToString("o")`), so phase G sees
+   the start delay.
+4. Make a job object, `CreateJobObject(IntPtr.Zero, null)`: no security
+   attributes, so its handle is not inheritable (`Process.Start` with
+   `UseShellExecute = false` passes inheritable handles to the child, and a
+   script that held the job's handle would keep the job open after the
+   program died). Set `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` through
+   `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` (144 bytes on x64). Declare
+   `CreateJobObject` to return `IntPtr`, store the handle in a static field
+   and never close it: a `SafeHandle` held in a local could be finalized after
+   its last use under `/optimize`, and closing the job's last handle would
+   kill the program and the script at a random moment. Put the program itself in the job
+   (`AssignProcessToJobObject(job, GetCurrentProcess())`; Windows 8 and later
+   nest jobs, so this works inside Task Scheduler's own job). Only then start
+   the scale script, which is born in the job: there is no moment when it
+   runs outside it. `powershell.exe` by absolute path from
+   `Environment.SystemDirectory` (`WindowsPowerShell\v1.0\powershell.exe`),
+   arguments `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File
+   "<folder>\lanai-scale.ps1"` with `<folder>` the program's own folder
+   (`AppDomain.CurrentDomain.BaseDirectory`), `UseShellExecute = false`,
+   `CreateNoWindow = true` (Windows still gives the script a hidden
+   `conhost.exe`, with no window). When the program ends for any reason, Task
+   Scheduler's stop included, Windows closes the job's last handle and ends
+   the script too, so a 5-minute repetition never finds a script without its
+   program (spec 27, one copy). If the job cannot be made, set or joined, the
+   program logs `Start program: error: <msg>`, starts no script, runs the
+   step, and returns 1: an unprotected script could outlive a crashed
+   program, and the 5-minute repetition tries again. A failed script start
+   logs `Start program: error: <msg>`, the step still runs, and the program
+   returns 1 after it.
+5. Run the sign-in step (below) on the main thread.
+6. Wait for the script to exit and return its exit code. The task lives as
+   long as the script, so `IgnoreNew` and the 5-minute repetition work as
+   today: if the script ends, the program ends; if the program ends, the job
+   ends the script; either way the next repetition starts both.
+
+**SMBIOS.** `GetSystemFirmwareTable(0x52534D42, 0, ...)` (the provider `'RSMB'`
+as a big-endian number; `'BMSR'` is the wrong byte order), called once for the
+size and once for the data. The parser is a pure function over the buffer it
+returns, with three results: found, not found, failed read. First the 8-byte
+`RawSMBIOSData` header (calling method, major, minor, DMI revision, then the
+table's length as a 32-bit little-endian number); a buffer shorter than 8
+bytes, or a length that runs past the buffer, is a failed read. Then, within
+that length, walk each structure (type, length, handle): skip its formatted
+area, read its strings up to the double NUL, and stop (not found, unless found
+already) at type 127, at a length byte under 4, or at anything that runs past
+the end. (WMI's `System.Management` does not compile under Linux pwsh, and the
+WMI service is busy at sign-in.)
+
+**The step.** Phase F's design moves to C# unchanged: the `HKCU\Volatile
+Environment` gate (`LanaiSigninStep`), `ExtraMode` as untrusted input (1 to 5
+ASCII digits a side), the decision table, the 500 ms pacing, the stop rules,
+failures that stay inside each try (one log line per distinct message), and
+every log line's words. After the gate passes, the step logs `Sign-in step:
+started`; a skip logs `Sign-in step: skipped (already ran since sign-in)` as
+today, so phase G step 5's check (`started`, not `skipped`) keeps its meaning.
+A class `SigninStep` takes its inputs as delegates (read and set the mark,
+read `ExtraMode`, `Find`, `Size`, `Apply`, the clock, the log), so tests drive
+it with fakes; `Tick(now)` returns whether the step has ended. `RealDeps`
+wires the real ones (`Microsoft.Win32.Registry`, the display calls from phase F's
+`LanaiDesktop`, a `Stopwatch`); its step delegate calls `Tick` every 250 ms until it ends.
+`RealDeps` only builds delegates: it opens no file or key, so `/check` still
+changes nothing;
+the 2-minute stop rule bounds it. Remove the step from `lanai-scale.ps1`:
+`Invoke-SigninTick`, its helpers, the `LanaiDesktop` class, the `Signin`
+context field; update the `.DESCRIPTION`. The script's own `Add-Type` stays:
+it is built at run time under the same rules (spec 27), with `TMP` pinned, as
+today.
+
+**Log.** The program writes `C:\Program Files\Lanai\lanai-signin.log`, not the
+script's log: two processes appending to one file can collide, and a failed
+`Add-Content` ends the script. Same format: `DateTime.Now.ToString("o")`, a
+space, the message. Open, append, close per line, `FileShare.Read`; a failed
+write is dropped. The writer is a static function that takes the path, the
+message and whether to skip a line equal to the last one (the not-Lanai
+line's rule), so tests run it on a temp file.
+
+**Setup (`guest/setup.cmd`).**
+- The up-front checks (before any change, beside the SID, writability and
+  media checks) gain the compiler: `csc.exe` in the folder that
+  `[Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()`
+  returns in Windows PowerShell (the .NET Framework 4.x that every Windows 10
+  and 11 carries). Missing: refuse with a line that names the compiler and its
+  path, before any change, through its own label that ends in `pause` and
+  `exit /b 1`, as `:media_broken` does (spec 7, row 7b by review).
+- Step 6, after the `:scale_task` label and before the task registration (a
+  rerun jumps past the `tmp` folder's `mkdir` to that label, so anything
+  before it would be skipped on every rerun): copy `lanai-start.cs`
+  beside the script. Delete every `lanai-start.old-*.exe` (ignore failures:
+  one may still run after a setup that stopped before its restart; this is
+  the one change with no exit code check, so the exit-code test exempts it as
+  it does the publisher trust line). If `lanai-start.exe` exists, rename it to
+  `lanai-start.old-<n>.exe`, with `<n>` a fresh number (the time in ticks): on
+  a rerun the old program still runs (the task started at sign-in), and
+  Windows lets a running program be renamed but not replaced or deleted (spec
+  row 9). The old one runs until setup's restart.
+- Every new elevated PowerShell one-liner (the compiler check, the rename,
+  the build, the self-check) first pins `$env:PSModulePath` to the system
+  module folders, as `lanai-scale.ps1` does, or uses only .NET calls
+  (`[IO.File]::Exists`, `[IO.File]::Move`, `[DateTime]::UtcNow.Ticks`):
+  cmdlets autoload modules, and the elevated stage runs with the user's
+  environment.
+- Build, from a PowerShell one-liner like the task's: working folder
+  `C:\Program Files\Lanai`; `TMP` and `TEMP` set to its `tmp`; `LIB` cleared
+  (csc searches the working folder, then the framework folder, then `LIB`);
+  `PATH` set to `[Environment]::SystemDirectory` only (the .NET Framework
+  `csc.exe` is a native program that loads its DLLs from its own folder and
+  System32, so this is belt and braces); the compiler by its full path;
+  `/nologo /noconfig /target:winexe /optimize /r:System.dll
+  /out:lanai-start.exe lanai-start.cs`. A failed build fails the step.
+- The self-check, in the same kind of one-liner, with `$ErrorActionPreference
+  = 'Stop'`: `try { $p = Start-Process -FilePath 'C:\Program
+  Files\Lanai\lanai-start.exe' -ArgumentList '/check' -Wait -PassThru; if
+  ($null -eq $p.ExitCode) { exit 1 }; exit $p.ExitCode } catch { exit 1 }`.
+  Not `&`: PowerShell
+  does not wait for a windows program and sets no `$LASTEXITCODE`, so the
+  check would pass when it should fail. A blocked start throws. Non-zero
+  fails the step; the message says that Windows blocked the program and what
+  to change per cause: with an App Control or AppLocker policy, allow
+  `C:\Program Files\Lanai\lanai-start.exe`; Smart App Control allows no
+  single program, so it has to be turned off (Windows Security > App & browser
+  control), which on many Windows versions only a reinstall undoes; then run
+  setup again (spec 7). Check the words against the test copy's Windows build.
+- The task's action becomes the program: `-Execute` with its full path in
+  quotes (`[char]34`, as the script path is quoted today; an unquoted path
+  with a space is CWE-428), no arguments. The rest of the registration stays.
+- Comments say why each part is there.
+
+**Host side.**
+- `lib/setup.sh`: the setup media gain `lanai-start.cs`; step 6 records
+  `signin_step: 2` (the form with the program). The header comment says to
+  bump it with any change to `lanai-start.cs` that an install must pick up.
+- `lib/ui.sh`: `signin_step_missing` is true unless `signin_step` is 2, so the
+  test copy's phase F record shows the warning. Keep the current mark in one
+  constant that both files read, so a bump touches one line. Panel words:
+  unchanged.
+- `README.md`:
+  - the sign-in step's log is `lanai-signin.log`;
+  - scale work that starts at a sign-in finishes within 20 s of it:
+    README:221 ("or when you next sign in") and the pick paragraph
+    (README:225-233); README:184's 5 s is the resolution and stays;
+  - the symptom and fix when Windows blocks the program later (spec 7: the
+    scale and the size at sign-in stop following; allow the program under App
+    Control or AppLocker, or turn Smart App Control off, which on many Windows
+    versions only a reinstall undoes; then Run setup again);
+  - the security paragraph (README:284-289): the program, its source, the
+    build and the logs sit in `C:\Program Files\Lanai`, where only
+    administrators can write;
+  - uninstall (README:357-366): `schtasks /End /TN "Lanai display scale"`
+    before `schtasks /Delete` (ending the program ends the job, and the job
+    ends the script; a running program would make `rmdir` fail), and "This
+    removes..." names `lanai-start.exe`, `lanai-start.cs`, `lanai-signin.log`
+    and any `lanai-start.old-*.exe`.
+- Fixtures: `signin_step: 1` becomes 2 wherever it means current; a case with
+  1 shows the warning.
+- `CLAUDE.md`: `guest/` gains `lanai-start.cs`.
+
+**Tests first.**
+- `test/guest.bats` (pwsh): compile `lanai-start.cs` with `Add-Type
+  -TypeDefinition (Get-Content -Raw ...) -CompilerOptions '-langversion:5'`
+  (`Main` is not called); `Marshal.SizeOf` of `DEVMODE` 220,
+  `DISPLAY_DEVICE` 840 and `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` 144. Port
+  phase F's `Get-SigninAction`, `ConvertFrom-ExtraMode` and tick cases to
+  `SigninStep`, with the same expectations, the `Sign-in step: started` line
+  after the gate included.
+- The SMBIOS parser, on whole `RSMB` buffers (the 8-byte header, then the
+  table): a type 11 `lanai-scale=100` string (found); `LANAI-SCALE=100`
+  (found); `lanai-scale=x` (found: the script validates); a realistic table
+  (type 0 and type 1 with strings, a structure with no strings, that is its
+  formatted area then `00 00`, a type 11 with `lanai-scale-save=5` first and
+  `lanai-scale=150` second, a second type 11, then type 127: found); other type 11
+  strings only (not found); an empty table (not found); a buffer under 8
+  bytes, and a header length past the buffer (failed read); a structure whose
+  length runs past the end, a length byte under 4, a string set with no double
+  NUL, and an end-of-table structure before a type 11 (no throw; not found).
+- The log writer on a temp file: the format, the last-line rule (two equal
+  lines with the rule leave one; without it, two), and an unwritable path
+  dropped with no throw.
+- The start order, through `Run` with fakes: `/check` returns 0 with no log
+  and no other call; another argument returns 2; no OEM string returns 0 with no job, script or step, and two such
+  starts leave one log line; a failed read starts the script and skips the
+  step; a failed job starts no script, runs the step and returns 1; a failed
+  script start runs the step and returns 1; the happy path joins the job, then
+  starts the script, then runs the step, then waits; an exception in any fake
+  is logged and returns 1.
+- Static checks on `lanai-start.cs`: `Main` holds only `return Run(args,
+  RealDeps())`; `Run`'s body is one `try` with a `catch (Exception`; `CreateNoWindow = true`, `UseShellExecute = false`,
+  `KILL_ON_JOB_CLOSE`; `CreateJobObject(IntPtr.Zero, null)`; the program
+  joins the job before `Process.Start`; `powershell.exe` from
+  `Environment.SystemDirectory`; the script path from the program's folder;
+  the provider `0x52534D42`; the job handle is an `IntPtr` in a static field,
+  with no `SafeHandle` and no `CloseHandle` on it; no `using System.Linq` and
+  no other assembly than `mscorlib` and `System.dll` (the Windows build has
+  only `/r:System.dll`, while Linux pwsh references everything); the mark key
+  opened with `OpenSubKey("Volatile Environment", true)`, never
+  `CreateSubKey` (phase F's rule: a key Lanai made would not be volatile).
+  On `lanai-scale.ps1`: no `Invoke-SigninTick` and
+  no `LanaiDesktop`.
+- `setup.cmd` (static, as the existing cases): the compiler check in the
+  up-front checks, before the first change; in step 6, after `:scale_task`,
+  the copy, the delete,
+  the rename, the build (`/target:winexe`, `/noconfig`, the working folder,
+  `TMP`, `TEMP`, `LIB`, `PATH`), the self-check as the exact `Start-Process
+  ... -Wait -PassThru` one-liner with the null-exit-code guard, and no `&`
+  call of `lanai-start.exe` (`-PassThru` then `WaitForExit()` can leave
+  `ExitCode` null on Windows PowerShell 5.1, which would fail every setup), then the task with the quoted
+  program path as its action; every change but the old-program delete
+  followed by its exit code check; the media list includes `lanai-start.cs`.
+- Existing tests that change (a cold session will meet them):
+  `guest.bats:135` (every change has its exit code check) gains the rename,
+  build and self-check in `CHANGE_RE`, its change count moves, and the delete
+  gets an exemption; `guest.bats:1190` (the task's `powershell.exe` action) asserts
+  the program instead; `guest.bats:1276-1517` (the sign-in step's
+  PowerShell cases) and `guest.bats:1519` (its registry wrappers) move to the
+  C# class; `guest.bats:1541` (the step's place in the main loop) goes; `guest.bats:1569` (the script's C# 5 compile with the `LanaiDesktop`
+  sizes) keeps the compile and drops the sizes, which move to
+  `lanai-start.cs`'s case.
+- `test/setup.bats`: the media; step 6 records `signin_step` 2.
+- `test/ui.bats` / `test/panel.bats`: `signin_step` 1 shows the warning, 2
+  does not.
+
+**Files.** `guest/lanai-start.cs` (new), `guest/lanai-scale.ps1`,
+`guest/setup.cmd`, `lib/setup.sh`, `lib/ui.sh`, `README.md`, `CLAUDE.md`,
+`test/guest.bats`, `test/setup.bats`, `test/ui.bats`, `test/panel.bats`.
+
+**Verify.** As phase F, plus the C# 5 compile of `lanai-start.cs`. A Linux
+compile does not catch an API found only in .NET Core: keep to .NET Framework
+4.x APIs. Phase G's step 1 builds it in Windows. Row 4's checks under
+`omarchy-windows-vm` (each task start ends within 10 seconds, no window, and
+`lanai-signin.log` says `not Lanai's VM`) run on phase 8's **Test install**
+(a separate machine or VM), as row 4 always has; never on John's host, where
+`omarchy-windows-vm` boots the live `~/.windows`. Then the diff gate (with
+phases A to F).
+
 ### Upstream offer (John)
 
 After the hands-on passes, offer each patch to Looking Glass (github.com/gnif/
@@ -3576,9 +3897,19 @@ step in place; offer it upstream only if the retest shows it needs one.
 - Known gap: CI never applies the patches to the real pinned source (the
   tarball case runs only locally), so a pin bump that breaks 0002 shows only in
   a local run or a real build.
-- The 15 s bar from sign-in has about 4 s of margin for a cold-start stuck
-  case (estimated, not measured). The scale task starts about 5 s after the
-  desktop comes up (Task Scheduler's logon start), which is most of it.
+- The 15 s bar from sign-in: phase H's program reached its code 6.7 s after
+  the sign-in on one boot (PowerShell took up to 12.8 s more). One sample;
+  phase G's starts measure it.
+- No test has yet nested a job inside Task Scheduler's job on this Windows
+  (the probe program used no job). If joining fails, the program starts no
+  script, and phase G step 1 shows `Start program: error` in
+  `lanai-signin.log`.
+- Smart App Control, an App Control or AppLocker policy, or Defender can
+  block an unsigned program built in Windows. Setup's self-check catches it at
+  setup; later, the README names the symptom and the fix.
+- The sign-in step's switch and the script's scale ticks now run in two
+  processes, so a scale set can race the switch; the script re-caps on its
+  next observation, and phase G step 3 watches it.
 - The sign-in step relies on where the pinned driver stores the ask
   (`ExtraMode`); a pin change rechecks it (spec 12).
 - The gate's `HKCU\Volatile Environment` value is exported as an environment
@@ -3587,10 +3918,9 @@ step in place; offer it upstream only if the retest shows it needs one.
   loaded across a quick sign-out and sign-in, the value would survive and the
   step would skip; the helper still applies the last ask after a sign-out
   (phase E), and phase G step 5 checks for `started`.
-- The scale cap check (5 s after the step's switch) can run close to its bar:
-  the step can switch on its first tick, while the scale task decides only
-  once it is ready (its first channel line, about 2.3 s, or 5 s after the
-  task starts without one). Phase G records both times.
+- The scale script still loads in PowerShell, 10 to 14 s after the sign-in,
+  so scale work that starts at a sign-in has a 20 s bar (spec 12). Phase G
+  records the script's ready time beside the step's switch.
 
 ### Routing
 
@@ -3602,7 +3932,9 @@ signs, and runs the diff gate. Phase D and the upstream offer: John. Phase E:
 opus-5.5 in a worktree: eleven C test cases to retime with care, and both patches
 regenerated and checked against the pinned source. Phase F: opus-5.5 in a
 worktree: Windows display APIs through C# in PowerShell, pwsh tests, and
-panel and README words that need taste >= 7. Phase G: John with Claude.
+panel and README words that need taste >= 7. Phase H: opus-5.5 in a
+worktree: Windows APIs in C# 5, a job object, the setup build, and README
+words. Phase G: John with Claude.
 
 ## Phase 8: Acceptance
 
@@ -3787,3 +4119,10 @@ panel and README words that need taste >= 7. Phase G: John with Claude.
 | plan (resize, phases F and G) | b single (opus-5.5) | 2 (full) | 1 blocker, 1 should-fix, 13 nits, 0 refuted; all integrated. Blocker (phase G only): the driver-disabled case recovered through `omarchy-windows-vm`, which boots the live `~/.windows`; it now recovers on the test copy with `proof-vm`. Should-fix: the logon-age signal was undefined; replaced by the reviewer's simpler gate, a value in `HKCU\Volatile Environment` (rebuilt at each sign-in), with no WTS struct. Nits: the skip line uses `Write-Log`; repeated results log once; public structs and the prototype committed before phase F; the script's header; "until the window is resized" in the panel words; a separate `signin_step` key instead of mark 3 (an older Lanai still reads the record); "A fits inside B"; the stamper, window-sizing and pong tools in the proof kit, with dated, zoned stamps; the re-run rule covers the 5 s bars; step 5 checks the bounded asks; a risk and a ready time for the scale cap check; the spec log's flagged rows moved below John's acceptance |
 | plan (resize, phases F and G) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 3 should-fix, 7 nits, 0 refuted; all integrated: the registry wrappers return `$null` for a missing value (`Get-ItemPropertyValue` would throw and make the gate always skip), with a static check; the `started` line logs the process start time (the loop's clock starts after PowerShell's start-up and the C# compile); phase G first confirms Lanai's storage is the rehearsal copy, not `~/.windows`; nits (the How paragraph rewritten, the context field and `$Now`, the volatile value's side effects as a risk and step 5 checks `started`, the 2 s wait justified by phase D alone, the fixture grep and both keys, "no larger than" the smallest mode, exact commands for John, a rerun within the bound goes to John, a log-once test for no display, CI skips the pwsh cases, .NET Framework APIs only). Stage closed at the cap with these integrations unreviewed; the gate waits for John |
 | plan (resize, phases F and G) | John | 2026-10-13 | Accepted the gate at the cap with b round 3's integrations unreviewed; the diff gate checks the build against them |
+| plan (resize, phase H and G changes) | a (gpt-6.1-sol) | 1 (full) | 0 blockers, 1 should-fix, 0 nits, 0 refuted; integrated: the program joins its kill-on-close job before it starts the script, so no moment exists where the script runs outside the job (Codex proposed a suspended start; joining first is simpler); a failed join still starts the script |
+| plan (resize, phase H and G changes) | a (gpt-6.1-sol) | 2 (full) | 0 blockers, 2 should-fix, 0 nits, 0 refuted; both integrated: a failed job starts no script (an unprotected script could outlive a crashed program; the 5-minute repetition retries), with a fake-driven test; with no Lanai OEM string the program exits at once, with no script, so a task start under `omarchy-windows-vm` ends within seconds (row 4), while a failed read still starts the script |
+| plan (resize, phase H and G changes) | a (gpt-6.1-sol) | 3 (full, cap) | 0 blockers, 2 should-fix, 0 nits, 0 refuted; both integrated: the SMBIOS parser unwraps the 8-byte `RawSMBIOSData` header and checks its length, with whole-buffer fixtures and three results (found, not found, failed read); row 4's checks go to phase 8's separate test install, not the rehearsal copy (on John's host `omarchy-windows-vm` boots the live `~/.windows`). Stage at the cap with round 3's integrations unreviewed by stage a |
+| plan (resize, phase H and G changes) | b single (opus-5.5) | 1 (full) | 0 blockers, 4 should-fix, 11 nits, 0 refuted; all integrated: the self-check runs through `Start-Process -PassThru` and `WaitForExit` (`&` does not wait for a windows program); `Main` is one `try`, so no error dialog shows; the not-Lanai line follows the last-line rule and comes before `started`; README's uninstall ends the task first and names the new files, and its security paragraph names the program; nits: a `Start program:` prefix keeps `Sign-in step: started` meaning the gate passed, a non-inheritable job handle, the job struct's size, the `RSMB` value and a length under 4, the OEM prefix rule only (the script validates), the quoted task path, the existing tests that change, `PATH` set for the build, phase G's process check and fixture (an IFEO `Debugger` value), and two test and risk gaps |
+| plan (resize, phase H and G changes) | b single (opus-5.5) | 2 (full) | 0 blockers, 4 should-fix, 10 nits, 0 refuted; all integrated: a realistic multi-structure SMBIOS fixture (a double-NUL slip would read every real table as not Lanai's); the job handle an `IntPtr` in a static field, never a `SafeHandle` a finalizer could close; per-cause words for a blocked program (Smart App Control allows no single program, only off); phase G step 5's plain sign-in takes its evidence from the unchanged frame plus the 0-switch line; nits: `Run(args, deps)` with a wait delegate and the return-2 case, the other phase F tests that move, no LINQ, the exit-code test's pattern and count, `PSModulePath` pinned in the one-liners, a null exit code fails the check, README pointers, exact commands for John, a race risk, one constant for the mark |
+| plan (resize, phase H and G changes) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 2 should-fix, 6 nits, 0 refuted; all integrated: the static checks match the design (`Main` calls `Run`, whose body is the `try`; `RealDeps` wires the real step and opens nothing); the self-check test asserts the exact `-Wait -PassThru` one-liner (`-PassThru` then `WaitForExit()` can leave a null exit code on 5.1 and fail every setup); nits: the new step 6 lines go after `:scale_task` (a rerun skips what comes before), a log writer tested on a temp file, every new elevated one-liner pins `PSModulePath` or uses .NET calls, the compiler refusal's label, a misplaced risk sentence, a process list that skips John's own PowerShell and shows an old program, and softer Smart App Control words to check against the build. Stage at the cap with round 3's integrations unreviewed |
+| plan (resize, phase H and G changes) | John | 2026-10-14 | Accepted the gate at the cap with b round 3's integrations unreviewed; the diff gate checks the build against them |
