@@ -3428,6 +3428,19 @@ describe the sign-in step.
   must run locally. A `-langversion:5` compile does not catch APIs found only
   in .NET Core, so keep the C# to .NET Framework 4.x APIs, as the prototype
   does. Then the diff gate.
+- As built (2026-10-13): 827 tests, 0 failed, 3 skipped (no pinned tarball,
+  no strace, no comma-decimal locale); ShellCheck clean; the C# compiles as C#
+  5 (`DEVMODE` 220, `DISPLAY_DEVICE` 840). Choices the table left open: a
+  throwing read is a "wait, log `error: <msg>` once" row after the 2-minute
+  row; "3 switches did not take" counts successful switches at least 2 s old
+  whose size is not the desktop now; the match line counts every `Apply`
+  call; `Set-SigninMark` throws (and the step skips) when `HKCU\Volatile
+  Environment` is missing, since a key Lanai made would not be volatile; the
+  sign-in warning also needs a finished setup plan, like `clientOld`, so a
+  pending update step (requirement 8 included) shows only its own step and
+  the old-task note returns under the scale list. Phase G's tools are in the
+  proof kit: `stamp-client-log`, `size-window-on-open`, `clock-ping` and
+  `pong.ps1`.
 
 ### Phase G: hands-on (John and Claude, test copy)
 

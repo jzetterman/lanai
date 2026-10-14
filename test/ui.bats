@@ -15,10 +15,12 @@ setup() {
   export T PATH=$T/shims:$PATH
 }
 
-# Record finished setup for the fixture's storage, with [<scale_task>].
+# Record finished setup for the fixture's storage, with [<scale_task>
+# [<signin_step>]].
 setup_finished() {
   mkdir -p "$(state_dir)"
-  jq -nc --argjson t "${1:-null}" '{location:"/test-copy",done:true} + (if $t == null then {} else {scale_task:$t} end)' \
+  jq -nc --argjson t "${1:-null}" --argjson i "${2:-null}" '{location:"/test-copy",done:true} +
+    (if $t == null then {} else {scale_task:$t} end) + (if $i == null then {} else {signin_step:$i} end)' \
     >"$(state_dir)/setup.json"
 }
 
@@ -82,6 +84,34 @@ setup_finished() {
   assert_equal "$(scale_task_kind)" new
 }
 
+@test "sign-in step: missing only for finished setup with no round running and no signin_step 1" {
+  # Before setup finishes, nothing is missing yet.
+  run signin_step_missing
+  assert_failure
+  # Finished without the mark: the old task, or the live task from before the step.
+  setup_finished
+  run signin_step_missing
+  assert_success
+  setup_finished 2
+  run signin_step_missing
+  assert_success
+  setup_finished 2 2
+  run signin_step_missing
+  assert_success
+  setup_finished 2 1
+  run signin_step_missing
+  assert_failure
+  # A setup round may be replacing the task: not missing until it records.
+  setup_finished 2
+  jq '.round=true' "$(state_dir)/setup.json" >"$T/setup" && mv "$T/setup" "$(state_dir)/setup.json"
+  run signin_step_missing
+  assert_failure
+  # A record for another storage location counts as no setup.
+  jq -nc '{location:"/elsewhere",done:true,scale_task:2}' >"$(state_dir)/setup.json"
+  run signin_step_missing
+  assert_failure
+}
+
 @test "settings reply: structured fields say what was saved, whether Windows runs, and which task" {
   lanai_run settings 8 4 150
   assert_equal "$(jq -c '{scale_saved,running,scale_task_kind}' <<<"$JSON")" '{"scale_saved":true,"running":false,"scale_task_kind":"none"}'
@@ -100,6 +130,12 @@ setup_finished() {
   assert_equal "$(jq -c '{scale_saved,running,scale_task_kind}' <<<"$JSON")" '{"scale_saved":true,"running":true,"scale_task_kind":"new"}'
   # The CLI says what the panel says.
   assert_equal "$(field message)" "$(panel_words settings "$JSON")"
+  local live
+  live=$(field message)
+  # The sign-in step's mark changes no save words.
+  setup_finished 2 1
+  lanai_run settings 8 4 150
+  assert_equal "$(field message)" "$live"
   echo deactivating >"$T/unit-state"
   lanai_run settings 8 4 150
   assert_equal "$(field running)" false

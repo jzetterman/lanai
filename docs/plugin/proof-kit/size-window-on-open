@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# size-window-on-open <width> <height>: resize phase G, step 3. Wait for a
+# new Looking Glass client window, then make it float and set its size in
+# monitor pixels at once, before Windows' first frame. Run it before the
+# start from the bar. Needs the live Hyprland session's
+# HYPRLAND_INSTANCE_SIGNATURE.
+set -euo pipefail
+
+w=${1:?width} h=${2:?height}
+lg() {
+  hyprctl clients -j | jq -r '.[] | select(.class == "looking-glass-client") |
+    "\(.address) \(.floating)"'
+}
+old=$(lg | cut -d' ' -f1)
+while :; do
+  read -r addr floating < <(lg | grep -v -F -- "${old:-none}" || true) || true
+  [[ -n ${addr:-} ]] && break
+  sleep 0.05
+done
+if [[ $floating != true ]]; then
+  hyprctl dispatch "hl.dsp.window.float({ action = \"toggle\", window = \"address:$addr\" })" >/dev/null
+fi
+hyprctl dispatch "hl.dsp.window.resize({ x = $w, y = $h, window = \"address:$addr\" })" >/dev/null
+printf '%s %s set to %sx%s\n' "$(date +%FT%T.%N%:z)" "$addr" "$w" "$h"
+hyprctl clients -j | jq -r --arg a "$addr" '.[] | select(.address == $a) | "now \(.size[0])x\(.size[1]) floating \(.floating)"'

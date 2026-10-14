@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# clock-ping [<dir>]: resize phase G. The host side of the two-way clock
+# exchange through the share (default ~/Windows/lanai-proof). With pong.ps1
+# running in Windows, write 10 pings and time each pong. For each sample,
+# offset = guest time - (T1 + T2) / 2, bounded by (T2 - T1) / 2. Prints every
+# sample and the one with the smallest bound. Add the offset's negative to a
+# guest time to get host time.
+set -euo pipefail
+
+dir=${1:-$HOME/Windows/lanai-proof}
+ping=$dir/ping.txt pong=$dir/pong.txt
+rm -f -- "$pong"
+best=""
+for n in $(seq 1 10); do
+  t1=$(date +%s.%N)
+  printf 'ping %s\n' "$n" >"$ping"
+  while ! grep -q "^ping $n " "$pong" 2>/dev/null; do
+    sleep 0.005
+    awk -v t="$t1" -v now="$(date +%s.%N)" 'BEGIN { exit !(now - t > 5) }' &&
+      { echo "no pong for ping $n in 5 s; is pong.ps1 running?" >&2; exit 1; }
+  done
+  t2=$(date +%s.%N)
+  guest=$(grep "^ping $n " "$pong" | tail -n 1 | cut -d' ' -f3)
+  g=$(date -d "$guest" +%s.%N)
+  line=$(awk -v t1="$t1" -v t2="$t2" -v g="$g" -v n="$n" \
+    'BEGIN { printf "%d offset %+.3f s bound %.3f s\n", n, g - (t1 + t2) / 2, (t2 - t1) / 2 }')
+  echo "$line"
+  if [[ -z $best ]] || awk -v a="${line##* bound }" -v b="${best##* bound }" \
+      'BEGIN { exit !(a + 0 < b + 0) }'; then best=$line; fi
+  sleep 0.2
+done
+echo "best: $best"

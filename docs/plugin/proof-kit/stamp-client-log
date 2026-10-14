@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# stamp-client-log [<out>]: resize phase G. Follow Lanai's client log and
+# print each line with the host's time as it arrives (ISO 8601, with the
+# zone), so a case's times do not depend on the log's whole-second start
+# time. Also appends to <out> when given. Stop with Ctrl+C.
+set -euo pipefail
+
+log=${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is not set}/lanai/client.log
+out=${1:-/dev/null}
+tail -n 0 -F -- "$log" 2>/dev/null | while IFS= read -r line; do
+  printf '%s %s\n' "$(date +%FT%T.%N%:z)" "$line" | tee -a -- "$out"
+done

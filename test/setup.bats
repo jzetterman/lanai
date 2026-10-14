@@ -1243,29 +1243,34 @@ exec /usr/bin/mv "$@"'
   run field message
   assert_output --partial "the display scale task did not start"
   assert_equal "$(jq -r '.scale_task // "unset"' "$S/setup.json")" unset
+  assert_equal "$(jq -r '.signin_step // "unset"' "$S/setup.json")" unset
   run setup_done
   assert_failure
 }
 
-@test "lanai setup step 6: the scale task opening after the answers finishes setup with its mark" {
+@test "lanai setup step 6: the scale task opening after the answers finishes setup with its marks" {
   step6_running "$FIX/client-logs/match.log" 90 90
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run --share-ok yes --scale-ok yes
   assert_equal "$(field step)" 6
+  assert_equal "$(jq -r '.signin_step // "unset"' "$S/setup.json")" unset
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=true
   setup_run
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -r .scale_task "$S/setup.json")" 2
+  # The live scale task, which now carries the sign-in step.
+  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" '[2,1]'
   assert_equal "$(scale_task_kind)" new
+  run signin_step_missing
+  assert_failure
 }
 
-@test "lanai setup step 6: answers with the scale task open finish setup with its mark" {
+@test "lanai setup step 6: answers with the scale task open finish setup with its marks" {
   step6_running "$FIX/client-logs/match.log" 90 90
   setup_run --share-ok yes --scale-ok yes
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -r .scale_task "$S/setup.json")" 2
+  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" '[2,1]'
 }
 
 @test "lanai setup step 6: an agent that refuses to set the clock sends setup back to step 5" {
@@ -1532,7 +1537,7 @@ exec /usr/bin/mv "$@"'
   setup_run --share-ok yes --scale-ok yes
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" '{"snapshot":"declined","done":true,"scale_task":2}'
+  assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" '{"snapshot":"declined","done":true,"scale_task":2,"signin_step":1}'
   setup_run
   assert_equal "$(field step)" 7
 }

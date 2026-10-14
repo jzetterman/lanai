@@ -343,12 +343,40 @@ scale_decision() {
 # [LanaiDisplay]::D (a missing display when it is $null) and counts polls,
 # SetScale counts calls and applies the change unless Apply is false,
 # GetScale reads the same range back, and
-# Write-Log collects lines in $script:Logs. Helpers: Obs builds an
-# observation, L parses a line, Q makes a queued line, Assert throws.
+# Write-Log collects lines in $script:Logs. The sign-in step's Windows calls
+# are faked from [LanaiDesktop]::F: Get-StoredMode returns Stored (the raw
+# ExtraMode), Get-SigninMark and Set-SigninMark read and set Mark, Find
+# returns Device, Size returns Desktop, and Apply records the size in
+# Applied and returns Result (with Result 0 and Take, the desktop takes the
+# size at once). Throw names the one call that throws; Calls counts them.
+# Helpers: Obs builds an observation, L parses a line, Q makes a queued
+# line, Ctx builds a loop context, Ticks runs the sign-in tick every 250 ms,
+# Signin lists the sign-in step's log lines, Assert throws.
 guest_ps() {
   PS1=${GUEST_SCRIPT:-$REPO/guest/lanai-scale.ps1} BODY=$1 pwsh -NoProfile -NonInteractive -Command '
     $ErrorActionPreference = "Stop"
     $Steps = @(100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500)
+    class LanaiDesktop {
+      static [hashtable] $F = @{ Stored = "1600x1000@60*"; Mark = $null; Device = "\\.\DISPLAY2"; Desktop = "1594x990"
+        Result = 0; Take = $true; Throw = ""; Applied = @()
+        Calls = @{ Stored = 0; GetMark = 0; SetMark = 0; Find = 0; Size = 0; Apply = 0 } }
+      static [void] Call([string] $name) {
+        [LanaiDesktop]::F.Calls[$name]++
+        if ([LanaiDesktop]::F.Throw -eq $name) { throw "$name failed" }
+      }
+      static [object] Find() { [LanaiDesktop]::Call("Find"); return [LanaiDesktop]::F.Device }
+      static [object] Size([object] $d) { [LanaiDesktop]::Call("Size"); return [LanaiDesktop]::F.Desktop }
+      static [int] Apply([object] $d, [int] $w, [int] $h) {
+        $x = [LanaiDesktop]::F
+        $x.Applied = @($x.Applied) + @("${w}x${h}")
+        [LanaiDesktop]::Call("Apply")
+        if ($x.Result -eq 0 -and $x.Take) { $x.Desktop = "${w}x${h}" }
+        return $x.Result
+      }
+    }
+    function Get-StoredMode { [LanaiDesktop]::Call("Stored"); [LanaiDesktop]::F.Stored }
+    function Get-SigninMark { [LanaiDesktop]::Call("GetMark"); [LanaiDesktop]::F.Mark }
+    function Set-SigninMark { [LanaiDesktop]::Call("SetMark"); [LanaiDesktop]::F.Mark = "1" }
     class LanaiDisplay {
       static [hashtable] $D = @{ DevicePath = "lg"; Resolution = "1920x1080"; MinRel = -1; CurRel = 0; MaxRel = 5 }
       static [int] $Sets = 0
@@ -376,9 +404,9 @@ guest_ps() {
     $script:Logs = @()
     function Write-Log($Message) { $script:Logs += $Message }
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
-    # Every top-level function but the two that need Windows (faked above).
+    # Every top-level function but the ones that need Windows (faked above).
     $fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-      $n.Name -notin "Write-Log", "Get-DisplayObservation" }, $false)
+      $n.Name -notin "Write-Log", "Get-DisplayObservation", "Get-StoredMode", "Get-SigninMark", "Set-SigninMark" }, $false)
     if (@($fns).Count -lt 10) { throw "only $(@($fns).Count) functions" }
     foreach ($f in $fns) { . ([scriptblock]::Create($f.Extent.Text)) }
     function Obs($Cur, $Min = -1, $Max = 5, $Res = "1920x1080", $Path = "lg") {
@@ -387,6 +415,9 @@ guest_ps() {
     }
     function L($Step, $Save) { ConvertFrom-ScaleLine "lanai-scale $Step $Save" }
     function Q($Text, $At) { [pscustomobject]@{ Text = $Text; At = $At } }
+    function Ctx { New-ScaleContext (New-ScaleState 3 5 0) (New-Object "System.Collections.Concurrent.ConcurrentQueue[object]") @{ OpenedAt = 0; PortError = "" } }
+    function Ticks($C, $From, $To) { for ($t = $From; $t -le $To; $t += 250) { Invoke-SigninTick $C $t } }
+    function Signin { , @($script:Logs | Where-Object { $_ -like "Sign-in step: *" }) }
     function Assert($Ok, $Why) { if (-not $Ok) { throw "failed: $Why" } }
     Invoke-Expression $env:BODY
     "ok"'
@@ -1238,4 +1269,312 @@ step_name() {
   # The applying line names the raw values and goes to the log.
   run grep -E -A3 'raw minScaleRel.*curScaleRel.*maxScaleRel' "$f"
   assert_output --partial 'Write-Log $text'
+}
+
+# --- the sign-in step (spec 12): set the desktop to the driver's stored size ---
+
+@test "guest sign-in: the stored size parses from <w>x<h>@<refresh> with 1 to 5 ASCII digits a side" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $m = ConvertFrom-ExtraMode "1600x1000@60*"
+    Assert ($m.Width -eq 1600 -and $m.Height -eq 1000) "starred mode"
+    $m = ConvertFrom-ExtraMode "1600x1000@59.94"
+    Assert ($m.Width -eq 1600 -and $m.Height -eq 1000) "fractional refresh"
+    Assert ((ConvertFrom-ExtraMode "99999x1@60").Width -eq 99999) "5 digits"
+    $bad = @($null, "", "x@60", "0x0@60", "0x600@60", "800x0@60", "1600x1000", "1600x@60", "x1000@60",
+      "100000x1000@60", "1600x100000@60", ("1" * 40 + "x1000@60"), " 1600x1000@60", "1600X1000@60",
+      ([string][char]0x0661 + "600x1000@60"), ("1600x1000" + [char]0x0660 + "@60"), "-1600x1000@60")
+    foreach ($b in $bad) { Assert ($null -eq (ConvertFrom-ExtraMode $b)) "accepted [$b]" }
+    # Only a string: a registry value of another type is no stored size.
+    Assert ($null -eq (ConvertFrom-ExtraMode 1600)) "a number"
+    Assert ($null -eq (ConvertFrom-ExtraMode @("1600x1000@60", "x"))) "a multi-string"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest sign-in: each row of the decision table" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    function St($Switches = @(), $Started = 0) { @{ StartedAt = $Started; Switches = @($Switches) } }
+    function Sw($W, $H, $R, $At) { [pscustomobject]@{ Width = $W; Height = $H; Result = $R; At = $At } }
+    function Is($A, $Kind, $Line, $Why) { Assert ($A.Kind -eq $Kind -and $A.Line -ceq $Line) "$Why`: $($A.Kind) [$($A.Line)]" }
+    $m = ConvertFrom-ExtraMode "1600x1000@60*"
+    # 2 minutes after the step started, whatever else holds.
+    Is (Get-SigninAction (St @() 1000) 121000 $m "D" "1594x990") stop "gave up after 2 minutes; changed nothing" "time"
+    Is (Get-SigninAction (St @((Sw 1600 1000 0 500)) 1000) 121000 $null $null $null "boom") stop "gave up after 2 minutes; Windows reported 1 switch done" "time with a switch"
+    Is (Get-SigninAction (St @((Sw 1600 1000 0 0), (Sw 1600 1000 -1 500), (Sw 1600 1000 0 2500))) 120000 $m "D" "1594x990") stop "gave up after 2 minutes; Windows reported 2 switches done" "time with switches"
+    Assert ((Get-SigninAction (St) 119999 $m "D" "1594x990").Kind -eq "switch") "just before 2 minutes"
+    # A read that failed waits, naming the error.
+    Is (Get-SigninAction (St) 1000 $null $null $null "boom") wait "error: boom" "read error"
+    Is (Get-SigninAction (St) 1000 $null "D" "1594x990") stop "no stored size; changed nothing" "no stored size"
+    Is (Get-SigninAction (St) 1000 $m $null $null) wait "no Looking Glass display" "no display"
+    Is (Get-SigninAction (St) 1000 $m "" $null) wait "no Looking Glass display" "an empty device name"
+    Is (Get-SigninAction (St) 500 $m "D" "1600x1000") stop "desktop 1600x1000 matches after 0 switches, 0.5 s after the step started" "already matched"
+    Is (Get-SigninAction (St @((Sw 1600 1000 0 1000)) 1000) 3250 $m "D" "1600x1000") stop "desktop 1600x1000 matches after 1 switch, 2.25 s after the step started" "matched after a switch"
+    # Windows refused the size just read.
+    Is (Get-SigninAction (St @((Sw 1600 1000 -2 0))) 500 $m "D" "1594x990") stop "Windows does not support 1600x1000" "bad mode"
+    # A success less than 2 s ago: wait, with nothing to log.
+    Is (Get-SigninAction (St @((Sw 1600 1000 0 0))) 1999 $m "D" "1594x990") wait "" "within 2 s"
+    # Three successes, each followed 2 s later by a desktop that differs.
+    Is (Get-SigninAction (St @((Sw 1600 1000 0 0), (Sw 1600 1000 0 2000), (Sw 1600 1000 0 4000))) 6000 $m "D" "1594x990") stop "3 switches did not take" "3 switches"
+    # Otherwise switch to the stored size; any other result retries at once.
+    $a = Get-SigninAction (St) 0 $m "D" "1594x990"
+    Assert ($a.Kind -eq "switch" -and $a.Width -eq 1600 -and $a.Height -eq 1000 -and $a.Line -eq "") "switch: $($a | ConvertTo-Json -Compress)"
+    Assert ((Get-SigninAction (St @((Sw 1600 1000 -1 0))) 500 $m "D" "1594x990").Kind -eq "switch") "a failure retries"
+    Assert ((Get-SigninAction (St @((Sw 1600 1000 0 0))) 2000 $m "D" "1594x990").Kind -eq "switch") "2 s after a success"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest sign-in: a new stored size is used at once, also after a refusal of the old one; the third failed switch stops" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    function St($Switches) { @{ StartedAt = 0; Switches = @($Switches) } }
+    function Sw($W, $H, $R, $At) { [pscustomobject]@{ Width = $W; Height = $H; Result = $R; At = $At } }
+    $old = ConvertFrom-ExtraMode "1600x1000@60*"
+    $new = ConvertFrom-ExtraMode "1280x800@60"
+    $a = Get-SigninAction (St @((Sw 1600 1000 -1 0))) 500 $new "D" "1594x990"
+    Assert ($a.Kind -eq "switch" -and $a.Width -eq 1280 -and $a.Height -eq 800) "after a failure: $($a.Kind)"
+    # A refusal of the old size does not count against the new one.
+    $a = Get-SigninAction (St @((Sw 1600 1000 -2 0))) 500 $new "D" "1594x990"
+    Assert ($a.Kind -eq "switch" -and $a.Width -eq 1280) "after -2 for the old size: $($a.Kind) $($a.Line)"
+    # A refusal before the last switch does not count either.
+    $a = Get-SigninAction (St @((Sw 1600 1000 -2 0), (Sw 1280 800 -1 500))) 1000 $old "D" "1594x990"
+    Assert ($a.Kind -eq "switch" -and $a.Width -eq 1600) "an older -2: $($a.Kind) $($a.Line)"
+    # Two switches that did not take still switch; the third stops.
+    $two = @((Sw 1600 1000 0 0), (Sw 1600 1000 0 2000))
+    Assert ((Get-SigninAction (St $two) 4000 $old "D" "1594x990").Kind -eq "switch") "two"
+    $a = Get-SigninAction (St ($two + (Sw 1600 1000 0 4000))) 6000 $old "D" "1594x990"
+    Assert ($a.Kind -eq "stop" -and $a.Line -eq "3 switches did not take") "three: $($a.Line)"
+    # A switch the desktop shows did take, even when the stored size moved on.
+    $a = Get-SigninAction (St ($two + (Sw 1280 800 0 4000))) 6000 $old "D" "1280x800"
+    Assert ($a.Kind -eq "switch" -and $a.Width -eq 1600) "a taken switch: $($a.Kind) $($a.Line)"
+    # Failures other than -2 never count as switches that did not take.
+    $fails = @(0..9 | ForEach-Object { Sw 1600 1000 -1 ($_ * 500) })
+    Assert ((Get-SigninAction (St $fails) 6000 $old "D" "1594x990").Kind -eq "switch") "failures"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest sign-in tick: the happy path switches, sees the match, stops, and returns nothing" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    # Write-Log writes to the output stream, as the real one does.
+    function Write-Log($Message) { $script:Logs += $Message; Write-Output $Message }
+    $c = Ctx
+    $out = Invoke-SigninTick $c 0
+    Assert ($null -eq $out) "returned [$out]"
+    $f = [LanaiDesktop]::F
+    Assert ($f.Mark -eq "1" -and $f.Calls.SetMark -eq 1) "the mark is set"
+    Assert (($f.Applied -join ",") -eq "1600x1000") "applied: $($f.Applied -join ",")"
+    $out = Invoke-SigninTick $c 250
+    $out = Invoke-SigninTick $c 500
+    Assert ($null -eq $out) "returned [$out]"
+    $calls = $f.Calls | ConvertTo-Json -Compress
+    Ticks $c 750 300000
+    Assert (($f.Calls | ConvertTo-Json -Compress) -eq $calls) "calls after the stop: $($f.Calls | ConvertTo-Json -Compress)"
+    $l = Signin
+    Assert ($l.Count -eq 3) "lines: $($l -join " | ")"
+    Assert ($l[0] -match "^Sign-in step: started 0 s into the main loop; the process started at \d{4}-\d\d-\d\dT") "started: $($l[0])"
+    Assert ($l[1] -eq "Sign-in step: desktop 1594x990, stored size 1600x1000; switch result 0") "switch: $($l[1])"
+    Assert ($l[2] -eq "Sign-in step: desktop 1600x1000 matches after 1 switch, 0.5 s after the step started") "match: $($l[2])"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest sign-in tick: one try per 500 ms, each reading the stored size again" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $f = [LanaiDesktop]::F
+    $f.Result = -1
+    $c = Ctx
+    Invoke-SigninTick $c 1000
+    Invoke-SigninTick $c 1250
+    Assert ($f.Calls.Stored -eq 1 -and $f.Calls.Apply -eq 1) "two ticks 250 ms apart: $($f.Calls.Stored) reads"
+    Invoke-SigninTick $c 1500
+    Assert ($f.Calls.Stored -eq 2) "the next try at 500 ms: $($f.Calls.Stored)"
+    $f.Stored = "1280x800@60"
+    Ticks $c 1750 3000
+    Assert ($f.Calls.Stored -eq 5) "reads: $($f.Calls.Stored)"
+    Assert (($f.Applied -join ",") -eq "1600x1000,1600x1000,1280x800,1280x800,1280x800") "applied: $($f.Applied -join ",")"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest sign-in tick: a call that throws is a failed try, logged once; the 2-minute stop still ends it and the scale tick still runs" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $f = [LanaiDesktop]::F
+    foreach ($which in "Stored", "Find", "Size", "Apply") {
+      $script:Logs = @()
+      $f.Throw = $which; $f.Mark = $null; $f.Desktop = "1594x990"
+      $c = Ctx
+      Invoke-SigninTick $c 0
+      $polls = [LanaiDisplay]::Polls
+      Invoke-ScaleTick $c 0
+      Assert ([LanaiDisplay]::Polls -eq $polls + 1) "$which`: the scale tick did not run"
+      $before = $f.Calls[$which]
+      Invoke-SigninTick $c 500
+      Assert ($f.Calls[$which] -eq $before + 1) "$which`: the next tick retries"
+      Ticks $c 750 130000
+      $calls = $f.Calls | ConvertTo-Json -Compress
+      Ticks $c 130250 200000
+      Assert (($f.Calls | ConvertTo-Json -Compress) -eq $calls) "$which`: tries after the stop"
+      $l = Signin
+      Assert (@($l | Where-Object { $_ -eq "Sign-in step: error: $which failed" }).Count -eq 1) "$which`: $($l -join " | ")"
+      Assert ($l[-1] -eq "Sign-in step: gave up after 2 minutes; changed nothing") "$which`: last [$($l[-1])]"
+      Assert ($l.Count -eq 3) "$which`: $($l -join " | ")"
+    }
+    # A log that fails never stops the step.
+    function Write-Log($Message) { throw "the log is full" }
+    $f.Throw = ""; $f.Mark = $null; $f.Desktop = "1594x990"; $f.Applied = @()
+    $c = Ctx
+    Ticks $c 0 1000
+    Assert (($f.Applied -join ",") -eq "1600x1000") "applied: $($f.Applied -join ",")"
+    Assert ($c.Signin.Phase -eq "done") "the match stopped it"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest sign-in tick: a result or an error that repeats is logged once" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $f = [LanaiDesktop]::F
+    $f.Result = -1
+    $c = Ctx
+    Ticks $c 0 60000
+    Assert ($f.Calls.Apply -eq 121) "switches: $($f.Calls.Apply)"
+    $l = Signin
+    Assert (@($l | Where-Object { $_ -eq "Sign-in step: desktop 1594x990, stored size 1600x1000; switch result -1" }).Count -eq 1) "$($l -join " | ")"
+    Assert ($l.Count -eq 2) "$($l -join " | ")"
+    # A new result is a new line.
+    $f.Result = -5
+    Ticks $c 60250 61000
+    Assert ((Signin)[-1] -eq "Sign-in step: desktop 1594x990, stored size 1600x1000; switch result -5") "$((Signin) -join " | ")"
+    $script:Logs = @()
+    $f.Throw = "Apply"; $f.Mark = $null; $f.Calls.Apply = 0
+    $c = Ctx
+    Ticks $c 0 60000
+    Assert ($f.Calls.Apply -eq 121) "throwing switches: $($f.Calls.Apply)"
+    $l = Signin
+    Assert ($l.Count -eq 2 -and $l[1] -eq "Sign-in step: error: Apply failed") "$($l -join " | ")"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest sign-in gate: the first start since sign-in sets the mark and runs; a later start or a failed mark skips" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $f = [LanaiDesktop]::F
+    $f.Mark = "1"
+    $c = Ctx
+    Ticks $c 0 10000
+    Assert ($f.Calls.Stored -eq 0 -and $f.Calls.Find -eq 0 -and $f.Calls.SetMark -eq 0) "ran: $($f.Calls | ConvertTo-Json -Compress)"
+    Assert (((Signin) -join " | ") -eq "Sign-in step: skipped (already ran since sign-in)") "$((Signin) -join " | ")"
+    foreach ($which in "GetMark", "SetMark") {
+      $script:Logs = @()
+      $f.Mark = $null; $f.Throw = $which
+      $c = Ctx
+      Ticks $c 0 10000
+      Assert ($f.Calls.Stored -eq 0 -and $f.Calls.Apply -eq 0) "$which`: ran"
+      $l = Signin
+      Assert ($l.Count -eq 1 -and $l[0] -like "Sign-in step: skipped (cannot * the sign-in mark: $which failed)") "$which`: $($l -join " | ")"
+    }
+    # The gate is read on the first tick, not before.
+    $script:Logs = @()
+    $f.Mark = $null; $f.Throw = ""; $f.Calls.GetMark = 0
+    $c = Ctx
+    Assert ($f.Calls.GetMark -eq 0 -and $c.Signin.Phase -eq "gate") "read before the first tick"
+    Invoke-SigninTick $c 0
+    Assert ($f.Calls.GetMark -eq 1 -and $f.Mark -eq "1") "first tick"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest sign-in tick: no Looking Glass display is logged once, then the step gives up after 2 minutes" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $f = [LanaiDesktop]::F
+    $f.Device = $null
+    $c = Ctx
+    Ticks $c 0 200000
+    Assert ($f.Calls.Size -eq 0 -and $f.Calls.Apply -eq 0) "touched a display"
+    # Tries every 500 ms from 0 to 120 s; the last one stops.
+    Assert ($f.Calls.Find -eq 241) "tries: $($f.Calls.Find)"
+    $l = Signin
+    Assert ($l.Count -eq 3) "$($l -join " | ")"
+    Assert ($l[1] -eq "Sign-in step: no Looking Glass display") "$($l[1])"
+    Assert ($l[2] -eq "Sign-in step: gave up after 2 minutes; changed nothing") "$($l[2])"
+    # No stored size stops at once, before looking for the display.
+    $script:Logs = @()
+    $f.Device = "\\.\DISPLAY2"; $f.Mark = $null; $f.Stored = $null; $f.Calls.Find = 0; $f.Calls.Stored = 0
+    $c = Ctx
+    Ticks $c 0 10000
+    Assert ($f.Calls.Find -eq 0 -and $f.Calls.Stored -eq 1) "calls: $($f.Calls | ConvertTo-Json -Compress)"
+    Assert ((Signin)[-1] -eq "Sign-in step: no stored size; changed nothing") "$((Signin) -join " | ")"'
+  assert_success
+  assert_output ok
+}
+
+@test "lanai-scale.ps1: the registry wrappers read through Microsoft.Win32.Registry, never Get-ItemPropertyValue" {
+  local f=$REPO/guest/lanai-scale.ps1 fn body
+  for fn in Get-StoredMode Get-SigninMark Set-SigninMark; do
+    body=$(awk -v f="function $fn " 'index($0, f) == 1 { on = 1 } on { print } on && /^}/ { exit }' "$f")
+    [[ -n $body ]] || fail "no $fn"
+    grep -qF '[Microsoft.Win32.Registry]::' <<<"$body" || fail "$fn: $body"
+  done
+  run awk '/^function Get-StoredMode /,/^}/' "$f"
+  assert_output --partial "[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\\LookingGlass\\IDD')"
+  assert_output --partial ".GetValue('ExtraMode')"
+  run awk '/^function Get-SigninMark /,/^}/' "$f"
+  assert_output --partial "[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Volatile Environment')"
+  assert_output --partial ".GetValue('LanaiSigninStep')"
+  run awk '/^function Set-SigninMark /,/^}/' "$f"
+  assert_output --partial "[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Volatile Environment', \$true)"
+  # Never creates the key: one Lanai made would not be volatile.
+  refute_output --partial 'CreateSubKey'
+  # Get-ItemPropertyValue throws on a missing value under Stop.
+  run grep -nE '^[^#]*(Get-ItemProperty|HKCU:|HKLM:)' "$f"
+  assert_failure
+}
+
+@test "lanai-scale.ps1: the sign-in step runs only in the main loop, after the OEM exit" {
+  local f=$REPO/guest/lanai-scale.ps1 calls exit loop end
+  # Every call, outside its definition and comments.
+  calls=$(grep -nE '^[^#]*Invoke-SigninTick' "$f" | grep -vF 'function Invoke-SigninTick' | cut -d: -f1)
+  [[ $calls =~ ^[0-9]+$ ]] || fail "calls: $calls"
+  exit=$(grep -nF "Write-ExitLog 'No lanai-scale OEM string" "$f" | cut -d: -f1)
+  loop=$(awk -v from="$exit" 'NR > from && /^    while \(\$true\) \{$/ { print NR; exit }' "$f")
+  end=$(awk -v from="$loop" 'NR > from && /^    \}$/ { print NR; exit }' "$f")
+  [[ -n $exit && -n $loop && -n $end ]] || fail "exit $exit, loop $loop, end $end"
+  ((exit < loop && loop < calls && calls < end)) || fail "OEM exit $exit, loop $loop-$end, call $calls"
+}
+
+# Compile the script's Add-Type block as C# 5 (Windows PowerShell 5.1's
+# compiler) and print <expression>'s result. Callers skip without pwsh.
+guest_csharp() {
+  PS1=$REPO/guest/lanai-scale.ps1 EXPR=$1 pwsh -NoProfile -NonInteractive -Command '
+    $ErrorActionPreference = "Stop"
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
+    $cmds = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and
+      $n.GetCommandName() -eq "Add-Type" }, $true))
+    if ($cmds.Count -ne 1) { throw "$($cmds.Count) Add-Type commands" }
+    $src = @($cmds[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
+      $_.StringConstantType -eq "SingleQuotedHereString" })
+    if ($src.Count -ne 1) { throw "no here-string" }
+    Add-Type -TypeDefinition $src[0].Value -CompilerOptions "-langversion:5"
+    Invoke-Expression $env:EXPR'
+}
+
+@test "lanai-scale.ps1: the C# compiles as C# 5, and the sign-in structs have the Win32 sizes" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_csharp '
+    [System.Runtime.InteropServices.Marshal]::SizeOf([type][LanaiDesktop+DEVMODE])
+    [System.Runtime.InteropServices.Marshal]::SizeOf([type][LanaiDesktop+DISPLAY_DEVICE])
+    # The check bites: C# 6 syntax fails as C# 5.
+    $probe = "public static class LanaiProbe { public static string S(int i) { return `$`"{i}`"; } }"
+    try { Add-Type -TypeDefinition $probe -CompilerOptions "-langversion:5"; "compiled" }
+    catch { if ("$_ $($_.Exception.Message)" -match "CS8026") { "CS8026" } else { throw } }'
+  assert_success
+  assert_output $'220\n840\nCS8026'
 }

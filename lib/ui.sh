@@ -36,6 +36,13 @@ scale_task_kind() {
   else echo old; fi
 }
 
+# Succeed when Windows' scale task lacks the sign-in step (spec 12): setup
+# is done, no setup round runs (setup.cmd may be replacing the task), and
+# the record has no signin_step 1. The old task lacks it too.
+signin_step_missing() {
+  setup_done && [[ $(setup_get round) != true && $(setup_get signin_step) != 1 ]]
+}
+
 # settings [<memory GiB> <cores> [<Windows scale>]]: show or save settings.
 # Two-argument saves keep the scale, its save number and unrelated keys.
 # Three-argument saves are scale saves: they also count the save number up

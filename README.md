@@ -181,9 +181,13 @@ Windows Explorer.
 
 Windows' resolution follows the Windows window. When the window opens, resizes,
 tiles, goes fullscreen or moves to a monitor with another scale, Windows matches it
-within 5 seconds. This also holds after Windows restarts or its display driver
-restarts. To change Windows' resolution, resize the window. A resolution you pick
-in Windows' Display settings does not stay: Lanai sets the window's size again.
+within 5 seconds. This also holds after Windows' display driver restarts. Windows
+cannot change its desktop size before you sign in. So when Windows starts or
+restarts, it matches the window within 15 seconds of your sign-in: when the
+Windows user who ran setup signs in, Lanai's scale task sets the size. If you sign
+in as another Windows user, you may need to resize the window once. To change
+Windows' resolution, resize the window. A resolution you pick in Windows' Display
+settings does not stay: Lanai sets the window's size again.
 
 Two sizes are exceptions. Lanai never asks for a size under 640 wide or 480 high,
 the smallest Windows' display driver takes. Windows also refuses a size too large
@@ -192,14 +196,17 @@ monitor. Lanai asks a few times, so the screen may flicker or Windows may show a
 notice, and then stops. In both cases Windows keeps its last size and the picture
 is scaled to fit the window. Resize the window or leave fullscreen to fix it.
 
-Installs set up with an earlier version of Lanai keep working, but Windows may start at, or
-change to, the wrong size until you update the Windows window. The panel says so
-and names one step. Usually it is **Update the Windows window**. It takes a few
-minutes, works whether Windows runs or not, and changes nothing in Windows. When it
-finishes, close the Windows window and open it again. If the
-update fails, the panel points to the Windows window build log. When the install
-also has the old scale task, the panel names **Run setup again** instead. It
-updates the window too, and restarts Windows as setup always does.
+Installs set up with an earlier version of Lanai keep working, but Windows may
+not match the window. The panel says what may go wrong and names one step. When
+only the Windows window is old, Windows may start at, or change to, the wrong
+size until you click **Update the Windows window**. It takes a few minutes, works
+whether Windows runs or not, and changes nothing in Windows. When it finishes,
+close the Windows window and open it again. If the update fails, the panel points
+to the Windows window build log. When the scale task in Windows was set up
+without the sign-in step, Windows may stay at its old size after it starts, until
+you resize the window. Then the panel names **Run setup again** instead. It
+updates the window too, turns the Windows lock off again, and restarts Windows as
+setup always does.
 
 Windows' display scale changes while Windows runs, without a restart or sign-out.
 “Match my monitor” uses the Windows step nearest the scale of the monitor the
@@ -234,10 +241,11 @@ minute. Its log is `C:\Program Files\Lanai\lanai-scale.log`.
 
 Installs set up before live scale keep the old scale task: a scale save applies at
 the next start, the old task undoes scale changes made in Windows, and “Match my
-monitor” does not follow the window while Windows runs. The panel says so under
-the scale list and after a save. To get live scale, shut Windows down and click **Run setup again**; it also
-turns the Windows lock off again. After you update Lanai while Windows runs, the
-panel may say some of Lanai's helpers stopped until Windows next starts. The
+monitor” does not follow the window while Windows runs. The panel says so in its
+warning, with the size fix, and after a save. To get live scale, shut Windows down
+and click **Run setup again**; it also turns the Windows lock off again. After you
+update Lanai while Windows runs, the panel may say some of Lanai's helpers stopped
+until Windows next starts. The
 [rehearsal checklist](docs/plugin/proofs.md)
 covers resizing, scale limits and reconnecting the display.
 Host locking, suspend and session shutdown are covered by the

@@ -105,7 +105,7 @@ panel_records() {
 cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
-  local client_old=false task started=0
+  local client_old=false signin_missing=false task started=0
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
       emit false "" "Invalid panel input." ""; return 2
@@ -142,6 +142,11 @@ cmd_panel() {
   # driver update instead, so it never counts here.
   if jq -e '.finished' <<<"$plan" >/dev/null && build_stamp_current && ! build_patches_current &&
     [[ -z $(guest_version_behind) ]]; then client_old=true; fi
+  # A finished install whose scale task lacks the sign-in step (req 12):
+  # Run setup again is then the one step, also for an old client or the
+  # old task. An unfinished plan (req 8's driver update included) already
+  # names its own step.
+  if jq -e '.finished' <<<"$plan" >/dev/null && signin_step_missing; then signin_missing=true; fi
   task=$(scale_task_kind)
   # When the current client started (client.log's first line), or 0.
   [[ -z $run || ! -s $run/client.log ]] || started=$(log_client_start "$run/client.log")
@@ -188,13 +193,14 @@ cmd_panel() {
   done
   if settings=$(cmd_settings 2>/dev/null) && jq -e '.ok' <<<"$settings" >/dev/null; then
     # The note near the scale list: with the live scale task, while Windows
-    # runs, that a scale save replaces a pick; with the old task, always,
-    # how to make scale saves apply while Windows runs.
+    # runs, that a scale save replaces a pick; with the old task, how to
+    # make scale saves apply while Windows runs, unless the resize warning
+    # already says it (the panel names Run setup again once).
     note='' active=false
     ! jq -e '.active' <<<"$status" >/dev/null || active=true
     case $task in
       new) ! $active || note='Saving a scale replaces one you picked in Windows.' ;;
-      old) note=$(old_task_note "$active") ;;
+      old) $signin_missing || note=$(old_task_note "$active") ;;
     esac
     settings=$(jq -c --arg steps "$LANAI_SCALE_STEPS" --arg note "$note" '{memory_gib,cores,windows_scale,error:"",
       line:"Memory and cores apply the next time Windows starts.",note:$note,
@@ -213,7 +219,7 @@ cmd_panel() {
     --argjson progress "$progress" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
-    --argjson clientOld "$client_old" --arg task "$task" \
+    --argjson clientOld "$client_old" --argjson signinMissing "$signin_missing" --arg task "$task" \
     --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" '
     def button($show;$enable;$label): {show:$show,enable:($show and $enable),label:$label};
     ({"not-installed":["Not installed","Windows is not installed","No supported Windows install was found.","Install Windows with Omarchy, then continue setup."],
@@ -311,7 +317,7 @@ cmd_panel() {
          {labels:($snaps.names | map({key:.,value:("Restore snapshot " + .)}) | from_entries)},
        restore_confirm:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore and replace Windows") +
          {labels:($snaps.names | map({key:.,value:("Restore " + . + " and replace Windows")}) | from_entries)},
-       update_client:button($clientOld and $task == "new";($busy|not);"Update the Windows window"),
+       update_client:button($clientOld and $task == "new" and ($signinMissing|not);($busy|not);"Update the Windows window"),
        save_settings:button(true;$settings.error == "";"Save settings")}} |
     if ($dailyControls|not) and ($st.state == "stopped" or $st.state == "running") then
       .next="Follow the Setup section below." |
@@ -327,11 +333,20 @@ cmd_panel() {
         (if $dailyControls then "Try Open window again." elif $reopen then "Try Reopen the Windows window in Setup."
          else "Check the Windows window log, then shut down and continue setup." end) else empty end,
       if $st.state != "version-mismatch" and ($facts | contains("LanaiDriverOld=")) then "The Windows display driver needs an update. Shut down and continue setup." else empty end,
-      # The resize warning (req 12): the update button with the live scale
-      # task; with the old task, Run setup again, which also replaces it.
-      if $clientOld then "Windows may start at, or change to, the wrong size until you " +
-        (if $task == "new" then "click Update the Windows window. This changes nothing in Windows."
-         elif $off then "click Run setup again." else "shut Windows down and click Run setup again." end) else empty end
+      # The resize warning (req 12): with the sign-in step present, an old
+      # client gets the update button. Without the step, Run setup again
+      # is the one step: one message says what it fixes (an old client, the
+      # missing step, and scale saves with the old task) and the lock.
+      if $signinMissing then
+        ([if $clientOld then "Windows may start at, or change to, the wrong size." else empty end,
+          "After Windows starts, it may stay at its old size until you resize the window.",
+          if $task == "old" then "Scale saves apply only the next time Windows starts." else empty end]) as $fixes |
+        ($fixes + ["To fix " + ({"1":"this","2":"both","3":"all three"}[$fixes | length | tostring]) + ", " +
+          (if $off then "click Run setup again." else "shut Windows down and click Run setup again." end),
+          "Running setup again also turns the Windows lock off again."] | join(" "))
+      elif $clientOld then
+        "Windows may start at, or change to, the wrong size until you click Update the Windows window. This changes nothing in Windows."
+      else empty end
     ] | join(" "))'
   # shellcheck disable=SC2034
   LANAI_EMITTED=1

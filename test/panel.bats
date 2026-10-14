@@ -37,7 +37,7 @@ setup() {
 # Write setup state belonging to the fixture's storage.
 
 @test "panel scale: supplies current value and every labeled scale choice" {
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   run cmd_panel
   assert_success
   assert_equal "$(jq -r .settings.windows_scale <<<"$output")" auto
@@ -117,15 +117,25 @@ setup() {
   run cmd_panel
   assert_equal "$(jq -r .settings.line <<<"$output")" 'Memory and cores apply the next time Windows starts.'
   assert_equal "$(jq -r .settings.note <<<"$output")" ''
-  # The old task, stopped and running: a standing note says how to get live saves.
+  # The old task on a finished install: the resize warning names Run setup
+  # again with the scale fix, so the note under the scale list is empty.
   state '{"done":true}'
   run cmd_panel
+  assert_equal "$(jq -r .settings.note <<<"$output")" ''
+  assert_output --partial 'Scale saves apply only the next time Windows starts.'
+  # While an update step waits, the warning is not shown: a standing note
+  # says how to get live saves, stopped and running.
+  build_stamp_current() { return 1; }
+  run cmd_panel
+  assert_equal "$(jq -r .setup.finished <<<"$output")" false
+  assert_equal "$(jq -r .warning <<<"$output")" ''
   assert_equal "$(jq -r .settings.note <<<"$output")" "$old click Run setup again."
   ST=active
   run cmd_panel
   assert_equal "$(jq -r .settings.note <<<"$output")" "$old shut Windows down and click Run setup again."
+  build_stamp_current() { return 0; }
   # The new task: the pick note only while Windows runs.
-  state '{"done":true,"scale_task":2}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   run cmd_panel
   assert_equal "$(jq -r .settings.note <<<"$output")" "$note"
   ST=inactive
@@ -210,7 +220,7 @@ assert_plan_agreement() {
 
 @test "panel: every status state has plain words and the full view" {
   local fixture_facts expected
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   for expected in not-installed setup-needed stopped starting running stopping in-use version-mismatch failed; do
     case $expected in
       not-installed) fixture_facts=$'ActiveState=inactive\nLanaiInstall=none' ;;
@@ -523,7 +533,7 @@ assert_plan_agreement() {
       questions|checking|wait) expected=6; state '{"snapshot":"declined","step5":true}'; fixture_facts+=$'\nActiveState=active'
         [[ $fixture != wait ]] || fixture_facts+=$'\nActiveState=activating'
         [[ $fixture != questions ]] || : >"$RUN/step6-asked" ;;
-      done) expected=7; state '{"done":true}' ;;
+      done) expected=7; state '{"done":true,"scale_task":2,"signin_step":1}' ;;
     esac
     plan=$(setup_plan "$fixture_facts")
     assert_equal "$(jq -r .step <<<"$plan")" "$expected"
@@ -535,7 +545,7 @@ assert_plan_agreement() {
   share_check() { return 1; }
   run cmd_panel
   assert_output --partial 'a real folder you own, not a link'
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   container_fact() { echo running; }
   run cmd_panel
   assert_equal "$(jq -r .setup.finished <<<"$output")" true
@@ -686,8 +696,8 @@ assert_plan_agreement() {
         share) share_check() { return 1; } ;;
         layout) layout_check() { echo broken; return 1; } ;;
         restore) : >"$S/restore-in-progress" ;;
-        done-container) state '{"done":true}'; container_fact() { echo running; } ;;
-        done-share) state '{"done":true}'; share_check() { return 1; } ;;
+        done-container) state '{"done":true,"scale_task":2,"signin_step":1}'; container_fact() { echo running; } ;;
+        done-share) state '{"done":true,"scale_task":2,"signin_step":1}'; share_check() { return 1; } ;;
       esac
       [[ $marker != consumed ]] || record_previous_run >/dev/null
       plan=$(setup_plan "$(shared_facts)")
@@ -1043,7 +1053,7 @@ assert_plan_agreement() {
 }
 
 @test "panel: warnings have no leading space and mismatch already explains the old driver" {
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   status_facts() { printf 'ActiveState=active\nLanaiClient=timeout\nLanaiDriverOld=old\nLanaiVersion=mismatch\nLanaiSetup=done\n'; }
   run cmd_panel
   assert_equal "$(jq -r .warning <<<"$output")" 'The Windows window did not open in time. Try Open window again.'
@@ -1715,7 +1725,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: stopped requires current finished setup and no unfinished restore" {
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   run cmd_panel
   assert_success
   assert_right_click start
@@ -1723,7 +1733,7 @@ assert_right_click() {
   run cmd_panel
   assert_success
   assert_right_click panel
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   : >"$S/restore-in-progress"
   run cmd_panel
   assert_success
@@ -1745,7 +1755,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: finished running install opens only its closed window" {
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   ST=active
   local window
   for window in false true; do
@@ -1759,7 +1769,7 @@ assert_right_click() {
 
 @test "panel clicks: CLI and panel snapshot or restore block Start but allow Open" {
   local origin operation fd pid=$BASHPID
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   for origin in cli panel; do
     for operation in snapshot restore; do
       exec {fd}>"$S/lock"
@@ -1790,7 +1800,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: pending panel launch opens the panel until it starts" {
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   run cmd_panel --pending click-job "$EPOCHSECONDS"
   assert_success
   assert_equal "$(jq -r .busy.active <<<"$output")" true
@@ -1798,7 +1808,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: active panel setup work blocks the stopped shortcut" {
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   local fd
   exec {fd}>"$S/panel-job.lock"
   flock -n "$fd"
@@ -1817,7 +1827,7 @@ assert_right_click() {
   run panel_words restore "$reply"
   assert_success
   assert_output "$words"
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   jq -nc --argjson reply "$reply" '{command:"restore",reply:$reply}' >"$S/panel-result-snapshots.json"
   shim systemctl 'printf "ActiveState=inactive\nResult=success\nInvocationID=\n"'
   export PATH=$T/shims:$PATH
@@ -1853,7 +1863,7 @@ assert_right_click() {
 }
 
 @test "panel restore: a refusal during unfinished recovery never claims Windows was unchanged" {
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   : >"$S/restore-in-progress"
   panel_result_write snapshots '{"command":"restore","reply":{"ok":false,"reason":"restore-unsupported","message":"Lanai cannot verify the image. The restore is still unfinished."}}'
   shim systemctl 'printf "ActiveState=inactive\nResult=success\nInvocationID=\n"'
@@ -1865,7 +1875,7 @@ assert_right_click() {
 }
 
 @test "panel activity: gathers once and reuses the result for the storage check" {
-  state '{"done":true}'
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   shim python3 'if [[ $1 == */image-proof.py && $2 == activity ]]; then
   echo activity >>"$T/activity-calls"
   echo "{\"label\":\"Restoring Windows: replacing the disk\",\"percent\":99}"
@@ -1881,16 +1891,41 @@ exec /usr/bin/python3 "$@"'
   assert_equal "$(jq -r .progress.label <<<"$output")" 'Restoring Windows: replacing the disk'
 }
 
-# --- the resize upgrade: a client built without the current patches (req 12) ---
+# --- the resize upgrade: a client built without the current patches, or a
+# scale task without the sign-in step (req 12) ---
 
 RESIZE_NEW='Windows may start at, or change to, the wrong size until you click Update the Windows window. This changes nothing in Windows.'
-RESIZE_OLD='Windows may start at, or change to, the wrong size until you click Run setup again.'
-RESIZE_OLD_RUNNING='Windows may start at, or change to, the wrong size until you shut Windows down and click Run setup again.'
+WRONG='Windows may start at, or change to, the wrong size.'
+SIGNIN='After Windows starts, it may stay at its old size until you resize the window.'
+SCALE='Scale saves apply only the next time Windows starts.'
+LOCK='Running setup again also turns the Windows lock off again.'
 CLIENT_DONE='The Windows window is updated. If the Windows window is open, close it and open it again.'
 CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window again.'
+CURRENT='{"done":true,"scale_task":2,"signin_step":1}'
 
-@test "panel resize: an old client with the live scale task warns and offers the update, stopped or running" {
-  state '{"done":true,"scale_task":2}'
+# Assert the panel's warning is <stopped words> while Windows is stopped and
+# <running words> while it runs, with no Update button and no note under
+# the scale list (the warning names Run setup again once).
+assert_rerun_warning() {
+  ST=inactive
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .setup.finished <<<"$output")" true
+  assert_equal "$(jq -r .warning <<<"$output")" "$1"
+  assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+  assert_equal "$(jq -r .settings.note <<<"$output")" ''
+  assert_equal "$(jq -c '.buttons.continue_setup | [.show,.enable,.label]' <<<"$output")" '[true,true,"Run setup again"]'
+  ST=active
+  run cmd_panel
+  assert_equal "$(jq -r .warning <<<"$output")" "$2"
+  assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+  # The live task's pick note may show while Windows runs; it never names
+  # Run setup again.
+  assert_equal "$(jq -r '.settings.note | contains("Run setup again")' <<<"$output")" false
+}
+
+@test "panel resize: an old client with the live scale task and the sign-in step warns and offers the update, stopped or running" {
+  state "$CURRENT"
   build_patches_current() { return 1; }
   for ST in inactive active; do
     run cmd_panel
@@ -1906,20 +1941,53 @@ CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window a
   assert_equal "$(jq -r '.buttons.start.show and .buttons.start.enable' <<<"$output")" true
 }
 
-@test "panel resize: an old client with the old scale task names only Run setup again" {
-  state '{"done":true}'
+@test "panel resize: a current client without the sign-in step names Run setup again and the lock" {
+  state '{"done":true,"scale_task":2}'
+  assert_rerun_warning "$SIGNIN To fix this, click Run setup again. $LOCK" \
+    "$SIGNIN To fix this, shut Windows down and click Run setup again. $LOCK"
+  # A mark other than 1 counts as missing.
+  state '{"done":true,"scale_task":2,"signin_step":2}'
+  assert_rerun_warning "$SIGNIN To fix this, click Run setup again. $LOCK" \
+    "$SIGNIN To fix this, shut Windows down and click Run setup again. $LOCK"
+}
+
+@test "panel resize: an old client without the sign-in step names only Run setup again, for both fixes" {
+  state '{"done":true,"scale_task":2}'
   build_patches_current() { return 1; }
-  ST=inactive
+  assert_rerun_warning "$WRONG $SIGNIN To fix both, click Run setup again. $LOCK" \
+    "$WRONG $SIGNIN To fix both, shut Windows down and click Run setup again. $LOCK"
+}
+
+@test "panel resize: the old scale task names Run setup again once, with the scale fix, and keeps the save words" {
+  local oldtask='Until you run setup again, the old scale task undoes scales you pick in Windows, and “Match my monitor” does not follow the window. Running setup again also turns the Windows lock off again.'
+  state '{"done":true}'
+  assert_rerun_warning "$SIGNIN $SCALE To fix both, click Run setup again. $LOCK" \
+    "$SIGNIN $SCALE To fix both, shut Windows down and click Run setup again. $LOCK"
+  # A scale save's reply keeps its words: it answers the save.
+  panel_result_write settings '{"command":"settings","invocation":"inv","ended":1,"reply":{"ok":true,"scale_saved":true,"running":true,"scale_task_kind":"old"}}'
+  ST=active INV=inv
   run cmd_panel
-  assert_equal "$(jq -r .warning <<<"$output")" "$RESIZE_OLD"
-  assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
-  ST=active
-  run cmd_panel
-  assert_equal "$(jq -r .warning <<<"$output")" "$RESIZE_OLD_RUNNING"
-  assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+  assert_equal "$(jq -r .result.settings <<<"$output")" "Saved. Windows uses the saved scale the next time it starts. $oldtask"
+  # With an old client too: all three in one message.
+  build_patches_current() { return 1; }
+  assert_rerun_warning "$WRONG $SIGNIN $SCALE To fix all three, click Run setup again. $LOCK" \
+    "$WRONG $SIGNIN $SCALE To fix all three, shut Windows down and click Run setup again. $LOCK"
+}
+
+@test "panel resize: the live task's save words are the same with and without the sign-in step" {
+  local live='Saved. Windows uses the saved scale within 5 seconds if you'"'"'re signed in, or when you next sign in.'
+  panel_result_write settings '{"command":"settings","invocation":"inv","ended":1,"reply":{"ok":true,"scale_saved":true,"running":true,"scale_task_kind":"new"}}'
+  ST=active INV=inv
+  for doc in "$CURRENT" '{"done":true,"scale_task":2}'; do
+    state "$doc"
+    run cmd_panel
+    assert_equal "$(jq -r .result.settings <<<"$output")" "$live"
+    assert_equal "$(jq -r .settings.note <<<"$output")" 'Saving a scale replaces one you picked in Windows.'
+  done
 }
 
 @test "panel resize: an older pin's build in use shows only the driver update words" {
+  # No sign-in mark on purpose: req 8's words still replace the warning.
   state '{"done":true,"scale_task":2}'
   build_patches_current() { return 1; }
   guest_version_behind() { echo B7-801-g1a2b3c4d5e; }
@@ -1927,10 +1995,15 @@ CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window a
   assert_success
   assert_equal "$(jq -r .warning <<<"$output")" 'The Windows display driver needs an update. Shut down and continue setup.'
   assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+  # With the old task, the note under the scale list names the scale fix again.
+  state '{"done":true}'
+  run cmd_panel
+  assert_equal "$(jq -r .warning <<<"$output")" 'The Windows display driver needs an update. Shut down and continue setup.'
+  assert_equal "$(jq -r .settings.note <<<"$output")" 'Scale saves apply the next time Windows starts. To make them apply while Windows runs, click Run setup again.'
 }
 
-@test "panel resize: current patches or an unfinished setup show neither the warning nor the button" {
-  state '{"done":true,"scale_task":2}'
+@test "panel resize: current patches with the sign-in step, or an unfinished setup, show neither the warning nor the button" {
+  state "$CURRENT"
   run cmd_panel
   assert_equal "$(jq -r .warning <<<"$output")" ''
   assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
@@ -1940,11 +2013,15 @@ CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window a
   assert_equal "$(jq -r .setup.finished <<<"$output")" false
   assert_equal "$(jq -r .warning <<<"$output")" ''
   assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+  # A setup round that has not recorded the step yet warns of nothing.
+  state '{"snapshot":"declined","done":true,"scale_task":2,"round":true}'
+  run cmd_panel
+  assert_equal "$(jq -r .warning <<<"$output")" ''
 }
 
 @test "panel resize: the update button shows disabled while a panel job runs, and the busy line names the update" {
   local fd
-  state '{"done":true,"scale_task":2}'
+  state "$CURRENT"
   build_patches_current() { return 1; }
   panel_result_write client '{"token":"t","command":"build-client","args":[],"started":5}'
   exec {fd}>"$S/panel-job.lock"; flock "$fd"
@@ -1974,7 +2051,7 @@ CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window a
 }
 
 @test "panel resize: the done words stay until a client starts after the update ended" {
-  state '{"done":true,"scale_task":2}'
+  state "$CURRENT"
   panel_result_write client '{"token":"t","command":"build-client","args":[],"started":1000.25,"ended":1100.5,"reply":{"ok":true}}'
   # No client since: the window was closed when the update finished.
   rm -f "$RUN/client.log"
@@ -1994,7 +2071,7 @@ CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window a
 }
 
 @test "panel resize: an interrupted update has its own words and never arms Continue setup" {
-  state '{"done":true,"scale_task":2}'
+  state "$CURRENT"
   build_patches_current() { return 1; }
   panel_result_write client '{"token":"t","command":"build-client","args":[],"started":1}'
   run cmd_panel
@@ -2012,7 +2089,7 @@ CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window a
 }
 
 @test "panel resize: failed and interrupted update words go once the client is current" {
-  state '{"done":true,"scale_task":2}'
+  state "$CURRENT"
   build_patches_current() { return 1; }
   panel_result_write client '{"token":"t","command":"build-client","args":[],"started":1,"ended":2,"reply":{"ok":false}}'
   run cmd_panel

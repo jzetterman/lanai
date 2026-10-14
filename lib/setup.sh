@@ -12,6 +12,10 @@
 #   scale_task  2 once step 6 passed with the live scale task's port open:
 #             the task's version (Lanai before live scale never wrote
 #             it), so a finished setup without it has the old task
+#   signin_step  1 once step 6 passed: the scale task carries the sign-in
+#             step (spec 12). A separate key, so a Lanai from before the
+#             step still reads scale_task right; a finished setup without
+#             it lacks the step
 #   round     true from a setup boot's start until step 7; while it is
 #             open, a done setup (a pin bump, or a rerun) does not read as
 #             finished, though lanai start still works (spec 8)
@@ -435,8 +439,9 @@ setup_step6() {
     return 1
   fi
   # The scale task's port is open, so Windows has the live task:
-  # scale_task 2. A record without it means the old task (spec 12).
-  if ! setup_patch '{"done": true, "step5": null, "round": null, "scale_task": 2}'; then
+  # scale_task 2, with the sign-in step: signin_step 1. A record without
+  # them means the old task, or a task without the step (spec 12).
+  if ! setup_patch '{"done": true, "step5": null, "round": null, "scale_task": 2, "signin_step": 1}'; then
     setup_reply false 6 "Lanai cannot record its setup state." "run setup again"
     return 1
   fi
