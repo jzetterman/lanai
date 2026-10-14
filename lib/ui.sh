@@ -36,11 +36,12 @@ scale_task_kind() {
   else echo old; fi
 }
 
-# Succeed when Windows' scale task lacks the sign-in step (spec 12): setup
-# is done, no setup round runs (setup.cmd may be replacing the task), and
-# the record has no signin_step 1. The old task lacks it too.
+# Succeed when Windows' scale task lacks the current sign-in step (spec 12):
+# setup is done, no setup round runs (setup.cmd may be replacing the task),
+# and the record's signin_step is not LANAI_SIGNIN_STEP (lib/setup.sh). The
+# old task and the step's earlier forms lack it too.
 signin_step_missing() {
-  setup_done && [[ $(setup_get round) != true && $(setup_get signin_step) != 1 ]]
+  setup_done && [[ $(setup_get round) != true && $(setup_get signin_step) != "$LANAI_SIGNIN_STEP" ]]
 }
 
 # settings [<memory GiB> <cores> [<Windows scale>]]: show or save settings.

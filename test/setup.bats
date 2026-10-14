@@ -499,11 +499,16 @@ setup_guest_run() {
   assert_equal "$(field window)" true
   local media=$S/setup-media
   run bash -c 'cd "$1" && find . -mindepth 1 | LC_ALL=C sort' _ "$media"
-  assert_output "$(printf '%s\n' ./lanai-lock.cmd ./lanai-scale.ps1 ./looking-glass-idd-setup.exe \
-    ./qemu-ga.msi ./setup.cmd ./spice-vdagent.msi ./viofs ./viofs/w11 ./viofs/w11/amd64 \
-    ./viofs/w11/amd64/viofs.inf ./viofs/w11/amd64/virtiofs.exe ./winfsp.msi)"
+  assert_output "$(printf '%s\n' ./lanai-lock.cmd ./lanai-scale.ps1 ./lanai-start.cs \
+    ./looking-glass-idd-setup.exe ./qemu-ga.msi ./setup.cmd ./spice-vdagent.msi ./viofs ./viofs/w11 \
+    ./viofs/w11/amd64 ./viofs/w11/amd64/viofs.inf ./viofs/w11/amd64/virtiofs.exe ./winfsp.msi)"
   cmp "$media/setup.cmd" "$REPO/guest/setup.cmd"
   cmp "$media/lanai-lock.cmd" "$REPO/guest/lanai-lock.cmd"
+  # The start program's source, which setup builds in Windows: no prebuilt
+  # Lanai program on the media (spec 27).
+  cmp "$media/lanai-start.cs" "$REPO/guest/lanai-start.cs"
+  run find "$media" -iname '*.exe' -not -path '*/viofs/*' -not -name looking-glass-idd-setup.exe
+  assert_output ''
   cmp "$media/spice-vdagent.msi" "$T/src/vdagent.msi"
   # Every file setup.cmd calls by %~dp0 is on the media.
   local f
@@ -1258,8 +1263,9 @@ exec /usr/bin/mv "$@"'
   setup_run
   assert_success
   assert_equal "$(field step)" 7
-  # The live scale task, which now carries the sign-in step.
-  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" '[2,1]'
+  # The live scale task, which now carries the sign-in step in the start
+  # program: signin_step 2.
+  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" '[2,2]'
   assert_equal "$(scale_task_kind)" new
   run signin_step_missing
   assert_failure
@@ -1270,7 +1276,7 @@ exec /usr/bin/mv "$@"'
   setup_run --share-ok yes --scale-ok yes
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" '[2,1]'
+  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" '[2,2]'
 }
 
 @test "lanai setup step 6: an agent that refuses to set the clock sends setup back to step 5" {
@@ -1537,7 +1543,7 @@ exec /usr/bin/mv "$@"'
   setup_run --share-ok yes --scale-ok yes
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" '{"snapshot":"declined","done":true,"scale_task":2,"signin_step":1}'
+  assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" '{"snapshot":"declined","done":true,"scale_task":2,"signin_step":2}'
   setup_run
   assert_equal "$(field step)" 7
 }

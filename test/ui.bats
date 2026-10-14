@@ -84,7 +84,7 @@ setup_finished() {
   assert_equal "$(scale_task_kind)" new
 }
 
-@test "sign-in step: missing only for finished setup with no round running and no signin_step 1" {
+@test "sign-in step: missing only for finished setup with no round running and no signin_step 2" {
   # Before setup finishes, nothing is missing yet.
   run signin_step_missing
   assert_failure
@@ -95,12 +95,18 @@ setup_finished() {
   setup_finished 2
   run signin_step_missing
   assert_success
-  setup_finished 2 2
-  run signin_step_missing
-  assert_success
+  # 1 is the step in PowerShell, before the start program: Run setup again.
   setup_finished 2 1
   run signin_step_missing
+  assert_success
+  setup_finished 2 3
+  run signin_step_missing
+  assert_success
+  setup_finished 2 2
+  run signin_step_missing
   assert_failure
+  # The current mark is one constant, which setup records.
+  assert_equal "$LANAI_SIGNIN_STEP" 2
   # A setup round may be replacing the task: not missing until it records.
   setup_finished 2
   jq '.round=true' "$(state_dir)/setup.json" >"$T/setup" && mv "$T/setup" "$(state_dir)/setup.json"

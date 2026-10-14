@@ -184,10 +184,11 @@ tiles, goes fullscreen or moves to a monitor with another scale, Windows matches
 within 5 seconds. This also holds after Windows' display driver restarts. Windows
 cannot change its desktop size before you sign in. So when Windows starts or
 restarts, it matches the window within 15 seconds of your sign-in: when the
-Windows user who ran setup signs in, Lanai's scale task sets the size. If you sign
-in as another Windows user, you may need to resize the window once. To change
-Windows' resolution, resize the window. A resolution you pick in Windows' Display
-settings does not stay: Lanai sets the window's size again.
+Windows user who ran setup signs in, Lanai's scale task sets the size. Its log is
+`C:\Program Files\Lanai\lanai-signin.log`. If you sign in as another Windows user,
+you may need to resize the window once. To change Windows' resolution, resize the
+window. A resolution you pick in Windows' Display settings does not stay: Lanai
+sets the window's size again.
 
 Two sizes are exceptions. Lanai never asks for a size under 640 wide or 480 high,
 the smallest Windows' display driver takes. Windows also refuses a size too large
@@ -219,8 +220,8 @@ first one Hyprland lists. Without any monitor the scale stays as it was (100% at
 start).
 
 A scale save while Windows runs reaches Windows within 5 seconds if you are signed
-in, or when you next sign in. Lanai cannot see which, so the panel says both. A
-save while Windows is stopped applies at the next start.
+in, or within 20 seconds of your next sign-in. Lanai cannot see which, so the panel
+says both. A save while Windows is stopped applies at the next start.
 
 You can also pick a scale in Windows, under Settings > System > Display > Scale.
 Your pick holds until your next scale save, a sign-out, a Windows restart or the VM
@@ -230,7 +231,9 @@ setting. Windows changes its recommended scale when the resolution changes;
 the scale task sets it back to your pick, or to the scale you saved in Lanai when
 you have no pick. The scale holds as the window resizes: Lanai caps it at
 Windows' limit for the current resolution, and it goes back up when the window
-grows.
+grows. The scale task needs longer to start at a sign-in, so scale changes that
+start then finish within 20 seconds of the sign-in, not 5: the end of your pick,
+and the scale for the size Lanai sets at sign-in.
 
 This is Windows' display scale, separate from its “Text size” setting. While
 Windows' custom scaling is on (a percentage that needs a sign-out to apply), it
@@ -238,6 +241,16 @@ overrides the scale Lanai sets; turn it off under Settings > System > Display >
 Scale, then sign out. Some Windows apps redraw at a new scale only after they restart. If Windows
 accepts a change but leaves the scale unchanged, the scale task tries again once a
 minute. Its log is `C:\Program Files\Lanai\lanai-scale.log`.
+
+The scale task runs a small program that setup builds in Windows,
+`C:\Program Files\Lanai\lanai-start.exe`. If Windows blocks it later, for example
+after Smart App Control or an App Control or AppLocker policy is turned on, the
+scale and the size at sign-in stop following Lanai. To fix it, allow that program
+in the App Control or AppLocker policy, or turn Smart App Control off under Windows
+Security > App & browser control. Smart App Control allows no single program, and
+on many Windows versions only a reinstall turns it back on. Then click **Run setup
+again**. Setup checks that Windows runs the program, and stops with these steps if
+it does not.
 
 Installs set up before live scale keep the old scale task: a scale save applies at
 the next start, the old task undoes scale changes made in Windows, and “Match my
@@ -282,12 +295,14 @@ scale channel. The scale channel runs one way: each message holds a scale step a
 a save number, and Lanai never reads what Windows writes to it.
 
 Windows opens the scale channel only to administrators, so the scale task runs at
-your sign-in with your administrator rights and no prompt. Its script, log and temp
-folder sit in `C:\Program Files\Lanai`, where only administrators can write. Such a
-task still starts with your Windows user's environment variables and registry
-settings, so malware already running as that user could use it to gain
-administrator rights. With UAC
-on, that malware has other ways to the same end.
+your sign-in with your administrator rights and no prompt. Its program, the
+program's source, its script, logs and temp folder sit in `C:\Program Files\Lanai`,
+where only administrators can write. Setup builds the program there from Lanai's
+source with the C# compiler that comes with Windows, so no prebuilt Lanai program
+enters Windows. Such a task still starts with your Windows user's environment
+variables and registry settings, so malware already running as that user could use
+it to gain administrator rights. With UAC on, that malware has other ways to the
+same end.
 
 ## Networking and coexistence
 
@@ -357,15 +372,19 @@ the final measurement. If the wait expires, the next start reports the forced st
    Remove Lanai's scale task and virtiofs service from the administrator prompt:
 
    ```bat
+   schtasks /End /TN "Lanai display scale"
    schtasks /Delete /TN "Lanai display scale" /F
    sc.exe stop VirtioFsSvc
    sc.exe delete VirtioFsSvc
    rmdir /S /Q "C:\Program Files\Lanai"
    ```
 
-   A service already stopped needs no further stop. This removes Lanai's
-   `virtiofs.exe`, `lanai-scale.ps1` with its log and temp folder, and the
-   service's auto-start, dependency and executable-path settings. An install set
+   Ending the task ends its program, and the program's end ends the script, so
+   `rmdir` can remove them. A task or service already stopped needs no further
+   stop. This removes Lanai's `virtiofs.exe`, the scale task's `lanai-start.exe`,
+   `lanai-start.cs` and any `lanai-start.old-*.exe`, `lanai-scale.ps1`, the logs
+   `lanai-scale.log` and `lanai-signin.log`, the temp folder, and the service's
+   auto-start, dependency and executable-path settings. An install set
    up before live scale also kept the scale log in `%LOCALAPPDATA%\Lanai`; delete
    that folder too. If another workflow depended on a pre-existing
    `VirtioFsSvc`, reinstall/configure its own virtiofs tools before using it;

@@ -37,7 +37,7 @@ setup() {
 # Write setup state belonging to the fixture's storage.
 
 @test "panel scale: supplies current value and every labeled scale choice" {
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   run cmd_panel
   assert_success
   assert_equal "$(jq -r .settings.windows_scale <<<"$output")" auto
@@ -135,7 +135,7 @@ setup() {
   assert_equal "$(jq -r .settings.note <<<"$output")" "$old shut Windows down and click Run setup again."
   build_stamp_current() { return 0; }
   # The new task: the pick note only while Windows runs.
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   run cmd_panel
   assert_equal "$(jq -r .settings.note <<<"$output")" "$note"
   ST=inactive
@@ -220,7 +220,7 @@ assert_plan_agreement() {
 
 @test "panel: every status state has plain words and the full view" {
   local fixture_facts expected
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   for expected in not-installed setup-needed stopped starting running stopping in-use version-mismatch failed; do
     case $expected in
       not-installed) fixture_facts=$'ActiveState=inactive\nLanaiInstall=none' ;;
@@ -533,7 +533,7 @@ assert_plan_agreement() {
       questions|checking|wait) expected=6; state '{"snapshot":"declined","step5":true}'; fixture_facts+=$'\nActiveState=active'
         [[ $fixture != wait ]] || fixture_facts+=$'\nActiveState=activating'
         [[ $fixture != questions ]] || : >"$RUN/step6-asked" ;;
-      done) expected=7; state '{"done":true,"scale_task":2,"signin_step":1}' ;;
+      done) expected=7; state '{"done":true,"scale_task":2,"signin_step":2}' ;;
     esac
     plan=$(setup_plan "$fixture_facts")
     assert_equal "$(jq -r .step <<<"$plan")" "$expected"
@@ -545,7 +545,7 @@ assert_plan_agreement() {
   share_check() { return 1; }
   run cmd_panel
   assert_output --partial 'a real folder you own, not a link'
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   container_fact() { echo running; }
   run cmd_panel
   assert_equal "$(jq -r .setup.finished <<<"$output")" true
@@ -696,8 +696,8 @@ assert_plan_agreement() {
         share) share_check() { return 1; } ;;
         layout) layout_check() { echo broken; return 1; } ;;
         restore) : >"$S/restore-in-progress" ;;
-        done-container) state '{"done":true,"scale_task":2,"signin_step":1}'; container_fact() { echo running; } ;;
-        done-share) state '{"done":true,"scale_task":2,"signin_step":1}'; share_check() { return 1; } ;;
+        done-container) state '{"done":true,"scale_task":2,"signin_step":2}'; container_fact() { echo running; } ;;
+        done-share) state '{"done":true,"scale_task":2,"signin_step":2}'; share_check() { return 1; } ;;
       esac
       [[ $marker != consumed ]] || record_previous_run >/dev/null
       plan=$(setup_plan "$(shared_facts)")
@@ -1053,7 +1053,7 @@ assert_plan_agreement() {
 }
 
 @test "panel: warnings have no leading space and mismatch already explains the old driver" {
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   status_facts() { printf 'ActiveState=active\nLanaiClient=timeout\nLanaiDriverOld=old\nLanaiVersion=mismatch\nLanaiSetup=done\n'; }
   run cmd_panel
   assert_equal "$(jq -r .warning <<<"$output")" 'The Windows window did not open in time. Try Open window again.'
@@ -1725,7 +1725,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: stopped requires current finished setup and no unfinished restore" {
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   run cmd_panel
   assert_success
   assert_right_click start
@@ -1733,7 +1733,7 @@ assert_right_click() {
   run cmd_panel
   assert_success
   assert_right_click panel
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   : >"$S/restore-in-progress"
   run cmd_panel
   assert_success
@@ -1755,7 +1755,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: finished running install opens only its closed window" {
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   ST=active
   local window
   for window in false true; do
@@ -1769,7 +1769,7 @@ assert_right_click() {
 
 @test "panel clicks: CLI and panel snapshot or restore block Start but allow Open" {
   local origin operation fd pid=$BASHPID
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   for origin in cli panel; do
     for operation in snapshot restore; do
       exec {fd}>"$S/lock"
@@ -1800,7 +1800,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: pending panel launch opens the panel until it starts" {
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   run cmd_panel --pending click-job "$EPOCHSECONDS"
   assert_success
   assert_equal "$(jq -r .busy.active <<<"$output")" true
@@ -1808,7 +1808,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: active panel setup work blocks the stopped shortcut" {
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   local fd
   exec {fd}>"$S/panel-job.lock"
   flock -n "$fd"
@@ -1827,7 +1827,7 @@ assert_right_click() {
   run panel_words restore "$reply"
   assert_success
   assert_output "$words"
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   jq -nc --argjson reply "$reply" '{command:"restore",reply:$reply}' >"$S/panel-result-snapshots.json"
   shim systemctl 'printf "ActiveState=inactive\nResult=success\nInvocationID=\n"'
   export PATH=$T/shims:$PATH
@@ -1863,7 +1863,7 @@ assert_right_click() {
 }
 
 @test "panel restore: a refusal during unfinished recovery never claims Windows was unchanged" {
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   : >"$S/restore-in-progress"
   panel_result_write snapshots '{"command":"restore","reply":{"ok":false,"reason":"restore-unsupported","message":"Lanai cannot verify the image. The restore is still unfinished."}}'
   shim systemctl 'printf "ActiveState=inactive\nResult=success\nInvocationID=\n"'
@@ -1875,7 +1875,7 @@ assert_right_click() {
 }
 
 @test "panel activity: gathers once and reuses the result for the storage check" {
-  state '{"done":true,"scale_task":2,"signin_step":1}'
+  state '{"done":true,"scale_task":2,"signin_step":2}'
   shim python3 'if [[ $1 == */image-proof.py && $2 == activity ]]; then
   echo activity >>"$T/activity-calls"
   echo "{\"label\":\"Restoring Windows: replacing the disk\",\"percent\":99}"
@@ -1901,7 +1901,7 @@ SCALE='Scale saves apply only the next time Windows starts.'
 LOCK='Running setup again also turns the Windows lock off again.'
 CLIENT_DONE='The Windows window is updated. If the Windows window is open, close it and open it again.'
 CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window again.'
-CURRENT='{"done":true,"scale_task":2,"signin_step":1}'
+CURRENT='{"done":true,"scale_task":2,"signin_step":2}'
 
 # Assert the panel's warning is <stopped words> while Windows is stopped and
 # <running words> while it runs, with no Update button and no note under
@@ -1945,8 +1945,9 @@ assert_rerun_warning() {
   state '{"done":true,"scale_task":2}'
   assert_rerun_warning "$SIGNIN To fix this, click Run setup again. $LOCK" \
     "$SIGNIN To fix this, shut Windows down and click Run setup again. $LOCK"
-  # A mark other than 1 counts as missing.
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  # A mark other than the current one counts as missing: 1 is phase F's
+  # step in PowerShell, before the start program.
+  state '{"done":true,"scale_task":2,"signin_step":1}'
   assert_rerun_warning "$SIGNIN To fix this, click Run setup again. $LOCK" \
     "$SIGNIN To fix this, shut Windows down and click Run setup again. $LOCK"
 }

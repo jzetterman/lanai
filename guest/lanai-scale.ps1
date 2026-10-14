@@ -27,17 +27,10 @@
   elevated. Changes, caps, a current scale outside Windows' range (custom
   scaling) and distinct errors go to C:\Program Files\Lanai\lanai-scale.log.
 
-  The sign-in step: after a boot, Windows' frame can reach the size Lanai
-  asked for while the desktop keeps its old size, and Windows cannot switch
-  the desktop before the signed-in desktop is up. So on the first start of
-  the task since the sign-in (a mark in HKCU\Volatile Environment), the
-  main loop also sets the Looking Glass display's desktop to the size the
-  display driver stored from Lanai's latest ask that it took (ExtraMode in
-  HKLM\SOFTWARE\LookingGlass\IDD). It tries every 500 ms, reading that
-  size again each time, until the desktop matches or 2 minutes pass; it
-  stops early when Windows does not support the size or after 3 switches
-  that did not take. With no Looking Glass display or no stored size it
-  changes nothing. Its log lines start "Sign-in step:".
+  The scale task runs C:\Program Files\Lanai\lanai-start.exe, a windowless
+  program setup builds from lanai-start.cs. It starts this script in a
+  hidden powershell.exe, in a job that ends the script when the program
+  ends, and runs the sign-in step itself (its log is lanai-signin.log).
 
 .PARAMETER Scale
   Use this percentage instead of the SMBIOS string. For testing.
@@ -361,14 +354,12 @@ function Get-DisplayObservation {
 #                after an observation in range
 #   PortOpened   whether the port's opening was seen and logged
 #   MalformedLogged  whether a malformed line was logged
-#   Signin       the sign-in step's state (New-SigninState)
 function New-ScaleContext($State, $Queue, $Shared) {
     return @{
         State = $State; Queue = $Queue; Shared = $Shared
         Lines = New-Object 'System.Collections.Generic.List[object]'
         NextObserve = 0; LastError = ''; LoggedPortError = ''; LoggedSet = ''; LoggedCap = ''
         RangeLogged = $false; PortOpened = $false; MalformedLogged = $false
-        Signin = New-SigninState
     }
 }
 
@@ -487,193 +478,6 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
     if (-not $failed) { $Ctx.LastError = '' }
 }
 
-# --- The sign-in step (spec 12) ---
-# After a boot, the client can see Windows' frame at the window's size while
-# the desktop keeps its old size, and Windows' display helper cannot switch
-# the desktop until the signed-in desktop is up. So once per sign-in the
-# step sets the Looking Glass display's desktop to the size the display
-# driver stored from Lanai's latest ask that it took.
-
-# Parse the driver's stored mode <Value> ("<w>x<h>@<refresh>", "*" marking
-# the preferred one) to its Width and Height, or $null for anything else:
-# a value that is not a string, a side of 0, or a side that is not 1 to 5
-# ASCII digits. Any interactive user can write the value, so it is
-# untrusted; callers log the parsed size, never the raw value.
-function ConvertFrom-ExtraMode($Value) {
-    if ($Value -isnot [string] -or $Value -cnotmatch '^([0-9]{1,5})x([0-9]{1,5})@') { return $null }
-    $w = [int]$Matches[1]
-    $h = [int]$Matches[2]
-    if ($w -le 0 -or $h -le 0) { return $null }
-    return [pscustomobject]@{ Width = $w; Height = $h }
-}
-
-# The driver's stored mode, raw, or $null when the key or value is missing.
-# The registry API returns $null for a missing value and throws only on a
-# real error (Get-ItemPropertyValue throws on a missing value under Stop).
-function Get-StoredMode {
-    $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE\LookingGlass\IDD')
-    if ($null -eq $k) { return $null }
-    try { return $k.GetValue('ExtraMode') } finally { $k.Close() }
-}
-
-# The sign-in mark: $null until the step ran since this sign-in. Windows
-# rebuilds HKCU\Volatile Environment at each sign-in and drops it at
-# sign-out, so the mark lasts one sign-in.
-function Get-SigninMark {
-    $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Volatile Environment')
-    if ($null -eq $k) { return $null }
-    try { return $k.GetValue('LanaiSigninStep') } finally { $k.Close() }
-}
-
-# Set the sign-in mark. Throws when the key is missing: a key Lanai made
-# would not be volatile, and the mark would outlive the sign-in.
-function Set-SigninMark {
-    $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Volatile Environment', $true)
-    if ($null -eq $k) { throw 'HKCU\Volatile Environment is missing' }
-    try { $k.SetValue('LanaiSigninStep', '1') } finally { $k.Close() }
-}
-
-# The sign-in step's state:
-#   Phase      "gate" until the first tick reads the mark, "run" while the
-#              step tries, "done" once it stopped or skipped
-#   StartedAt  when the step started (ms on the loop's clock)
-#   NextTry    when the next try is due (one every 500 ms)
-#   Switches   each switch: Width, Height, Result (DISP_CHANGE) and At
-#   LastLine   the last switch line logged
-#   Logged     the wait and error lines logged, each logged once
-function New-SigninState {
-    return @{
-        Phase = 'gate'; StartedAt = 0; NextTry = 0
-        Switches = @()
-        LastLine = ''; Logged = @{}
-    }
-}
-
-# Name <N> switches, as "1 switch" or "2 switches".
-function Get-SwitchCount([int]$N) {
-    if ($N -eq 1) { return '1 switch' }
-    return "$N switches"
-}
-
-# Decide one try of the sign-in step at time <Now> (ms) from <State>
-# (New-SigninState), the parsed stored size <Stored> ($null when there is
-# none), the Looking Glass display's device name <Device> ($null or empty
-# when none is attached), its desktop size <Desktop> ("<w>x<h>") and
-# <ReadError> (the message of a read that threw, or empty). Returns Kind
-# "stop", "wait" or "switch", the Line to log ("" for none) and, for a
-# switch, the Width and Height. In order:
-#   120 s since the step started        stop, saying what it changed
-#   a read threw                        wait, naming the error
-#   no stored size                      stop
-#   no Looking Glass display            wait
-#   the desktop is the stored size      stop: it matches
-#   the last switch got DISP_CHANGE_BADMODE (-2) for this size: stop
-#   3 successful switches, each 2 s old, whose size the desktop does not
-#   show                                stop
-#   a successful switch under 2 s ago   wait (the switch is asynchronous)
-#   otherwise                           switch to the stored size
-function Get-SigninAction($State, [double]$Now, $Stored, $Device, $Desktop, [string]$ReadError = '') {
-    $switches = @($State.Switches)
-    $done = @($switches | Where-Object { $_.Result -eq 0 })
-    $changed = 'changed nothing'
-    if ($done.Count -gt 0) { $changed = "Windows reported $(Get-SwitchCount $done.Count) done" }
-    if ($Now - $State.StartedAt -ge 120000) { return [pscustomobject]@{ Kind = 'stop'; Line = "gave up after 2 minutes; $changed" } }
-    if ($ReadError -ne '') { return [pscustomobject]@{ Kind = 'wait'; Line = "error: $ReadError" } }
-    if ($null -eq $Stored) { return [pscustomobject]@{ Kind = 'stop'; Line = "no stored size; $changed" } }
-    if (-not $Device) { return [pscustomobject]@{ Kind = 'wait'; Line = 'no Looking Glass display' } }
-    $size = "$($Stored.Width)x$($Stored.Height)"
-    if ($Desktop -eq $size) {
-        $after = [math]::Round(($Now - $State.StartedAt) / 1000, 2)
-        return [pscustomobject]@{ Kind = 'stop'; Line = "desktop $size matches after $(Get-SwitchCount $switches.Count), $after s after the step started" }
-    }
-    $last = $null
-    if ($switches.Count -gt 0) { $last = $switches[$switches.Count - 1] }
-    if ($null -ne $last -and $last.Result -eq -2 -and $last.Width -eq $Stored.Width -and $last.Height -eq $Stored.Height) {
-        return [pscustomobject]@{ Kind = 'stop'; Line = "Windows does not support $size" }
-    }
-    $missed = @($done | Where-Object { $Now - $_.At -ge 2000 -and "$($_.Width)x$($_.Height)" -ne $Desktop })
-    if ($missed.Count -ge 3) { return [pscustomobject]@{ Kind = 'stop'; Line = '3 switches did not take' } }
-    if (@($done | Where-Object { $Now - $_.At -lt 2000 }).Count -gt 0) { return [pscustomobject]@{ Kind = 'wait'; Line = '' } }
-    return [pscustomobject]@{ Kind = 'switch'; Line = ''; Width = $Stored.Width; Height = $Stored.Height }
-}
-
-# Log one sign-in step line. A failed log is dropped.
-function Write-SigninLog([string]$Message) {
-    try { Write-Log "Sign-in step: $Message" | Out-Null } catch { }
-}
-
-# One pass of the main loop at time <Now> (ms) for the sign-in step in
-# <Ctx>.Signin. It acts at most every 500 ms and does nothing once the step
-# ended. The first tick is the gate: with the sign-in mark already set this
-# task start is not the first since the sign-in (the trigger's repetition
-# after the task exited), so it skips; otherwise it sets the mark and runs.
-# Each try reads the stored size, the display and its desktop again, asks
-# Get-SigninAction, and acts. Everything it calls is caught: an exception
-# is a failed try, logged once per message, so nothing here ends the task.
-# Returns nothing.
-function Invoke-SigninTick($Ctx, [double]$Now) {
-    $s = $Ctx.Signin
-    if ($s.Phase -eq 'done' -or $Now -lt $s.NextTry) { return }
-    $s.NextTry = $Now + 500
-    try {
-        if ($s.Phase -eq 'gate') {
-            $s.Phase = 'done'
-            $mark = $null
-            try { $mark = Get-SigninMark }
-            catch { Write-SigninLog "skipped (cannot read the sign-in mark: $($_.Exception.Message))"; return }
-            if ($null -ne $mark) { Write-SigninLog 'skipped (already ran since sign-in)'; return }
-            try { Set-SigninMark }
-            catch { Write-SigninLog "skipped (cannot set the sign-in mark: $($_.Exception.Message))"; return }
-            $s.Phase = 'run'
-            $s.StartedAt = $Now
-            # The loop's clock starts after PowerShell's start-up, the C#
-            # compile and the OEM read, so also name the process's start.
-            $process = 'unknown'
-            try { $process = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToString('o') } catch { }
-            Write-SigninLog "started $([math]::Round($Now / 1000, 2)) s into the main loop; the process started at $process"
-        }
-        $stored = $null
-        $device = $null
-        $desktop = $null
-        $readError = ''
-        try {
-            $stored = ConvertFrom-ExtraMode (Get-StoredMode)
-            if ($null -ne $stored) {
-                $device = [LanaiDesktop]::Find()
-                if ($device) { $desktop = [LanaiDesktop]::Size($device) }
-            }
-        }
-        catch { $readError = $_.Exception.Message }
-        $a = Get-SigninAction $s $Now $stored $device $desktop $readError
-        if ($a.Kind -eq 'stop') {
-            $s.Phase = 'done'
-            Write-SigninLog $a.Line
-        }
-        elseif ($a.Kind -eq 'wait') {
-            if ($a.Line -ne '' -and -not $s.Logged.ContainsKey($a.Line)) {
-                $s.Logged[$a.Line] = $true
-                Write-SigninLog $a.Line
-            }
-        }
-        else {
-            $result = [LanaiDesktop]::Apply($device, $a.Width, $a.Height)
-            $s.Switches += [pscustomobject]@{ Width = $a.Width; Height = $a.Height; Result = $result; At = $Now }
-            $line = "desktop $desktop, stored size $($a.Width)x$($a.Height); switch result $result"
-            if ($line -ne $s.LastLine) {
-                $s.LastLine = $line
-                Write-SigninLog $line
-            }
-        }
-    }
-    catch {
-        $line = "error: $($_.Exception.Message)"
-        if (-not $s.Logged.ContainsKey($line)) {
-            $s.Logged[$line] = $true
-            Write-SigninLog $line
-        }
-    }
-}
-
 # Frame the port's bytes into lines: <Partial> is the unfinished line
 # carried from the last read, <Chunk> the new text. Returns the complete
 # Lines (CR trimmed) and the new Partial. Lanai's lines are short, so a
@@ -765,9 +569,8 @@ $ReaderScript = {
     }
 }
 
-# The display configuration API from user32.dll, CreateFile for the scale
-# port, and the display settings calls for the sign-in step. DPI_GET and
-# DPI_SET use the undocumented device info types -3 and -4, which the
+# The display configuration API from user32.dll and CreateFile for the
+# scale port. DPI_GET and DPI_SET use the undocumented device info types -3 and -4, which the
 # Settings app uses for "Scale"; their scale fields count steps relative to
 # the recommended one. Windows PowerShell 5.1 compiles C# 5 only: no
 # interpolated strings, ?., nameof or out var.
@@ -923,90 +726,6 @@ public static class LanaiDisplay {
         if (rc != 0) throw new Exception("SET_DPI_SCALE failed: " + rc);
     }
 }
-
-// The Looking Glass display's desktop size, for the sign-in step. All
-// struct handling stays here: PowerShell [ref] struct calls to
-// EnumDisplayDevices failed on the first call in the prototype. The
-// layouts are the prototype's, which worked on Windows 11 26200.
-public static class LanaiDesktop {
-    // 840 bytes.
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct DISPLAY_DEVICE {
-        public int cb;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceString;
-        public int StateFlags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceID;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
-    }
-
-    // DEVMODEW with the display fields, 220 bytes.
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct DEVMODE {
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
-        public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
-        public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
-        public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
-        public short dmLogPixels;
-        public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
-        public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2;
-        public int dmPanningWidth, dmPanningHeight;
-    }
-
-    const int DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 1;
-    const int ENUM_CURRENT_SETTINGS = -1;
-    const int DM_PELSWIDTH_PELSHEIGHT = 0x180000;
-    const uint CDS_UPDATEREGISTRY = 1;
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern bool EnumDisplayDevicesW(string device, uint index, ref DISPLAY_DEVICE dd, uint flags);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern bool EnumDisplaySettingsW(string device, int mode, ref DEVMODE dm);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    static extern int ChangeDisplaySettingsExW(string device, ref DEVMODE dm, IntPtr hwnd, uint flags, IntPtr param);
-
-    // The device name of the display attached to the desktop whose adapter
-    // names Looking Glass, or null.
-    public static string Find() {
-        for (uint i = 0; ; i++) {
-            DISPLAY_DEVICE dd = new DISPLAY_DEVICE();
-            dd.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
-            if (!EnumDisplayDevicesW(null, i, ref dd, 0)) return null;
-            if ((dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != 0 && dd.DeviceString != null &&
-                dd.DeviceString.Contains("Looking Glass"))
-                return dd.DeviceName;
-        }
-    }
-
-    static DEVMODE Current(string device) {
-        DEVMODE dm = new DEVMODE();
-        dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
-        if (!EnumDisplaySettingsW(device, ENUM_CURRENT_SETTINGS, ref dm))
-            throw new Exception("EnumDisplaySettings failed: " + Marshal.GetLastWin32Error());
-        return dm;
-    }
-
-    // The device's desktop size, "<w>x<h>".
-    public static string Size(string device) {
-        DEVMODE dm = Current(device);
-        return dm.dmPelsWidth + "x" + dm.dmPelsHeight;
-    }
-
-    // Switch the device's desktop to <w>x<h>: the current mode with only
-    // the width and height fields set, saved to the registry as Windows'
-    // display helper does. Returns the DISP_CHANGE result: 0 success,
-    // -2 a mode Windows does not support.
-    public static int Apply(string device, int w, int h) {
-        DEVMODE dm = Current(device);
-        dm.dmPelsWidth = w;
-        dm.dmPelsHeight = h;
-        dm.dmFields = DM_PELSWIDTH_PELSHEIGHT;
-        return ChangeDisplaySettingsExW(device, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY, IntPtr.Zero);
-    }
-}
 '@
 
 try {
@@ -1032,7 +751,6 @@ try {
     $reader.BeginInvoke() | Out-Null
     $ctx = New-ScaleContext (New-ScaleState $want $save 0) $queue $shared
     while ($true) {
-        Invoke-SigninTick $ctx $clock.Elapsed.TotalMilliseconds
         Invoke-ScaleTick $ctx $clock.Elapsed.TotalMilliseconds
         Start-Sleep -Milliseconds 250
     }
