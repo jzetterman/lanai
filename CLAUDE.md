@@ -25,7 +25,7 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   in `COPYING`) and `test/` (bats; fake
   QMP and guest agent servers and trimmed client logs in `test/fixtures/`;
   `test/client-patches.bats` builds and runs the patches' C tests).
-  `docs/plugin/proof-kit/` holds the phase 1 and live-scale proof scripts and
+  `docs/plugin/proof-kit/` holds the phase 1, live-scale and resize proof scripts and
   `count-image-extents.py`, the read-only extent census.
 - QML lint: `test/qml-lint` (or `test/qml-lint <file>`). It makes a temporary
   repository-local import root with `qs` linked to `/usr/share/omarchy/shell`,
