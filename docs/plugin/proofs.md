@@ -1180,6 +1180,62 @@ cleared.
   the failure is after a boot only. John: "adjusted immediately after I
   signed in. Very fast."
 
+## Resize hands-on, phase G (2026-10-14)
+
+John ran the steps on the test copy (`~/lanai-proofs/lanai-setup-test`),
+Claude read the client log through `stamp-client-log`, all times EDT. The
+guest-host offset comes from `clock-ping` and `pong.ps1` at each boot (guest
+minus host, with its bound). Phase F's build (`89c9805`) was installed.
+
+- Step 0: John removed the phase E prototype task (`display-backstop.ps1
+  -Remove`).
+- Step 1 passed. The panel showed the Run setup again message with the lock
+  note. After Run setup again, the record has `"signin_step":1` beside
+  `"scale_task":2`, the warning is gone, and setup reached step 7.
+- Start after a shape change (1901x946 to 946x1146, which Hyprland's tiling
+  gave the reopened window): offset -0.239 s, bound 0.012 s. Sign-in (first
+  `Using Clipboard: LGMP`) at 17:16:48.50; asks at 17:16:47.69, 49.68 and
+  54.69; frame 946x1146 at 17:16:54.89 (6.4 s). The step's first check came
+  at 17:17:02.47 host time, 14.0 s after the sign-in, and found the desktop
+  matched (0 switches). Display settings: 946x1146. Passed.
+- Plain start 1, with the task's priority set to 4 (normal) by hand as a test:
+  offset -1.520 s, bound 0.008 s. The frame was 946x1146 at 17:23:16.06,
+  before the sign-in at 17:23:24.35. The step's first check came 14.1 s after
+  the sign-in and found the desktop matched. Display settings: 946x1146.
+  Passed.
+- Plain start 2, priority back to 7: offset -0.817 s, bound 0.008 s. Frame
+  946x1146 at 17:32:47.33, before the sign-in at 17:32:49.50. The step's first
+  check came 11.3 s after the sign-in, matched. Display settings: 946x1146.
+  Passed.
+
+**The scale task starts slowly at sign-in.** The Windows PowerShell event log
+(`probe-startup.ps1`, engine state `Available`) shows where the time goes, in
+guest time:
+
+| Boot | powershell.exe starts | Engine ready | C# compiled | Step's first check |
+|---|---|---|---|---|
+| 17:16 | 47.67 | 00.51 (+12.8 s) | 01.48 | 02.23 (+14.6 s) |
+| 17:23 (priority 4) | 22.43 | 35.19 (+12.8 s) | 36.14 | 36.88 (+14.4 s) |
+| 17:32 | 48.11 | 58.35 (+10.2 s) | 59.10 | 59.94 (+11.8 s) |
+
+Run warm, a new `powershell.exe` takes 146 ms, 323 ms with the compile, and
+231 ms with the WMI query: the task's code is fast, and the wait is
+PowerShell loading while Windows signs in. Normal task priority did not help.
+
+On the 17:32 boot, two probe sign-in tasks set up like the scale task
+(`probe-exe.ps1`) wrote their start times. From the sign-in at 17:32:48.68
+guest time: `cmd.exe` wrote its line at +4.5 s, and a small C# program built
+with Windows' own `csc.exe` reached its code at +6.7 s. PowerShell's engine
+was ready at +9.7 s and the step's first check came at +11.3 s.
+
+So a stuck desktop would be fixed 11 to 15 s after the sign-in, at or past
+the 15 s bar. John also saw a blank Windows PowerShell window at every
+sign-in that closed on its own: `-WindowStyle Hidden` takes effect only once
+PowerShell has loaded. John chose a small windowless program that setup
+builds in Windows, which starts the scale script with no window and runs the
+sign-in step itself (spec amendment 4, plan phase H). The starts above count
+for phase G's record but get run again on phase H's build.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with
