@@ -681,7 +681,7 @@ patch_fixture() {
   cp -a "$base/tree" "$work/tree"
   case $kind in
     exact) sed -i 's/beta/BETA/' "$work/tree/one" ;;
-    offset) sed -i 's/beta/BETA/' "$work/tree/one"; sed -i '1i extra' "$base/tree/one" ;;
+    offset) sed -i 's/beta/BETA/' "$work/tree/one" ;;
     fuzz) sed -i 's/beta/BETA/' "$work/tree/one" ;;
     failed) sed -i 's/beta/BETA/' "$work/tree/one"; sed -i 's/beta/OTHER/' "$base/tree/one" ;;
     already) sed -i 's/beta/BETA/' "$work/tree/one" ;;
@@ -720,6 +720,14 @@ patch_fixture() {
     mkdir -p "$T/empty/tree"
     printf 'alpha\nbeta\ngamma\n' >"$T/empty/tree/one"
     if [[ $kind == already ]]; then sed -i 's/beta/BETA/' "$T/empty/tree/one"; fi
+    if [[ $kind == offset ]]; then
+      # Shift the target, not the patch's base: GNU patch alone takes it
+      # with an offset, so only patches_apply's own check can refuse it.
+      sed -i '1i extra' "$T/empty/tree/one"
+      run patch -d "$T/empty" -p1 --dry-run --batch --fuzz=0 -i "$LANAI_PATCHES/0001-one.patch"
+      assert_success
+      assert_output --partial 'offset'
+    fi
     run patches_apply "$T/empty" "$T/apply.log"
     [[ $status != 0 ]] || fail "$kind patch unexpectedly applied"
     assert_failure
