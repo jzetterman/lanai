@@ -3,7 +3,8 @@
 # run as commands. No VM starts and nothing is downloaded: every case stops
 # before QEMU, curl is a PATH shim, `client` talks to test/fixtures/fake-qmp
 # and execs a stand-in client, and clock-ping talks to a stand-in pong.
-# shellcheck disable=SC2030,SC2031
+# display-backstop.ps1 gets static checks only.
+# shellcheck disable=SC2030,SC2031,SC2016
 
 load helpers
 
@@ -256,6 +257,25 @@ fake_pong() {
   assert_output ''
 }
 
+@test "clock-ping: a folder swapped for a link after the check is not followed" {
+  mkdir "$T/share" "$T/elsewhere"
+  # After the first ping, the guest moves the folder away and puts a link
+  # in its place, then keeps answering in the moved folder.
+  (
+    while [[ ! -s $T/share/ping.txt ]]; do sleep 0.01; done
+    mv "$T/share" "$T/moved"
+    ln -s "$T/elsewhere" "$T/share"
+    fake_pong "$T/moved"
+  ) 3>&- &
+  BG_PIDS+=("$!")
+  run timeout 30 "$KIT/clock-ping" "$T/share"
+  assert_success
+  assert_output --partial 'best: '
+  assert_equal "$(cat "$T/moved/ping.txt")" 'ping 10'
+  run find "$T/elsewhere" -mindepth 1
+  assert_output ''
+}
+
 @test "clock-ping: a folder that is a link is refused before any write" {
   mkdir "$T/real"
   ln -s "$T/real" "$T/linked"
@@ -264,4 +284,34 @@ fake_pong() {
   assert_output --partial 'link'
   run find "$T/real" -mindepth 1
   assert_output ''
+}
+
+@test "display-backstop.ps1: lives where only administrators write, and pins its loads before Add-Type" {
+  local f=$KIT/display-backstop.ps1 pins first add
+  # A standard user can create a folder under C:\ProgramData first.
+  run grep -n 'ProgramData' "$f"
+  assert_failure
+  run grep -nxF "\$dir  = 'C:\Program Files\LanaiProof'" "$f"
+  assert_success
+  # As lanai-scale.ps1: the system module folders, temp files in its own
+  # folder, no reference search path and the system folder as PATH, all
+  # before the first cmdlet and Add-Type.
+  run grep -E '^\$env:(PSModulePath|TMP|TEMP|LIB|PATH) = ' "$f"
+  assert_line '$env:PSModulePath = "$([Environment]::SystemDirectory)\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules"'
+  assert_line "\$env:TMP = 'C:\Program Files\LanaiProof\tmp'"
+  assert_line "\$env:TEMP = 'C:\Program Files\LanaiProof\tmp'"
+  assert_line "\$env:LIB = \$null"
+  assert_line "\$env:PATH = [Environment]::SystemDirectory"
+  pins=$(grep -nE '^\$env:(PSModulePath|TMP|TEMP|LIB|PATH) = ' "$f" | cut -d: -f1 | tail -n 1)
+  first=$(grep -nE '^[^#]*[A-Z][a-z]+-[A-Z][A-Za-z]+' "$f" | head -n 1 | cut -d: -f1)
+  add=$(grep -n '^Add-Type' "$f" | cut -d: -f1)
+  [[ -n $pins && -n $first && -n $add ]] || fail "pins $pins, first $first, Add-Type $add"
+  ((pins < first && pins < add)) || fail "pins end on line $pins; first cmdlet $first, Add-Type $add"
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  PS1=$f run pwsh -NoProfile -NonInteractive -Command '
+    $e = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$e) | Out-Null
+    $e.Count'
+  assert_success
+  assert_output 0
 }

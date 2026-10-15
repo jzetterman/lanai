@@ -1,19 +1,30 @@
 # Lanai resize proof (2026-10-13): the sign-in backstop prototype.
 # Worker (no switch): until the Looking Glass display's desktop matches the
 # driver's ExtraMode (Lanai's last ask), switch it there; give up after
-# -Seconds. Logs to C:\ProgramData\LanaiProof\display-backstop.log.
-# -Install (admin): copy this file to C:\ProgramData\LanaiProof and register a
-# logon task for the current user that runs it. -Remove (admin): undo both.
+# -Seconds. Logs to C:\Program Files\LanaiProof\display-backstop.log.
+# -Install (admin): copy this file to C:\Program Files\LanaiProof, where only
+# administrators can write, and register a logon task for the current user
+# that runs it elevated. -Remove (admin): undo both.
 # A prototype for a test copy of Windows only. Remove it after use (-Remove)
-# and never install it on a live Windows: a standard user can create the
-# C:\ProgramData folder first and control the file the elevated task runs.
+# and never install it on a live Windows.
 param([switch]$Install, [switch]$Remove, [int]$Seconds = 120)
 $ErrorActionPreference = 'Stop'
-$dir  = 'C:\ProgramData\LanaiProof'
+$dir  = 'C:\Program Files\LanaiProof'
 $task = 'Lanai display backstop proof'
 
+# The task runs elevated with the user's environment, so, as in
+# lanai-scale.ps1, nothing it loads may come from a folder that user can
+# write: the system module folders only, Add-Type's compiler files in this
+# folder, no reference search path (LIB), and the system folder as PATH.
+# Set before the first cmdlet or Add-Type.
+$env:PSModulePath = "$([Environment]::SystemDirectory)\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules"
+$env:TMP = 'C:\Program Files\LanaiProof\tmp'
+$env:TEMP = 'C:\Program Files\LanaiProof\tmp'
+$env:LIB = $null
+$env:PATH = [Environment]::SystemDirectory
+
 if ($Install) {
-  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  New-Item -ItemType Directory -Force -Path "$dir\tmp" | Out-Null
   Copy-Item -Force $PSCommandPath "$dir\display-backstop.ps1"
   $u = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   $a = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `

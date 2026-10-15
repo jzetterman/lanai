@@ -1251,25 +1251,35 @@ guest_ps() {
   # functions and the comment block.
   first=$(awk '/^<#/,/^#>/ { next } /^(function|\$ReaderScript)/ { skip = 1 } skip && /^}/ { skip = 0; next }
     !skip && /^[^#]*(Add-Type|[A-Z][a-z]+-[A-Z][A-Za-z]+)/ { print NR; exit }' "$f")
-  pins=$(grep -nE '^\$env:(PSModulePath|TMP|TEMP|LIB) = ' "$f" | cut -d: -f1 | sort -n | tail -n 1)
+  pins=$(grep -nE '^\$env:(PSModulePath|TMP|TEMP|LIB|PATH) = ' "$f" | cut -d: -f1 | sort -n | tail -n 1)
   [[ -n $first && -n $pins ]] || fail "first $first, pins $pins"
   ((pins < first)) || fail "the env pins end on line $pins, after line $first"
-  run grep -E '^\$env:(PSModulePath|TMP|TEMP|LIB) = ' "$f"
+  run grep -E '^\$env:(PSModulePath|TMP|TEMP|LIB|PATH) = ' "$f"
   assert_line "\$env:TMP = 'C:\Program Files\Lanai\tmp'"
   assert_line "\$env:TEMP = 'C:\Program Files\Lanai\tmp'"
-  # As the setup build: csc's reference search path is cleared, and the
-  # working folder is Lanai's, before Add-Type compiles.
+  # As the setup build: csc's reference search path is cleared and PATH is
+  # the system folder, before Add-Type compiles.
   assert_line "\$env:LIB = \$null"
-  local cd add
-  cd=$(grep -nxF "Set-Location -LiteralPath 'C:\Program Files\Lanai'" "$f" | cut -d: -f1)
+  assert_line "\$env:PATH = [Environment]::SystemDirectory"
+  local add
   add=$(grep -n '^Add-Type' "$f" | cut -d: -f1)
-  [[ -n $cd && -n $add ]] || fail "Set-Location $cd, Add-Type $add"
-  ((pins < cd && cd < add)) || fail "pins $pins, Set-Location $cd, Add-Type $add"
+  [[ -n $add ]] || fail "no Add-Type"
+  ((pins < add)) || fail "pins $pins, Add-Type $add"
+  # Set-Location moves only PowerShell's location, not the folder csc runs
+  # in: the start program sets that (the WorkingDirectory check below).
+  run grep -nE '^[^#]*Set-Location' "$f"
+  assert_failure
+  run grep -E '^\$env:(PSModulePath|TMP|TEMP|LIB|PATH) = ' "$f"
   assert_line --partial '$env:PSModulePath = "$([Environment]::SystemDirectory)\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules"'
   run grep -F "\$LogFile = 'C:\Program Files\Lanai\lanai-scale.log'" "$f"
   assert_success
   # Nothing under the user's profile.
   run grep -iE 'LOCALAPPDATA|APPDATA|USERPROFILE' "$f"
+  assert_failure
+}
+
+@test "lanai-scale.ps1: the sign-in step lives only in the start program (plan phase H)" {
+  run grep -nE 'Invoke-SigninTick|LanaiDesktop' "$REPO/guest/lanai-scale.ps1"
   assert_failure
 }
 
@@ -1477,6 +1487,8 @@ start_cs() {
   assert_output --partial 'Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe")'
   assert_output --partial 'Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "lanai-scale.ps1")'
   assert_output --partial '"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \""'
+  # The script's process runs in Lanai's folder, where Add-Type's csc runs.
+  assert_output --partial 'info.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;'
   assert_output --partial 'GetSystemFirmwareTable(0x52534D42, 0, '
   assert_output --partial 'StringComparison.OrdinalIgnoreCase'
   # The job handle: an IntPtr in a static field, never closed or wrapped in
@@ -1560,6 +1572,7 @@ start_cs() {
       (S 11 @("lanai-scale-save=5", "lanai-scale=150") 5) + (S 11 @("other=1") 5) + $end
     Is (Rsmb $real) Found "a realistic table"
     Is (Rsmb ((S 11 @("lanai-scale-save=5", "lanai-scale2=1") 5) + $end)) NotFound "other type 11 strings"
+    Is (Rsmb ((S 11 @("x-lanai-scale=1")) + $end)) NotFound "a string that only contains it"
     Is (Rsmb ((S 1 @("lanai-scale=100") 27) + $end)) NotFound "the string in another type"
     Is (Rsmb @()) NotFound "an empty table"
     Is (Rsmb ((S 0 @("SeaBIOS") 24) + (S 11 @("lanai-scale=100") 5) + $end) 30) NotFound "a type 11 past the table length"
@@ -1569,6 +1582,10 @@ start_cs() {
     $t = [byte[]]((S 11 @("lanai-scale=100")) + $end)
     Is (Rsmb $t ($t.Count + 1)) Failed "a header length one past the buffer"
     Is (Rsmb $t $t.Count) Found "a header length that fills the buffer"
+    # Each high byte of the 32-bit length counts.
+    foreach ($high in 0x100, 0x10000, 0x1000000) {
+      Is (Rsmb $t ($t.Count + $high)) Failed "a header length with $high added"
+    }
     # Broken structures stop the walk: no throw, not found.
     Is (Rsmb ([byte[]]@(0, 200, 0, 0) + (S 11 @("lanai-scale=100")))) NotFound "a length past the end"
     $short = [byte[]]@(11, 3, 0, 0) + [Text.Encoding]::ASCII.GetBytes("lanai-scale=100") + [byte[]]@(0, 0)

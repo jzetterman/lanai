@@ -88,7 +88,8 @@ COPYING_SHA=8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
     --target looking-glass-client resize-tests config-message-tests mouse-tests >"$T/build.log" 2>&1 ||
     fail "the client or its tests did not build: $(grep -m5 -E 'error' "$T/build.log")"
   assert [ -x "$T/build/looking-glass-client" ]
-  run ctest --test-dir "$T/build" -R '^(resize|config-message|mouse)-' --output-on-failure
+  # --no-tests=error: a filter that matches no test fails, not passes.
+  run ctest --test-dir "$T/build" -R '^(resize|config-message|mouse)-' --no-tests=error --output-on-failure
   assert_success
 
   # resize-tests names the same cases that CMake registers.

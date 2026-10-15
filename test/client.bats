@@ -910,6 +910,14 @@ esac'
   assert_success
   assert [ -e "$T/cmake.calls" ]
   assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
+  # Current patches on a binary that reports another build rebuild it.
+  printf '#!/bin/sh\necho "00:00:00.000 [I] main.c:4303 | main | Looking Glass (B7-1-deadbeef)" >&2\n' \
+    >"$LGDIR/$LG_BUILD/bin/looking-glass-client"
+  rm "$T/cmake.calls"
+  run build_client
+  assert_success
+  assert [ -e "$T/cmake.calls" ]
+  assert_equal "$(client_version "$LGDIR/$LG_BUILD/bin/looking-glass-client")" "$LG_BUILD"
 }
 
 @test "build_client: a failed update keeps the working client and its old identity" {
@@ -966,6 +974,19 @@ exec /usr/bin/mv "$@"'
   assert [ ! -e "$XDG_CACHE_HOME/lanai/build-$LG_BUILD" ]
 }
 
+@test "build_client: an empty patch fails with its name, though GNU patch takes it" {
+  lg_source
+  : >"$T/fixture-patches/0002-empty.patch"
+  run patch -d "$T/src/looking-glass-$LG_BUILD" -p1 --dry-run --batch -i "$T/fixture-patches/0002-empty.patch"
+  assert_success
+  run --separate-stderr build_client
+  assert_failure
+  assert_output "the Lanai patch 0002-empty.patch does not apply exactly to Looking Glass $LG_BUILD; see $S/build-client.log"
+  run tail -n 1 "$S/build-client.log"
+  assert_output "the Lanai patch 0002-empty.patch does not apply exactly to Looking Glass $LG_BUILD; see $S/build-client.log"
+  assert [ ! -e "$LGDIR/$LG_BUILD" ]
+}
+
 @test "build_client: no patches is an error that stamps nothing, even for an installed client" {
   lg_source
   LANAI_PATCHES=$T/no-patches
@@ -1014,7 +1035,8 @@ exec /usr/bin/mv "$@"'
 
 @test "build_client.log: every failure leaves its reason and nothing from an older build" {
   local case reason
-  for case in patches download unpack submodule offset configure usb build install version; do
+  # patchid stubs patches_id for the rest of the loop, so it comes last.
+  for case in patches download unpack submodule offset configure usb build install version stamp patchid; do
     lg_source
     rm -rf "${LGDIR:?}" "$XDG_CACHE_HOME/lanai" "$T"/{curl,configure,build,install}-fails "$T/no-usb" "$T/client-version"
     mkdir -p "$S"
@@ -1044,6 +1066,13 @@ exec /usr/bin/mv "$@"'
       build) touch "$T/build-fails" ;;
       install) touch "$T/install-fails" ;;
       version) echo B7-1-deadbeef >"$T/client-version" ;;
+      # The quick path: a current client whose build stamp cannot be written.
+      stamp)
+        fake_build "$LG_BUILD"
+        patches_id >"$LGDIR/$LG_BUILD/build-patches"
+        mkdir "$LGDIR/$LG_BUILD/build-stamp"
+        ;;
+      patchid) patches_id() { return 1; } ;;
     esac
     run --separate-stderr build_client
     assert_failure

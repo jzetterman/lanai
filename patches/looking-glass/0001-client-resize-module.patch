@@ -276,8 +276,8 @@ diff -Naur lg-pristine/client/src/resize.h lg-working/client/src/resize.h
 +#endif
 diff -Naur lg-pristine/client/tests/resize_test.c lg-working/client/tests/resize_test.c
 --- lg-pristine/client/tests/resize_test.c	1970-01-01 00:00:00.000000000 +0000
-+++ lg-working/client/tests/resize_test.c	2026-10-15 00:05:44.952615696 +0000
-@@ -0,0 +1,699 @@
++++ lg-working/client/tests/resize_test.c	2026-10-15 02:23:11.575372437 +0000
+@@ -0,0 +1,724 @@
 +/**
 + * Looking Glass
 + * Copyright (C) 2026 John Zetterman
@@ -903,6 +903,30 @@ diff -Naur lg-pristine/client/tests/resize_test.c lg-working/client/tests/resize
 +  CHECK(countLines("did not take") == 0);
 +}
 +
++/* The window at width x height and the guest at 1600x900 differ in one side
++ * only: one ask goes out, and the guest taking it, a change of that side
++ * alone, stops the asks. */
++static void oneSide(unsigned width, unsigned height)
++{
++  start();
++  window(width, height);
++  frame(1600, 900);
++  runTo(T0 + SEC(1));
++  CHECK(t.asks == 1);
++  checkAsk(0, T0, width, height);
++
++  frame(width, height);
++  runTo(T0 + SEC(300));
++  CHECK(t.asks == 1);
++  CHECK(countLines("did not take") == 0);
++}
++
++static void testOneSide(void)
++{
++  oneSide(1600, 1000);
++  oneSide(1700, 900);
++}
++
 +static void testLogLines(void)
 +{
 +  start();
@@ -948,6 +972,7 @@ diff -Naur lg-pristine/client/tests/resize_test.c lg-working/client/tests/resize
 +  { "late-change", testLateChange },
 +  { "same-size"  , testSameSize   },
 +  { "replaced"   , testReplaced   },
++  { "one-side"   , testOneSide    },
 +  { "log-lines"  , testLogLines   },
 +};
 +

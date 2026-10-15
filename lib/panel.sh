@@ -1,17 +1,19 @@
 # The panel's read-only view and copy table. No setup reply file is consulted.
 # shellcheck shell=bash
 
-# old_task_note <running true|false>: print the standing note for an install
-# whose scale task is from before live scale (scale_task_kind old).
+# old_task_note <running true|false> [<button>]: print the standing note for
+# an install whose scale task is from before live scale (scale_task_kind
+# old). <button> is the setup button that shows (default Run setup again).
 old_task_note() {
   local how="click"
   [[ $1 != true ]] || how="shut Windows down and click"
-  printf 'Scale saves apply the next time Windows starts. To make them apply while Windows runs, %s Run setup again.\n' "$how"
+  printf 'Scale saves apply the next time Windows starts. To make them apply while Windows runs, %s %s.\n' "$how" "${2:-Run setup again}"
 }
 
 # Reply words depend on command, ok, step and structured details/reasons.
 # The optional current plan step selects visible snapshot-choice retry controls
-# and the button a failed client build names (step 7 is Run setup again).
+# and a failed client build's words: step 7 (Run setup again) updates the
+# Windows window, any other step prepares it (Continue setup).
 # Offers and waits belong to the durable view and therefore have no result text.
 # A settings save's words come from its scale_saved, running and scale_task_kind
 # fields; for a scale save, cmd_settings prints the same words (plus
@@ -56,8 +58,8 @@ panel_words() {
         else "Continue setup." end)
       elif .reason and (reasons[.reason] != null) then reasons[.reason]
       elif $c == "setup" and .step == "4" then
-        "Setup could not update the Windows window. Check the Windows window build log, then click " +
-        (if $step == "7" then "Run setup again." else "Continue setup." end)
+        (if $step == "7" then "Setup could not update the Windows window. Check the Windows window build log, then click Run setup again."
+        else "Setup could not prepare the Windows window. Check the Windows window build log, then click Continue setup." end)
       elif $c == "setup" and .step == "2" and .missing then ""
       elif $c == "setup" and .step == "3" and .reason == null then ""
       else ({start:"Windows could not start. Check the button actions log and the Windows VM log and try again.",
@@ -109,7 +111,7 @@ panel_records() {
 cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
-  local client_old=false signin_missing=false update_shown=false task started=0 booted
+  local client_old=false signin_missing=false update_shown=false task started=0 booted button
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
       emit false "" "Invalid panel input." ""; return 2
@@ -179,12 +181,15 @@ cmd_panel() {
     fi
     # A failed reply about another step is over, and one with the plan's
     # reason repeats the problem line. One exception: a client build that
-    # failed in Run setup again. The plan is then finished (step 7), and
-    # the failure holds while the client is still old.
-    if [[ $group == setup ]] && jq -e --argjson p "$plan" --argjson old "$client_old" '
+    # failed in Run setup again (the panel passes --window or --no-window).
+    # The plan is then finished (step 7), and the failure holds while the
+    # client is still old and the update button is hidden; with the button,
+    # the resize warning names the one step.
+    if [[ $group == setup ]] && jq -e --argjson p "$plan" --argjson old "$client_old" --argjson shown "$update_shown" '
       .reply.ok == false and
       ((.reply.step != null and .reply.step != $p.step and
-        ((.reply.step == "4" and $p.finished and $old) | not)) or
+        ((.reply.step == "4" and $p.finished and $old and ($shown | not) and
+          any(.args[]?; . == "--window" or . == "--no-window")) | not)) or
        (.reply.reason != null and .reply.reason == $p.reason))' <<<"$doc" >/dev/null; then
       words=''
     fi
@@ -194,17 +199,22 @@ cmd_panel() {
         snapshot) words="The snapshot did not finish. Try again." ;;
         restore) words="The restore did not finish. Finish the unfinished restore or restore another snapshot before starting Windows." ;;
         build-client) words="The update did not finish. Click Update the Windows window again." ;;
-        *) words="Setup was interrupted. Continue setup to try again." ;;
+        # Run setup again's step 4 build runs while the plan is finished.
+        *) if jq -e '.finished' <<<"$plan" >/dev/null; then
+          words="Setup was interrupted. Click Run setup again to try again."
+        else words="Setup was interrupted. Continue setup to try again."; fi ;;
       esac
     fi
     # An update's done words hold until a client starts after the job
-    # ended (the next lanai open runs the new binary), or until a reboot
-    # after it. Its failed and interrupted words name the update button,
-    # so they hold only while that button shows.
+    # ended (the next lanai open runs the new binary), until a reboot
+    # after it, or until the client is old again. Its failed and
+    # interrupted words name the update button, so they hold only while
+    # that button shows.
     if [[ $group == client ]]; then
       if jq -e '.reply.ok == true' <<<"$doc" >/dev/null; then
-        ! jq -e --argjson c "$started" --argjson b "$booted" '$c > .ended or $b > .ended' <<<"$doc" >/dev/null ||
+        if $client_old || jq -e --argjson c "$started" --argjson b "$booted" '$c > .ended or $b > .ended' <<<"$doc" >/dev/null; then
           words=''
+        fi
       elif ! $update_shown; then words=''; fi
     fi
     results=$(jq -nc --argjson r "$results" --arg g "$group" --arg w "$words" '$r + {($g):$w}')
@@ -213,12 +223,14 @@ cmd_panel() {
     # The note near the scale list: with the live scale task, while Windows
     # runs, that a scale save replaces a pick; with the old task, how to
     # make scale saves apply while Windows runs, unless the resize warning
-    # already says it (the panel names Run setup again once).
-    note='' active=false
+    # already says it (the panel names Run setup again once). An unfinished
+    # plan (req 8's driver update) shows Continue setup instead.
+    note='' active=false button='Run setup again'
     ! jq -e '.active' <<<"$status" >/dev/null || active=true
+    jq -e '.finished' <<<"$plan" >/dev/null || button='Continue setup'
     case $task in
       new) ! $active || note='Saving a scale replaces one you picked in Windows.' ;;
-      old) $signin_missing || note=$(old_task_note "$active") ;;
+      old) $signin_missing || note=$(old_task_note "$active" "$button") ;;
     esac
     settings=$(jq -c --arg steps "$LANAI_SCALE_STEPS" --arg note "$note" '{memory_gib,cores,windows_scale,error:"",
       line:"Memory and cores apply the next time Windows starts.",note:$note,
@@ -353,16 +365,17 @@ cmd_panel() {
       if $st.state != "version-mismatch" and ($facts | contains("LanaiDriverOld=")) then "The Windows display driver needs an update. Shut down and continue setup." else empty end,
       # The resize warning (req 12): with the sign-in step present, an old
       # client gets the update button. Without the step, Run setup again
-      # is the one step: one message says what it fixes (an old client, the
-      # missing step, and scale saves with the old task) and the lock.
+      # is the one step: one message says what it fixes (the size, from
+      # the missing step and an old client, and scale saves with the old
+      # task) and the lock.
       if $signinMissing then
-        ([if $clientOld then "Windows may start at, or change to, the wrong size." else empty end,
-          "After Windows starts, it may stay at its old size until you resize the window.",
+        ([if $clientOld then "Windows may start at the wrong size and stay there until you resize the window, and it may change to the wrong size while it runs."
+          else "After Windows starts, it may stay at its old size until you resize the window." end,
           if $task == "old" then "Scale saves apply only the next time Windows starts." else empty end]) as $fixes |
-        ($fixes + ["To fix " + ({"1":"this","2":"both","3":"all three"}[$fixes | length | tostring]) + ", " +
+        ($fixes + ["To fix " + ({"1":"this","2":"both"}[$fixes | length | tostring]) + ", " +
           (if $off then "click Run setup again." else "shut Windows down and click Run setup again." end),
           "Running setup again also turns the Windows lock off again."] | join(" "))
-      elif $clientOld then
+      elif $updateShown then
         "Windows may start at, or change to, the wrong size until you click Update the Windows window. Updating changes nothing in Windows."
       else empty end
     ] | join(" "))'

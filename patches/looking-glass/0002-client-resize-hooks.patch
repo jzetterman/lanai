@@ -247,7 +247,7 @@ diff -Naur lg-pristine/client/src/main.c lg-working/client/src/main.c
  
 diff -Naur lg-pristine/client/tests/CMakeLists.txt lg-working/client/tests/CMakeLists.txt
 --- lg-pristine/client/tests/CMakeLists.txt	2026-09-01 11:49:36.000000000 +0000
-+++ lg-working/client/tests/CMakeLists.txt	2026-10-13 18:38:14.200545065 +0000
++++ lg-working/client/tests/CMakeLists.txt	2026-10-15 02:22:31.539010338 +0000
 @@ -328,6 +328,7 @@
  add_executable(mouse-tests
    mouse_test.c
@@ -256,7 +256,7 @@ diff -Naur lg-pristine/client/tests/CMakeLists.txt lg-working/client/tests/CMake
    ../src/input.c
    ../src/util.c
  )
-@@ -756,10 +757,48 @@
+@@ -756,10 +757,49 @@
    )
  endforeach()
  
@@ -286,6 +286,7 @@ diff -Naur lg-pristine/client/tests/CMakeLists.txt lg-working/client/tests/CMake
 +  late-change
 +  same-size
 +  replaced
++  one-side
 +  log-lines
 +)
 +foreach(name IN LISTS RESIZE_CASES)
@@ -305,7 +306,7 @@ diff -Naur lg-pristine/client/tests/CMakeLists.txt lg-working/client/tests/CMake
    ../src/config.c
  )
  target_compile_definitions(config-message-tests PRIVATE
-@@ -780,6 +819,14 @@
+@@ -780,6 +820,14 @@
    equal
    reinit
    control

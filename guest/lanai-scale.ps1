@@ -47,13 +47,16 @@ $ErrorActionPreference = 'Stop'
 # may come from a folder that user can write: the system module folders
 # only, and Add-Type's compiler files in Lanai's own administrator-only
 # folder. Set before the first cmdlet or Add-Type. As in setup's build,
-# LIB (the compiler's search path for references) is cleared and the
-# working folder is Lanai's.
+# LIB (the compiler's search path for references) is cleared and PATH is
+# the system folder only. Add-Type runs the compiler in this process's
+# working folder, which lanai-start.exe sets to Lanai's folder when it
+# starts the script. Set-Location would not change it: it moves only
+# PowerShell's own location.
 $env:PSModulePath = "$([Environment]::SystemDirectory)\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules"
 $env:TMP = 'C:\Program Files\Lanai\tmp'
 $env:TEMP = 'C:\Program Files\Lanai\tmp'
 $env:LIB = $null
-Set-Location -LiteralPath 'C:\Program Files\Lanai'
+$env:PATH = [Environment]::SystemDirectory
 $LogFile = 'C:\Program Files\Lanai\lanai-scale.log'
 
 # Windows' scale steps, in order. The index of a step is what the relative

@@ -1475,10 +1475,21 @@ setup_command() {
           return 1
         fi
         built=true
-        out=$(build_client_locked) || {
-          setup_reply false 4 "The Looking Glass client was not built: $out" "fix the cause, then run setup again"
+        # The words and the build log match lanai build-client's; a first
+        # setup prepares the Windows window, Run setup again updates it.
+        out=$(build_client_locked) || rc=$?
+        if ((rc == 3)); then
+          setup_reply false 4 "Another build of the Windows window is running." \
+            "wait for it to finish, then run setup again" '{"reason":"build-busy"}'
           return 1
-        }
+        elif ((rc != 0)); then
+          local verb=prepared next
+          ! setup_done || verb=updated
+          next="check the Windows window build log, $(state_dir)/build-client.log, then run setup again"
+          [[ -n $(patches_list) ]] || next="reinstall Lanai"
+          setup_reply false 4 "The Windows window was not $verb: $out" "$next"
+          return 1
+        fi
         ;;
       setup-boot)
         out=$(setup_guest "$window") || rc=$?

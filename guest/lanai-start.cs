@@ -351,8 +351,10 @@ public static class LanaiStart {
 
     // Start lanai-scale.ps1 from this program's own folder, in
     // powershell.exe by its absolute path in the system folder. No shell
-    // and no window: Windows gives the script a hidden conhost.exe. Returns
-    // null, or why it failed.
+    // and no window: Windows gives the script a hidden conhost.exe. The
+    // script's working folder is this program's folder, where only
+    // administrators can write: the script's Add-Type runs the compiler
+    // there. Returns null, or why it failed.
     static string StartScript() {
         try {
             ProcessStartInfo info = new ProcessStartInfo(
@@ -361,6 +363,7 @@ public static class LanaiStart {
                 Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "lanai-scale.ps1") + "\"");
             info.UseShellExecute = false;
             info.CreateNoWindow = true;
+            info.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;
             script = Process.Start(info);
             if (script == null) return "powershell.exe did not start";
             return null;

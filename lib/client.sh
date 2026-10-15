@@ -261,7 +261,8 @@ patches_id() {
 }
 
 # Apply each patch exactly. GNU patch can succeed with an offset, so its
-# Hunk diagnostics are treated as failure as well as a nonzero status.
+# Hunk diagnostics are treated as failure as well as a nonzero status. It
+# also succeeds on an empty file, so a patch must patch at least one file.
 patches_apply() {
   local src=$1 log=$2 patch_file output rc patch_dir
   local -a list=()
@@ -275,7 +276,7 @@ patches_apply() {
       rc=$?
     fi
     printf '%s\n' "$output" >>"$log"
-    if ((rc != 0)) || grep -q '^Hunk ' <<<"$output"; then
+    if ((rc != 0)) || grep -q '^Hunk ' <<<"$output" || ! grep -q '^patching file ' <<<"$output"; then
       build_fail "$log" "the Lanai patch $patch_file does not apply exactly to Looking Glass $LG_BUILD; see $log"
       return 1
     fi
@@ -288,12 +289,13 @@ build_fail() {
   printf '%s\n' "$2" | tee -a "$1"
 }
 
-# True only for an installed binary carrying the current patch identity.
+# build_patches_current [<id>]: true only for an installed binary carrying
+# the current patch identity. build_client passes the id it computed.
 build_patches_current() {
-  local d id
+  local d id=${1:-}
   d=$(client_builds)/$LG_BUILD
   [[ -x $d/bin/looking-glass-client && -f $d/build-patches ]] || return 1
-  id=$(patches_id) || return 1
+  [[ -n $id ]] || id=$(patches_id) || return 1
   [[ $(<"$d/build-patches") == "$id" ]]
 }
 
@@ -463,14 +465,16 @@ build_client() {
     return 1
   fi
   patch_id=$(patches_id) || {
+    : >"$log"
     build_fail "$log" "cannot read Lanai's Looking Glass patches in $LANAI_PATCHES"
     return 1
   }
-  # The quick path: build_patches_current, against the id computed above.
-  if [[ -x $dest/bin/looking-glass-client && -f $dest/build-patches &&
-    $(<"$dest/build-patches") == "$patch_id" &&
-    $(client_version "$dest/bin/looking-glass-client" 2>/dev/null) == "$LG_BUILD" ]]; then
+  # The quick path: the installed binary has the current patches and
+  # reports the pinned build.
+  if build_patches_current "$patch_id" &&
+    [[ $(client_version "$dest/bin/looking-glass-client" 2>/dev/null) == "$LG_BUILD" ]]; then
     printf '%s\n' "$LG_BUILD" >"$dest/build-stamp" || {
+      : >"$log"
       build_fail "$log" "cannot write $dest/build-stamp"
       return 1
     }

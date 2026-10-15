@@ -41,6 +41,8 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   (`.github/workflows/test.yml`). `test/client-patches.bats` also applies every patch
   to the pinned source, builds the client and runs its tests when
   `LANAI_TEST_LG_TARBALL` names the pinned source tarball (local only; CI skips it).
+  The guest C# and PowerShell tests in `test/guest.bats` need `pwsh`, which CI does
+  not install, so CI skips them: run them locally before a merge.
 
 ## Rules
 
@@ -56,7 +58,9 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
 - Lanai changes the Looking Glass client only through the patches in
   `patches/looking-glass/`, applied exactly to the pinned source (no offset or fuzz);
   the IDD stays the pinned build. A pin change needs patches that apply exactly to
-  the new source.
+  the new source, and a recheck that the new IDD still stores the ask where and as
+  `guest/lanai-start.cs` reads it (`ExtraMode` in `HKLM\SOFTWARE\LookingGlass\IDD`,
+  `<w>x<h>@<refresh>[*]`; spec 12, the sign-in bullet).
 - The spike (`spike/`) never writes to the live `omarchy-windows-vm` disk; it works on a
   reflink copy. Lanai boots the live disk only after its adoption checks pass
   (docs/plugin/spec.md, requirements 1-5).

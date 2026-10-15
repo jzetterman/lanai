@@ -867,8 +867,21 @@ exec /usr/bin/mv "$@"'
   setup_run
   assert_failure
   assert_equal "$(field step)" 4
-  run field message
-  assert_output --partial "USB audio"
+  # The words and the build log match lanai build-client's.
+  assert_equal "$(field message)" "The Windows window was not prepared: cmake turned USB audio off"
+  assert_equal "$(field next)" "check the Windows window build log, $S/build-client.log, then run setup again"
+  assert_equal "$(field reason)" null
+  # Run setup again on a finished install updates the window.
+  setup_json '{"snapshot": "declined", "done": true}'
+  setup_run --window
+  assert_failure
+  assert_equal "$(field step)" 4
+  assert_equal "$(field message)" "The Windows window was not updated: cmake turned USB audio off"
+  # Missing patches mean a broken install.
+  LANAI_PATCHES=$T/no-patches
+  setup_run --window
+  assert_failure
+  assert_equal "$(field next)" "reinstall Lanai"
 }
 
 @test "setup plan: stale patches rebuild during a setup round but do not unset a finished install" {
@@ -884,6 +897,14 @@ exec /usr/bin/mv "$@"'
   run setup_plan "$(shared_facts)" auto true
   assert_success
   assert_equal "$(jq -r .step <<<"$output")" 7
+  # A setup round on a finished install (Run setup again's record, after
+  # its setup boot started) still rebuilds the stale client.
+  setup_json "$(jq -nc --argjson i "$LANAI_SIGNIN_STEP" \
+    '{snapshot:"declined",done:true,scale_task:2,signin_step:$i,round:true,step5:false}')"
+  # shellcheck disable=SC2119
+  run setup_plan "$(shared_facts)" auto true
+  assert_success
+  assert_equal "$(jq -r .step <<<"$output")" 4
 }
 
 @test "lanai setup step 5: starts the setup boot, then reports it while it runs" {
@@ -1772,8 +1793,8 @@ exec /usr/bin/mv "$@"'
   setup_run
   assert_failure
   assert_equal "$(field step)" 4
-  run field message
-  assert_output --partial 'another Looking Glass client build is running'
+  assert_equal "$(field message)" 'Another build of the Windows window is running.'
+  assert_equal "$(field reason)" build-busy
   assert [ ! -e "$T/build.calls" ]
   exec {fd}>&-
 }
