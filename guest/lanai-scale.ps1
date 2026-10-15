@@ -570,9 +570,9 @@ $ReaderScript = {
 }
 
 # The display configuration API from user32.dll and CreateFile for the
-# scale port. DPI_GET and DPI_SET use the undocumented device info types -3 and -4, which the
-# Settings app uses for "Scale"; their scale fields count steps relative to
-# the recommended one. Windows PowerShell 5.1 compiles C# 5 only: no
+# scale port. DPI_GET and DPI_SET use the undocumented device info types
+# -3 and -4, which the Settings app uses for "Scale"; their scale fields
+# count steps relative to the recommended one. Windows PowerShell 5.1 compiles C# 5 only: no
 # interpolated strings, ?., nameof or out var.
 Add-Type -TypeDefinition @'
 using System;

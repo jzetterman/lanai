@@ -764,6 +764,11 @@ patch_fixture() {
   printf changed >"$LANAI_PATCHES/0001-a.patch"
   second=$(patches_id)
   [[ $second != "$first" ]]
+  # A rename that keeps the order still changes the id.
+  mv "$LANAI_PATCHES/0002-b.patch" "$LANAI_PATCHES/0002-z.patch"
+  assert_equal "$(patches_list)" $'0001-a.patch\n0002-z.patch'
+  [[ $(patches_id) != "$second" ]]
+  mv "$LANAI_PATCHES/0002-z.patch" "$LANAI_PATCHES/0002-b.patch"
   mv "$LANAI_PATCHES/0001-a.patch" "$LANAI_PATCHES/0003-a.patch"
   [[ $(patches_id) != "$second" ]]
   rm "$LANAI_PATCHES/0002-b.patch"
@@ -787,7 +792,9 @@ patch_fixture() {
   echo stale >"$d/build-patches"
   run build_patches_current
   assert_failure
-  rm "$d/build-patches" "$d/bin/looking-glass-client"
+  # A current id file without the binary is not current.
+  patches_id >"$d/build-patches"
+  rm "$d/bin/looking-glass-client"
   run build_patches_current
   assert_failure
 }
@@ -938,6 +945,47 @@ esac'
   assert_success
   run grep -F 'features have been enabled:' "$S/build-client.log"
   assert_success
+  # With two patches, both patches' apply lines stay in the log.
+  rm -rf "${LGDIR:?}"
+  mkdir -p "$T/patchdiff/patched2/client"
+  cp -a "$T/patchdiff/patched/." "$T/patchdiff/patched2/"
+  echo second >"$T/patchdiff/patched2/client/lanai-second.txt"
+  (cd "$T/patchdiff" && diff -Naur patched patched2) \
+    >"$T/fixture-patches/0002-second.patch" || [[ $? == 1 ]]
+  run build_client
+  assert_success
+  run grep -F 'lanai-patched.txt' "$S/build-client.log"
+  assert_success
+  run grep -F 'lanai-second.txt' "$S/build-client.log"
+  assert_success
+}
+
+@test "build_client.log: an early failure leaves its reason and nothing from an older build" {
+  local case reason
+  for case in patches download unpack submodule; do
+    lg_source
+    rm -rf "${LGDIR:?}" "$XDG_CACHE_HOME/lanai" "$T/curl-fails"
+    mkdir -p "$S"
+    echo "older build output" >"$S/build-client.log"
+    case $case in
+      patches) LANAI_PATCHES=$T/no-patches ;;
+      download) touch "$T/curl-fails" ;;
+      unpack) echo "not a tarball" >"$T/lg.tar.gz"; LG_SOURCE_SHA=$(sha256sum "$T/lg.tar.gz" | cut -d' ' -f1) ;;
+      submodule)
+        rm -rf "${T:?}/src/looking-glass-$LG_BUILD/${LG_SUBMODULES[0]}"
+        tar -czf "$T/lg.tar.gz" -C "$T/src" "looking-glass-$LG_BUILD"
+        LG_SOURCE_SHA=$(sha256sum "$T/lg.tar.gz" | cut -d' ' -f1)
+        ;;
+    esac
+    run build_client
+    assert_failure
+    reason=$output
+    [[ -n $reason ]] || fail "$case: no reason printed"
+    run cat "$S/build-client.log"
+    refute_output --partial "older build output"
+    assert_output --partial "$reason"
+    rm -rf "${T:?}/src" "$T/patchdiff" "$T/fixture-patches"
+  done
 }
 
 @test "build_client: a wrong checksum deletes the download and builds nothing" {

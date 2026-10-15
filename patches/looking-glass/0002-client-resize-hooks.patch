@@ -322,7 +322,7 @@ diff -Naur lg-pristine/client/tests/CMakeLists.txt lg-working/client/tests/CMake
    cfg-size
 diff -Naur lg-pristine/client/tests/config_message_test.c lg-working/client/tests/config_message_test.c
 --- lg-pristine/client/tests/config_message_test.c	2026-09-01 11:49:36.000000000 +0000
-+++ lg-working/client/tests/config_message_test.c	2026-10-13 18:38:26.038627206 +0000
++++ lg-working/client/tests/config_message_test.c	2026-10-15 00:05:44.952615696 +0000
 @@ -19,6 +19,7 @@
   */
  
@@ -465,7 +465,7 @@ diff -Naur lg-pristine/client/tests/config_message_test.c lg-working/client/test
    CHECK(t.send == 1);
    checkCtl(0, 1024, 768);
    lgMessage_deinit();
-@@ -241,57 +286,277 @@
+@@ -241,57 +286,288 @@
    post(640, 480);
    mature();
    CHECK(t.send == 1);
@@ -723,6 +723,17 @@ diff -Naur lg-pristine/client/tests/config_message_test.c lg-working/client/test
 +static void testResizeFault(void)
 +{
 +  static const char * warn = "Window-size control failed";
++
++  /* UNAVAILABLE never warns, also while the warning is armed. */
++  msgInit();
++  post(1600, 900);
++  t.status = LG_TRANSPORT_UNAVAILABLE;
++  CHECK(countLogged(warn, mature) == 0);
++  CHECK(t.send == 1);
++  CHECK(countLogged(warn, faultPolls) == 0);
++  CHECK(t.send == 4);
++  lgMessage_deinit();
++
 +  msgInit();
 +  post(1600, 900);
 +  t.status = LG_TRANSPORT_ERROR;
@@ -740,7 +751,7 @@ diff -Naur lg-pristine/client/tests/config_message_test.c lg-working/client/test
 +  CHECK(countLogged(warn, faultPolls) == 0);
 +  CHECK(t.send == 5);
 +
-+  /* UNAVAILABLE never warns. */
++  /* Nor after a failure. */
 +  t.status = LG_TRANSPORT_UNAVAILABLE;
 +  CHECK(countLogged(warn, faultPolls) == 0);
 +  CHECK(t.send == 8);
@@ -762,7 +773,7 @@ diff -Naur lg-pristine/client/tests/config_message_test.c lg-working/client/test
    lgMessage_deinit();
  }
  
-@@ -445,6 +710,14 @@
+@@ -445,6 +721,14 @@
    { "equal"         , testEqual         },
    { "reinit"        , testReinit        },
    { "control"       , testControl       },

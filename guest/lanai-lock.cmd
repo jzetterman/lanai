@@ -38,10 +38,12 @@ rem Sign-in on wake and Dynamic Lock cannot fire in this VM (no sleep
 rem states, no Bluetooth), so they stay as they are.
 echo lanai-lock: locking inside Windows is off.
 
-rem A domain, Entra ID or MDM policy may turn the lock back on.
+rem A domain, Entra ID or MDM policy may turn the lock back on. The module
+rem path is pinned first: this runs elevated with the user's environment,
+rem and the cmdlet loads its module from that path.
 set "MANAGED="
 if "%LANAI_FAKE_MANAGED%"=="1" set "MANAGED=1"
-powershell -NoProfile -NonInteractive -Command "(Get-CimInstance Win32_ComputerSystem).PartOfDomain" 2>nul | findstr /b /c:"True" >nul
+powershell -NoProfile -NonInteractive -Command "$env:PSModulePath = [Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules'; (Get-CimInstance Win32_ComputerSystem).PartOfDomain" 2>nul | findstr /b /c:"True" >nul
 if not errorlevel 1 set "MANAGED=1"
 dsregcmd /status 2>nul | findstr /r /i /c:"AzureAdJoined *: *YES" /c:"WorkplaceJoined *: *YES" >nul
 if not errorlevel 1 set "MANAGED=1"

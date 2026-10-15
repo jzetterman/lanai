@@ -224,8 +224,11 @@ stage1_code() {
   assert_line "$((check + 1)):if errorlevel 1 goto :no_compiler"
   run bash -c 'cut -d: -f2- | sed -n "/^:no_compiler\$/,/^exit/p"' < <(setup_code)
   assert_output --partial 'csc.exe'
-  assert_output --partial 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319'
+  # The check uses GetRuntimeDirectory(), so the words name no fixed path.
+  refute_output --partial 'Framework64'
+  assert_output --partial 'the .NET Framework 4 folder'
   assert_output --partial 'Nothing was changed.'
+  assert_output --partial 'Repair the .NET Framework 4.8 in Windows, then run setup.cmd'
   assert_line 'pause'
   assert_line 'exit /b 1'
 }
@@ -255,11 +258,37 @@ stage1_code() {
   assert_output 0
 }
 
+@test "setup.cmd and lanai-lock.cmd: every elevated powershell line pins the module path before its first cmdlet" {
+  # The elevated stage keeps the user's environment, and a cmdlet loads its
+  # module from PSModulePath. A line with .NET calls only needs no pin.
+  local line cmd first n=0 pinned=0 re='[A-Z][a-z]+-[A-Z][A-Za-z]+'
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    [[ $line == powershell\ * ]] || continue
+    n=$((n + 1))
+    cmd=${line#*-Command \"}
+    [[ $cmd =~ $re ]] || continue
+    first=${BASH_REMATCH[0]}
+    [[ ${cmd%%"$first"*} == *"$PIN_MODULES"* ]] || fail "no module pin before $first: $line"
+    pinned=$((pinned + 1))
+  done < <(sed -n '/^:elevated/,$p' "$SETUP_CMD"; cat "$REPO/guest/lanai-lock.cmd")
+  # setup.cmd's compiler check, move, build, self-check, task and IDD
+  # trust, and lanai-lock.cmd's domain check; the check and move use .NET
+  # calls only.
+  assert_equal "$n $pinned" "7 5"
+}
+
 @test "setup.cmd: a blocked start program stops setup with what to change" {
   run bash -c 'cut -d: -f2- | sed -n "/^:start_blocked\$/,/^exit/p"' < <(setup_code)
   assert_output --partial 'Windows blocked'
   assert_output --partial 'C:\Program Files\Lanai\lanai-start.exe'
   assert_output --partial 'App Control or AppLocker'
+  # By its path: setup builds the program again on each run, and the .NET
+  # Framework csc has no /deterministic, so a hash rule stops matching.
+  assert_output --partial 'allow the program by its path,'
+  assert_output --partial 'A rule by file hash stops'
+  assert_output --partial 'working, because setup builds the program again on each run.'
+  refute_output --partial 'allow that program'
   assert_output --partial 'Smart App Control'
   assert_output --partial 'Windows Security ^> App ^& browser'
   assert_output --partial 'reinstall'
@@ -1346,16 +1375,6 @@ guest_csharp() {
   assert_output $'-3\nCS8026'
 }
 
-@test "lanai-scale.ps1: the sign-in step moved to the start program" {
-  local f=$REPO/guest/lanai-scale.ps1
-  run grep -nE 'Invoke-SigninTick|LanaiDesktop|Get-SigninAction|ConvertFrom-ExtraMode|SigninMark|Get-StoredMode|Signin =' "$f"
-  assert_failure
-  # The header no longer describes a step the script does not run.
-  run awk '/^<#/,/^#>/' "$f"
-  refute_output --partial 'The sign-in step: after a boot'
-  assert_output --partial 'lanai-start.exe'
-}
-
 # --- guest/lanai-start.cs: the scale task's start program and the sign-in step ---
 
 START_CS=$BATS_TEST_DIRNAME/../guest/lanai-start.cs
@@ -1437,7 +1456,10 @@ start_cs() {
   run cat "$f"
   # The script, born in a kill-on-close job the program already joined.
   assert_output --partial 'CreateJobObject(IntPtr.Zero, null)'
-  assert_output --partial 'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE'
+  assert_output --partial 'const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;'
+  assert_output --partial 'const int JobObjectExtendedLimitInformation = 9;'
+  assert_output --partial 'info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;'
+  assert_output --partial 'if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref info,'
   assert_output --partial 'AssignProcessToJobObject(job, GetCurrentProcess())'
   assert_output --partial 'UseShellExecute = false;'
   assert_output --partial 'CreateNoWindow = true;'
@@ -1461,7 +1483,7 @@ start_cs() {
   assert_output 1
 }
 
-@test "lanai-start.cs: uses only mscorlib and System.dll, and the registry as phase F did" {
+@test "lanai-start.cs: uses only mscorlib and System.dll, opens only the sign-in step's registry keys, and creates none" {
   local f=$START_CS
   # The Windows build references only System.dll; Linux pwsh references
   # everything, so the compile cannot catch this.
@@ -1530,6 +1552,9 @@ start_cs() {
     Is ([byte[]]@(0, 3, 4, 0, 0, 0, 0)) Failed "under 8 bytes"
     Is $null Failed "no buffer"
     Is (Rsmb ((S 11 @("lanai-scale=100")) + $end) 100) Failed "a header length past the buffer"
+    $t = [byte[]]((S 11 @("lanai-scale=100")) + $end)
+    Is (Rsmb $t ($t.Count + 1)) Failed "a header length one past the buffer"
+    Is (Rsmb $t $t.Count) Found "a header length that fills the buffer"
     # Broken structures stop the walk: no throw, not found.
     Is (Rsmb ([byte[]]@(0, 200, 0, 0) + (S 11 @("lanai-scale=100")))) NotFound "a length past the end"
     $short = [byte[]]@(11, 3, 0, 0) + [Text.Encoding]::ASCII.GetBytes("lanai-scale=100") + [byte[]]@(0, 0)

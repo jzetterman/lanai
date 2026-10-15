@@ -276,8 +276,8 @@ diff -Naur lg-pristine/client/src/resize.h lg-working/client/src/resize.h
 +#endif
 diff -Naur lg-pristine/client/tests/resize_test.c lg-working/client/tests/resize_test.c
 --- lg-pristine/client/tests/resize_test.c	1970-01-01 00:00:00.000000000 +0000
-+++ lg-working/client/tests/resize_test.c	2026-10-13 18:38:14.192823383 +0000
-@@ -0,0 +1,684 @@
++++ lg-working/client/tests/resize_test.c	2026-10-15 00:05:44.952615696 +0000
+@@ -0,0 +1,699 @@
 +/**
 + * Looking Glass
 + * Copyright (C) 2026 John Zetterman
@@ -837,15 +837,30 @@ diff -Naur lg-pristine/client/tests/resize_test.c lg-working/client/tests/resize
 +  checkAsk(2, T0 + SEC(63), 1600, 900);
 +  checkLine(t.lines - 1, "Resize: asking Windows for 1600x900 (1 of 5)");
 +
-+  /* An exhausted sequence starts over too. */
++  /* A change exactly 60 s after the last ask still continues the exhausted
++   * sequence: no ask. */
 +  runTo(T0 + SEC(63) + SEC(42));
 +  CHECK(t.asks == 7);
 +  CHECK(countLines("did not take") == 1);
++  runTo(T0 + SEC(63) + SEC(37) + SEC(60));
++  frame(1366, 768);
++  poll();
++  CHECK(t.asks == 7);
++
++  /* One 61 s after it starts over. */
 +  runTo(T0 + SEC(63) + SEC(37) + SEC(61));
 +  frame(1280, 720);
 +  poll();
 +  CHECK(t.asks == 8);
 +  checkLine(t.lines - 1, "Resize: asking Windows for 1600x900 (1 of 5)");
++
++  /* The new sequence ends with its own "did not take". */
++  const uint64_t third = T0 + SEC(161);
++  runTo(third + SEC(42) + SEC(600));
++  CHECK(t.asks == 12);
++  CHECK(countLines("did not take") == 2);
++  checkLine(t.lines - 1, "Resize: Windows did not take 1600x900");
++  CHECK(t.line[t.lines - 1].at == third + SEC(42));
 +}
 +
 +static void testSameSize(void)

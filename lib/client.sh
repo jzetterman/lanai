@@ -282,6 +282,12 @@ patches_apply() {
   done
 }
 
+# build_fail <log> <message>: print why the build failed and append it to
+# the build log that the panel and the CLI name.
+build_fail() {
+  printf '%s\n' "$2" | tee -a "$1"
+}
+
 # True only for an installed binary carrying the current patch identity.
 build_patches_current() {
   local d id
@@ -434,19 +440,27 @@ builds_prune() {
 # -DENABLE_X11=no, fail if USB audio is off, and install
 # into <data>/looking-glass/<build>/ through a .partial folder. The
 # installed binary must report the pinned build. Keeps other builds until
-# the guest's IDD matches the pin. Build output goes to <state>/build-client.log.
+# the guest's IDD matches the pin. Build output goes to <state>/build-client.log,
+# which each build starts empty. A failure before cmake runs also writes its
+# reason there, so the log never shows an older build's output.
 # Prints the client binary; on failure prints why. Does nothing when the
 # pinned build is already installed with the current patches.
 build_client() {
   local cache dl dest work src log part out patch_id
   dest=$(client_builds)/$LG_BUILD
+  log=$(state_dir)/build-client.log
+  mkdir -p -- "${log%/*}" || return 1
   # No patches means a broken install: never stamp an unpatched client.
   if [[ -z $(patches_list) ]]; then
-    echo "Lanai's Looking Glass patches are missing from $LANAI_PATCHES; reinstall Lanai"
+    : >"$log"
+    build_fail "$log" "Lanai's Looking Glass patches are missing from $LANAI_PATCHES; reinstall Lanai"
     return 1
   fi
   patch_id=$(patches_id) || return 1
-  if build_patches_current && [[ $(client_version "$dest/bin/looking-glass-client" 2>/dev/null) == "$LG_BUILD" ]]; then
+  # The quick path: build_patches_current, against the id computed above.
+  if [[ -x $dest/bin/looking-glass-client && -f $dest/build-patches &&
+    $(<"$dest/build-patches") == "$patch_id" &&
+    $(client_version "$dest/bin/looking-glass-client" 2>/dev/null) == "$LG_BUILD" ]]; then
     printf '%s\n' "$LG_BUILD" >"$dest/build-stamp" || return 1
     builds_prune
     printf '%s\n' "$dest/bin/looking-glass-client"
@@ -455,31 +469,30 @@ build_client() {
   cache=${XDG_CACHE_HOME:-$HOME/.cache}/lanai
   dl=$cache/downloads/looking-glass-$LG_BUILD-source.tar.gz
   work=$cache/build-$LG_BUILD
-  log=$(state_dir)/build-client.log
-  mkdir -p -- "${dl%/*}" "${log%/*}" || return 1
+  : >"$log" || return 1
+  mkdir -p -- "${dl%/*}" || return 1
   if ! out=$(fetch_verified "$LG_SOURCE_URL" "$dl" "$LG_SOURCE_SHA" 2>&1); then
-    printf '%s\n' "${out:-could not download the Looking Glass source}"
+    build_fail "$log" "${out:-could not download the Looking Glass source}"
     return 1
   fi
   rm -rf -- "$work" && mkdir -p -- "$work" || return 1
   # From here every failure removes the work folder.
   (
     trap 'rm -rf -- "$work"' EXIT
-    tar -xzf "$dl" -C "$work" --no-same-owner || {
-      echo "cannot unpack $dl"
+    tar -xzf "$dl" -C "$work" --no-same-owner 2>>"$log" || {
+      build_fail "$log" "cannot unpack $dl"
       exit 1
     }
     src=$work/looking-glass-$LG_BUILD
     [[ -f $src/client/CMakeLists.txt ]] || {
-      echo "the source tarball has no looking-glass-$LG_BUILD/client folder"
+      build_fail "$log" "the source tarball has no looking-glass-$LG_BUILD/client folder"
       exit 1
     }
     out=$(submodules_missing "$src")
     [[ -z $out ]] || {
-      echo "the source tarball is missing submodule folders: ${out//$'\n'/, }"
+      build_fail "$log" "the source tarball is missing submodule folders: ${out//$'\n'/, }"
       exit 1
     }
-    : >"$log"
     patches_apply "$src" "$log" || exit 1
     cmake -S "$src/client" -B "$work/build" -DENABLE_X11=no >>"$log" 2>&1 || {
       echo "cmake could not configure the client; see $log"

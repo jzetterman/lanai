@@ -200,7 +200,7 @@ is scaled to fit the window. Resize the window or leave fullscreen to fix it.
 Installs set up with an earlier version of Lanai keep working, but Windows may
 not match the window. The panel says what may go wrong and names one step. When
 only the Windows window is old, Windows may start at, or change to, the wrong
-size until you click **Update the Windows window**. It takes a few minutes, works
+size until you click **Update the Windows window**. It takes several minutes, works
 whether Windows runs or not, and changes nothing in Windows. When it finishes,
 close the Windows window and open it again. If the update fails, the panel points
 to the Windows window build log. When the scale task in Windows was set up
@@ -231,9 +231,9 @@ setting. Windows changes its recommended scale when the resolution changes;
 the scale task sets it back to your pick, or to the scale you saved in Lanai when
 you have no pick. The scale holds as the window resizes: Lanai caps it at
 Windows' limit for the current resolution, and it goes back up when the window
-grows. The scale task needs longer to start at a sign-in, so scale changes that
-start then finish within 20 seconds of the sign-in, not 5: the end of your pick,
-and the scale for the size Lanai sets at sign-in.
+grows. The scale task needs longer to start at a sign-in. So at a sign-in, scale
+changes finish within 20 seconds of the sign-in, not 5: the end of your pick, and
+the scale for the size Lanai sets at sign-in.
 
 This is Windows' display scale, separate from its “Text size” setting. While
 Windows' custom scaling is on (a percentage that needs a sign-out to apply), it
@@ -243,13 +243,15 @@ accepts a change but leaves the scale unchanged, the scale task tries again once
 minute. Its log is `C:\Program Files\Lanai\lanai-scale.log`.
 
 The scale task runs a small program that setup builds in Windows,
-`C:\Program Files\Lanai\lanai-start.exe`. If Windows blocks it later, for example
-after Smart App Control or an App Control or AppLocker policy is turned on, the
-scale and the size at sign-in stop following Lanai. To fix it, allow that program
-in the App Control or AppLocker policy, or turn Smart App Control off under Windows
-Security > App & browser control. Smart App Control allows no single program, and
-on many Windows versions only a reinstall turns it back on. Then click **Run setup
-again**. Setup checks that Windows runs the program, and stops with these steps if
+`C:\Program Files\Lanai\lanai-start.exe`. If Windows blocks or removes it later
+(for example, antivirus quarantines it, or Smart App Control or an App Control or
+AppLocker policy is turned on), the scale and the size at sign-in stop following
+Lanai. To fix it, allow the program by its path, `C:\Program Files\Lanai\lanai-start.exe`,
+in your antivirus or in the App Control or AppLocker policy. A rule by file hash
+stops working, because setup builds the program again on each run. Or turn Smart
+App Control off under Windows Security > App & browser control. Smart App Control
+allows no single program, and on many Windows versions only a reinstall turns it
+back on. Then click **Run setup again**. Setup checks that Windows runs the program, and stops with these steps if
 it does not.
 
 Installs set up before live scale keep the old scale task: a scale save applies at
@@ -345,7 +347,7 @@ the final measurement. If the wait expires, the next start reports the forced st
    ```
 
    It waits for shutdown and can force-stop at the timeout. Let any detached setup,
-   snapshot or restore operation finish before removing its code. Once Lanai's VM
+   snapshot, restore or Windows window update finish before removing its code. Once Lanai's VM
    is stopped, start Windows with `omarchy-windows-vm` and connect over RDP.
    **Do every Windows removal step below in that RDP session**: uninstalling the
    IDD or SPICE vdagent can remove Lanai's display or input, and a normal Lanai boot
@@ -433,7 +435,9 @@ unset or not on btrfs; CI runs them on a loop-mounted btrfs image. No test boots
 or talks to your systemd user manager; QEMU runs only paused (TCG) on 1 MiB scratch
 disks for the lock tests. No test downloads or builds the Looking Glass client, runs
 sudo, or opens a window: curl, cmake, pacman, sudo, omarchy, systemd-run and hyprctl
-are stand-ins. Lint with
+are stand-ins. One exception: when `LANAI_TEST_LG_TARBALL` names a local copy of the
+pinned source tarball, `test/client-patches.bats` applies Lanai's patches to it and
+builds and runs the client's own tests. Lint with
 `shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
 docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
 docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga test/qml-lint`.

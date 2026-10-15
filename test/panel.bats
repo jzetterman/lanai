@@ -77,7 +77,7 @@ setup() {
 
 @test "panel words: a display scale task that did not start says what to do" {
   run panel_words setup '{"ok":false,"step":"5","reason":"scale-task","message":"UNTRUSTED"}'
-  assert_output 'The display scale task in Windows did not start. It starts when the Windows user who ran setup.cmd signs in. Shut down and set up Windows again, then sign in as that user. If it happens again, check C:\Program Files\Lanai\lanai-scale.log in Windows.'
+  assert_output 'The display scale task in Windows did not start. It starts when the Windows user who ran setup.cmd signs in. Shut down and set up Windows again, then sign in as that user. If it happens again, in Windows check lanai-scale.log and lanai-signin.log in C:\Program Files\Lanai.'
 }
 
 @test "panel: step 6 asks to sign in first, and the wait after both answers names the scale task" {
@@ -1894,7 +1894,7 @@ exec /usr/bin/python3 "$@"'
 # --- the resize upgrade: a client built without the current patches, or a
 # scale task without the sign-in step (req 12) ---
 
-RESIZE_NEW='Windows may start at, or change to, the wrong size until you click Update the Windows window. This changes nothing in Windows.'
+RESIZE_NEW='Windows may start at, or change to, the wrong size until you click Update the Windows window. Updating changes nothing in Windows.'
 WRONG='Windows may start at, or change to, the wrong size.'
 SIGNIN='After Windows starts, it may stay at its old size until you resize the window.'
 SCALE='Scale saves apply only the next time Windows starts.'
@@ -2101,4 +2101,27 @@ assert_rerun_warning() {
   panel_result_write client '{"token":"t","command":"build-client","args":[],"started":1}'
   run cmd_panel
   assert_equal "$(jq -r .result.client <<<"$output")" ''
+}
+
+@test "panel resize: failed and interrupted update words show only with the update button" {
+  local doc st words
+  build_patches_current() { return 1; }
+  for doc in '{"token":"t","command":"build-client","args":[],"started":1,"ended":2,"reply":{"ok":false}}' \
+    '{"token":"t","command":"build-client","args":[],"started":1}'; do
+    panel_result_write client "$doc"
+    # The button shows, so the words show.
+    state "$CURRENT"
+    run cmd_panel
+    assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" true
+    words=$(jq -r .result.client <<<"$output")
+    [[ $words == "$CLIENT_INTERRUPTED" || $words == *"could not be updated"* ]] || fail "no update words: $words"
+    # Without the sign-in step, or with the old task, Run setup again is
+    # the one step: no button and no update words.
+    for st in '{"done":true,"scale_task":2}' '{"done":true}'; do
+      state "$st"
+      run cmd_panel
+      assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+      assert_equal "$(jq -r .result.client <<<"$output")" ''
+    done
+  done
 }

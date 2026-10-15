@@ -182,18 +182,19 @@ rem code. A null exit code fails too.
 powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $env:PSModulePath = [Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules'; try { $p = Start-Process -FilePath 'C:\Program Files\Lanai\lanai-start.exe' -ArgumentList '/check' -Wait -PassThru; if ($null -eq $p.ExitCode) { exit 1 }; exit $p.ExitCode } catch { exit 1 }"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :start_blocked
-rem An interactive task for the SID the check above verified, which stores no
-rem password. It runs elevated (highest privileges, no prompt): Windows
-rem opens the scale port only to administrators. -Force replaces it on a
-rem rerun, so there is one task. The sign-in trigger repeats every 5 minutes
+rem An interactive task for the SID the elevated stage's account check
+rem verified, which stores no password. It runs elevated (highest
+rem privileges, no prompt): Windows opens the scale port only to
+rem administrators. -Force replaces it on a rerun, so there is one task. The sign-in trigger repeats every 5 minutes
 rem with no end (a repetition pattern with no Duration), and IgnoreNew makes
 rem a start a no-op while the task runs, so a task that died is back within
 rem 5 minutes. RestartCount would cover only a failed start (phase C).
 rem The action is the start program by its absolute path, with no
 rem arguments. [char]34 quotes the path, which holds a space (CWE-428),
-rem without nested quotes for cmd.
+rem without nested quotes for cmd. The module path is pinned first, as for
+rem the build.
 set "LANAI_TASK_SID=%HAVE_SID%"
-powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $u = $env:LANAI_TASK_SID; $a = New-ScheduledTaskAction -Execute ([char]34 + 'C:\Program Files\Lanai\lanai-start.exe' + [char]34); $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $r = Get-CimClass -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClassName 'MSFT_TaskRepetitionPattern' | New-CimInstance -ClientOnly; $r.Interval = 'PT5M'; $t.Repetition = $r; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew; Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $env:PSModulePath = [Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules'; $u = $env:LANAI_TASK_SID; $a = New-ScheduledTaskAction -Execute ([char]34 + 'C:\Program Files\Lanai\lanai-start.exe' + [char]34); $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $r = Get-CimClass -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClassName 'MSFT_TaskRepetitionPattern' | New-CimInstance -ClientOnly; $r.Interval = 'PT5M'; $t.Repetition = $r; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew; Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 
@@ -210,8 +211,9 @@ echo This screen turns black now. Windows shuts down by itself in a moment.
 set "STEP=the Looking Glass display driver"
 rem Last: nothing after it may need the user's eyes or a key press.
 rem Trust the valid IDD signer to avoid Windows' extra publisher prompt.
+rem The module path is pinned first, as for the build.
 set "LANAI_IDD=%~dp0looking-glass-idd-setup.exe"
-powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $s = Get-AuthenticodeSignature -LiteralPath $env:LANAI_IDD; if ($s.Status -ne 'Valid' -or -not $s.SignerCertificate) { exit 2 }; $st = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher','LocalMachine'); $st.Open('ReadWrite'); $st.Add($s.SignerCertificate); $st.Close()"
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $env:PSModulePath = [Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules'; $s = Get-AuthenticodeSignature -LiteralPath $env:LANAI_IDD; if ($s.Status -ne 'Valid' -or -not $s.SignerCertificate) { exit 2 }; $st = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher','LocalMachine'); $st.Open('ReadWrite'); $st.Add($s.SignerCertificate); $st.Close()"
 if errorlevel 1 echo Windows may ask to trust the Looking Glass driver's publisher; choose Install.
 "%~dp0looking-glass-idd-setup.exe" /S /ivshmem
 set "RC=%errorlevel%"
@@ -243,9 +245,10 @@ pause
 exit /b 1
 
 :no_compiler
-echo Lanai setup: Windows' C# compiler, csc.exe, is missing from the .NET
-echo Framework folder, C:\Windows\Microsoft.NET\Framework64\v4.0.30319. Lanai
-echo builds its display scale program with it. Nothing was changed.
+echo Lanai setup: Windows' C# compiler, csc.exe, is missing from
+echo the .NET Framework 4 folder. Lanai builds its display scale program
+echo with it. Nothing was changed.
+echo Repair the .NET Framework 4.8 in Windows, then run setup.cmd again.
 pause
 exit /b 1
 
@@ -260,7 +263,9 @@ echo.
 echo Lanai setup stopped: Windows blocked the program setup built for the
 echo display scale task, C:\Program Files\Lanai\lanai-start.exe (exit code
 echo %RC%). To fix this:
-echo - With an App Control or AppLocker policy, allow that program.
+echo - With an App Control or AppLocker policy, allow the program by its path,
+echo   C:\Program Files\Lanai\lanai-start.exe. A rule by file hash stops
+echo   working, because setup builds the program again on each run.
 echo - With Smart App Control on, turn it off: Windows Security ^> App ^& browser control.
 echo   It allows no single program, and on many Windows versions only a
 echo   reinstall turns it back on.

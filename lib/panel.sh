@@ -40,7 +40,7 @@ panel_words() {
       mismatch:"The display driver in Windows needs an update. Shut down and set up Windows again.",
       agents:"The Windows agents did not answer. Shut down and set up Windows again.",
       answers:"The final checks did not pass. Shut down and set up Windows again.",
-      "scale-task":"The display scale task in Windows did not start. It starts when the Windows user who ran setup.cmd signs in. Shut down and set up Windows again, then sign in as that user. If it happens again, check C:\\Program Files\\Lanai\\lanai-scale.log in Windows.",
+      "scale-task":"The display scale task in Windows did not start. It starts when the Windows user who ran setup.cmd signs in. Shut down and set up Windows again, then sign in as that user. If it happens again, in Windows check lanai-scale.log and lanai-signin.log in C:\\Program Files\\Lanai.",
       client:"The Windows window could not open. Check the Windows window log and try again.",
       "build-busy":"Another build of the Windows window is running. Try again when it finishes.",
       "restore-unsupported":"The restore was refused because Lanai cannot verify an instant copy in this storage location. Choose storage that supports verified instant copies, then try again.",
@@ -71,6 +71,7 @@ panel_words() {
     elif $c == "snapshot" and .snapshot then
       "Snapshot saved at " + .snapshot + ". It shares disk space at first and grows as Windows changes. To delete it, remove that folder in your file manager."
     elif $c == "restore" then "The snapshot was restored."
+    # cmd_build_client in lib/lanai.sh prints the same words.
     elif $c == "build-client" then "The Windows window is updated. If the Windows window is open, close it and open it again."
     elif $c == "settings" and (.scale_saved | type) == "boolean" then
       if .scale_saved | not then "Saved."
@@ -183,11 +184,12 @@ cmd_panel() {
     fi
     # An update's done words hold until a client starts after the job
     # ended (the next lanai open runs the new binary). Its failed and
-    # interrupted words hold only while the client is still old.
+    # interrupted words name the update button, so they hold only while
+    # that button shows (update_client below).
     if [[ $group == client ]]; then
       if jq -e '.reply.ok == true' <<<"$doc" >/dev/null; then
         ! jq -e --argjson c "$started" '$c > .ended' <<<"$doc" >/dev/null || words=''
-      elif ! $client_old; then words=''; fi
+      elif ! $client_old || [[ $task != new ]] || $signin_missing; then words=''; fi
     fi
     results=$(jq -nc --argjson r "$results" --arg g "$group" --arg w "$words" '$r + {($g):$w}')
   done
@@ -317,6 +319,7 @@ cmd_panel() {
          {labels:($snaps.names | map({key:.,value:("Restore snapshot " + .)}) | from_entries)},
        restore_confirm:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore and replace Windows") +
          {labels:($snaps.names | map({key:.,value:("Restore " + . + " and replace Windows")}) | from_entries)},
+       # The failed and interrupted update words use the same test.
        update_client:button($clientOld and $task == "new" and ($signinMissing|not);($busy|not);"Update the Windows window"),
        save_settings:button(true;$settings.error == "";"Save settings")}} |
     if ($dailyControls|not) and ($st.state == "stopped" or $st.state == "running") then
@@ -345,7 +348,7 @@ cmd_panel() {
           (if $off then "click Run setup again." else "shut Windows down and click Run setup again." end),
           "Running setup again also turns the Windows lock off again."] | join(" "))
       elif $clientOld then
-        "Windows may start at, or change to, the wrong size until you click Update the Windows window. This changes nothing in Windows."
+        "Windows may start at, or change to, the wrong size until you click Update the Windows window. Updating changes nothing in Windows."
       else empty end
     ] | join(" "))'
   # shellcheck disable=SC2034

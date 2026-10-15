@@ -4,6 +4,9 @@
 # -Seconds. Logs to C:\ProgramData\LanaiProof\display-backstop.log.
 # -Install (admin): copy this file to C:\ProgramData\LanaiProof and register a
 # logon task for the current user that runs it. -Remove (admin): undo both.
+# A prototype for a test copy of Windows only. Remove it after use (-Remove)
+# and never install it on a live Windows: a standard user can create the
+# C:\ProgramData folder first and control the file the elevated task runs.
 param([switch]$Install, [switch]$Remove, [int]$Seconds = 120)
 $ErrorActionPreference = 'Stop'
 $dir  = 'C:\ProgramData\LanaiProof'

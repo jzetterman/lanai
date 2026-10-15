@@ -13,7 +13,7 @@
 //   3. runs the sign-in step (SigninStep), then waits for the script and
 //      returns its exit code.
 // With the one argument /check it returns 0 and does nothing else: setup
-// runs it so to check that Windows lets it run.
+// runs it to check that Windows lets it run.
 //
 // Windows' csc.exe compiles C# 5 only, against .NET Framework 4.x, with
 // only mscorlib and System.dll: no interpolated strings, ?., nameof, out
