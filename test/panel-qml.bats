@@ -488,6 +488,11 @@ TestCase {
     verify(note !== undefined)
     verify(note.visible)
     for (var p = note.parent; p; p = p.parent) verify(p.contentY === undefined)
+    // The notice's box is the popup's background, made opaque, and its
+    // border the accent.
+    var bg = Commons.Color.popups.background
+    compare(note.parent.color, Qt.rgba(bg.r, bg.g, bg.b, 1))
+    compare(note.parent.border.color, Commons.Color.accent)
     // The scrolling content gets room below, so nothing stays covered.
     var flick = objects(panel, function(o) { return o.contentY !== undefined })[0]
     compare(flick.bottomMargin, note.parent.height)

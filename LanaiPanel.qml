@@ -328,12 +328,12 @@ Panel {
         visible: root.model.clickNotice !== ""
         height: clickNote.implicitHeight + 2 * Style.space(8)
         // The popup's background, opaque so covered text never shows
-        // through. Color.popups is a grouped QtObject the lint metadata does
-        // not type.
+        // through. Commons.Color.popups is a grouped QtObject the lint
+        // metadata does not type.
         // qmllint disable missing-property
-        color: Qt.rgba(Color.popups.background.r, Color.popups.background.g, Color.popups.background.b, 1)
+        color: Qt.rgba(Commons.Color.popups.background.r, Commons.Color.popups.background.g, Commons.Color.popups.background.b, 1)
         // qmllint enable missing-property
-        border.color: Color.accent
+        border.color: Commons.Color.accent
         border.width: 1
         Note {
           id: clickNote
