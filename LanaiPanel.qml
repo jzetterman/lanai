@@ -2,6 +2,9 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls as QQC
 import qs.Commons
+// Qt 6.12 shadows a bare Color with a built-in, so Color is always read through
+// this alias, as the Omarchy shell does.
+import qs.Commons as Commons
 import qs.Ui
 
 // Backend fields decide all guidance and controls. Only unsaved input lives here.
@@ -27,7 +30,7 @@ Panel {
   property bool scaleTouched: false
   // The shell supplies bar/theme fields dynamically on QObject groups.
   // qmllint disable missing-property
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   // qmllint enable missing-property
 
@@ -149,9 +152,9 @@ Panel {
             width: parent.width
             implicitHeight: setupColumn.implicitHeight + 2 * setupColumn.y
             color: root.model.view.setup.attention === true
-              ? (typeof Style.selectedAccentFill !== "undefined" ? Style.selectedAccentFill : Util.alpha(Color.accent, 0.10))
+              ? (typeof Style.selectedAccentFill !== "undefined" ? Style.selectedAccentFill : Util.alpha(Commons.Color.accent, 0.10))
               : "transparent"
-            border.color: Color.accent
+            border.color: Commons.Color.accent
             border.width: root.model.view.setup.attention === true ? 1 : 0
             Column {
               id: setupColumn

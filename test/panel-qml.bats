@@ -187,6 +187,7 @@ import QtQuick
 import QtTest
 import TestShell
 import TestCommons
+import TestCommons as Commons
 TestCase {
   id: tests
   name: "PanelRenderer"
@@ -761,14 +762,15 @@ TestCase {
     var sectionHeight = section.implicitHeight
     var columnWidth = column.width
     compare(section.border.width, 1)
-    compare(section.border.color, Color.accent)
-    compare(section.color, Util.alpha(Color.accent, 0.10))
+    compare(panel.foreground, Commons.Color.foreground)
+    compare(section.border.color, Commons.Color.accent)
+    compare(section.color, Util.alpha(Commons.Color.accent, 0.10))
     Style.selectedAccentFill = '#336699'
     compare(section.color, Style.selectedAccentFill)
     Style.selectedAccentFill = undefined
-    Color.accent = '#c06030'
-    compare(section.border.color, Color.accent)
-    compare(section.color, Util.alpha(Color.accent, 0.10))
+    Commons.Color.accent = '#c06030'
+    compare(section.border.color, Commons.Color.accent)
+    compare(section.color, Util.alpha(Commons.Color.accent, 0.10))
     compare(objects(panel, function(o) { return o.text === 'Snapshots' && o.visible }).length, 0)
     var reopen = objects(section, function(o) { return o.control === 'reopen_window' })[0]
     verify(reopen.visible)
