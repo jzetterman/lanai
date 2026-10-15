@@ -289,6 +289,9 @@ stage1_code() {
   assert_output --partial 'A rule by file hash stops'
   assert_output --partial 'working, because setup builds the program again on each run.'
   refute_output --partial 'allow that program'
+  assert_output --partial 'With antivirus, allow the program by its path,'
+  # The self-check's catch always exits 1, so its exit code tells nothing.
+  refute_output --partial 'exit code'
   assert_output --partial 'Smart App Control'
   assert_output --partial 'Windows Security ^> App ^& browser'
   assert_output --partial 'reinstall'
@@ -1248,12 +1251,20 @@ guest_ps() {
   # functions and the comment block.
   first=$(awk '/^<#/,/^#>/ { next } /^(function|\$ReaderScript)/ { skip = 1 } skip && /^}/ { skip = 0; next }
     !skip && /^[^#]*(Add-Type|[A-Z][a-z]+-[A-Z][A-Za-z]+)/ { print NR; exit }' "$f")
-  pins=$(grep -nE '^\$env:(PSModulePath|TMP|TEMP) = ' "$f" | cut -d: -f1 | sort -n | tail -n 1)
+  pins=$(grep -nE '^\$env:(PSModulePath|TMP|TEMP|LIB) = ' "$f" | cut -d: -f1 | sort -n | tail -n 1)
   [[ -n $first && -n $pins ]] || fail "first $first, pins $pins"
   ((pins < first)) || fail "the env pins end on line $pins, after line $first"
-  run grep -E '^\$env:(PSModulePath|TMP|TEMP) = ' "$f"
+  run grep -E '^\$env:(PSModulePath|TMP|TEMP|LIB) = ' "$f"
   assert_line "\$env:TMP = 'C:\Program Files\Lanai\tmp'"
   assert_line "\$env:TEMP = 'C:\Program Files\Lanai\tmp'"
+  # As the setup build: csc's reference search path is cleared, and the
+  # working folder is Lanai's, before Add-Type compiles.
+  assert_line "\$env:LIB = \$null"
+  local cd add
+  cd=$(grep -nxF "Set-Location -LiteralPath 'C:\Program Files\Lanai'" "$f" | cut -d: -f1)
+  add=$(grep -n '^Add-Type' "$f" | cut -d: -f1)
+  [[ -n $cd && -n $add ]] || fail "Set-Location $cd, Add-Type $add"
+  ((pins < cd && cd < add)) || fail "pins $pins, Set-Location $cd, Add-Type $add"
   assert_line --partial '$env:PSModulePath = "$([Environment]::SystemDirectory)\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules"'
   run grep -F "\$LogFile = 'C:\Program Files\Lanai\lanai-scale.log'" "$f"
   assert_success
@@ -1510,7 +1521,10 @@ start_cs() {
   assert_output --partial '.GetValue("LanaiSigninStep")'
   # Never creates the key: one Lanai made would not be volatile.
   refute_output --partial 'CreateSubKey'
-  assert_output --partial '@"C:\Program Files\Lanai\lanai-signin.log"'
+  # The log sits beside the program, as the script does.
+  assert_output --partial 'Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "lanai-signin.log")'
+  run grep -nE '^[^/]*"[^"]*Program Files' "$f"
+  assert_failure
 }
 
 @test "lanai-start.cs: the SMBIOS parser finds a type 11 lanai-scale string in whole RSMB buffers" {
@@ -1594,6 +1608,32 @@ start_cs() {
     [LanaiStart]::WriteLog("/nonexistent-lanai/x.log", "lost", $false)
     [LanaiStart]::WriteLog("/nonexistent-lanai/x.log", "lost", $true)
     [LanaiStart]::WriteLog([IO.Path]::GetTempPath(), "lost", $true)'
+  assert_success
+  assert_output ok
+}
+
+@test "lanai-start.cs: the log writer moves a log past 1 MB to .old and starts a new one" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run start_cs '
+    $p = Join-Path ([IO.Path]::GetTempPath()) "lanai-signin-cap-$PID.log"
+    $old = "$p.old"
+    Remove-Item -LiteralPath $p, $old -ErrorAction SilentlyContinue
+    # At 1 MB exactly the log grows on.
+    [IO.File]::WriteAllText($p, ("x" * 1048575) + "`n")
+    [IO.File]::WriteAllText($old, "older`n")
+    [LanaiStart]::WriteLog($p, "at the cap", $false)
+    Assert ((Get-Item -LiteralPath $p).Length -gt 1048576) "grew at the cap"
+    Assert ((Get-Content -Raw -LiteralPath $old) -eq "older`n") "no move at the cap"
+    # Past it, the log replaces the older .old, and the line starts a new log.
+    $size = (Get-Item -LiteralPath $p).Length
+    [LanaiStart]::WriteLog($p, "past the cap", $false)
+    Assert ((Get-Item -LiteralPath $old).Length -eq $size) "moved to .old"
+    $l = @(Get-Content -LiteralPath $p)
+    Assert ($l.Count -eq 1 -and $l[0] -cmatch "^\S+ past the cap$") "new log: $l"
+    # A skipped repeat reads the new log, not the old one.
+    [LanaiStart]::WriteLog($p, "past the cap", $true)
+    Assert (@(Get-Content -LiteralPath $p).Count -eq 1) "repeat skipped"
+    Remove-Item -LiteralPath $p, $old'
   assert_success
   assert_output ok
 }

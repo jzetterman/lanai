@@ -276,7 +276,7 @@ patches_apply() {
     fi
     printf '%s\n' "$output" >>"$log"
     if ((rc != 0)) || grep -q '^Hunk ' <<<"$output"; then
-      echo "the Lanai patch $patch_file does not apply exactly to Looking Glass $LG_BUILD; see $log"
+      build_fail "$log" "the Lanai patch $patch_file does not apply exactly to Looking Glass $LG_BUILD; see $log"
       return 1
     fi
   done
@@ -438,30 +438,42 @@ builds_prune() {
 # every submodule, spec 26), unpack it, check the submodule folders, apply
 # Lanai's patches exactly (none is an error), build the client with
 # -DENABLE_X11=no, fail if USB audio is off, and install
-# into <data>/looking-glass/<build>/ through a .partial folder. The
+# into <data>/looking-glass/<build>/ through a .partial folder that holds
+# the binary and both stamps before it replaces the old build. The
 # installed binary must report the pinned build. Keeps other builds until
 # the guest's IDD matches the pin. Build output goes to <state>/build-client.log,
-# which each build starts empty. A failure before cmake runs also writes its
-# reason there, so the log never shows an older build's output.
+# which each build starts empty. Every failure prints one line that says
+# why and adds it to that log, so the log never shows an older build's
+# output and always ends with the reason. Only when the log itself cannot
+# be written does the reason go to stdout alone.
 # Prints the client binary; on failure prints why. Does nothing when the
 # pinned build is already installed with the current patches.
 build_client() {
   local cache dl dest work src log part out patch_id
   dest=$(client_builds)/$LG_BUILD
   log=$(state_dir)/build-client.log
-  mkdir -p -- "${log%/*}" || return 1
+  mkdir -p -- "${log%/*}" 2>/dev/null || {
+    echo "cannot create ${log%/*} for the build log"
+    return 1
+  }
   # No patches means a broken install: never stamp an unpatched client.
   if [[ -z $(patches_list) ]]; then
     : >"$log"
     build_fail "$log" "Lanai's Looking Glass patches are missing from $LANAI_PATCHES; reinstall Lanai"
     return 1
   fi
-  patch_id=$(patches_id) || return 1
+  patch_id=$(patches_id) || {
+    build_fail "$log" "cannot read Lanai's Looking Glass patches in $LANAI_PATCHES"
+    return 1
+  }
   # The quick path: build_patches_current, against the id computed above.
   if [[ -x $dest/bin/looking-glass-client && -f $dest/build-patches &&
     $(<"$dest/build-patches") == "$patch_id" &&
     $(client_version "$dest/bin/looking-glass-client" 2>/dev/null) == "$LG_BUILD" ]]; then
-    printf '%s\n' "$LG_BUILD" >"$dest/build-stamp" || return 1
+    printf '%s\n' "$LG_BUILD" >"$dest/build-stamp" || {
+      build_fail "$log" "cannot write $dest/build-stamp"
+      return 1
+    }
     builds_prune
     printf '%s\n' "$dest/bin/looking-glass-client"
     return 0
@@ -469,13 +481,22 @@ build_client() {
   cache=${XDG_CACHE_HOME:-$HOME/.cache}/lanai
   dl=$cache/downloads/looking-glass-$LG_BUILD-source.tar.gz
   work=$cache/build-$LG_BUILD
-  : >"$log" || return 1
-  mkdir -p -- "${dl%/*}" || return 1
+  { : >"$log"; } 2>/dev/null || {
+    echo "cannot write the build log $log"
+    return 1
+  }
+  mkdir -p -- "${dl%/*}" 2>>"$log" || {
+    build_fail "$log" "cannot create the download folder ${dl%/*}"
+    return 1
+  }
   if ! out=$(fetch_verified "$LG_SOURCE_URL" "$dl" "$LG_SOURCE_SHA" 2>&1); then
     build_fail "$log" "${out:-could not download the Looking Glass source}"
     return 1
   fi
-  rm -rf -- "$work" && mkdir -p -- "$work" || return 1
+  { rm -rf -- "$work" && mkdir -p -- "$work"; } 2>>"$log" || {
+    build_fail "$log" "cannot create the work folder $work"
+    return 1
+  }
   # From here every failure removes the work folder.
   (
     trap 'rm -rf -- "$work"' EXIT
@@ -495,37 +516,43 @@ build_client() {
     }
     patches_apply "$src" "$log" || exit 1
     cmake -S "$src/client" -B "$work/build" -DENABLE_X11=no >>"$log" 2>&1 || {
-      echo "cmake could not configure the client; see $log"
+      build_fail "$log" "cmake could not configure the client; see $log"
       exit 1
     }
     usb_audio_enabled "$log" || {
-      echo "cmake turned USB audio off (a build dependency is missing); see $log"
+      build_fail "$log" "cmake turned USB audio off (a build dependency is missing); see $log"
       exit 1
     }
     cmake --build "$work/build" -j "$(nproc)" >>"$log" 2>&1 || {
-      echo "the client did not build; see $log"
+      build_fail "$log" "the client did not build; see $log"
       exit 1
     }
     part=$dest.partial
     rm -rf -- "$part"
     cmake --install "$work/build" --prefix "$part" >>"$log" 2>&1 || {
       rm -rf -- "$part"
-      echo "the client did not install; see $log"
+      build_fail "$log" "the client did not install; see $log"
       exit 1
     }
     out=$(client_version "$part/bin/looking-glass-client") || out="nothing"
     [[ $out == "$LG_BUILD" ]] || {
       rm -rf -- "$part"
-      echo "the built client reports $out, not $LG_BUILD"
+      build_fail "$log" "the built client reports $out, not $LG_BUILD"
       exit 1
     }
-    rm -rf -- "$dest" && mv -T -- "$part" "$dest" || {
-      echo "cannot install into $dest"
+    # The stamps go in before the swap, so a reader never sees the new
+    # binary without them.
+    { printf '%s\n' "$LG_BUILD" >"$part/build-stamp" &&
+      printf '%s\n' "$patch_id" >"$part/build-patches"; } 2>>"$log" || {
+      rm -rf -- "$part"
+      build_fail "$log" "cannot write the build stamps in $part"
+      exit 1
+    }
+    { rm -rf -- "$dest" && mv -T -- "$part" "$dest"; } 2>>"$log" || {
+      build_fail "$log" "cannot install into $dest"
       exit 1
     }
   ) || return 1
-  printf '%s\n' "$LG_BUILD" >"$dest/build-stamp" || return 1
-  printf '%s\n' "$patch_id" >"$dest/build-patches" || return 1
   builds_prune
   printf '%s\n' "$dest/bin/looking-glass-client"
 }

@@ -47,4 +47,6 @@ jobs:
         run: >-
           shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash
           spike/test/*.bats docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
-          docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga
+          docs/plugin/proof-kit/proof-unit-stop docs/plugin/proof-kit/clock-ping
+          docs/plugin/proof-kit/size-window-on-open docs/plugin/proof-kit/stamp-client-log
+          test/fixtures/fake-qmp test/fixtures/fake-qga

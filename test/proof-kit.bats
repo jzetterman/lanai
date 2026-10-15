@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
-# Tests for the proof kit (docs/plugin/proof-kit/proof-vm), run as a
-# command. No VM starts and nothing is downloaded: every case stops before
-# QEMU, curl is a PATH shim, and `client` talks to test/fixtures/fake-qmp and
-# execs a stand-in client.
+# Tests for the proof kit (docs/plugin/proof-kit/proof-vm and clock-ping),
+# run as commands. No VM starts and nothing is downloaded: every case stops
+# before QEMU, curl is a PATH shim, `client` talks to test/fixtures/fake-qmp
+# and execs a stand-in client, and clock-ping talks to a stand-in pong.
 # shellcheck disable=SC2030,SC2031
 
 load helpers
@@ -223,4 +223,45 @@ win:setGuestRes=yes"
   assert_output --partial "QEMU did not answer"
   (($(grep -c qmp_capabilities "$T/qmp.log") >= 2)) || fail "only one try: $(cat "$T/qmp.log")"
   assert [ ! -e "$T/client.args" ]
+}
+
+# Answer clock-ping in <dir> as pong.ps1 does: each new ping line goes back
+# to pong.txt with the time appended. Stops after 15 s.
+fake_pong() {
+  local dir=$1 last='' line end=$((EPOCHSECONDS + 15))
+  while ((EPOCHSECONDS < end)); do
+    line=$(cat "$dir/ping.txt" 2>/dev/null) || line=''
+    if [[ -n $line && $line != "$last" ]]; then
+      printf '%s %s\n' "$line" "$(date +%FT%T.%N%:z)" >>"$dir/pong.txt"
+      last=$line
+    fi
+    sleep 0.01
+  done
+}
+
+@test "clock-ping: a link the guest made at ping.txt is replaced, not written through" {
+  mkdir "$T/share"
+  echo keep >"$T/victim"
+  ln -s "$T/victim" "$T/share/ping.txt"
+  fake_pong "$T/share" 3>&- &
+  BG_PIDS+=("$!")
+  run timeout 30 "$KIT/clock-ping" "$T/share"
+  assert_success
+  assert_output --partial 'best: '
+  assert_equal "$(cat "$T/victim")" keep
+  assert [ ! -L "$T/share/ping.txt" ]
+  assert_equal "$(cat "$T/share/ping.txt")" 'ping 10'
+  # No temporary file is left behind.
+  run find "$T/share" -mindepth 1 -not -name ping.txt -not -name pong.txt
+  assert_output ''
+}
+
+@test "clock-ping: a folder that is a link is refused before any write" {
+  mkdir "$T/real"
+  ln -s "$T/real" "$T/linked"
+  run timeout 10 "$KIT/clock-ping" "$T/linked"
+  assert_failure
+  assert_output --partial 'link'
+  run find "$T/real" -mindepth 1
+  assert_output ''
 }

@@ -18,7 +18,9 @@
 // Windows' csc.exe compiles C# 5 only, against .NET Framework 4.x, with
 // only mscorlib and System.dll: no interpolated strings, ?., nameof, out
 // var or expression-bodied members, and no LINQ or other types from other
-// assemblies. Log lines go to C:\Program Files\Lanai\lanai-signin.log.
+// assemblies. Log lines go to lanai-signin.log in the program's own
+// folder, C:\Program Files\Lanai. Past 1 MB the log moves to
+// lanai-signin.log.old.
 
 using System;
 using System.Collections.Generic;
@@ -32,7 +34,8 @@ using System.Threading;
 using Microsoft.Win32;
 
 public static class LanaiStart {
-    public const string LogFile = @"C:\Program Files\Lanai\lanai-signin.log";
+    // The log's cap in bytes: past it, the next write moves the log aside.
+    public const long LogCap = 1048576;
 
     // What the SMBIOS read found (requirement 4).
     public enum Oem { Found, NotFound, Failed }
@@ -48,7 +51,8 @@ public static class LanaiStart {
     }
 
     // What Run calls, so tests drive every path with fakes. The real ones
-    // (RealDeps) never throw: each turns its own failure into a result.
+    // (RealDeps) turn their own failures into results, except Wait, which
+    // can throw; Run's catch logs that.
     //   ReadOem      the SMBIOS read
     //   Job          make the kill-on-close job and join it: null, or why not
     //   StartScript  start the scale script in the job: null, or why not
@@ -138,15 +142,27 @@ public static class LanaiStart {
         return d;
     }
 
+    // The log beside this program, in the same folder as the script it
+    // starts.
     static void Log(string message, bool skipSame) {
-        WriteLog(LogFile, message, skipSame);
+        WriteLog(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "lanai-signin.log"), message, skipSame);
     }
 
     // Append "<time> <message>" to the log at <path>: open, append, close,
     // so another reader is never locked out for long. With <skipSame>, a
     // message the log's last line already carries is not written again.
-    // A failed write is dropped.
+    // A log past LogCap moves to <path>.old first (replacing an older one),
+    // so a failure that repeats every 5 minutes cannot grow it without
+    // bound. A failed move or write is dropped.
     public static void WriteLog(string path, string message, bool skipSame) {
+        try {
+            FileInfo info = new FileInfo(path);
+            if (info.Exists && info.Length > LogCap) {
+                File.Delete(path + ".old");
+                File.Move(path, path + ".old");
+            }
+        }
+        catch (Exception) { }
         try {
             using (FileStream f = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)) {
                 if (skipSame && message == LastMessage(f)) return;

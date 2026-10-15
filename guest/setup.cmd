@@ -261,8 +261,9 @@ exit /b 1
 :start_blocked
 echo.
 echo Lanai setup stopped: Windows blocked the program setup built for the
-echo display scale task, C:\Program Files\Lanai\lanai-start.exe (exit code
-echo %RC%). To fix this:
+echo display scale task, C:\Program Files\Lanai\lanai-start.exe. To fix this:
+echo - With antivirus, allow the program by its path,
+echo   C:\Program Files\Lanai\lanai-start.exe.
 echo - With an App Control or AppLocker policy, allow the program by its path,
 echo   C:\Program Files\Lanai\lanai-start.exe. A rule by file hash stops
 echo   working, because setup builds the program again on each run.

@@ -4,16 +4,24 @@
 # running in Windows, write 10 pings and time each pong. For each sample,
 # offset = guest time - (T1 + T2) / 2, bounded by (T2 - T1) / 2. Prints every
 # sample and the one with the smallest bound. Add the offset's negative to a
-# guest time to get host time.
+# guest time to get host time. The guest can write in <dir>, so the folder
+# must not be a link, and each ping goes to a new file that a rename moves
+# onto ping.txt: a link the guest made there is replaced, not followed.
 set -euo pipefail
 
 dir=${1:-$HOME/Windows/lanai-proof}
 ping=$dir/ping.txt pong=$dir/pong.txt
+[[ -d $dir && ! -L $dir ]] || {
+  echo "clock-ping: $dir must be a folder, not a link" >&2
+  exit 1
+}
 rm -f -- "$pong"
 best=""
 for n in $(seq 1 10); do
+  tmp=$(mktemp -- "$dir/.ping.XXXXXX")
+  printf 'ping %s\n' "$n" >"$tmp"
   t1=$(date +%s.%N)
-  printf 'ping %s\n' "$n" >"$ping"
+  mv -fT -- "$tmp" "$ping"
   while ! grep -q "^ping $n " "$pong" 2>/dev/null; do
     sleep 0.005
     awk -v t="$t1" -v now="$(date +%s.%N)" 'BEGIN { exit !(now - t > 5) }' &&

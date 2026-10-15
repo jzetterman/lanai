@@ -833,7 +833,8 @@ while (($#)); do
   fi
   shift
 done'
-  # With $T/configure-fails, cmake cannot configure.
+  # With $T/configure-fails, cmake cannot configure; with $T/build-fails
+  # or $T/install-fails, its build or install fails.
   shim cmake 'echo "$*" >>"$T/cmake.calls"
 case $1 in
   -S)
@@ -848,11 +849,13 @@ case $1 in
     fi
     ;;
   --build)
+    [[ ! -e $T/build-fails ]] || { echo "error: boom"; exit 1; }
     v=$(cat "$T/client-version" 2>/dev/null || echo "$LG_BUILD")
     printf "#!/usr/bin/env bash\necho \"00:00:00.000 [I]              main.c:4303 | main                           | Looking Glass (%s)\" >&2\n" "$v" >"$2/looking-glass-client"
     chmod +x "$2/looking-glass-client"
     ;;
   --install)
+    [[ ! -e $T/install-fails ]] || { echo "install: boom"; exit 1; }
     mkdir -p "$4/bin"
     cp "$2/looking-glass-client" "$4/bin/"
     ;;
@@ -899,6 +902,55 @@ esac'
   assert_success
   assert [ -e "$T/curl.calls" ]
   assert_equal "$(<"$LGDIR/$LG_BUILD/build-stamp")" "$LG_BUILD"
+  assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
+  # A stale patch id rebuilds the client too (from the cached source).
+  echo stale >"$LGDIR/$LG_BUILD/build-patches"
+  rm "$T/cmake.calls"
+  run build_client
+  assert_success
+  assert [ -e "$T/cmake.calls" ]
+  assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
+}
+
+@test "build_client: a failed update keeps the working client and its old identity" {
+  local case sum
+  for case in patch configure; do
+    lg_source
+    rm -f "$T/configure-fails"
+    rm -rf "${LGDIR:?}"
+    fake_build "$LG_BUILD"
+    echo "$LG_BUILD" >"$LGDIR/$LG_BUILD/build-stamp"
+    echo stale >"$LGDIR/$LG_BUILD/build-patches"
+    sum=$(sha256sum <"$LGDIR/$LG_BUILD/bin/looking-glass-client")
+    case $case in
+      patch)
+        sed -i 's#+++ patched/client/lanai-patched.txt#+++ patched/client#' \
+          "$T/fixture-patches/0001-fixture.patch"
+        ;;
+      configure) touch "$T/configure-fails" ;;
+    esac
+    run build_client
+    assert_failure
+    assert_equal "$(sha256sum <"$LGDIR/$LG_BUILD/bin/looking-glass-client")" "$sum"
+    assert_equal "$(<"$LGDIR/$LG_BUILD/build-stamp")" "$LG_BUILD"
+    assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" stale
+    run build_patches_current
+    assert_failure
+    rm -rf "${T:?}/src" "$T/patchdiff" "$T/fixture-patches"
+  done
+}
+
+@test "build_client: the new build has both stamps before it replaces the old one" {
+  lg_source
+  # mv logs what the .partial folder holds when it moves into place.
+  shim mv 'for a; do [[ $a != *.partial ]] || ls "$a" >"$T/partial.ls"; done
+exec /usr/bin/mv "$@"'
+  fake_build "$LG_BUILD"
+  run build_client
+  assert_success
+  run cat "$T/partial.ls"
+  assert_line build-stamp
+  assert_line build-patches
   assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
 }
 
@@ -960,11 +1012,11 @@ esac'
   assert_success
 }
 
-@test "build_client.log: an early failure leaves its reason and nothing from an older build" {
+@test "build_client.log: every failure leaves its reason and nothing from an older build" {
   local case reason
-  for case in patches download unpack submodule; do
+  for case in patches download unpack submodule offset configure usb build install version; do
     lg_source
-    rm -rf "${LGDIR:?}" "$XDG_CACHE_HOME/lanai" "$T/curl-fails"
+    rm -rf "${LGDIR:?}" "$XDG_CACHE_HOME/lanai" "$T"/{curl,configure,build,install}-fails "$T/no-usb" "$T/client-version"
     mkdir -p "$S"
     echo "older build output" >"$S/build-client.log"
     case $case in
@@ -976,16 +1028,53 @@ esac'
         tar -czf "$T/lg.tar.gz" -C "$T/src" "looking-glass-$LG_BUILD"
         LG_SOURCE_SHA=$(sha256sum "$T/lg.tar.gz" | cut -d' ' -f1)
         ;;
+      offset)
+        # The patch applies one line lower: GNU patch takes it with an
+        # offset and leaves only its Hunk line in the log.
+        printf 'a\nb\nc\n' >"$T/patchdiff/original/client/lanai-patched.txt"
+        printf 'a\nB\nc\n' >"$T/patchdiff/patched/client/lanai-patched.txt"
+        (cd "$T/patchdiff" && diff -Naur original patched) \
+          >"$T/fixture-patches/0001-fixture.patch" || [[ $? == 1 ]]
+        printf 'extra\na\nb\nc\n' >"$T/src/looking-glass-$LG_BUILD/client/lanai-patched.txt"
+        tar -czf "$T/lg.tar.gz" -C "$T/src" "looking-glass-$LG_BUILD"
+        LG_SOURCE_SHA=$(sha256sum "$T/lg.tar.gz" | cut -d' ' -f1)
+        ;;
+      configure) touch "$T/configure-fails" ;;
+      usb) touch "$T/no-usb" ;;
+      build) touch "$T/build-fails" ;;
+      install) touch "$T/install-fails" ;;
+      version) echo B7-1-deadbeef >"$T/client-version" ;;
     esac
-    run build_client
+    run --separate-stderr build_client
     assert_failure
     reason=$output
     [[ -n $reason ]] || fail "$case: no reason printed"
+    [[ $reason != *$'\n'* ]] || fail "$case: more than one line: $reason"
     run cat "$S/build-client.log"
     refute_output --partial "older build output"
     assert_output --partial "$reason"
     rm -rf "${T:?}/src" "$T/patchdiff" "$T/fixture-patches"
   done
+}
+
+@test "build_client: a failure with no other message still says why" {
+  lg_source
+  # The build log is a folder, so the build cannot start it afresh.
+  mkdir -p "$S/build-client.log"
+  run --separate-stderr build_client
+  assert_failure
+  assert_output --partial "$S/build-client.log"
+  rmdir "$S/build-client.log"
+  # The work folder cannot be made.
+  mkdir -p "$XDG_CACHE_HOME/lanai/downloads"
+  chmod 555 "$XDG_CACHE_HOME/lanai"
+  run --separate-stderr build_client
+  chmod 755 "$XDG_CACHE_HOME/lanai"
+  assert_failure
+  assert_output --partial "$XDG_CACHE_HOME/lanai/build-$LG_BUILD"
+  run cat "$S/build-client.log"
+  assert_output --partial "$XDG_CACHE_HOME/lanai/build-$LG_BUILD"
+  assert [ ! -e "$T/cmake.calls" ]
 }
 
 @test "build_client: a wrong checksum deletes the download and builds nothing" {
@@ -1134,12 +1223,18 @@ esac'
   run --separate-stderr cmd_build_client
   assert_failure
   JSON=$output
-  run field message
-  assert_output --partial 'the client did not build'
-  run field next
-  assert_output --partial "$S/build-client.log"
-  refute_output --partial setup
+  assert_equal "$(field message)" "The Windows window was not updated: the client did not build; see $S/build-client.log"
+  assert_equal "$(field next)" "check the Windows window build log, $S/build-client.log, then run lanai build-client again"
   assert_equal "$(field reason)" null
+}
+
+@test "lanai build-client: missing patches say to reinstall Lanai" {
+  LANAI_PATCHES=$T/no-patches
+  run --separate-stderr cmd_build_client
+  assert_failure
+  JSON=$output
+  assert_equal "$(field message)" "The Windows window was not updated: Lanai's Looking Glass patches are missing from $T/no-patches; reinstall Lanai"
+  assert_equal "$(field next)" "reinstall Lanai"
 }
 
 @test "lanai build-client: refuses while another build runs" {
@@ -1151,8 +1246,7 @@ esac'
   lanai_run build-client
   assert_failure
   assert_equal "$(field reason)" build-busy
-  run field message
-  assert_output --partial "Another Looking Glass client build is running"
+  assert_equal "$(field message)" "Another build of the Windows window is running."
 }
 
 # --- lanai setup-host (spec 7; the one sudo, in the panel's terminal) ---

@@ -1264,8 +1264,8 @@ exec /usr/bin/mv "$@"'
   assert_success
   assert_equal "$(field step)" 7
   # The live scale task, which now carries the sign-in step in the start
-  # program: signin_step 2.
-  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" '[2,2]'
+  # program: the current signin_step.
+  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" "[2,$LANAI_SIGNIN_STEP]"
   assert_equal "$(scale_task_kind)" new
   run signin_step_missing
   assert_failure
@@ -1276,7 +1276,7 @@ exec /usr/bin/mv "$@"'
   setup_run --share-ok yes --scale-ok yes
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" '[2,2]'
+  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" "[2,$LANAI_SIGNIN_STEP]"
 }
 
 @test "lanai setup step 6: an agent that refuses to set the clock sends setup back to step 5" {
@@ -1543,7 +1543,8 @@ exec /usr/bin/mv "$@"'
   setup_run --share-ok yes --scale-ok yes
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" '{"snapshot":"declined","done":true,"scale_task":2,"signin_step":2}'
+  assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" \
+    "{\"snapshot\":\"declined\",\"done\":true,\"scale_task\":2,\"signin_step\":$LANAI_SIGNIN_STEP}"
   setup_run
   assert_equal "$(field step)" 7
 }
@@ -1604,7 +1605,7 @@ exec /usr/bin/mv "$@"'
   assert_failure
   assert_equal "$(field ok)" false
   assert_equal "$(field step)" 4
-  assert_output --partial "still is not built from $LG_BUILD with Lanai's current patches"
+  assert_output --partial "is still not built from $LG_BUILD with Lanai's current patches"
   assert_equal "$(wc -l <"$T/build.calls")" 1
   ! grep -q -- '--user start' "$T/systemctl.calls" || fail "the unit was started"
 }
@@ -1766,7 +1767,7 @@ exec /usr/bin/mv "$@"'
   build_client() { echo called >>"$T/build.calls"; return 1; }
   run --separate-stderr cmd_build_client
   assert_failure
-  assert_output --partial 'Another Looking Glass client build is running'
+  assert_output --partial 'Another build of the Windows window is running'
   assert_equal "$(jq -r .reason <<<"$output")" build-busy
   setup_run
   assert_failure

@@ -31,13 +31,15 @@ setup() {
   build_patches_current() { return 0; }
   expected_base() { echo fixture.iso; }
   settings_seed() { echo '{"memory_gib":8,"cores":4}'; }
+  # A finished setup with the live scale task and the current sign-in mark.
+  CURRENT=$(jq -nc --argjson i "$LANAI_SIGNIN_STEP" '{done:true,scale_task:2,signin_step:$i}')
   export T
 }
 
 # Write setup state belonging to the fixture's storage.
 
 @test "panel scale: supplies current value and every labeled scale choice" {
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   run cmd_panel
   assert_success
   assert_equal "$(jq -r .settings.windows_scale <<<"$output")" auto
@@ -135,7 +137,7 @@ setup() {
   assert_equal "$(jq -r .settings.note <<<"$output")" "$old shut Windows down and click Run setup again."
   build_stamp_current() { return 0; }
   # The new task: the pick note only while Windows runs.
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   run cmd_panel
   assert_equal "$(jq -r .settings.note <<<"$output")" "$note"
   ST=inactive
@@ -220,7 +222,7 @@ assert_plan_agreement() {
 
 @test "panel: every status state has plain words and the full view" {
   local fixture_facts expected
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   for expected in not-installed setup-needed stopped starting running stopping in-use version-mismatch failed; do
     case $expected in
       not-installed) fixture_facts=$'ActiveState=inactive\nLanaiInstall=none' ;;
@@ -533,7 +535,7 @@ assert_plan_agreement() {
       questions|checking|wait) expected=6; state '{"snapshot":"declined","step5":true}'; fixture_facts+=$'\nActiveState=active'
         [[ $fixture != wait ]] || fixture_facts+=$'\nActiveState=activating'
         [[ $fixture != questions ]] || : >"$RUN/step6-asked" ;;
-      done) expected=7; state '{"done":true,"scale_task":2,"signin_step":2}' ;;
+      done) expected=7; state "$CURRENT" ;;
     esac
     plan=$(setup_plan "$fixture_facts")
     assert_equal "$(jq -r .step <<<"$plan")" "$expected"
@@ -545,7 +547,7 @@ assert_plan_agreement() {
   share_check() { return 1; }
   run cmd_panel
   assert_output --partial 'a real folder you own, not a link'
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   container_fact() { echo running; }
   run cmd_panel
   assert_equal "$(jq -r .setup.finished <<<"$output")" true
@@ -696,8 +698,8 @@ assert_plan_agreement() {
         share) share_check() { return 1; } ;;
         layout) layout_check() { echo broken; return 1; } ;;
         restore) : >"$S/restore-in-progress" ;;
-        done-container) state '{"done":true,"scale_task":2,"signin_step":2}'; container_fact() { echo running; } ;;
-        done-share) state '{"done":true,"scale_task":2,"signin_step":2}'; share_check() { return 1; } ;;
+        done-container) state "$CURRENT"; container_fact() { echo running; } ;;
+        done-share) state "$CURRENT"; share_check() { return 1; } ;;
       esac
       [[ $marker != consumed ]] || record_previous_run >/dev/null
       plan=$(setup_plan "$(shared_facts)")
@@ -1053,7 +1055,7 @@ assert_plan_agreement() {
 }
 
 @test "panel: warnings have no leading space and mismatch already explains the old driver" {
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   status_facts() { printf 'ActiveState=active\nLanaiClient=timeout\nLanaiDriverOld=old\nLanaiVersion=mismatch\nLanaiSetup=done\n'; }
   run cmd_panel
   assert_equal "$(jq -r .warning <<<"$output")" 'The Windows window did not open in time. Try Open window again.'
@@ -1119,7 +1121,7 @@ assert_plan_agreement() {
 @test "panel: logs and reply guidance use the same names" {
   run cmd_panel
   assert_equal "$(jq -r .logs.client <<<"$output")" "Windows window log: $RUN/client.log"
-  assert_equal "$(jq -r .logs.job <<<"$output")" "Setup, snapshot and restore log: $S/panel-job.log"
+  assert_equal "$(jq -r .logs.job <<<"$output")" "Setup, snapshot, restore and update log: $S/panel-job.log"
   assert_equal "$(jq -r .logs.command <<<"$output")" "Button actions log: $S/panel-run.log"
   run panel_words setup '{"ok":false,"reason":"client"}'
   assert_output 'The Windows window could not open. Check the Windows window log and try again.'
@@ -1130,7 +1132,7 @@ assert_plan_agreement() {
   run panel_words restore '{"ok":false}'
   assert_output 'Lanai could not restore the snapshot. Check the restore log before trying again.'
   run cmd_panel --pending never "$((EPOCHSECONDS - 11))"
-  assert_equal "$(jq -r .result.launch <<<"$output")" 'The operation did not start. Check the setup, snapshot and restore log, then try again.'
+  assert_equal "$(jq -r .result.launch <<<"$output")" 'The operation did not start. Check the setup, snapshot, restore and update log, then try again.'
 }
 
 @test "panel: repair prompt and named restore labels come from the backend" {
@@ -1725,7 +1727,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: stopped requires current finished setup and no unfinished restore" {
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   run cmd_panel
   assert_success
   assert_right_click start
@@ -1733,7 +1735,7 @@ assert_right_click() {
   run cmd_panel
   assert_success
   assert_right_click panel
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   : >"$S/restore-in-progress"
   run cmd_panel
   assert_success
@@ -1755,7 +1757,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: finished running install opens only its closed window" {
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   ST=active
   local window
   for window in false true; do
@@ -1769,7 +1771,7 @@ assert_right_click() {
 
 @test "panel clicks: CLI and panel snapshot or restore block Start but allow Open" {
   local origin operation fd pid=$BASHPID
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   for origin in cli panel; do
     for operation in snapshot restore; do
       exec {fd}>"$S/lock"
@@ -1800,7 +1802,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: pending panel launch opens the panel until it starts" {
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   run cmd_panel --pending click-job "$EPOCHSECONDS"
   assert_success
   assert_equal "$(jq -r .busy.active <<<"$output")" true
@@ -1808,7 +1810,7 @@ assert_right_click() {
 }
 
 @test "panel clicks: active panel setup work blocks the stopped shortcut" {
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   local fd
   exec {fd}>"$S/panel-job.lock"
   flock -n "$fd"
@@ -1827,7 +1829,7 @@ assert_right_click() {
   run panel_words restore "$reply"
   assert_success
   assert_output "$words"
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   jq -nc --argjson reply "$reply" '{command:"restore",reply:$reply}' >"$S/panel-result-snapshots.json"
   shim systemctl 'printf "ActiveState=inactive\nResult=success\nInvocationID=\n"'
   export PATH=$T/shims:$PATH
@@ -1863,7 +1865,7 @@ assert_right_click() {
 }
 
 @test "panel restore: a refusal during unfinished recovery never claims Windows was unchanged" {
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   : >"$S/restore-in-progress"
   panel_result_write snapshots '{"command":"restore","reply":{"ok":false,"reason":"restore-unsupported","message":"Lanai cannot verify the image. The restore is still unfinished."}}'
   shim systemctl 'printf "ActiveState=inactive\nResult=success\nInvocationID=\n"'
@@ -1875,7 +1877,7 @@ assert_right_click() {
 }
 
 @test "panel activity: gathers once and reuses the result for the storage check" {
-  state '{"done":true,"scale_task":2,"signin_step":2}'
+  state "$CURRENT"
   shim python3 'if [[ $1 == */image-proof.py && $2 == activity ]]; then
   echo activity >>"$T/activity-calls"
   echo "{\"label\":\"Restoring Windows: replacing the disk\",\"percent\":99}"
@@ -1901,7 +1903,6 @@ SCALE='Scale saves apply only the next time Windows starts.'
 LOCK='Running setup again also turns the Windows lock off again.'
 CLIENT_DONE='The Windows window is updated. If the Windows window is open, close it and open it again.'
 CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window again.'
-CURRENT='{"done":true,"scale_task":2,"signin_step":2}'
 
 # Assert the panel's warning is <stopped words> while Windows is stopped and
 # <running words> while it runs, with no Update button and no note under
@@ -2045,8 +2046,9 @@ assert_rerun_warning() {
   assert_output 'The Windows window could not be updated. Check the Windows window build log (build-client.log), then try again.'
   run panel_words build-client '{"ok":false,"reason":"build-busy","message":"UNTRUSTED"}'
   assert_output 'Another build of the Windows window is running. Try again when it finishes.'
+  # ui_call writes the CLI's stderr to the job log, not the build log.
   run panel_words build-client '{"ok":false,"reason":"invalid-reply"}'
-  assert_output 'Lanai did not give a readable reply. Check the Windows window build log and try again.'
+  assert_output 'Lanai did not give a readable reply. Check the update log and try again.'
   run cmd_panel
   assert_equal "$(jq -r .logs.build <<<"$output")" "Windows window build log: $S/build-client.log"
 }
@@ -2067,6 +2069,15 @@ assert_rerun_warning() {
   run cmd_panel
   assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_DONE"
   printf '%s 1101\nlog\n' "$LANAI_CLIENT_START" >"$RUN/client.log"
+  run cmd_panel
+  assert_equal "$(jq -r .result.client <<<"$output")" ''
+  # A reboot empties the runtime folder, so no client.log tells; an update
+  # that ended before this boot is over too.
+  rm -f "$RUN/client.log"
+  printf 'cpu  1 2 3\nbtime 1100\n' >"$LANAI_PROC/stat"
+  run cmd_panel
+  assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_DONE"
+  printf 'cpu  1 2 3\nbtime 1101\n' >"$LANAI_PROC/stat"
   run cmd_panel
   assert_equal "$(jq -r .result.client <<<"$output")" ''
 }
@@ -2124,4 +2135,33 @@ assert_rerun_warning() {
       assert_equal "$(jq -r .result.client <<<"$output")" ''
     done
   done
+}
+
+@test "panel resize: a client build that fails in setup names the build log and the button it shows" {
+  local again='Setup could not update the Windows window. Check the Windows window build log, then click Run setup again.'
+  local cont='Setup could not update the Windows window. Check the Windows window build log, then click Continue setup.'
+  run panel_words setup '{"ok":false,"step":"4","message":"UNTRUSTED"}' 7
+  assert_output "$again"
+  run panel_words setup '{"ok":false,"step":"4","message":"UNTRUSTED"}' 4
+  assert_output "$cont"
+  # Run setup again on an old client: the plan is finished (step 7), so
+  # the step 4 failure holds while the client is still old.
+  state '{"done":true,"scale_task":2}'
+  build_patches_current() { return 1; }
+  panel_result_write setup '{"token":"t","command":"setup","args":["--window"],"started":1,"ended":2,"reply":{"ok":false,"step":"4","message":"UNTRUSTED"}}'
+  run cmd_panel
+  assert_equal "$(jq -r .result.setup <<<"$output")" "$again"
+  assert_equal "$(jq -r .buttons.continue_setup.label <<<"$output")" 'Run setup again'
+  # Once the client is current, the failure is over.
+  build_patches_current() { return 0; }
+  run cmd_panel
+  assert_equal "$(jq -r .result.setup <<<"$output")" ''
+  # A first setup stays at step 4 with Continue setup.
+  build_patches_current() { return 1; }
+  build_stamp_current() { return 1; }
+  state '{"snapshot":"declined"}'
+  run cmd_panel
+  assert_equal "$(jq -r .setup.step <<<"$output")" 4
+  assert_equal "$(jq -r .result.setup <<<"$output")" "$cont"
+  assert_equal "$(jq -r .buttons.continue_setup.label <<<"$output")" 'Continue setup'
 }

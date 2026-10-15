@@ -25,11 +25,11 @@
 # shellcheck shell=bash
 
 # The sign-in step's current mark (signin_step above), which step 6 records
-# and signin_step_missing (lib/ui.sh) checks. It covers only
-# guest/lanai-start.cs: bump it with any change to that file that an
-# install must pick up, and the panel then names Run setup again. A change
-# to guest/lanai-scale.ps1 that an install must pick up needs its own mark
-# and its own panel words.
+# and signin_step_missing (lib/ui.sh) checks. Bump it only for a change to
+# guest/lanai-start.cs that the panel's sign-in warning describes: the
+# panel then names Run setup again with those words. Any other change that
+# an install must pick up, in guest/lanai-start.cs or
+# guest/lanai-scale.ps1, needs its own mark and its own panel words.
 LANAI_SIGNIN_STEP=2
 
 # --- setup.json ---

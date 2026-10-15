@@ -39,8 +39,8 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   `$XDG_RUNTIME_DIR`): socket paths over 108 characters make the fake QMP and guest
   agent tests fail. CI runs the same in an Arch container
   (`.github/workflows/test.yml`). `test/client-patches.bats` also applies every patch
-  to the pinned source and runs the client's tests when `LANAI_TEST_LG_TARBALL` names
-  the pinned source tarball (local only; CI skips it).
+  to the pinned source, builds the client and runs its tests when
+  `LANAI_TEST_LG_TARBALL` names the pinned source tarball (local only; CI skips it).
 
 ## Rules
 

@@ -3,7 +3,8 @@
 # Everywhere: the patch headers and COPYING, and patch 0001 (new files only)
 # applied to an empty folder, its resize module built with cc and every
 # resize case run. Locally, when LANAI_TEST_LG_TARBALL names the pinned
-# source tarball: every patch applied exactly to the real source, and the
+# source tarball: every patch applied exactly to the real source, the
+# client itself built (it compiles patch 0002's hooks in main.c), and the
 # client tests that cover the change built and run (needs the client's
 # build dependencies and GoogleTest).
 # shellcheck disable=SC2030,SC2031,SC2034
@@ -63,7 +64,7 @@ COPYING_SHA=8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
   assert_failure
 }
 
-@test "the pinned source: every patch applies exactly, and the client tests that cover it pass" {
+@test "the pinned source: every patch applies exactly, the client builds, and the client tests that cover it pass" {
   [[ -n ${LANAI_TEST_LG_TARBALL:-} ]] || skip "LANAI_TEST_LG_TARBALL is not set"
   local src listed declared
   # verify_sha256 deletes a file that does not match, so check a copy.
@@ -81,9 +82,12 @@ COPYING_SHA=8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
   cmake -S "$src/client" -B "$T/build" -DENABLE_X11=no -DENABLE_TESTS=ON \
     -DWESTON_EXECUTABLE=/usr/bin/true >"$T/cmake.log" 2>&1 ||
     fail "cmake could not configure: $(tail -20 "$T/cmake.log")"
+  # The client too, with build_client's -DENABLE_X11=no: only it compiles
+  # main.c, where patch 0002 adds its hooks.
   cmake --build "$T/build" -j "$(nproc)" \
-    --target resize-tests config-message-tests mouse-tests >"$T/build.log" 2>&1 ||
-    fail "the tests did not build: $(grep -m5 -E 'error' "$T/build.log")"
+    --target looking-glass-client resize-tests config-message-tests mouse-tests >"$T/build.log" 2>&1 ||
+    fail "the client or its tests did not build: $(grep -m5 -E 'error' "$T/build.log")"
+  assert [ -x "$T/build/looking-glass-client" ]
   run ctest --test-dir "$T/build" -R '^(resize|config-message|mouse)-' --output-on-failure
   assert_success
 

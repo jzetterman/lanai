@@ -10,14 +10,15 @@ old_task_note() {
 }
 
 # Reply words depend on command, ok, step and structured details/reasons.
-# The optional current plan step selects visible snapshot-choice retry controls.
+# The optional current plan step selects visible snapshot-choice retry controls
+# and the button a failed client build names (step 7 is Run setup again).
 # Offers and waits belong to the durable view and therefore have no result text.
 # A settings save's words come from its scale_saved, running and scale_task_kind
 # fields; for a scale save, cmd_settings prints the same words (plus
 # old_task_note for the old task, which the panel shows under the scale list).
 panel_words() {
   jq -r --arg c "$1" --arg step "${3:-}" '
-    def log: {setup:"setup log",snapshot:"snapshot log",restore:"restore log","build-client":"Windows window build log"}[$c] // "button actions log";
+    def log: {setup:"setup log",snapshot:"snapshot log",restore:"restore log","build-client":"update log"}[$c] // "button actions log";
     def oldtask: " Until you run setup again, the old scale task undoes scales you pick in Windows," +
       " and \u201cMatch my monitor\u201d does not follow the window. Running setup again also turns the Windows lock off again.";
     def reasons: {
@@ -54,6 +55,9 @@ panel_words() {
           "Continue without a snapshot or take a snapshot again."
         else "Continue setup." end)
       elif .reason and (reasons[.reason] != null) then reasons[.reason]
+      elif $c == "setup" and .step == "4" then
+        "Setup could not update the Windows window. Check the Windows window build log, then click " +
+        (if $step == "7" then "Run setup again." else "Continue setup." end)
       elif $c == "setup" and .step == "2" and .missing then ""
       elif $c == "setup" and .step == "3" and .reason == null then ""
       else ({start:"Windows could not start. Check the button actions log and the Windows VM log and try again.",
@@ -71,7 +75,6 @@ panel_words() {
     elif $c == "snapshot" and .snapshot then
       "Snapshot saved at " + .snapshot + ". It shares disk space at first and grows as Windows changes. To delete it, remove that folder in your file manager."
     elif $c == "restore" then "The snapshot was restored."
-    # cmd_build_client in lib/lanai.sh prints the same words.
     elif $c == "build-client" then "The Windows window is updated. If the Windows window is open, close it and open it again."
     elif $c == "settings" and (.scale_saved | type) == "boolean" then
       if .scale_saved | not then "Saved."
@@ -106,7 +109,7 @@ panel_records() {
 cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
-  local client_old=false signin_missing=false task started=0
+  local client_old=false signin_missing=false update_shown=false task started=0 booted
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
       emit false "" "Invalid panel input." ""; return 2
@@ -149,8 +152,15 @@ cmd_panel() {
   # names its own step.
   if jq -e '.finished' <<<"$plan" >/dev/null && signin_step_missing; then signin_missing=true; fi
   task=$(scale_task_kind)
+  # The update button shows for an old client only with the live scale
+  # task and the sign-in step; else Run setup again is the one step.
+  if $client_old && [[ $task == new ]] && ! $signin_missing; then update_shown=true; fi
   # When the current client started (client.log's first line), or 0.
   [[ -z $run || ! -s $run/client.log ]] || started=$(log_client_start "$run/client.log")
+  # When the host booted, or 0. A reboot empties the runtime folder, and
+  # client.log with it.
+  booted=$(sed -n 's/^btime //p' "${LANAI_PROC:-/proc}/stat" 2>/dev/null) || booted=0
+  [[ $booted =~ ^[0-9]+$ ]] || booted=0
   for group in vm setup settings snapshots client; do
     doc=$(jq -c --arg g "$group" '.records[$g] // {}' <<<"$records")
     words=''
@@ -167,9 +177,14 @@ cmd_panel() {
         words=$(panel_words "$(jq -r '.command' <<<"$doc")" "$(jq -c .reply <<<"$doc")" "$(jq -r .step <<<"$plan")")
       fi
     fi
-    if [[ $group == setup ]] && jq -e --argjson p "$plan" '
+    # A failed reply about another step is over, and one with the plan's
+    # reason repeats the problem line. One exception: a client build that
+    # failed in Run setup again. The plan is then finished (step 7), and
+    # the failure holds while the client is still old.
+    if [[ $group == setup ]] && jq -e --argjson p "$plan" --argjson old "$client_old" '
       .reply.ok == false and
-      ((.reply.step != null and .reply.step != $p.step) or
+      ((.reply.step != null and .reply.step != $p.step and
+        ((.reply.step == "4" and $p.finished and $old) | not)) or
        (.reply.reason != null and .reply.reason == $p.reason))' <<<"$doc" >/dev/null; then
       words=''
     fi
@@ -183,13 +198,14 @@ cmd_panel() {
       esac
     fi
     # An update's done words hold until a client starts after the job
-    # ended (the next lanai open runs the new binary). Its failed and
-    # interrupted words name the update button, so they hold only while
-    # that button shows (update_client below).
+    # ended (the next lanai open runs the new binary), or until a reboot
+    # after it. Its failed and interrupted words name the update button,
+    # so they hold only while that button shows.
     if [[ $group == client ]]; then
       if jq -e '.reply.ok == true' <<<"$doc" >/dev/null; then
-        ! jq -e --argjson c "$started" '$c > .ended' <<<"$doc" >/dev/null || words=''
-      elif ! $client_old || [[ $task != new ]] || $signin_missing; then words=''; fi
+        ! jq -e --argjson c "$started" --argjson b "$booted" '$c > .ended or $b > .ended' <<<"$doc" >/dev/null ||
+          words=''
+      elif ! $update_shown; then words=''; fi
     fi
     results=$(jq -nc --argjson r "$results" --arg g "$group" --arg w "$words" '$r + {($g):$w}')
   done
@@ -214,14 +230,14 @@ cmd_panel() {
   else snapshots='{"names":[],"error":"Lanai could not read the snapshot list. Check the settings and logs."}'; fi
   logs=$(jq -nc --arg client "${run:+$run/client.log}" --arg job "$s/panel-job.log" --arg command "$s/panel-run.log" \
     --arg build "$s/build-client.log" \
-    '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Setup, snapshot and restore log: " + $job),command:("Button actions log: " + $command),
+    '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Setup, snapshot, restore and update log: " + $job),command:("Button actions log: " + $command),
       build:("Windows window build log: " + $build)} +
      (if $client == "" then {} else {client:("Windows window log: " + $client)} end)')
   jq -nc --argjson st "$status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
     --argjson progress "$progress" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
-    --argjson clientOld "$client_old" --argjson signinMissing "$signin_missing" --arg task "$task" \
+    --argjson clientOld "$client_old" --argjson signinMissing "$signin_missing" --argjson updateShown "$update_shown" --arg task "$task" \
     --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" '
     def button($show;$enable;$label): {show:$show,enable:($show and $enable),label:$label};
     ({"not-installed":["Not installed","Windows is not installed","No supported Windows install was found.","Install Windows with Omarchy, then continue setup."],
@@ -264,7 +280,7 @@ cmd_panel() {
          "build-client":("Updating the Windows window. This may take several minutes. " +
            (if $off then "You can start Windows when it finishes. " else "" end) + "You can close this panel.")}[$job.command // ""] //
          "Starting the operation.") else "" end)},
-     result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot and restore log, then try again." else "" end)}),
+     result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot, restore and update log, then try again." else "" end)}),
      setup:{show:($p.finished|not),finished:$p.finished,
        attention:(($p.finished|not) and $st.state != "stopping" and ($p.reason != "" or $r.setup != "" or $launchFailed or
          ($p.step == "3" and $rec.records.snapshots.reply.ok == false) or $st.state == "failed" or
@@ -319,8 +335,7 @@ cmd_panel() {
          {labels:($snaps.names | map({key:.,value:("Restore snapshot " + .)}) | from_entries)},
        restore_confirm:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore and replace Windows") +
          {labels:($snaps.names | map({key:.,value:("Restore " + . + " and replace Windows")}) | from_entries)},
-       # The failed and interrupted update words use the same test.
-       update_client:button($clientOld and $task == "new" and ($signinMissing|not);($busy|not);"Update the Windows window"),
+       update_client:button($updateShown;($busy|not);"Update the Windows window"),
        save_settings:button(true;$settings.error == "";"Save settings")}} |
     if ($dailyControls|not) and ($st.state == "stopped" or $st.state == "running") then
       .next="Follow the Setup section below." |
