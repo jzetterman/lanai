@@ -1345,19 +1345,26 @@ build_client_locked() (
   build_client
 )
 
-# build-client: build and install the pinned Looking Glass client (spec 7,
-# 26). It takes about a minute; the panel runs it detached (phases 6-7).
+# build-client: build and install the pinned Looking Glass client with
+# Lanai's patches (spec 7, 12, 26). It takes several minutes and changes
+# nothing in Windows. The panel runs it as a panel job (Update the Windows
+# window, the client group). A running client keeps its open binary, so the
+# message always ends by saying to reopen the window. Another build holding
+# build.lock replies with reason build-busy. Missing patches mean a broken
+# install, so the next step is to reinstall Lanai.
 cmd_build_client() {
-  local out rc=0
+  local out rc=0 next
   out=$(build_client_locked) || rc=$?
   if ((rc == 3)); then
-    emit false "" "Another Looking Glass client build is running." "wait for it to finish"
+    emit false "" "Another build of the Windows window is running." "wait for it to finish" '{"reason":"build-busy"}'
     return 1
   elif ((rc != 0)); then
-    emit false "" "The Looking Glass client was not built: $out" "fix the cause, then run setup again"
+    next="check the Windows window build log, $(state_dir)/build-client.log, then run lanai build-client again"
+    [[ -n $(patches_list) ]] || next="reinstall Lanai"
+    emit false "" "The Windows window was not updated: $out" "$next"
     return 1
   fi
-  emit true "" "The Looking Glass client $LG_BUILD is ready." "" \
+  emit true "" "$(panel_words build-client '{"ok":true}')" "" \
     "$(jq -n -c --arg c "$out" --arg b "$LG_BUILD" '{client: $c, build: $b}')"
 }
 
@@ -1464,14 +1471,25 @@ setup_command() {
     case $out in
       build)
         if $built; then
-          setup_reply false 4 "The Looking Glass client still does not report $LG_BUILD." "run lanai build-client"
+          setup_reply false 4 "The Looking Glass client is still not built from $LG_BUILD with Lanai's current patches." "run lanai build-client"
           return 1
         fi
         built=true
-        out=$(build_client_locked) || {
-          setup_reply false 4 "The Looking Glass client was not built: $out" "fix the cause, then run setup again"
+        # The words and the build log match lanai build-client's; a first
+        # setup prepares the Windows window, Run setup again updates it.
+        out=$(build_client_locked) || rc=$?
+        if ((rc == 3)); then
+          setup_reply false 4 "Another build of the Windows window is running." \
+            "wait for it to finish, then run setup again" '{"reason":"build-busy"}'
           return 1
-        }
+        elif ((rc != 0)); then
+          local verb=prepared next
+          ! setup_done || verb=updated
+          next="check the Windows window build log, $(state_dir)/build-client.log, then run setup again"
+          [[ -n $(patches_list) ]] || next="reinstall Lanai"
+          setup_reply false 4 "The Windows window was not $verb: $out" "$next"
+          return 1
+        fi
         ;;
       setup-boot)
         out=$(setup_guest "$window") || rc=$?

@@ -302,6 +302,7 @@ shared_facts() { printf 'ActiveState=inactive\nLanaiStorage=%s/storage\n' "$T"; 
 share_check() { :; }
 host_packages_missing() { :; }
 build_stamp_current() { :; }
+build_patches_current() { :; }
 guest_version_behind() { :; }
 setup_follow() { :; }
 lanai_flock() { [[ ! -e $T/resume-locked ]] && touch "$T/resume-locked"; }
@@ -317,4 +318,35 @@ SH
   assert_equal "$(jq -r .reply.reason "$S/panel-result-setup.json")" busy
   assert_equal "$(jq -r .reply.step "$S/panel-result-setup.json")" 6
   assert [ -n "$(jq -r '.ended // empty' "$S/panel-result-setup.json")" ]
+}
+
+@test "ui job: build-client launches and runs as a panel job in the client group" {
+  run cmd_ui_job launch build-client
+  assert_success
+  run cat "$T/launch"
+  assert_output --partial $'ui-job-worker\nlaunch\nbuild-client'
+  # It needs no graphical session: building changes nothing in Windows.
+  echo inactive >"$T/session"
+  run cmd_ui_job_worker token build-client
+  assert_success
+  assert_equal "$(cat "$T/calls")" build-client
+  assert_equal "$(jq -r .command "$S/panel-result-client.json")" build-client
+  assert_equal "$(jq -r .reply.ok "$S/panel-result-client.json")" true
+  assert [ -n "$(jq -r '.ended // empty' "$S/panel-result-client.json")" ]
+  assert [ ! -e "$S/panel-result-setup.json" ]
+}
+
+@test "ui job: the launcher and worker refuse commands the panel does not run as jobs" {
+  local command
+  for command in start stop open settings setup-host build-clients 'build-client;x'; do
+    run cmd_ui_job launch "$command"
+    assert_failure 2
+    run cmd_ui_job_worker token "$command"
+    assert_failure 2
+  done
+  assert [ ! -e "$T/launch" ]
+  assert [ ! -e "$T/calls" ]
+  # Direct actions stay short: ui-run does not take the build.
+  run cmd_ui_run token build-client
+  assert_failure 2
 }

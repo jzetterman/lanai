@@ -27,7 +27,7 @@ jobs:
       - name: Install packages
         run: >-
           pacman -Syu --noconfirm bats bats-assert bats-support shellcheck ffmpeg jq
-          socat e2fsprogs btrfs-progs diffutils qemu-system-x86 qemu-img python strace
+          socat e2fsprogs btrfs-progs diffutils gcc patch qemu-system-x86 qemu-img python strace
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -47,4 +47,6 @@ jobs:
         run: >-
           shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash
           spike/test/*.bats docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
-          docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga
+          docs/plugin/proof-kit/proof-unit-stop docs/plugin/proof-kit/clock-ping
+          docs/plugin/proof-kit/size-window-on-open docs/plugin/proof-kit/stamp-client-log
+          test/fixtures/fake-qmp test/fixtures/fake-qga test/qml-lint

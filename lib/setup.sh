@@ -12,11 +12,25 @@
 #   scale_task  2 once step 6 passed with the live scale task's port open:
 #             the task's version (Lanai before live scale never wrote
 #             it), so a finished setup without it has the old task
+#   signin_step  LANAI_SIGNIN_STEP once step 6 passed: the scale task
+#             carries the sign-in step in its current form (spec 12), 2
+#             for the start program (guest/lanai-start.cs) and 1 for the
+#             earlier step in PowerShell. A separate key, so a Lanai from
+#             before the step still reads scale_task right; a finished
+#             setup without the current mark has an older form or none
 #   round     true from a setup boot's start until step 7; while it is
 #             open, a done setup (a pin bump, or a rerun) does not read as
 #             finished, though lanai start still works (spec 8)
 # State for another location, or none, counts as no state at all.
 # shellcheck shell=bash
+
+# The sign-in step's current mark (signin_step above), which step 6 records
+# and signin_step_missing (lib/ui.sh) checks. Bump it only for a change to
+# guest/lanai-start.cs that the panel's sign-in warning describes: the
+# panel then names Run setup again with those words. Any other change that
+# an install must pick up, in guest/lanai-start.cs or
+# guest/lanai-scale.ps1, needs its own mark and its own panel words.
+LANAI_SIGNIN_STEP=2
 
 # --- setup.json ---
 
@@ -121,7 +135,8 @@ setup_downloads() {
 # first, so a failure leaves none at all; download and verify the pinned
 # guest files (setup_downloads); then, in setup-media.partial, renamed at
 # the end, put the IDD installer from its zip, the three MSIs under the
-# names setup.cmd uses, the guest scripts, and from the virtio-win ISO (too
+# names setup.cmd uses, the guest scripts and the start program's source
+# (setup.cmd builds it in Windows), and from the virtio-win ISO (too
 # big for QEMU's FAT disk) only viofs/w11/amd64. The VM must be stopped: a
 # running setup boot reads the folder. On failure prints why.
 setup_media_build() {
@@ -164,7 +179,7 @@ setup_media_build() {
   if ! cp -- "$dl/spice-vdagent-x64-$VDAGENT_VERSION.msi" "$part/spice-vdagent.msi" ||
     ! cp -- "$dl/qemu-ga-x86_64-$QEMU_GA_VERSION.msi" "$part/qemu-ga.msi" ||
     ! cp -- "$dl/winfsp-$WINFSP_VERSION.msi" "$part/winfsp.msi" ||
-    ! cp -- "$guest/setup.cmd" "$guest/lanai-lock.cmd" "$guest/lanai-scale.ps1" "$part/"; then
+    ! cp -- "$guest/setup.cmd" "$guest/lanai-lock.cmd" "$guest/lanai-scale.ps1" "$guest/lanai-start.cs" "$part/"; then
     echo "cannot assemble $media"
     rm -rf -- "$part"
     return 1
@@ -435,8 +450,10 @@ setup_step6() {
     return 1
   fi
   # The scale task's port is open, so Windows has the live task:
-  # scale_task 2. A record without it means the old task (spec 12).
-  if ! setup_patch '{"done": true, "step5": null, "round": null, "scale_task": 2}'; then
+  # scale_task 2, with the start program's sign-in step: signin_step
+  # LANAI_SIGNIN_STEP. A record without them means the old task, or a task
+  # without the current step (spec 12).
+  if ! setup_patch "{\"done\": true, \"step5\": null, \"round\": null, \"scale_task\": 2, \"signin_step\": $LANAI_SIGNIN_STEP}"; then
     setup_reply false 6 "Lanai cannot record its setup state." "run setup again"
     return 1
   fi
@@ -492,7 +509,7 @@ setup_plan() {
     else setup_decision 3 snapshot; return; fi
   fi
   if $stopped && [[ ! -s $dir/windows.base ]]; then setup_decision 3a base; return; fi
-  if ! build_stamp_current; then setup_decision 4 build; return; fi
+  if ! build_stamp_current || ! build_patches_current; then setup_decision 4 build; return; fi
   step5=$(jq -r 'if has("step5") then .step5 else "" end' <<<"$doc")
   if ! $stopped; then
     if jq -e '.setup == true' "$(state_dir)/boot.json" >/dev/null 2>&1; then

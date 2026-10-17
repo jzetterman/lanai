@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
-# Tests for the proof kit (docs/plugin/proof-kit/proof-vm), run as a
-# command. No VM starts and nothing is downloaded: every case stops before
-# QEMU, curl is a PATH shim, and `client` talks to test/fixtures/fake-qmp and
-# execs a stand-in client.
-# shellcheck disable=SC2030,SC2031
+# Tests for the proof kit (docs/plugin/proof-kit/proof-vm and clock-ping),
+# run as commands. No VM starts and nothing is downloaded: every case stops
+# before QEMU, curl is a PATH shim, `client` talks to test/fixtures/fake-qmp
+# and execs a stand-in client, and clock-ping talks to a stand-in pong.
+# display-backstop.ps1 gets static checks only.
+# shellcheck disable=SC2030,SC2031,SC2016
 
 load helpers
 
@@ -223,4 +224,131 @@ win:setGuestRes=yes"
   assert_output --partial "QEMU did not answer"
   (($(grep -c qmp_capabilities "$T/qmp.log") >= 2)) || fail "only one try: $(cat "$T/qmp.log")"
   assert [ ! -e "$T/client.args" ]
+}
+
+# Answer clock-ping in <dir> as pong.ps1 does: the line already in ping.txt
+# is the last run's and gets no pong; each new ping line goes back to
+# pong.txt with the time appended. Stops after <max> pongs (0, the default,
+# for no limit) or 15 s. <skip> 0 answers the line already there too, for a
+# pong that starts after the first ping.
+fake_pong() {
+  local dir=$1 max=${2:-0} skip=${3:-1} count=0 last='' line end=$((EPOCHSECONDS + 15))
+  if ((skip)); then last=$(cat "$dir/ping.txt" 2>/dev/null) || last=''; fi
+  while ((EPOCHSECONDS < end)) && ((max == 0 || count < max)); do
+    line=$(cat "$dir/ping.txt" 2>/dev/null) || line=''
+    if [[ -n $line && $line != "$last" ]]; then
+      printf '%s %s\n' "$line" "$(date +%FT%T.%N%:z)" >>"$dir/pong.txt"
+      last=$line
+      count=$((count + 1))
+    fi
+    sleep 0.01
+  done
+}
+
+@test "clock-ping: a link the guest made at ping.txt is replaced, not written through" {
+  mkdir "$T/share"
+  echo keep >"$T/victim"
+  ln -s "$T/victim" "$T/share/ping.txt"
+  fake_pong "$T/share" 3>&- &
+  BG_PIDS+=("$!")
+  run timeout 30 "$KIT/clock-ping" "$T/share"
+  assert_success
+  assert_output --partial 'best: '
+  assert_equal "$(cat "$T/victim")" keep
+  assert [ ! -L "$T/share/ping.txt" ]
+  [[ $(cat "$T/share/ping.txt") =~ ^ping\ 10\ [0-9]+$ ]] || fail "ping.txt: $(cat "$T/share/ping.txt")"
+  # No temporary file is left behind.
+  run find "$T/share" -mindepth 1 -not -name ping.txt -not -name pong.txt
+  assert_output ''
+}
+
+@test "clock-ping: a folder swapped for a link after the check is not followed" {
+  mkdir "$T/share" "$T/elsewhere"
+  # After the first ping, the guest moves the folder away and puts a link
+  # in its place, then keeps answering in the moved folder.
+  (
+    while [[ ! -s $T/share/ping.txt ]]; do sleep 0.01; done
+    mv "$T/share" "$T/moved"
+    ln -s "$T/elsewhere" "$T/share"
+    fake_pong "$T/moved" 0 0
+  ) 3>&- &
+  BG_PIDS+=("$!")
+  run timeout 30 "$KIT/clock-ping" "$T/share"
+  assert_success
+  assert_output --partial 'best: '
+  [[ $(cat "$T/moved/ping.txt") =~ ^ping\ 10\ [0-9]+$ ]] || fail "ping.txt: $(cat "$T/moved/ping.txt")"
+  run find "$T/elsewhere" -mindepth 1
+  assert_output ''
+}
+
+@test "clock-ping: a ping left by an earlier run does not stop a full exchange" {
+  mkdir "$T/share"
+  # A failed run left its first ping, and the new pong skips that line.
+  echo 'ping 1' >"$T/share/ping.txt"
+  fake_pong "$T/share" 3>&- &
+  BG_PIDS+=("$!")
+  run timeout 30 "$KIT/clock-ping" "$T/share"
+  assert_success
+  assert_line --partial '10 offset '
+  assert_output --partial 'best: '
+}
+
+@test "clock-ping: when pong stops early it reports the best sample so far" {
+  mkdir "$T/share"
+  fake_pong "$T/share" 3 3>&- &
+  BG_PIDS+=("$!")
+  run timeout 30 "$KIT/clock-ping" "$T/share"
+  assert_success
+  assert_line --partial '3 offset '
+  refute_line --partial '4 offset '
+  assert_output --partial 'no pong for ping 4 in 5 s'
+  assert_output --regexp 'best: [123] offset '
+}
+
+@test "clock-ping: with no pong at all it fails" {
+  mkdir "$T/share"
+  run timeout 30 "$KIT/clock-ping" "$T/share"
+  assert_failure
+  assert_output --partial 'no pong for ping 1 in 5 s'
+  refute_output --partial 'best: '
+}
+
+@test "clock-ping: a folder that is a link is refused before any write" {
+  mkdir "$T/real"
+  ln -s "$T/real" "$T/linked"
+  run timeout 10 "$KIT/clock-ping" "$T/linked"
+  assert_failure
+  assert_output --partial 'link'
+  run find "$T/real" -mindepth 1
+  assert_output ''
+}
+
+@test "display-backstop.ps1: lives where only administrators write, and pins its loads before Add-Type" {
+  local f=$KIT/display-backstop.ps1 pins first add
+  # A standard user can create a folder under C:\ProgramData first.
+  run grep -n 'ProgramData' "$f"
+  assert_failure
+  run grep -nxF "\$dir  = 'C:\Program Files\LanaiProof'" "$f"
+  assert_success
+  # As lanai-scale.ps1: the system module folders, temp files in its own
+  # folder, no reference search path and the system folder as PATH, all
+  # before the first cmdlet and Add-Type.
+  run grep -E '^\$env:(PSModulePath|TMP|TEMP|LIB|PATH) = ' "$f"
+  assert_line '$env:PSModulePath = "$([Environment]::SystemDirectory)\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules"'
+  assert_line "\$env:TMP = 'C:\Program Files\LanaiProof\tmp'"
+  assert_line "\$env:TEMP = 'C:\Program Files\LanaiProof\tmp'"
+  assert_line "\$env:LIB = \$null"
+  assert_line "\$env:PATH = [Environment]::SystemDirectory"
+  pins=$(grep -nE '^\$env:(PSModulePath|TMP|TEMP|LIB|PATH) = ' "$f" | cut -d: -f1 | tail -n 1)
+  first=$(grep -nE '^[^#]*[A-Z][a-z]+-[A-Z][A-Za-z]+' "$f" | head -n 1 | cut -d: -f1)
+  add=$(grep -n '^Add-Type' "$f" | cut -d: -f1)
+  [[ -n $pins && -n $first && -n $add ]] || fail "pins $pins, first $first, Add-Type $add"
+  ((pins < first && pins < add)) || fail "pins end on line $pins; first cmdlet $first, Add-Type $add"
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  PS1=$f run pwsh -NoProfile -NonInteractive -Command '
+    $e = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$e) | Out-Null
+    $e.Count'
+  assert_success
+  assert_output 0
 }

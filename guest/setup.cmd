@@ -3,8 +3,9 @@ rem setup.cmd: Lanai's setup inside Windows (spec req 7, plan phase 6).
 rem Run it from Lanai's setup drive as the user who uses Windows. It asks for
 rem administrator rights once, then, in order: installs the SPICE guest
 rem agent, the QEMU guest agent with its allow-list, WinFsp, the pinned
-rem virtio-fs driver and service, adds the display scale task (its script in
-rem C:\Program Files\Lanai), turns the Windows lock off (lanai-lock.cmd), and installs
+rem virtio-fs driver and service, builds the display scale task's start
+rem program and adds the task (its program and script in C:\Program
+rem Files\Lanai), turns the Windows lock off (lanai-lock.cmd), and installs
 rem the Looking Glass display driver last, since it turns this display black.
 rem Then Windows shuts down, and Lanai setup goes on at the next boot.
 rem Safe to rerun. It parses no localized text.
@@ -63,7 +64,12 @@ copy /y nul "%~dp0%WTEST%" >nul 2>&1
 if not errorlevel 1 goto :writable_copy
 
 rem Every file first, so a broken setup drive changes nothing.
-for %%f in (spice-vdagent.msi qemu-ga.msi winfsp.msi looking-glass-idd-setup.exe lanai-lock.cmd lanai-scale.ps1 viofs\w11\amd64\viofs.inf viofs\w11\amd64\virtiofs.exe) do if not exist "%~dp0%%f" goto :media_broken
+for %%f in (spice-vdagent.msi qemu-ga.msi winfsp.msi looking-glass-idd-setup.exe lanai-lock.cmd lanai-scale.ps1 lanai-start.cs viofs\w11\amd64\viofs.inf viofs\w11\amd64\virtiofs.exe) do if not exist "%~dp0%%f" goto :media_broken
+rem The compiler step 6 builds the start program with: the .NET Framework
+rem 4.x csc.exe that every Windows 10 and 11 carries. .NET calls only: a
+rem cmdlet would load modules from the user's module path.
+powershell -NoProfile -NonInteractive -Command "if ([IO.File]::Exists([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory() + 'csc.exe')) { exit 0 }; exit 1"
+if errorlevel 1 goto :no_compiler
 
 echo [1/8] Installing the SPICE guest agent
 set "STEP=the SPICE guest agent"
@@ -142,18 +148,53 @@ mkdir "C:\Program Files\Lanai\tmp"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 :scale_task
-rem An interactive task for the SID the check above verified, which stores no
-rem password. It runs elevated (highest privileges, no prompt): Windows
-rem opens the scale port only to administrators. -Force replaces it on a
-rem rerun, so there is one task. The sign-in trigger repeats every 5 minutes
+rem The task's start program, lanai-start.exe: a windows program, so the
+rem task shows no window, that starts the script and runs the sign-in step.
+rem Setup builds it here from its source with Windows' own compiler, so no
+rem prebuilt program enters Windows. Everything below runs on every rerun,
+rem which jumps here past the tmp folder's mkdir.
+copy /y "%~dp0lanai-start.cs" "C:\Program Files\Lanai\lanai-start.cs" >nul
+set "RC=%errorlevel%"
+if not "%RC%"=="0" goto :failed
+rem On a rerun the old program still runs: the task started it at sign-in.
+rem Windows lets a running program be renamed but not replaced or deleted,
+rem so it moves aside and runs until setup's restart. The delete clears
+rem the ones an earlier run moved aside; one that still runs stays, so its
+rem result is ignored.
+del /q "C:\Program Files\Lanai\lanai-start.old-*.exe" >nul 2>&1
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $p = 'C:\Program Files\Lanai\lanai-start'; if ([IO.File]::Exists($p + '.exe')) { [IO.File]::Move($p + '.exe', $p + '.old-' + [DateTime]::UtcNow.Ticks + '.exe') }"
+set "RC=%errorlevel%"
+if not "%RC%"=="0" goto :failed
+rem The build reads and writes only where administrators alone can write
+rem (spec 27): the working folder is Lanai's, TMP and TEMP its tmp folder,
+rem LIB (csc's search path for references) is cleared, and PATH is the
+rem system folder only. The compiler by its full path. /noconfig skips
+rem csc.rsp, so the build references System.dll only. The module path is
+rem pinned before Set-Location: the elevated stage has the user's
+rem environment, and a cmdlet loads its module from that path.
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $env:PSModulePath = [Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules'; $csc = [Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory() + 'csc.exe'; Set-Location -LiteralPath 'C:\Program Files\Lanai'; $env:TMP = 'C:\Program Files\Lanai\tmp'; $env:TEMP = 'C:\Program Files\Lanai\tmp'; $env:LIB = $null; $env:PATH = [Environment]::SystemDirectory; & $csc /nologo /noconfig /target:winexe /optimize /r:System.dll /out:lanai-start.exe lanai-start.cs; exit $LASTEXITCODE"
+set "RC=%errorlevel%"
+if not "%RC%"=="0" goto :failed
+rem The self-check (spec 7): with /check the program returns 0 and changes
+rem and starts nothing. A policy that blocks it makes Start-Process throw.
+rem Not &: PowerShell does not wait for a windows program and sets no exit
+rem code. A null exit code fails too.
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $env:PSModulePath = [Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules'; try { $p = Start-Process -FilePath 'C:\Program Files\Lanai\lanai-start.exe' -ArgumentList '/check' -Wait -PassThru; if ($null -eq $p.ExitCode) { exit 1 }; exit $p.ExitCode } catch { exit 1 }"
+set "RC=%errorlevel%"
+if not "%RC%"=="0" goto :start_blocked
+rem An interactive task for the SID the elevated stage's account check
+rem verified, which stores no password. It runs elevated (highest
+rem privileges, no prompt): Windows opens the scale port only to
+rem administrators. -Force replaces it on a rerun, so there is one task. The sign-in trigger repeats every 5 minutes
 rem with no end (a repetition pattern with no Duration), and IgnoreNew makes
 rem a start a no-op while the task runs, so a task that died is back within
 rem 5 minutes. RestartCount would cover only a failed start (phase C).
-rem powershell.exe by absolute path, from the system folder Windows
-rem reports, not an environment variable. [char]34 quotes the script's
-rem path, which holds a space, without nested quotes for cmd.
+rem The action is the start program by its absolute path, with no
+rem arguments. [char]34 quotes the path, which holds a space (CWE-428),
+rem without nested quotes for cmd. The module path is pinned first, as for
+rem the build.
 set "LANAI_TASK_SID=%HAVE_SID%"
-powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $u = $env:LANAI_TASK_SID; $a = New-ScheduledTaskAction -Execute ([Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\powershell.exe') -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + [char]34 + 'C:\Program Files\Lanai\lanai-scale.ps1' + [char]34); $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $r = Get-CimClass -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClassName 'MSFT_TaskRepetitionPattern' | New-CimInstance -ClientOnly; $r.Interval = 'PT5M'; $t.Repetition = $r; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew; Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $env:PSModulePath = [Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules'; $u = $env:LANAI_TASK_SID; $a = New-ScheduledTaskAction -Execute ([char]34 + 'C:\Program Files\Lanai\lanai-start.exe' + [char]34); $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $r = Get-CimClass -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClassName 'MSFT_TaskRepetitionPattern' | New-CimInstance -ClientOnly; $r.Interval = 'PT5M'; $t.Repetition = $r; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew; Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 
@@ -170,8 +211,9 @@ echo This screen turns black now. Windows shuts down by itself in a moment.
 set "STEP=the Looking Glass display driver"
 rem Last: nothing after it may need the user's eyes or a key press.
 rem Trust the valid IDD signer to avoid Windows' extra publisher prompt.
+rem The module path is pinned first, as for the build.
 set "LANAI_IDD=%~dp0looking-glass-idd-setup.exe"
-powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $s = Get-AuthenticodeSignature -LiteralPath $env:LANAI_IDD; if ($s.Status -ne 'Valid' -or -not $s.SignerCertificate) { exit 2 }; $st = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher','LocalMachine'); $st.Open('ReadWrite'); $st.Add($s.SignerCertificate); $st.Close()"
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $env:PSModulePath = [Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules'; $s = Get-AuthenticodeSignature -LiteralPath $env:LANAI_IDD; if ($s.Status -ne 'Valid' -or -not $s.SignerCertificate) { exit 2 }; $st = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher','LocalMachine'); $st.Open('ReadWrite'); $st.Add($s.SignerCertificate); $st.Close()"
 if errorlevel 1 echo Windows may ask to trust the Looking Glass driver's publisher; choose Install.
 "%~dp0looking-glass-idd-setup.exe" /S /ivshmem
 set "RC=%errorlevel%"
@@ -202,9 +244,33 @@ echo Run Lanai setup again to rebuild the setup drive.
 pause
 exit /b 1
 
+:no_compiler
+echo Lanai setup: Windows' C# compiler, csc.exe, is missing from
+echo the .NET Framework 4 folder. Lanai builds its display scale program
+echo with it. Nothing was changed.
+echo Repair the .NET Framework 4.8 in Windows, then run setup.cmd again.
+pause
+exit /b 1
+
 :writable_copy
 del "%~dp0%WTEST%" >nul 2>&1
 echo Lanai setup: run setup.cmd from Lanai's read-only setup drive, not from a copy.
+pause
+exit /b 1
+
+:start_blocked
+echo.
+echo Lanai setup stopped: Windows blocked the program setup built for the
+echo display scale task, C:\Program Files\Lanai\lanai-start.exe. To fix this:
+echo - With antivirus, allow the program by its path,
+echo   C:\Program Files\Lanai\lanai-start.exe.
+echo - With an App Control or AppLocker policy, allow the program by its path,
+echo   C:\Program Files\Lanai\lanai-start.exe. A rule by file hash stops
+echo   working, because setup builds the program again on each run.
+echo - With Smart App Control on, turn it off: Windows Security ^> App ^& browser control.
+echo   It allows no single program, and on many Windows versions only a
+echo   reinstall turns it back on.
+echo Then run setup.cmd again.
 pause
 exit /b 1
 

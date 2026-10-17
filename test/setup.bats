@@ -499,11 +499,16 @@ setup_guest_run() {
   assert_equal "$(field window)" true
   local media=$S/setup-media
   run bash -c 'cd "$1" && find . -mindepth 1 | LC_ALL=C sort' _ "$media"
-  assert_output "$(printf '%s\n' ./lanai-lock.cmd ./lanai-scale.ps1 ./looking-glass-idd-setup.exe \
-    ./qemu-ga.msi ./setup.cmd ./spice-vdagent.msi ./viofs ./viofs/w11 ./viofs/w11/amd64 \
-    ./viofs/w11/amd64/viofs.inf ./viofs/w11/amd64/virtiofs.exe ./winfsp.msi)"
+  assert_output "$(printf '%s\n' ./lanai-lock.cmd ./lanai-scale.ps1 ./lanai-start.cs \
+    ./looking-glass-idd-setup.exe ./qemu-ga.msi ./setup.cmd ./spice-vdagent.msi ./viofs ./viofs/w11 \
+    ./viofs/w11/amd64 ./viofs/w11/amd64/viofs.inf ./viofs/w11/amd64/virtiofs.exe ./winfsp.msi)"
   cmp "$media/setup.cmd" "$REPO/guest/setup.cmd"
   cmp "$media/lanai-lock.cmd" "$REPO/guest/lanai-lock.cmd"
+  # The start program's source, which setup builds in Windows: no prebuilt
+  # Lanai program on the media (spec 27).
+  cmp "$media/lanai-start.cs" "$REPO/guest/lanai-start.cs"
+  run find "$media" -iname '*.exe' -not -path '*/viofs/*' -not -name looking-glass-idd-setup.exe
+  assert_output ''
   cmp "$media/spice-vdagent.msi" "$T/src/vdagent.msi"
   # Every file setup.cmd calls by %~dp0 is on the media.
   local f
@@ -604,7 +609,7 @@ through_step4() {
   install
   setup_json '{"snapshot": "declined"}'
   fake_build "$LG_BUILD"
-  printf '%s\n' "$LG_BUILD" >"$(client_builds)/$LG_BUILD/build-stamp"
+  write_client_stamps
   pinned_files
 }
 
@@ -848,7 +853,7 @@ exec /usr/bin/mv "$@"'
   export WAYLAND_DISPLAY=wayland-3
   build_client() {
     fake_build "$LG_BUILD"
-    printf '%s\n' "$LG_BUILD" >"$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/build-stamp"
+    write_client_stamps
     echo "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"
   }
   setup_run
@@ -862,8 +867,44 @@ exec /usr/bin/mv "$@"'
   setup_run
   assert_failure
   assert_equal "$(field step)" 4
-  run field message
-  assert_output --partial "USB audio"
+  # The words and the build log match lanai build-client's.
+  assert_equal "$(field message)" "The Windows window was not prepared: cmake turned USB audio off"
+  assert_equal "$(field next)" "check the Windows window build log, $S/build-client.log, then run setup again"
+  assert_equal "$(field reason)" null
+  # Run setup again on a finished install updates the window.
+  setup_json '{"snapshot": "declined", "done": true}'
+  setup_run --window
+  assert_failure
+  assert_equal "$(field step)" 4
+  assert_equal "$(field message)" "The Windows window was not updated: cmake turned USB audio off"
+  # Missing patches mean a broken install.
+  LANAI_PATCHES=$T/no-patches
+  setup_run --window
+  assert_failure
+  assert_equal "$(field next)" "reinstall Lanai"
+}
+
+@test "setup plan: stale patches rebuild during a setup round but do not unset a finished install" {
+  through_step4
+  echo stale >"$(client_builds)/$LG_BUILD/build-patches"
+  # No activity override is intentional; setup_plan gathers its own facts.
+  # shellcheck disable=SC2119
+  run setup_plan "$(shared_facts)" auto true
+  assert_success
+  assert_equal "$(jq -r .step <<<"$output")" 4
+  setup_json '{"done":true,"snapshot":"declined"}'
+  # shellcheck disable=SC2119
+  run setup_plan "$(shared_facts)" auto true
+  assert_success
+  assert_equal "$(jq -r .step <<<"$output")" 7
+  # A setup round on a finished install (Run setup again's record, after
+  # its setup boot started) still rebuilds the stale client.
+  setup_json "$(jq -nc --argjson i "$LANAI_SIGNIN_STEP" \
+    '{snapshot:"declined",done:true,scale_task:2,signin_step:$i,round:true,step5:false}')"
+  # shellcheck disable=SC2119
+  run setup_plan "$(shared_facts)" auto true
+  assert_success
+  assert_equal "$(jq -r .step <<<"$output")" 4
 }
 
 @test "lanai setup step 5: starts the setup boot, then reports it while it runs" {
@@ -1228,29 +1269,35 @@ exec /usr/bin/mv "$@"'
   run field message
   assert_output --partial "the display scale task did not start"
   assert_equal "$(jq -r '.scale_task // "unset"' "$S/setup.json")" unset
+  assert_equal "$(jq -r '.signin_step // "unset"' "$S/setup.json")" unset
   run setup_done
   assert_failure
 }
 
-@test "lanai setup step 6: the scale task opening after the answers finishes setup with its mark" {
+@test "lanai setup step 6: the scale task opening after the answers finishes setup with its marks" {
   step6_running "$FIX/client-logs/match.log" 90 90
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run --share-ok yes --scale-ok yes
   assert_equal "$(field step)" 6
+  assert_equal "$(jq -r '.signin_step // "unset"' "$S/setup.json")" unset
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=true
   setup_run
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -r .scale_task "$S/setup.json")" 2
+  # The live scale task, which now carries the sign-in step in the start
+  # program: the current signin_step.
+  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" "[2,$LANAI_SIGNIN_STEP]"
   assert_equal "$(scale_task_kind)" new
+  run signin_step_missing
+  assert_failure
 }
 
-@test "lanai setup step 6: answers with the scale task open finish setup with its mark" {
+@test "lanai setup step 6: answers with the scale task open finish setup with its marks" {
   step6_running "$FIX/client-logs/match.log" 90 90
   setup_run --share-ok yes --scale-ok yes
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -r .scale_task "$S/setup.json")" 2
+  assert_equal "$(jq -c '[.scale_task, .signin_step]' "$S/setup.json")" "[2,$LANAI_SIGNIN_STEP]"
 }
 
 @test "lanai setup step 6: an agent that refuses to set the clock sends setup back to step 5" {
@@ -1517,7 +1564,8 @@ exec /usr/bin/mv "$@"'
   setup_run --share-ok yes --scale-ok yes
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" '{"snapshot":"declined","done":true,"scale_task":2}'
+  assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" \
+    "{\"snapshot\":\"declined\",\"done\":true,\"scale_task\":2,\"signin_step\":$LANAI_SIGNIN_STEP}"
   setup_run
   assert_equal "$(field step)" 7
 }
@@ -1540,7 +1588,7 @@ exec /usr/bin/mv "$@"'
   fake_build "$LG_BUILD"
   # A completed step 4 now includes its verified stamp, which the read-only
   # planner requires without running the client (panel-view amendment).
-  printf '%s\n' "$LG_BUILD" >"$(client_builds)/$LG_BUILD/build-stamp"
+  write_client_stamps
   setup_run
   assert_equal "$(field step)" 5
   assert_equal "$(field window)" true
@@ -1578,6 +1626,7 @@ exec /usr/bin/mv "$@"'
   assert_failure
   assert_equal "$(field ok)" false
   assert_equal "$(field step)" 4
+  assert_output --partial "is still not built from $LG_BUILD with Lanai's current patches"
   assert_equal "$(wc -l <"$T/build.calls")" 1
   ! grep -q -- '--user start' "$T/systemctl.calls" || fail "the unit was started"
 }
@@ -1739,12 +1788,13 @@ exec /usr/bin/mv "$@"'
   build_client() { echo called >>"$T/build.calls"; return 1; }
   run --separate-stderr cmd_build_client
   assert_failure
-  assert_output --partial 'Another Looking Glass client build is running'
+  assert_output --partial 'Another build of the Windows window is running'
+  assert_equal "$(jq -r .reason <<<"$output")" build-busy
   setup_run
   assert_failure
   assert_equal "$(field step)" 4
-  run field message
-  assert_output --partial 'another Looking Glass client build is running'
+  assert_equal "$(field message)" 'Another build of the Windows window is running.'
+  assert_equal "$(field reason)" build-busy
   assert [ ! -e "$T/build.calls" ]
   exec {fd}>&-
 }

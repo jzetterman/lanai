@@ -187,6 +187,7 @@ import QtQuick
 import QtTest
 import TestShell
 import TestCommons
+import TestCommons as Commons
 TestCase {
   id: tests
   name: "PanelRenderer"
@@ -487,6 +488,11 @@ TestCase {
     verify(note !== undefined)
     verify(note.visible)
     for (var p = note.parent; p; p = p.parent) verify(p.contentY === undefined)
+    // The notice's box is the popup's background, made opaque, and its
+    // border the accent.
+    var bg = Commons.Color.popups.background
+    compare(note.parent.color, Qt.rgba(bg.r, bg.g, bg.b, 1))
+    compare(note.parent.border.color, Commons.Color.accent)
     // The scrolling content gets room below, so nothing stays covered.
     var flick = objects(panel, function(o) { return o.contentY !== undefined })[0]
     compare(flick.bottomMargin, note.parent.height)
@@ -761,14 +767,15 @@ TestCase {
     var sectionHeight = section.implicitHeight
     var columnWidth = column.width
     compare(section.border.width, 1)
-    compare(section.border.color, Color.accent)
-    compare(section.color, Util.alpha(Color.accent, 0.10))
+    compare(panel.foreground, Commons.Color.foreground)
+    compare(section.border.color, Commons.Color.accent)
+    compare(section.color, Util.alpha(Commons.Color.accent, 0.10))
     Style.selectedAccentFill = '#336699'
     compare(section.color, Style.selectedAccentFill)
     Style.selectedAccentFill = undefined
-    Color.accent = '#c06030'
-    compare(section.border.color, Color.accent)
-    compare(section.color, Util.alpha(Color.accent, 0.10))
+    Commons.Color.accent = '#c06030'
+    compare(section.border.color, Commons.Color.accent)
+    compare(section.color, Util.alpha(Commons.Color.accent, 0.10))
     compare(objects(panel, function(o) { return o.text === 'Snapshots' && o.visible }).length, 0)
     var reopen = objects(section, function(o) { return o.control === 'reopen_window' })[0]
     verify(reopen.visible)
@@ -809,6 +816,39 @@ TestCase {
     wait(1)
     compare(section.visible, true)
     verify(objects(section, function(o) { return o.text === model.view.result.setup && o.visible }).length > 0)
+    panel.destroy(); wait(1)
+  }
+  function test_update_button_runs_build_client_as_a_long_job_with_its_result_and_log() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    var warning = 'Windows may start at, or change to, the wrong size until you click Update the Windows window. Updating changes nothing in Windows.'
+    var done = 'The Windows window is updated. If the Windows window is open, close it and open it again.'
+    function view(enable) {
+      return {warning:warning,buttons:{update_client:{show:true,enable:enable,label:'Update the Windows window'}},
+        setup:{},settings:{},snapshots:{names:[]},result:{client:done},
+        logs:{vm:'Windows VM log: in your user journal, under lanai-vm',build:'Windows window build log: /state/build-client.log'}}
+    }
+    model.view = view(true)
+    var panel = createTemporaryObject(panelComponent, tests, {model:model, opened:true})
+    wait(1)
+    verify(model.tooltip.indexOf(warning) !== -1)
+    var update = objects(panel, function(o) { return o.control === 'update_client' })[0]
+    verify(update !== undefined)
+    verify(update.visible)
+    verify(update.enabled)
+    compare(update.text, 'Update the Windows window')
+    verify(objects(panel, function(o) { return o.text === done && o.visible }).length > 0)
+    verify(objects(panel, function(o) { return o.text === model.view.logs.build && o.visible }).length > 0)
+    var count = Quickshell.launchCount
+    update.clicked()
+    compare(Quickshell.launchCount, count + 1)
+    compare(Quickshell.lastCommand[1], 'ui-job')
+    compare(Quickshell.lastCommand[2], model.pendingToken)
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'build-client')
+    verify(!process(model, model.cli))
+    model.view = view(false)
+    verify(update.visible)
+    verify(!update.enabled)
     panel.destroy(); wait(1)
   }
   function test_force_stop_two_clicks() {

@@ -150,8 +150,8 @@ keypad Enter), Space and the Menu key on the focused glyph also toggle the panel
 Right-click starts Windows only when stopped with setup finished and no blocking
 operation or unfinished restore. It opens the Windows window when running with
 setup finished and the window closed; otherwise it opens the panel. A pending
-update step opens the panel, where **Start Windows** remains available for a
-working install. Closing the Looking Glass window leaves Windows running;
+display driver update opens the panel, where **Start Windows** remains available
+for a working install. Closing the Looking Glass window leaves Windows running;
 right-click to reopen it. The tooltip names the right-click action and includes
 warnings and forced-stop notices. The panel keeps **Start Windows**, **Open window**
 and **Shut down** controls. Panel controls support Tab, Shift+Tab, Enter and Space;
@@ -179,6 +179,37 @@ Omarchy's Super shortcuts and Ctrl+Alt+Del do **not** reach Windows; use Windows
 onscreen menus. The shared folder is `~/Windows` on Linux and the virtiofs drive in
 Windows Explorer.
 
+Windows' resolution follows the Windows window. When the window opens, resizes,
+tiles, goes fullscreen or moves to a monitor with another scale, Windows matches it
+within 5 seconds. This also holds after Windows' display driver restarts. Windows
+cannot change its desktop size before you sign in. So when Windows starts or
+restarts, it matches the window within 15 seconds of your sign-in: when the
+Windows user who ran setup signs in, Lanai's scale task sets the size. Its log is
+`C:\Program Files\Lanai\lanai-signin.log`. If you sign in as another Windows user,
+you may need to resize the window once. To change Windows' resolution, resize the
+window. A resolution you pick in Windows' Display settings does not stay: Lanai
+sets the window's size again.
+
+Two sizes are exceptions. Lanai never asks for a size under 640 wide or 480 high,
+the smallest Windows' display driver takes. Windows also refuses a size too large
+for the display memory Lanai gives it, such as fullscreen on a very high-resolution
+monitor. Lanai asks a few times, so the screen may flicker or Windows may show a
+notice, and then stops. In both cases Windows keeps its last size and the picture
+is scaled to fit the window. Resize the window or leave fullscreen to fix it.
+
+Installs set up with an earlier version of Lanai keep working, but Windows may
+not match the window. The panel says what may go wrong and names one step. When
+only the Windows window needs an update, Windows may start at, or change to, the
+wrong size until you click **Update the Windows window**. It takes several
+minutes, works whether Windows runs or not, and changes nothing in Windows. When
+it finishes, close the Windows window and open it again. If the update fails, the
+panel points to the Windows window build log. When the scale task in Windows was
+set up without the sign-in step, Windows may stay at its old size after it
+starts, until you resize the window. Then the panel names **Run setup again**
+instead. It updates the Windows window too, turns the Windows lock off again, and
+restarts Windows as setup always does. If setup cannot update the window, the
+panel points to the same build log.
+
 Windows' display scale changes while Windows runs, without a restart or sign-out.
 “Match my monitor” uses the Windows step nearest the scale of the monitor the
 Windows window is on, with ties rounded down. When the window moves to a monitor
@@ -190,8 +221,8 @@ first one Hyprland lists. Without any monitor the scale stays as it was (100% at
 start).
 
 A scale save while Windows runs reaches Windows within 5 seconds if you are signed
-in, or when you next sign in. Lanai cannot see which, so the panel says both. A
-save while Windows is stopped applies at the next start.
+in, or within 20 seconds of your next sign-in. Lanai cannot see which, so the panel
+says both. A save while Windows is stopped applies at the next start.
 
 You can also pick a scale in Windows, under Settings > System > Display > Scale.
 Your pick holds until your next scale save, a sign-out, a Windows restart or the VM
@@ -201,21 +232,39 @@ setting. Windows changes its recommended scale when the resolution changes;
 the scale task sets it back to your pick, or to the scale you saved in Lanai when
 you have no pick. The scale holds as the window resizes: Lanai caps it at
 Windows' limit for the current resolution, and it goes back up when the window
-grows.
+grows. The scale task starts more slowly at a sign-in. So the scale changes a
+sign-in brings (the scale after a pick ends, and the scale for the size Lanai
+sets) finish within 20 seconds of it, not 5.
 
 This is Windows' display scale, separate from its “Text size” setting. While
 Windows' custom scaling is on (a percentage that needs a sign-out to apply), it
 overrides the scale Lanai sets; turn it off under Settings > System > Display >
-Scale, then sign out. Some Windows apps redraw at a new scale only after they restart. If Windows
-accepts a change but leaves the scale unchanged, the scale task tries again once a
-minute. Its log is `C:\Program Files\Lanai\lanai-scale.log`.
+Scale, then sign out. Some Windows apps redraw at a new scale only after they
+restart. If Windows accepts a change but leaves the scale unchanged, the scale
+task tries again once a minute. Its log is
+`C:\Program Files\Lanai\lanai-scale.log`.
+
+The scale task runs a small program that setup builds in Windows,
+`C:\Program Files\Lanai\lanai-start.exe`. If Windows blocks or removes it later
+(for example, antivirus quarantines it, or Smart App Control or an App Control or
+AppLocker policy is turned on), the scale and the size at sign-in stop following
+Lanai. To fix it, allow the program by its path,
+`C:\Program Files\Lanai\lanai-start.exe`, in your antivirus or in the App Control
+or AppLocker policy. A rule by file hash stops working, because setup builds the
+program again on each run. Or turn Smart App Control off under Windows Security >
+App & browser control. Smart App Control allows no single program, and on many
+Windows versions only a reinstall turns it back on. Then click **Run setup
+again**. Setup checks that Windows runs the program, and stops with these steps
+if it does not.
 
 Installs set up before live scale keep the old scale task: a scale save applies at
 the next start, the old task undoes scale changes made in Windows, and “Match my
-monitor” does not follow the window while Windows runs. The panel says so under
-the scale list and after a save. To get live scale, shut Windows down and click **Run setup again**; it also
-turns the Windows lock off again. After you update Lanai while Windows runs, the
-panel may say some of Lanai's helpers stopped until Windows next starts. The
+monitor” does not follow the window while Windows runs. The panel's warning says
+that scale saves apply only the next time Windows starts, beside the size fix.
+The words after a scale save say the same three things. To get live scale, shut
+Windows down and click **Run setup again**; it also turns the Windows lock off
+again. After you update Lanai while Windows runs, the panel may say some of
+Lanai's helpers stopped until Windows next starts. The
 [rehearsal checklist](docs/plugin/proofs.md)
 covers resizing, scale limits and reconnecting the display.
 Host locking, suspend and session shutdown are covered by the
@@ -252,12 +301,14 @@ scale channel. The scale channel runs one way: each message holds a scale step a
 a save number, and Lanai never reads what Windows writes to it.
 
 Windows opens the scale channel only to administrators, so the scale task runs at
-your sign-in with your administrator rights and no prompt. Its script, log and temp
-folder sit in `C:\Program Files\Lanai`, where only administrators can write. Such a
-task still starts with your Windows user's environment variables and registry
-settings, so malware already running as that user could use it to gain
-administrator rights. With UAC
-on, that malware has other ways to the same end.
+your sign-in with your administrator rights and no prompt. Its program, the
+program's source, its script, logs and temp folder sit in `C:\Program Files\Lanai`,
+where only administrators can write. Setup builds the program there from Lanai's
+source with the C# compiler that comes with Windows, so no prebuilt Lanai program
+enters Windows. Such a task still starts with your Windows user's environment
+variables and registry settings, so malware already running as that user could use
+it to gain administrator rights. With UAC on, that malware has other ways to the
+same end.
 
 ## Networking and coexistence
 
@@ -291,13 +342,6 @@ Windows shutdown time on John's machine at reboot.** Earlier proof 4 sessions wi
 idle Windows took 7 seconds at reboot and 11–13 seconds at logout. They do not replace
 the final measurement. If the wait expires, the next start reports the forced stop.
 
-Known issue: when the Windows window first opens, Windows can stay at its boot
-resolution (for example 1920x1080) instead of matching the window. Make the window
-fullscreen and tile it again, and Windows follows. The Looking Glass client sends the
-window size once, and a display driver restart during Windows' boot loses it; a fix
-is planned. The resize-drag and scale-timing checks still need a person and a running
-Windows test copy.
-
 ## Removal
 
 1. First, shut Lanai's VM down. This Linux command works even without the plugin:
@@ -307,7 +351,7 @@ Windows test copy.
    ```
 
    It waits for shutdown and can force-stop at the timeout. Let any detached setup,
-   snapshot or restore operation finish before removing its code. Once Lanai's VM
+   snapshot, restore or Windows window update finish before removing its code. Once Lanai's VM
    is stopped, start Windows with `omarchy-windows-vm` and connect over RDP.
    **Do every Windows removal step below in that RDP session**: uninstalling the
    IDD or SPICE vdagent can remove Lanai's display or input, and a normal Lanai boot
@@ -334,17 +378,21 @@ Windows test copy.
    Remove Lanai's scale task and virtiofs service from the administrator prompt:
 
    ```bat
+   schtasks /End /TN "Lanai display scale"
    schtasks /Delete /TN "Lanai display scale" /F
    sc.exe stop VirtioFsSvc
    sc.exe delete VirtioFsSvc
    rmdir /S /Q "C:\Program Files\Lanai"
    ```
 
-   A service already stopped needs no further stop. This removes Lanai's
-   `virtiofs.exe`, `lanai-scale.ps1` with its log and temp folder, and the
-   service's auto-start, dependency and executable-path settings. An install set
-   up before live scale also kept the scale log in `%LOCALAPPDATA%\Lanai`; delete
-   that folder too. If another workflow depended on a pre-existing
+   Ending the task ends its program, and the program's end ends the script, so
+   `rmdir` can remove them. A task or service already stopped needs no further
+   stop. This removes Lanai's `virtiofs.exe`, the scale task's `lanai-start.exe`,
+   `lanai-start.cs` and any `lanai-start.old-*.exe`, `lanai-scale.ps1`, the logs
+   `lanai-scale.log`, `lanai-signin.log` and `lanai-signin.log.old`, the temp
+   folder, and the service's auto-start, dependency and executable-path
+   settings. An install set up before live scale also kept the scale log in
+   `%LOCALAPPDATA%\Lanai`; delete that folder too. If another workflow depended on a pre-existing
    `VirtioFsSvc`, reinstall/configure its own virtiofs tools before using it;
    setup did not save its previous settings. WinFsp and the newer signed `viofs`
    driver can stay: without that service they do not create Lanai's share, and
@@ -355,7 +403,14 @@ Windows test copy.
 
 3. Run `certlm.msc`, open **Trusted Publishers → Certificates**, and remove the
    **HostFission** signing certificate setup added. This removes the permission to
-   install any HostFission-signed driver without a publisher prompt.
+   install any HostFission-signed driver without a publisher prompt. From the
+   administrator prompt instead, run `certutil -store TrustedPublisher`, find the
+   certificate whose Subject names HostFission, and delete it by its `Cert Hash(sha1)`
+   value:
+
+   ```bat
+   certutil -delstore TrustedPublisher <Cert Hash(sha1) value>
+   ```
 
 4. Shut Windows down from its **Start menu**. Restored locking can drop Lanai's
    shutdown request. The container does not restart automatically
@@ -391,10 +446,16 @@ unset or not on btrfs; CI runs them on a loop-mounted btrfs image. No test boots
 or talks to your systemd user manager; QEMU runs only paused (TCG) on 1 MiB scratch
 disks for the lock tests. No test downloads or builds the Looking Glass client, runs
 sudo, or opens a window: curl, cmake, pacman, sudo, omarchy, systemd-run and hyprctl
-are stand-ins. Lint with
+are stand-ins. One exception: when `LANAI_TEST_LG_TARBALL` names a local copy of the
+pinned source tarball, `test/client-patches.bats` applies Lanai's patches to it,
+builds the client, and builds and runs the client's own tests. The guest C# and
+PowerShell tests in `test/guest.bats` need `pwsh`. CI does not install it, so CI
+skips them: run them locally before a merge. Lint with
 `shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
 docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
-docs/plugin/proof-kit/proof-unit-stop test/fixtures/fake-qmp test/fixtures/fake-qga test/qml-lint`.
+docs/plugin/proof-kit/proof-unit-stop docs/plugin/proof-kit/clock-ping
+docs/plugin/proof-kit/size-window-on-open docs/plugin/proof-kit/stamp-client-log
+test/fixtures/fake-qmp test/fixtures/fake-qga test/qml-lint`.
 
 Run `test/qml-lint`.
 
@@ -405,12 +466,16 @@ shell and Process types when Qt 6’s test runner is available. It never starts 
 Omarchy shell. `lanai panel` supplies the complete view, including settings,
 snapshot names and plain-language results; the QML polls every two seconds only
 while its own panel is open, and every fifteen seconds otherwise. Direct actions
-are recorded by `lanai ui-run`; setup, snapshots and restores run in session units
+are recorded by `lanai ui-run`; setup, snapshots, restores and updates run in session units
 through `lanai ui-job`, with diagnostics in Lanai’s state directory as
 `panel-run.log` and `panel-job.log`. The panel labels these as the button actions
-log and the setup, snapshot and restore log. Rapid repeated clicks keep the first
+log and the setup, snapshot, restore and update log. Rapid repeated clicks keep the first
 launch pending. Other controls preserve a failed launch notice until the next
-setup, snapshot or restore starts. The Windows window log has its own
-path; the Windows VM log is in your user journal, under lanai-vm.
+setup, snapshot, restore or update starts. The Windows window log has its own
+path, and so does the Windows window build log, `build-client.log` in Lanai’s
+state directory; the Windows VM log is in your user journal, under lanai-vm.
 
-Lanai is MIT licensed; see [LICENSE](LICENSE).
+Lanai is MIT licensed (see [LICENSE](LICENSE)), except the patches to the
+Looking Glass client in `patches/looking-glass/`. Those carry Looking Glass's
+license, GPL-2.0-or-later, and its full text is in
+[COPYING](patches/looking-glass/COPYING) beside them.

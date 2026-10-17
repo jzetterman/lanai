@@ -8,6 +8,11 @@
 
 # Looking Glass client source and IDD: one build for both (spec req 8).
 # looking-glass.io's per-build source tarball includes every submodule.
+# A pin change needs (a) patches in patches/looking-glass that apply
+# exactly to the new source, and (b) a recheck of where and how the new
+# IDD stores the ask: guest/lanai-start.cs reads ExtraMode in
+# HKLM\SOFTWARE\LookingGlass\IDD as <w>x<h>@<refresh>, with an optional
+# trailing * (spec 12, the sign-in bullet).
 LG_BUILD=B7-826-236efcb1
 LG_COMMIT=236efcb155f952f5d7d9fcd5891a3060ad254e68
 LG_SOURCE_URL=https://looking-glass.io/artifact/$LG_BUILD/source

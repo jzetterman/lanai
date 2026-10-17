@@ -1,23 +1,26 @@
 # The panel's read-only view and copy table. No setup reply file is consulted.
 # shellcheck shell=bash
 
-# old_task_note <running true|false>: print the standing note for an install
-# whose scale task is from before live scale (scale_task_kind old).
+# old_task_note <running true|false> [<button>]: print the standing note for
+# an install whose scale task is from before live scale (scale_task_kind
+# old). <button> is the setup button that shows (default Run setup again).
 old_task_note() {
   local how="click"
   [[ $1 != true ]] || how="shut Windows down and click"
-  printf 'Scale saves apply the next time Windows starts. To make them apply while Windows runs, %s Run setup again.\n' "$how"
+  printf 'Scale saves apply the next time Windows starts. To make them apply while Windows runs, %s %s.\n' "$how" "${2:-Run setup again}"
 }
 
 # Reply words depend on command, ok, step and structured details/reasons.
-# The optional current plan step selects visible snapshot-choice retry controls.
+# The optional current plan step selects visible snapshot-choice retry controls
+# and a failed client build's words: step 7 (Run setup again) updates the
+# Windows window, any other step prepares it (Continue setup).
 # Offers and waits belong to the durable view and therefore have no result text.
 # A settings save's words come from its scale_saved, running and scale_task_kind
 # fields; for a scale save, cmd_settings prints the same words (plus
 # old_task_note for the old task, which the panel shows under the scale list).
 panel_words() {
   jq -r --arg c "$1" --arg step "${3:-}" '
-    def log: {setup:"setup log",snapshot:"snapshot log",restore:"restore log"}[$c] // "button actions log";
+    def log: {setup:"setup log",snapshot:"snapshot log",restore:"restore log","build-client":"update log"}[$c] // "button actions log";
     def oldtask: " Until you run setup again, the old scale task undoes scales you pick in Windows," +
       " and \u201cMatch my monitor\u201d does not follow the window. Running setup again also turns the Windows lock off again.";
     def reasons: {
@@ -40,8 +43,9 @@ panel_words() {
       mismatch:"The display driver in Windows needs an update. Shut down and set up Windows again.",
       agents:"The Windows agents did not answer. Shut down and set up Windows again.",
       answers:"The final checks did not pass. Shut down and set up Windows again.",
-      "scale-task":"The display scale task in Windows did not start. It starts when the Windows user who ran setup.cmd signs in. Shut down and set up Windows again, then sign in as that user. If it happens again, check C:\\Program Files\\Lanai\\lanai-scale.log in Windows.",
+      "scale-task":"The display scale task in Windows did not start. It starts when the Windows user who ran setup.cmd signs in. Shut down and set up Windows again, then sign in as that user. If it happens again, in Windows check lanai-scale.log and lanai-signin.log in C:\\Program Files\\Lanai.",
       client:"The Windows window could not open. Check the Windows window log and try again.",
+      "build-busy":"Another build of the Windows window is running. Try again when it finishes.",
       "restore-unsupported":"The restore was refused because Lanai cannot verify an instant copy in this storage location. Choose storage that supports verified instant copies, then try again.",
       "snapshot-unsupported":"This filesystem cannot make an instant snapshot. Make a backup before continuing without a snapshot.",
       "invalid-reply":"Lanai did not give a readable reply. Check the " + log + " and try again."
@@ -53,6 +57,9 @@ panel_words() {
           "Continue without a snapshot or take a snapshot again."
         else "Continue setup." end)
       elif .reason and (reasons[.reason] != null) then reasons[.reason]
+      elif $c == "setup" and .step == "4" then
+        (if $step == "7" then "Setup could not update the Windows window. Check the Windows window build log, then click Run setup again."
+        else "Setup could not prepare the Windows window. Check the Windows window build log, then click Continue setup." end)
       elif $c == "setup" and .step == "2" and .missing then ""
       elif $c == "setup" and .step == "3" and .reason == null then ""
       else ({start:"Windows could not start. Check the button actions log and the Windows VM log and try again.",
@@ -64,11 +71,13 @@ panel_words() {
         "setup-host":"The installation terminal could not open. Check the button actions log and try again.",
         setup:"Setup could not finish. Check the setup log, then continue setup.",
         snapshot:"Lanai could not take the snapshot. Check the snapshot log and try again.",
-        restore:"Lanai could not restore the snapshot. Check the restore log before trying again."}[$c] //
+        restore:"Lanai could not restore the snapshot. Check the restore log before trying again.",
+        "build-client":"The Windows window could not be updated. Check the Windows window build log (build-client.log), then try again."}[$c] //
         "The operation could not finish. Check the " + log + " and try again.") end
     elif $c == "snapshot" and .snapshot then
       "Snapshot saved at " + .snapshot + ". It shares disk space at first and grows as Windows changes. To delete it, remove that folder in your file manager."
     elif $c == "restore" then "The snapshot was restored."
+    elif $c == "build-client" then "The Windows window is updated. If the Windows window is open, close it and open it again."
     elif $c == "settings" and (.scale_saved | type) == "boolean" then
       if .scale_saved | not then "Saved."
       elif .scale_task_kind == "new" and .running == true then
@@ -89,7 +98,7 @@ panel_records() {
     exec {fd}<"$s/panel-job.lock"
     if ! flock -s -n "$fd"; then held=true; fi
   fi
-  for group in vm setup settings snapshots; do
+  for group in vm setup settings snapshots client; do
     doc=$(jq -ce 'select(type == "object")' "$s/panel-result-$group.json" 2>/dev/null) || doc=null
     records=$(jq -nc --arg g "$group" --argjson d "$doc" --argjson r "$records" '$r + {($g):$d}')
   done
@@ -102,6 +111,7 @@ panel_records() {
 cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
+  local client_old=false signin_missing=false update_shown=false task started=0 booted button
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
       emit false "" "Invalid panel input." ""; return 2
@@ -132,7 +142,28 @@ cmd_panel() {
   inv=$(sed -n 's/^InvocationID=//p' <<<"$facts")
   if [[ -n $inv && -f $s/stop-requested ]] && read -r stop_inv stop_at <"$s/stop-requested" &&
     [[ $stop_inv == "$inv" && $stop_at =~ ^[0-9]+$ ]]; then stop_requested=true; fi
-  for group in vm setup settings snapshots; do
+  # A finished install whose client is the pinned build without Lanai's
+  # current patches (req 12): it keeps working, and the panel names the one
+  # step that brings the resize fix. An older pin's build in use is req 8's
+  # driver update instead, so it never counts here.
+  if jq -e '.finished' <<<"$plan" >/dev/null && build_stamp_current && ! build_patches_current &&
+    [[ -z $(guest_version_behind) ]]; then client_old=true; fi
+  # A finished install whose scale task lacks the sign-in step (req 12):
+  # Run setup again is then the one step, also for an old client or the
+  # old task. An unfinished plan (req 8's driver update included) already
+  # names its own step.
+  if jq -e '.finished' <<<"$plan" >/dev/null && signin_step_missing; then signin_missing=true; fi
+  task=$(scale_task_kind)
+  # The update button shows for an old client only with the live scale
+  # task and the sign-in step; else Run setup again is the one step.
+  if $client_old && [[ $task == new ]] && ! $signin_missing; then update_shown=true; fi
+  # When the current client started (client.log's first line), or 0.
+  [[ -z $run || ! -s $run/client.log ]] || started=$(log_client_start "$run/client.log")
+  # When the host booted, or 0. A reboot empties the runtime folder, and
+  # client.log with it.
+  booted=$(sed -n 's/^btime //p' "${LANAI_PROC:-/proc}/stat" 2>/dev/null) || booted=0
+  [[ $booted =~ ^[0-9]+$ ]] || booted=0
+  for group in vm setup settings snapshots client; do
     doc=$(jq -c --arg g "$group" '.records[$g] // {}' <<<"$records")
     words=''
     if jq -e 'has("reply")' <<<"$doc" >/dev/null; then
@@ -148,9 +179,17 @@ cmd_panel() {
         words=$(panel_words "$(jq -r '.command' <<<"$doc")" "$(jq -c .reply <<<"$doc")" "$(jq -r .step <<<"$plan")")
       fi
     fi
-    if [[ $group == setup ]] && jq -e --argjson p "$plan" '
+    # A failed reply about another step is over, and one with the plan's
+    # reason repeats the problem line. One exception: a client build that
+    # failed in Run setup again (the panel passes --window or --no-window).
+    # The plan is then finished (step 7), and the failure holds while the
+    # client is still old and the update button is hidden; with the button,
+    # the resize warning names the one step.
+    if [[ $group == setup ]] && jq -e --argjson p "$plan" --argjson old "$client_old" --argjson shown "$update_shown" '
       .reply.ok == false and
-      ((.reply.step != null and .reply.step != $p.step) or
+      ((.reply.step != null and .reply.step != $p.step and
+        ((.reply.step == "4" and $p.finished and $old and ($shown | not) and
+          any(.args[]?; . == "--window" or . == "--no-window")) | not)) or
        (.reply.reason != null and .reply.reason == $p.reason))' <<<"$doc" >/dev/null; then
       words=''
     fi
@@ -159,20 +198,39 @@ cmd_panel() {
       case $(jq -r .command <<<"$doc") in
         snapshot) words="The snapshot did not finish. Try again." ;;
         restore) words="The restore did not finish. Finish the unfinished restore or restore another snapshot before starting Windows." ;;
-        *) words="Setup was interrupted. Continue setup to try again." ;;
+        build-client) words="The update did not finish. Click Update the Windows window again." ;;
+        # Run setup again's step 4 build runs while the plan is finished.
+        *) if jq -e '.finished' <<<"$plan" >/dev/null; then
+          words="Setup was interrupted. Click Run setup again to try again."
+        else words="Setup was interrupted. Continue setup to try again."; fi ;;
       esac
+    fi
+    # An update's done words hold until a client starts after the job
+    # ended (the next lanai open runs the new binary), until a reboot
+    # after it, or until the client is old again. Its failed and
+    # interrupted words name the update button, so they hold only while
+    # that button shows.
+    if [[ $group == client ]]; then
+      if jq -e '.reply.ok == true' <<<"$doc" >/dev/null; then
+        if $client_old || jq -e --argjson c "$started" --argjson b "$booted" '$c > .ended or $b > .ended' <<<"$doc" >/dev/null; then
+          words=''
+        fi
+      elif ! $update_shown; then words=''; fi
     fi
     results=$(jq -nc --argjson r "$results" --arg g "$group" --arg w "$words" '$r + {($g):$w}')
   done
   if settings=$(cmd_settings 2>/dev/null) && jq -e '.ok' <<<"$settings" >/dev/null; then
     # The note near the scale list: with the live scale task, while Windows
-    # runs, that a scale save replaces a pick; with the old task, always,
-    # how to make scale saves apply while Windows runs.
-    note='' active=false
+    # runs, that a scale save replaces a pick; with the old task, how to
+    # make scale saves apply while Windows runs, unless the resize warning
+    # already says it (the panel names Run setup again once). An unfinished
+    # plan (req 8's driver update) shows Continue setup instead.
+    note='' active=false button='Run setup again'
     ! jq -e '.active' <<<"$status" >/dev/null || active=true
-    case $(scale_task_kind) in
+    jq -e '.finished' <<<"$plan" >/dev/null || button='Continue setup'
+    case $task in
       new) ! $active || note='Saving a scale replaces one you picked in Windows.' ;;
-      old) note=$(old_task_note "$active") ;;
+      old) $signin_missing || note=$(old_task_note "$active" "$button") ;;
     esac
     settings=$(jq -c --arg steps "$LANAI_SCALE_STEPS" --arg note "$note" '{memory_gib,cores,windows_scale,error:"",
       line:"Memory and cores apply the next time Windows starts.",note:$note,
@@ -183,12 +241,15 @@ cmd_panel() {
     snapshots=$(jq -c '{names:(.snapshots | map(split("/")[-1])),error:"",line:(if (.snapshots|length) == 0 then "No snapshots yet." else "Restoring replaces Windows. Anything saved since the snapshot is lost. Stop Windows in both VMs before restoring." end)}' <<<"$snapshots")
   else snapshots='{"names":[],"error":"Lanai could not read the snapshot list. Check the settings and logs."}'; fi
   logs=$(jq -nc --arg client "${run:+$run/client.log}" --arg job "$s/panel-job.log" --arg command "$s/panel-run.log" \
-    '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Setup, snapshot and restore log: " + $job),command:("Button actions log: " + $command)} +
+    --arg build "$s/build-client.log" \
+    '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Setup, snapshot, restore and update log: " + $job),command:("Button actions log: " + $command),
+      build:("Windows window build log: " + $build)} +
      (if $client == "" then {} else {client:("Windows window log: " + $client)} end)')
   jq -nc --argjson st "$status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
     --argjson progress "$progress" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
+    --argjson clientOld "$client_old" --argjson signinMissing "$signin_missing" --argjson updateShown "$update_shown" --arg task "$task" \
     --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" '
     def button($show;$enable;$label): {show:$show,enable:($show and $enable),label:$label};
     ({"not-installed":["Not installed","Windows is not installed","No supported Windows install was found.","Install Windows with Omarchy, then continue setup."],
@@ -227,8 +288,11 @@ cmd_panel() {
      pending_ack:(if $seen then $token else "" end),
      progress:$progress,notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
      busy:{active:$busy,line:(if $progress != null then (if ($progress.label | startswith("Restoring Windows:")) then "Keep Windows stopped until it finishes." else "You can close this panel." end) elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
-       elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes."}[$job.command // ""] // "Starting the operation.") else "" end)},
-     result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot and restore log, then try again." else "" end)}),
+       elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes.",
+         "build-client":("Updating the Windows window. This may take several minutes. " +
+           (if $off then "You can start Windows when it finishes. " else "" end) + "You can close this panel.")}[$job.command // ""] //
+         "Starting the operation.") else "" end)},
+     result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot, restore and update log, then try again." else "" end)}),
      setup:{show:($p.finished|not),finished:$p.finished,
        attention:(($p.finished|not) and $st.state != "stopping" and ($p.reason != "" or $r.setup != "" or $launchFailed or
          ($p.step == "3" and $rec.records.snapshots.reply.ok == false) or $st.state == "failed" or
@@ -283,6 +347,7 @@ cmd_panel() {
          {labels:($snaps.names | map({key:.,value:("Restore snapshot " + .)}) | from_entries)},
        restore_confirm:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore and replace Windows") +
          {labels:($snaps.names | map({key:.,value:("Restore " + . + " and replace Windows")}) | from_entries)},
+       update_client:button($updateShown;($busy|not);"Update the Windows window"),
        save_settings:button(true;$settings.error == "";"Save settings")}} |
     if ($dailyControls|not) and ($st.state == "stopped" or $st.state == "running") then
       .next="Follow the Setup section below." |
@@ -297,7 +362,22 @@ cmd_panel() {
       if $facts | contains("LanaiClient=timeout") then "The Windows window did not open in time. " +
         (if $dailyControls then "Try Open window again." elif $reopen then "Try Reopen the Windows window in Setup."
          else "Check the Windows window log, then shut down and continue setup." end) else empty end,
-      if $st.state != "version-mismatch" and ($facts | contains("LanaiDriverOld=")) then "The Windows display driver needs an update. Shut down and continue setup." else empty end
+      if $st.state != "version-mismatch" and ($facts | contains("LanaiDriverOld=")) then "The Windows display driver needs an update. Shut down and continue setup." else empty end,
+      # The resize warning (req 12): with the sign-in step present, an old
+      # client gets the update button. Without the step, Run setup again
+      # is the one step: one message says what it fixes (the size, from
+      # the missing step and an old client, and scale saves with the old
+      # task) and the lock.
+      if $signinMissing then
+        ([if $clientOld then "Windows may start at the wrong size and stay there until you resize the window, and it may change to the wrong size while it runs."
+          else "After Windows starts, it may stay at its old size until you resize the window." end,
+          if $task == "old" then "Scale saves apply only the next time Windows starts." else empty end]) as $fixes |
+        ($fixes + ["To fix " + ({"1":"this","2":"both"}[$fixes | length | tostring]) + ", " +
+          (if $off then "click Run setup again." else "shut Windows down and click Run setup again." end),
+          "Running setup again also turns the Windows lock off again."] | join(" "))
+      elif $updateShown then
+        "Windows may start at, or change to, the wrong size until you click Update the Windows window. Updating changes nothing in Windows."
+      else empty end
     ] | join(" "))'
   # shellcheck disable=SC2034
   LANAI_EMITTED=1

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# clock-ping [<dir>]: resize phase G. The host side of the two-way clock
+# exchange through the share (default ~/Windows/lanai-proof). With pong.ps1
+# running in Windows, write 10 pings and time each pong. For each sample,
+# offset = guest time - (T1 + T2) / 2, bounded by (T2 - T1) / 2. Prints every
+# sample and the one with the smallest bound. Add the offset's negative to a
+# guest time to get host time. The guest can write in <dir>, so the folder
+# must not be a link, and each ping goes to a new file that a rename moves
+# onto ping.txt: a link the guest made there is replaced, not followed.
+# After the check the script works inside the folder with relative paths,
+# so a link the guest puts in the folder's place later is not followed.
+set -euo pipefail
+
+dir=${1:-$HOME/Windows/lanai-proof}
+[[ -d $dir && ! -L $dir ]] || {
+  echo "clock-ping: $dir must be a folder, not a link" >&2
+  exit 1
+}
+cd -- "$dir"
+ping=ping.txt pong=pong.txt
+rm -f -- "$pong"
+best=""
+# Each run's pings carry its own id, so a line left in ping.txt by an earlier
+# run never matches this run's pongs.
+run=$(date +%s%N)
+for n in $(seq 1 10); do
+  tmp=$(mktemp -- ".ping.XXXXXX")
+  printf 'ping %s %s\n' "$n" "$run" >"$tmp"
+  t1=$(date +%s.%N)
+  mv -fT -- "$tmp" "$ping"
+  late=""
+  while ! grep -q "^ping $n $run " "$pong" 2>/dev/null; do
+    sleep 0.005
+    awk -v t="$t1" -v now="$(date +%s.%N)" 'BEGIN { exit !(now - t > 5) }' &&
+      { late=1; break; }
+  done
+  if [[ -n $late ]]; then
+    echo "no pong for ping $n in 5 s; is pong.ps1 running?" >&2
+    [[ -n $best ]] || exit 1
+    break
+  fi
+  t2=$(date +%s.%N)
+  guest=$(grep "^ping $n $run " "$pong" | tail -n 1 | cut -d' ' -f4)
+  g=$(date -d "$guest" +%s.%N)
+  line=$(awk -v t1="$t1" -v t2="$t2" -v g="$g" -v n="$n" \
+    'BEGIN { printf "%d offset %+.3f s bound %.3f s\n", n, g - (t1 + t2) / 2, (t2 - t1) / 2 }')
+  echo "$line"
+  if [[ -z $best ]] || awk -v a="${line##* bound }" -v b="${best##* bound }" \
+      'BEGIN { exit !(a + 0 < b + 0) }'; then best=$line; fi
+  sleep 0.2
+done
+echo "best: $best"

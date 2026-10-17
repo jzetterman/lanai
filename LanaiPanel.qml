@@ -2,6 +2,9 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls as QQC
 import qs.Commons
+// Qt 6.12 shadows a bare Color with a built-in, so Color is always read through
+// this alias, as the Omarchy shell does.
+import qs.Commons as Commons
 import qs.Ui
 
 // Backend fields decide all guidance and controls. Only unsaved input lives here.
@@ -27,7 +30,7 @@ Panel {
   property bool scaleTouched: false
   // The shell supplies bar/theme fields dynamically on QObject groups.
   // qmllint disable missing-property
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   // qmllint enable missing-property
 
@@ -108,6 +111,9 @@ Panel {
           Note { text: root.model.view.next || "" }
           Note { text: root.model.view.notice || "" }
           Note { text: root.model.view.warning || "" }
+          // Shown with the resize warning: rebuilds the client as a panel job.
+          Action { control: "update_client"; onClicked: root.model.run(["build-client"], true) }
+          Note { text: root.model.view.result.client || "" }
           Note { text: (root.model.view.busy || {}).line || "" }
           Note { text: root.model.view.result.launch || "" }
           Note { text: root.stopArmed ? root.model.control("stop_confirm").hint || "" : "" }
@@ -146,9 +152,9 @@ Panel {
             width: parent.width
             implicitHeight: setupColumn.implicitHeight + 2 * setupColumn.y
             color: root.model.view.setup.attention === true
-              ? (typeof Style.selectedAccentFill !== "undefined" ? Style.selectedAccentFill : Util.alpha(Color.accent, 0.10))
+              ? (typeof Style.selectedAccentFill !== "undefined" ? Style.selectedAccentFill : Util.alpha(Commons.Color.accent, 0.10))
               : "transparent"
-            border.color: Color.accent
+            border.color: Commons.Color.accent
             border.width: root.model.view.setup.attention === true ? 1 : 0
             Column {
               id: setupColumn
@@ -305,7 +311,7 @@ Panel {
           PanelSeparator { foreground: root.foreground }
           PanelSectionHeader { text: "Logs"; foreground: root.foreground; fontFamily: root.fontFamily }
           Repeater {
-            model: [root.model.view.logs.vm, root.model.view.logs.client, root.model.view.logs.job, root.model.view.logs.command]
+            model: [root.model.view.logs.vm, root.model.view.logs.client, root.model.view.logs.build, root.model.view.logs.job, root.model.view.logs.command]
             delegate: Note { required property var modelData; text: modelData || "" }
           }
         }
@@ -322,12 +328,12 @@ Panel {
         visible: root.model.clickNotice !== ""
         height: clickNote.implicitHeight + 2 * Style.space(8)
         // The popup's background, opaque so covered text never shows
-        // through. Color.popups is a grouped QtObject the lint metadata does
-        // not type.
+        // through. Commons.Color.popups is a grouped QtObject the lint
+        // metadata does not type.
         // qmllint disable missing-property
-        color: Qt.rgba(Color.popups.background.r, Color.popups.background.g, Color.popups.background.b, 1)
+        color: Qt.rgba(Commons.Color.popups.background.r, Commons.Color.popups.background.g, Commons.Color.popups.background.b, 1)
         // qmllint enable missing-property
-        border.color: Color.accent
+        border.color: Commons.Color.accent
         border.width: 1
         Note {
           id: clickNote

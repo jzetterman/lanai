@@ -2106,9 +2106,11 @@ John's calls from the phase 7 hands-on run (2026-10-05). Each goes through the u
 spec, plan and review gates before it is built.
 
 - **Looking Glass resize on first open.** The client sends the window size once per
-  process; a display driver restart during Windows' boot loses it, and the client's
-  `lastWindowSize` (client/src/message.c) then skips the resend. Fix: carry one small
-  pinned patch that clears it when a session starts, and file the bug upstream.
+  size; a display driver restart during Windows' boot loses it, and the client's
+  `lastWindowSize` (client/src/message.c) then skips the resend. Specified as req 12's
+  size rule (spec amendment of 2026-10-12) and planned in
+  [Follow-on: resize](#follow-on-resize-john-2026-10-12), which also offers the fix
+  upstream.
 - **Icon color by health.** Today the icon turns the shell's urgent color (red in John's
   theme) whenever the VM runs, because `active` uses `Color.urgent`. Wanted: green when
   running and healthy, amber when running with a problem, red when running with a major
@@ -2124,6 +2126,28 @@ spec, plan and review gates before it is built.
   setup" reads as unclear to new users. Rename the button, and every panel line and
   README step that tells the user to click it, in one change; decide then whether "Run
   setup again" follows the same wording.
+- **Resize at the sign-in screen.** John's call (2026-10-13): worth adding in a later
+  PR. While no one is signed in to Windows, Looking Glass runs no display helper (its
+  service starts the helper only with a signed-in user's token,
+  `LGIddHelper/main.cpp:1806`), so Lanai's asks change the frame but not the sign-in
+  screen's size, and small sign-in fields can be hard to read (`proofs.md`, "Resize
+  hands-on, phase E", the signed-out case). Wanted: a privileged SYSTEM service in
+  Windows that sets the Looking Glass display to the driver's stored size on the
+  sign-in desktop. It is new security surface inside Windows (requirement 27), so it
+  gets its own spec, plan and gates. Offer the same fix upstream first: the helper
+  could run on the sign-in desktop as SYSTEM, as Looking Glass's capture host does.
+
+- **Move the scale script into the start program.** John's call (2026-10-14):
+  the scale script still loads in PowerShell 10 to 14 s after the sign-in, so
+  scale work that starts at a sign-in has a 20 s bar (spec 12). Moving it into
+  `lanai-start.cs` would bring that to about 7 s and drop the run-time
+  `Add-Type`. About 1,000 lines of PowerShell; its own plan and gates.
+  Measured on phase H's build (phase G, 2026-10-17): the program is up 7.4
+  to 8.5 s after the sign-in and switches the resolution 0.2 s later, but
+  the scale script opens its port 3.6 to 4.0 s after that and applies the
+  scale at +12.7 to +13.3 s. John sees the resolution change as the desktop
+  appears and the scale change seconds later. John's call (2026-10-17): do
+  this next, after phase G.
 
 ## Follow-on: live scale (John, 2026-10-10)
 
@@ -2579,6 +2603,1356 @@ Phase 0: Claude with John. Phases A and B: an Opus 5.5 implementer in a worktree
 (the step-up: concurrency in the feed and the pick rule; phase A also carries UI
 words, which need taste >= 7). Claude verifies, signs, and runs the diff gate.
 
+## Follow-on: resize (John, 2026-10-12)
+
+This implements the spec amendment of 2026-10-12: req 12's size bullets ("Size"
+through "An install whose client was built without the current patches"), the
+scale bullet "A resolution change never changes the target", the patch mentions
+in reqs 7 and 8, and row 12b. Where the spec is silent, the plan takes the
+simplest design and says so.
+
+Branch `plugin/resize`. Phases run in order; each starts from the previous
+phase's commit and is self-contained. Bash: `set -euo pipefail` in entry
+points, callers' options kept in sourced libraries, clean under ShellCheck.
+Bash decides the panel view; QML renders it. Tests first in every code phase.
+Agents never touch John's live `~/.windows`, `~/.local/state/lanai` or his
+installed client; real builds go to scratch XDG folders, and the hands-on runs on
+the rehearsal copy (`~/lanai-proofs/lanai-setup-test`).
+
+### Design
+
+**The bug.** The client sends the window size only when it changes
+(`lastWindowSize` in `client/src/message.c`), and `core_onWindowSizeChanged`
+(`client/src/core.c`) drops it when Windows' size already matches or the
+transport is not ready. A display driver restart during Windows' boot starts a
+new session at the driver's default size, and nothing sends the size again. A
+size Windows changes on its own is never corrected either.
+
+**Patches.** They live in `patches/looking-glass/`, named `NNNN-<topic>.patch`
+and applied in name order (`LC_ALL=C`), each made with `diff -Naur` between a
+pristine and a working copy of the pinned tree, so `-p1` strips the top folder.
+Each starts with a short header: subject, what it changes and why, and
+`SPDX-License-Identifier: GPL-2.0-or-later`. `patch` ignores the header, so no
+header line may look like the start of a diff: none begins with `--- `, `+++ `,
+`*** `, `diff `, `Index:` or `Prereq:`. Two patches:
+
+- `0001-client-resize-module.patch` adds new files only: `client/src/resize.h`,
+  `client/src/resize.c` and `client/tests/resize_test.c`. Because it creates
+  files only, it applies to an empty folder, which is how CI tests it (below).
+- `0002-client-resize-hooks.patch` wires the module in: `client/CMakeLists.txt`
+  (adds `src/resize.c`), `client/src/core.c` and `core.h` (the glue),
+  `client/src/main.c` (four one-line hooks), `client/tests/CMakeLists.txt`
+  (the `resize-tests` target and its cases; every test target that compiles
+  `../src/core.c` also compiles `../src/resize.c`) and
+  `client/tests/config_message_test.c` (cases updated for the new send rule,
+  plus glue cases).
+
+`message.c` stays as it is: its filter forwards each change of the window size,
+which is exactly the window trigger, and the module does every resend. The IDD
+stays the pinned build. No KVMFR or LGMP message is added or changed; the glue
+sends the same `LG_TRANSPORT_CONTROL_WINDOW_SIZE` control the client sends today.
+
+**Exact apply.** `patches_apply <src> <log>` (`lib/client.sh`) runs, for each
+patch, `LC_ALL=C patch -d <src> -p1 --forward --batch --fuzz=0
+--no-backup-if-mismatch --reject-file=- -i <patch>` (`LC_ALL=C` keeps the
+`Hunk` text English), appending its output to the build log. A patch
+fails when `patch` exits non-zero, prints any line starting with `Hunk `, or
+patches no file (no `patching file` line: GNU patch exits 0 on an empty file):
+GNU patch 2.8 prints nothing per hunk for an exact apply, and `Hunk #n succeeded
+at L (offset k lines).` for an offset (checked on 2026-10-12; `--fuzz=0` makes a
+fuzzed hunk fail outright). A failure stops the build with "the Lanai patch
+<name> does not apply exactly to Looking Glass <build>; see <log>". `patch` comes
+with `base-devel`, already a host package.
+
+**Identity and the stamp.** `patches_list` is the one list both use: the
+basenames of the `[0-9][0-9][0-9][0-9]-*.patch` files in `LANAI_PATCHES`, found
+with `nullglob` and sorted with `LC_ALL=C`. No folder or no match is an empty list, checked
+explicitly, never left to fail under `pipefail`. `patches_apply` applies that
+list in order. `patches_id` prints the hash of
+
+    (cd "$LANAI_PATCHES" && sha256sum -- "${list[@]}") | sha256sum
+
+or, for an empty list, the hash of empty input. It covers each patch's name,
+order and content, so a patch whose content changed gets a new id. `COPYING` is
+not part of it. From phase B on, an empty list is a build error ("Lanai's
+Looking Glass patches are missing from <dir>; reinstall Lanai"), so a broken
+install never stamps an unpatched client as current. The
+build folder stays `<data>/looking-glass/<build>/`, and the client still reports
+the pinned build, so `lg_same_build`, `build_select` and `builds_prune` (req 8's
+same-build check) do not change. `build-stamp` does not change either. The
+patch id goes in its own file beside it, `build-patches`, holding the id alone.
+
+- `build_stamp_current` does not change, so an install from before this change
+  still counts as the pinned build: setup stays finished and the window keeps
+  working (req 12's upgrade rule).
+- `build_patches_current` (new) is true only when `build-patches` holds
+  `$(patches_id)`. A missing file is false.
+- `build_client` returns early only when `build_patches_current` holds and the
+  binary reports the pin. Today it writes a fresh stamp for any binary that
+  reports the pin; without `build-patches` that path would mark an unpatched
+  client as current, so it now needs the file too. Otherwise it
+  rebuilds in this order: unpack, check submodules, start `build-client.log`
+  once (`: >"$log"`), `patches_apply`, cmake configure (now `>>"$log"`, so the
+  apply lines survive; `usb_audio_enabled` still reads the same log), build,
+  install through `.partial` (the old folder, and its `build-patches`, go with
+  it), then write `build-stamp` and `build-patches`, using the id it computed
+  before applying.
+- `LANAI_PATCHES` (default `$LANAI_LIB/../patches/looking-glass`) lets tests
+  point at fixture patches. `patches_apply` resolves it to an absolute path and
+  passes each patch to `-i` by absolute path, since GNU patch changes to `-d`'s
+  folder before it opens the `-i` file.
+- Rollback: a Lanai from before this change never reads `build-patches` and
+  keeps the patched client, because its `build_client` stamps any binary that
+  reports the pin. That is harmless (the client still matches the IDD) and
+  silent; upgrading again finds `build-patches` still current.
+
+**The module (`resize.c`).** Pure C: standard headers only, no `g_state`, no
+transport, no clock. Its caller passes the time in microseconds, a `send`
+callback (returns true when the ask went out) and a `log` callback. The state
+struct is in the header, so the glue keeps one static instance. API (names are the
+implementer's call):
+
+    void resize_init   (ResizeState *, ResizeSendFn, ResizeLogFn, void * opaque);
+    void resize_session(ResizeState *);  /* a new display session */
+    void resize_window (ResizeState *, unsigned w, unsigned h, uint64_t now);
+    void resize_frame  (ResizeState *, unsigned w, unsigned h, unsigned changes,
+                        uint64_t now);
+    void resize_update (ResizeState *, uint64_t now, bool responding);
+
+State: the window size (kept across sessions; 0 until known), Windows' size and
+whether a frame was seen (both cleared by `resize_session`), `asks` (0 to 5),
+the time of the last ask (or none), and whether "did not take" was logged.
+Rules, each from req 12:
+
+- `resize_window` with a new size logs `Resize: window is <w>x<h>` and starts a
+  new sequence (`asks` = 0, "did not take" cleared). The same size again does
+  nothing. Under the floor (`w < 640 || h < 480`), the line reads `Resize:
+  window is <w>x<h>, under 640x480, not asking`, and `resize_update` never asks
+  while the window size stays there.
+- `resize_session` clears Windows' size, the frame flag and the sequence, and
+  forgets the last ask. The first `resize_frame` after it is the session's first
+  frame: it records Windows' size and starts a new sequence.
+- `changes` is how many format changes the frame thread accepted since the last
+  call. A later `resize_frame` is a change of Windows' size when the size differs
+  from the last one it saw, or when `changes` >= 2 (Windows left a size and came
+  back between two polls). Two format changes that are not size changes (for
+  example an HDR switch and back) also count; that is accepted, since it costs at
+  most one ask sequence, bounded like any other. Within 60 s of the last ask it
+  continues the sequence (`asks` and the last ask stay); otherwise it starts a
+  new one. A call at the same size with `changes` < 2 is no change. Phase 0 saw
+  most resizes show a short-lived frame of another size 50-100 ms before the
+  asked one, so one taken ask often reaches here as `changes` = 2; Windows then
+  matches the window, so nothing is asked.
+- `resize_update` asks when all hold: a frame was seen this session, the window
+  size is known, Windows' size differs from it, `responding` is true, `asks` < 5,
+  and either `asks` is 0 or `now` >= last ask + wait, where the wait after ask
+  1, 2, 3 and 4 is 2, 5, 10 and 20 s (phase E; it was 5, 10, 20 and 40 s). An
+  ask sends the window size as it is now, so a newer size replaces a waiting
+  one. When `send` returns true: `asks`++,
+  last ask = now, and it logs `Resize: asking Windows for <w>x<h> (<n> of 5)`.
+  When it returns false, nothing counts and the next update tries again.
+- A match (Windows' size equals the window's) asks nothing. It does not clear
+  the sequence, so a change within 60 s of the last ask still continues it.
+- With `asks` = 5, Windows still different, and `now` >= last ask + 5 s, it logs
+  `Resize: Windows did not take <w>x<h>` once for that sequence. The spec's "5
+  seconds after its last ask" is read as after the fifth ask; a sequence that a
+  trigger replaces earlier logs nothing.
+
+So a sequence asks at most 5 times, at 0, 2, 7, 17 and 37 s when Windows never
+answers with the size, and a Windows that keeps leaving the size cannot cause a
+loop.
+
+**The glue (`core.c`, patch 0002).** It owns the static state, one control token
+and one `atomic_uint_least64_t` that holds Windows' size and a count of accepted
+format changes together, as `w << 48 | h << 32 | count` (size 0: no frame this
+session). One value means the main thread always reads a size with its own count,
+and a size that changes and changes back between two polls still moves the
+count. Only the frame thread writes it; the count wraps, and the main thread uses
+the difference modulo 2^32.
+
+- `core_resizeInit()`: called once in `main()`, beside `lgMessage_init()`.
+- `core_resizeSession()`: called at the `restart:` label of `lg_run`, which
+  runs before the first connect and after every host restart. The frame thread
+  is stopped there (not yet started, or stopped by `core_stopVideoThreads`
+  before `goto restart`), so storing 0 races with no writer. It stores 0, sets
+  the main thread's last-polled count to the same 0, forgets the token and calls
+  `resize_session`. The window opening, Windows starting or restarting and the
+  driver restarting each come through here (phase 0 confirms the last two).
+- `core_resizeFrame(w, h)`: called in `main_frameThread` in the
+  `if (formatChanged)` block that sets `g_state.formatValid = true` (about line
+  1655), after the frame is accepted and queued, with `rendererFormat.screenWidth`
+  and `screenHeight`, the size the old code compared through `srcSize`. It stores the
+  new size with the count plus 1, in one store. The first frame of a session always changes the format, since
+  `lgInit` clears `formatValid`.
+- `core_onWindowSizeChanged(w, h)`: now only calls
+  `resize_window(..., microtime())`, with no transport check, so no size is lost
+  while Windows is away.
+- `core_resizeUpdate()`: called in the main loop beside
+  `frameScheduler_update()`, about every 100 ms and only while the session is
+  valid. It loads the value once and, when the count moved since its last poll,
+  calls `resize_frame` with that size and the difference as `changes`.
+  `responding` is true when the transport handle is set, the session has
+  `LG_TRANSPORT_FEATURE_WINDOW_SIZE`, and there is no token or
+  `controlStatus(token)` returns `LG_TRANSPORT_OK` (the IDD read the last ask), as
+  `frame_scheduler.c` does, and no failed send happened in the last second. Then
+  it calls `resize_update`. Its `send` callback calls `sendControl` and keeps the
+  token on `LG_TRANSPORT_OK`. On another status it warns once until a send
+  succeeds again (like `frame_scheduler.c`'s `enqueueFaulted`; no warning for
+  `UNAVAILABLE`, as today) and sets the next try 1 s later, so a failing
+  transport is not retried on every main-loop pass. Its `log` callback is
+  `DEBUG_INFO("%s", line)`.
+
+All module state is touched only on the main thread; the frame thread writes only
+the atomic. "Shown a frame" means the frame thread accepted the session's first
+frame and handed it to the renderer. Rotation is ignored, as in the old
+comparison (Lanai never rotates).
+
+**Tests of the C change.** Two layers, both in the patches, so an upstream offer
+carries them:
+
+- `resize_test.c` drives the pure module with a fake clock, a recording `send`
+  and a recording `log`. It includes only `resize.h` and standard headers, with
+  its own `CHECK`, so it builds without the rest of the tree. It runs one case by
+  name, as Looking Glass's tests do, and lists its cases with `--list`.
+- `config_message_test.c` (already a synthetic transport with a fake
+  `clock_gettime`) gains `controlStatus` in its fake and covers the glue: no ask
+  before a frame, one unread ask at a time, the token read, a session reset, and
+  two format changes (away and back to the same size) between two polls after an
+  exhausted sequence, more than 60 s after the last ask, starting a new sequence;
+  and a size and count written between two polls reaching `resize_frame` together
+  (the packed value, never a size with another write's count); one format change,
+  a session reset, then the new session's first frame asks (the last-polled count
+  was reset with the value); a failing send warns once over several polls, is
+  tried again no sooner than 1 s later, and warns again only after a success.
+  Its existing cases change where the rule changed: a send now waits for a frame,
+  and a failed send is not counted.
+
+`test/client-patches.bats` runs them:
+
+- In CI and locally: point `LANAI_PATCHES` at a temp folder holding only 0001,
+  apply it to an empty folder through `patches_apply`, build `resize.c` and
+  `resize_test.c` with `cc -std=gnu11 -Wall -Wextra -Werror`, and run every case
+  `--list` names. CI gains `gcc` and `patch` in its package line.
+- Locally only, when `LANAI_TEST_LG_TARBALL` names the pinned source tarball (for
+  example the one in `~/.cache/lanai/downloads/`): check its SHA-256 against
+  `LG_SOURCE_SHA`, unpack it under the test's temp folder, apply every patch
+  through `patches_apply` (each must apply exactly), configure with
+  `-DENABLE_X11=no -DENABLE_TESTS=ON -DWESTON_EXECUTABLE=/usr/bin/true`, build the
+  `resize-tests`, `config-message-tests` and `mouse-tests` targets (`mouse-tests`
+  also compiles `core.c`), and run `ctest -R '^(resize|config-message|mouse)-'`.
+  It also checks that `resize-tests --list` names the same cases as
+  `RESIZE_CASES` in `client/tests/CMakeLists.txt`. `ENABLE_TESTS` needs GoogleTest
+  (installed on John's machine) and looks for Weston, which only the render tests
+  use, hence the stand-in. Checked on 2026-10-12 with the unpatched tree: configure
+  passes, and both targets build and pass in seconds. Skipped in CI, which has
+  neither the tarball nor the client's build dependencies, as the pwsh tests are
+  today.
+
+**Upgrade path.** A finished install whose stamp is the pin but whose patches are
+not current keeps working: setup stays finished, `lanai start` and `lanai open`
+use the installed client. `cmd_panel` computes `clientOld`: setup finished (the
+plan's step 7, `$p.finished`), `build_stamp_current`, not `build_patches_current`, and `guest_version_behind`
+empty. When `guest_version_behind` is not empty (an older pin's build is in use),
+req 8's existing words ("The Windows display driver needs an update. Shut down
+and continue setup.") are the one next step, and the resize warning stays hidden.
+"The resize warning" names the new line; "the notice" stays the forced-stop
+notice. The resize warning joins `.warning` on purpose, so it also shows in the
+bar's tooltip, which `LanaiModel.qml` builds from `view.warning`.
+
+- New scale task (`scale_task_kind` new): the panel shows the resize warning and a button,
+  Update the Windows window, which runs `lanai build-client` as a panel job
+  (`ui-job` and `ui-job-worker` accept `build-client`). `panel_group` maps it to
+  a new `client` group (added to `panel_records`' groups), so an interrupted
+  update never arms `$interruptedSetup` or Run setup again; it says "The update
+  did not finish. Click Update the Windows window again." The failed and
+  interrupted words show only while `clientOld` holds. While the job runs, its
+  panel lock disables Start Windows, as any panel job does; the busy line says
+  so. It works whether
+  Windows runs or not, and changes nothing in Windows: no administrator prompt,
+  no restart, no lock change. The running client keeps its open binary; the next
+  `lanai open` runs the new one. The panel shows the done words until a client
+  starts after the job's `ended` time (`client.log`'s first line holds the
+  client's start epoch), so a success with the window closed still shows its
+  words. `cmd_build_client` always ends with "If the Windows window is open,
+  close it and open it again." Its failure next step names `build-client.log`,
+  not "run setup again". Failure words name `build-client.log`, which joins the
+  panel's logs block; `panel-job.log` holds nothing useful for it.
+  `build_client_locked`'s rc 3 (another build running) replies with its own
+  reason, `build-busy`, and its own panel words.
+- Old scale task: the resize warning names Run setup again only, and no update button
+  shows. `setup_plan`'s step 4 check becomes `! build_stamp_current || !
+  build_patches_current`. The "done" check above it stays pin-only, so only a
+  setup round (Run setup again, or a first setup) reaches step 4 and builds. Run
+  setup again restarts Windows in step 5, so the Windows window that reopens runs
+  the fixed client; its last message stays "Lanai setup is finished."
+
+Draft words (the phase C implementer has the taste bar and may sharpen them,
+keeping each fact):
+
+- Resize warning, new task: "Windows may start at, or change to, the wrong size until
+  you click Update the Windows window. This changes nothing in Windows."
+- Resize warning, old task, varying on running state as `old_task_note` does: "Windows
+  may start at, or change to, the wrong size until you click Run setup again."
+  While Windows runs: "... until you shut Windows down and click Run setup
+  again."
+- Busy line: "Updating the Windows window. This may take several minutes. You
+  can start Windows when it finishes. You can close this panel."
+- Another build running (`build-busy`): "Another build is running. Try again
+  when it finishes."
+- Done (panel and `lanai build-client`): "The Windows window is updated. If the
+  Windows window is open, close it and open it again."
+- Interrupted: "The update did not finish. Click Update the Windows window
+  again."
+- Failed: "The Windows window could not be updated. Check the Windows window
+  build log (build-client.log), then try again."
+
+**Licensing.** `patches/looking-glass/COPYING` is the GPL-2.0 text, copied byte
+for byte from the pinned tree's `LICENSE` (SHA-256
+`8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643`). The new
+files in 0001 carry `Copyright (C) 2026 John Zetterman` with the usual
+GPL-2.0-or-later notice text, not "The Looking Glass Authors". The README's
+license paragraph says Lanai is MIT except the patches in
+`patches/looking-glass/`, which carry Looking Glass's license, GPL-2.0-or-later,
+with the text in `COPYING` beside them. `manifest.json`'s `license` becomes the
+SPDX expression `MIT AND GPL-2.0-or-later`: the field is a free string (the
+installed shell never reads it), and an SPDX expression is as close as it can say
+"except". The root `LICENSE` stays the MIT text.
+
+**Refused sizes.** The hands-on uses a floating window of 600x400 monitor pixels:
+below Windows' 800x600 minimum and below the pinned IDD's own 640x480 mode floor.
+The IDD keeps each ask in one `ExtraMode` registry value (`CSettings::SetExtraMode`,
+`idd/LGIdd/config/CSettings.cpp` about 96-121), so a refused ask replaces the window's previous
+mode. `LoadModes` then drops the 600x400 mode (`ParseModeString`'s floor, about
+line 338), and the replug leaves only the default list, whose preferred mode is
+1920x1080 (`DefaultPreferredDisplayMode`, `idd/LGCommon/DefaultDisplayModes.h:37`). Phase 0
+(4) confirmed it: Windows moved to 1920x1080 (`proofs.md`, "Resize phase 0").
+John's call: the client never asks for a size under the IDD's floor, 640 wide
+or 480 high (`width < 640 || height < 480`, the same per-side test as
+`CSettings.cpp:338`), so Windows keeps its size and the client scales the
+picture into the window. Phase 0 found 640x480, 720x540 and 800x600 all taken
+exactly, so the floor is the IDD's, not Windows' 800x600. Too large: the IDD's
+`SetResolution` returns `TOO_LARGE` when the mode does not fit the frame memory
+(128 MiB in `vm_args`; a 4K frame takes about 32 MiB of it;
+`idd/LGIdd/display/CDisplayConfiguration.cpp:180`), and
+`CDeviceContext::SetResolution` (`idd/LGIdd/display/CDeviceContext.cpp:490`)
+sends `ResolutionRejected` to the helper (the Windows notice) and does not
+replug. Reaching that needs a monitor well past 4K or a smaller
+frame memory, a test-only change to the VM's hardware, so this case is checked by
+review: the IDD path above, plus the client's generic refusal path, which the unit
+tests cover (Windows' size never changes, so at most 5 asks and one "did not
+take" line).
+
+**The scale.** "A resolution change never changes the target" is already how the
+scale task works (live scale's `ScaleDecision` caps per resolution on every 2 s
+poll). No guest change is planned; row 12b's scale case checks it, and a failure
+there gets its own fix phase.
+
+### Phase 0: log proof (John and Claude, test copy)
+
+With today's client, on the test copy: (1) resize the floating window three
+times, one of them to an odd width, and once on a monitor with a fractional scale
+(such as 1.5 or 1.25); (2) restart the Looking Glass display driver in Device
+Manager; (3) disable it, wait 10 s, enable it; (4) on a monitor at scale 1,
+float the window at 600x400 monitor pixels and wait a minute. Read `client.log`.
+Pass: (1) gives a `Format:` line per size, each equal to round(`hyprctl` size ×
+scale), the size the client asks for (`core_updatePositionInfo`, `core.c` about
+459-466), and no `Waiting for the host to restart`; (2) and (3) each give `Waiting for the
+host to restart`, then a new session's `Format:` line. (4) records the `Format:`
+lines, any session restart, and the size Windows ends at; "Refused sizes" in
+Design depends on it. Stop rules, each to John before phase B: (1) restarts the
+session (an ask Windows refuses would then start a new session and a new
+sequence every time); a (1) size is not that rounded size (the module would
+never see a match; bring a tolerance or rounding rule); (2) or (3) does not
+restart the session (the session hook would miss the driver restart); (4)
+restarts the session (an endless ask loop otherwise); (4) ends with Windows at
+another size than before (the spec wording, per "Refused sizes"). Row 12b's
+1 px allowance applies only to phase D's evidence. Record results in
+`proofs.md`.
+
+### Phase A: exact apply, patch id and stamp (TDD)
+
+- Tests first: `test/client.bats` with `LANAI_PATCHES` pointing at fixture
+  patches built in the test (a two-file tree and patches made with `diff -Naur`):
+  `patches_apply` applies an exact patch; an offset hunk, a fuzzed hunk, a failed
+  hunk and an already-applied patch each fail and name the patch; order follows
+  the names; a patch that only creates files applies to an empty folder.
+  `patches_id`: stable for the same files; changes when a patch's content changes,
+  when one is renamed, added or removed; ignores `COPYING`.
+  `build_patches_current`: false for a missing `build-patches`, a stale id, or a
+  missing binary; true for the current id. `patches_list`: basenames only; no
+  folder and no match are empty lists without an error under `set -euo
+  pipefail`. New `build_client` cases go in `test/client.bats` on its
+  `lg_source` helper, which already makes a fixture tarball behind `curl` and
+  `cmake` shims; `lg_source` also writes a fixture patch that applies exactly to
+  its tree and points `LANAI_PATCHES` at it. Cases: an installed binary with a
+  current `build-patches` needs no download; one without it rebuilds and writes
+  `build-stamp` and `build-patches`; a patch that does not apply stops the build
+  with its message and leaves no `.partial` or work folder; `build-client.log`
+  keeps the apply lines and the configure output. `test/panel.bats`' "client
+  stamp: an installed unstamped client takes a quick build check before setup
+  continues" changes with the rule: an unstamped client without
+  `build-patches` now rebuilds, so the case writes the current files first, or
+  moves to `client.bats` on `lg_source`. A new `test/helpers.bash` helper writes
+  the current `build-stamp` and `build-patches`; `test/setup.bats` uses it where
+  it writes a one-line stamp today (about lines 607, 851 inside its
+  `build_client` stub, and 1543). Wherever `build_stamp_current` is stubbed
+  (`test/panel.bats`, `test/panel-jobs.bats`, `test/setup.bats`), stub
+  `build_patches_current` beside it, true unless the case is about stale
+  patches.
+  `test/setup.bats`: a finished setup with stale patches still plans step 7; a
+  setup round (`--no-window`) with stale patches plans step 4 `build`.
+- Files: `lib/client.sh` (`LANAI_PATCHES`, `patches_list`, `patches_apply`,
+  `patches_id`, `build_patches_current`, `build_client`), `lib/setup.sh` (step 4
+  check), `lib/lanai.sh` (`setup_command`'s second-build message, about lines
+1466-1468,
+  fits a step 4 repeated for patches: "The Looking Glass client still is not
+  built from $LG_BUILD with Lanai's current patches."), `test/helpers.bash`, `lib/pins.sh` (comment: on a pin change, the patches must apply
+  exactly to the new source), `.github/workflows/test.yml` (`gcc patch`). The
+  patches folder comes in phase B; until then `patches_id` hashes an empty list
+  (no folder, or no patches, is the hash of empty input).
+- Verify: `bats test spike/test` (TMPDIR under `$XDG_RUNTIME_DIR`), CI's
+  ShellCheck line.
+
+### Phase B: the client patches (TDD, C)
+
+- Set up: a fresh worktree has an empty `spike/work/`. Get the verified tarball
+  there: copy `~/.cache/lanai/downloads/looking-glass-$LG_BUILD-source.tar.gz`
+  if it exists, else download it with `fetch_verified "$LG_SOURCE_URL" <dst>
+  "$LG_SOURCE_SHA"` (sourcing `lib/lanai.sh`); either way check it with
+  `verify_sha256`. Unpack it twice under `spike/work/` (pristine and working),
+  and build only out of tree (`cmake -B` outside both), so `diff -Naur` picks up
+  no build output. Each patch is made against the tree with the patches before it
+  applied: write the three new files into working first and make 0001 with
+  `diff -Naur pristine working` from their parent folder while working holds only
+  those files as changes (or diff only those three files); then apply 0001 to
+  pristine (exactly, as the build does), add the hooks in working, and make 0002
+  the same way, so 0002 holds only the hook edits. Add the header to each. Check the
+  pair by applying both, in order, to a fresh unpack.
+- Tests first, in `resize_test.c`: no ask before a frame or before the window size
+  is known; a first frame that differs asks at once, one that matches asks
+  nothing; Windows never taking the size gives asks at 0, 2, 7, 17 and 37 s
+  (phase E's times; phase B built 0, 5, 15, 35 and 75 s), "did not take" once
+  at 42 s, then nothing for 10 minutes; a match stops the asks;
+  `responding` false holds the ask and a later true sends it at once, with the next
+  wait counted from that send; a window size that changes while an ask waits is
+  the size sent, in one ask; a failed `send` is not counted; a new window size
+  starts over (asks at once, 1 of 5); a window of 639x800 or 800x479 never asks
+  and logs the "not asking" line once, 640x480 asks, and growing from under the
+  floor to an allowed size asks at once; a session reset starts over at its first
+  frame; the six-pick case from row 12b (asks 2, 5, 10 and 20 s apart, the sixth
+  pick stays and logs "did not take"); a Windows change more than 60 s after the
+  last ask starts over; the same frame size twice with `changes` < 2 is no
+  change, and with `changes` >= 2 is a change; a sequence replaced before its
+  fifth ask logs no "did not take"; log lines: one per new window size, one per
+  ask with its size and number. In `config_message_test.c`: the glue sends
+  nothing before `core_resizeFrame`; sends the window size after it; holds a
+  second ask while `controlStatus` reports the token unread; sends it once read;
+  `core_resizeSession` drops the token and waits for a new frame; features
+  without `WINDOW_SIZE` or no handle sends nothing; plus every glue case in
+  Design, "Tests of the C change". `test/client.bats` (on `lg_source`): with an
+  empty `LANAI_PATCHES` folder, `build_client` fails with the missing-patches
+  message and writes no `build-stamp` or `build-patches`.
+- Then `test/client-patches.bats` as in Design (the CI case and the tarball case).
+- Files: `patches/looking-glass/0001-client-resize-module.patch`,
+  `patches/looking-glass/0002-client-resize-hooks.patch`,
+  `patches/looking-glass/COPYING`, `lib/client.sh` (empty list is an error),
+  `test/client-patches.bats`, `test/client.bats`, `.gitattributes`
+  (`patches/** -text`, so git never rewrites a patch's bytes), `manifest.json`
+  (license), `README.md` (license paragraph).
+- Verify: `bats test spike/test`; `LANAI_TEST_LG_TARBALL=<tarball> bats
+  test/client-patches.bats`; one real build into scratch folders
+  (`XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME` under `spike/work/`):
+  `bin/lanai build-client` succeeds, `build-stamp` and `build-patches` are
+  written, the binary reports
+  the pin, and `build-client.log` shows each patch applied with no `Hunk ` line.
+
+### Phase C: panel, upgrade words and README (TDD)
+
+- Tests first: `test/panel.bats`: with `clientOld` and the new task, the resize
+  warning (also in the tooltip text) and an enabled Update the Windows window
+  button, while Windows runs and while stopped; with the old task, the resize
+  warning names Run setup again and no update
+  button shows; with an older pin's build in use, only req 8's words; with current
+  patches or an unfinished setup, neither; while busy, the button shows disabled;
+  the old-task resize warning while running and while stopped; `panel_words`
+  for a `build-client` reply, ok, failed (the failure names `build-client.log`,
+  and the logs block lists it) and `build-busy`; the done words show after a
+  success with the window closed, and go once a client starts after the job's
+  `ended` time; an
+  interrupted `build-client` record shows the interrupted words and does not arm
+  `$interruptedSetup` or Run setup again; the failed and interrupted words go once
+  `clientOld` no longer holds; the busy line for a `build-client` job.
+  `test/panel-jobs.bats`: `ui-job` and `ui-job-worker` accept `build-client`,
+  record it in the `client` group, and refuse other commands as before.
+  `test/panel-qml.bats`: the button runs `["build-client"]` as a long job; a
+  Note shows `view.result.client`; the Logs list shows the build log line.
+  `lanai build-client`'s CLI tests, in `test/client.bats` (about lines 876-895)
+  and `test/setup.bats` (about line 1733): its last message, its failure next
+  step, and the rc 3 reason.
+- Files: `lib/panel.sh` (`clientOld`; the resize warning joins `.warning`; the
+  button, words, busy line, the done words' client-start check; `client` in both group loops,
+  `panel_records`' and `cmd_panel`'s `for group in vm setup settings snapshots`,
+  about lines 92 and 135; a `build` key for `build-client.log` in the logs
+  block), `lib/ui.sh` (job allow-lists, `panel_group`), `lib/lanai.sh`
+  (`cmd_build_client` message, failure next step and rc 3 reason),
+  `LanaiPanel.qml` (the button beside the resize warning;
+  a Note for `view.result.client` in the top column, about lines 110-133, beside
+  `result.vm`; `logs.build` in the Logs Repeater's model, about line 308),
+  `README.md` (Daily use: Windows follows the window, and to change Windows'
+  resolution, resize the window; for a window under 640x480 or a fullscreen too
+  large for Windows' frame memory, Windows keeps its last size and the picture is
+  scaled to fit, the too-large case may flicker or show a notice while Lanai asks,
+  and resizing the window or leaving fullscreen fixes it; for installs from before this change, "Update the Windows window",
+  which changes nothing in Windows, then close and reopen the window; or, when the
+  panel names it instead, Run setup again, which restarts Windows as setup always
+  does), `CLAUDE.md` (layout:
+  `patches/looking-glass/`, `test/client-patches.bats`; Tests: `LANAI_TEST_LG_TARBALL`;
+  rule: the client changes only through those patches, applied exactly), this plan.
+- Verify: `bats test spike/test`, ShellCheck, `test/qml-lint`.
+- As built: the button is `buttons.update_client`. `result.client` shows right under
+  it, above the busy line, not beside `result.vm`, so the update's words sit with its
+  button. The busy line drops "You can start Windows when it finishes." while
+  Windows runs. `build-busy` reads "Another build of the Windows window is running.
+  Try again when it finishes." `lanai build-client`'s success message is the done
+  words; its failure next step names `build-client.log`. The README's "Known issue"
+  paragraph about the boot resolution is gone.
+
+### Phase D: hands-on (John, test copy)
+
+Walk row 12b on the rehearsal copy and record it in `proofs.md`, "Resize
+hands-on". Evidence: `client.log`'s `Resize:` and `Format:` lines (their times
+count from the client's start, written on the log's first line) against
+`hyprctl clients -j` size times the monitor's scale. Each `Resize: window is`
+line lands at least 0.5 s after the real window event (`message.c`'s debounce).
+Windows-side events (sign-in, picks, driver restarts) are made more than 60 s
+after the last ask, so each starts a fresh sequence, except the quick picks in
+(4), which test the continued one.
+
+1. Upgrade first, while the old client is still installed (the real pre-fix
+   case): the panel shows the resize warning and the button; start and open still work;
+   click it: no Windows prompt, no restart, the last message says to close and
+   reopen; reopen.
+2. Session starts: a driver restart with the window open (the deterministic
+   case), 10 starts from the bar, 3 starts from the bar after the window's size
+   changed while Windows was off, a Windows restart (once with the window's
+   size changed while Windows restarts), closing and reopening the window.
+   Each matches within 5 s of the session's first frame.
+3. During a session: sign-out and sign-in, tile, fullscreen and back, a resize, a
+   move to a monitor with another scale. If no second monitor is set up, record
+   the move as not run and bring it to John.
+4. Picks: 5 resolutions picked in Display settings, each more than a minute after
+   the last ask; then the 6 quick picks: the first more than 60 s after the last
+   ask, and each later one after Windows has taken the previous ask and within
+   60 s of it, kept with "Keep changes" (row 12b; phase E runs this case again).
+5. Scale: 300% target, large window, driver restart.
+6. Refusal: a floating window of 600x400 monitor pixels; the log names the size
+   with "not asking" and shows no ask, Windows keeps its size and the scale holds
+   for a minute; then resize to an allowed size, which matches within 5 s.
+7. Driver disabled: no ask until enabled.
+8. Repeatable upgrade fixture: add a word to 0002's header (the text before its
+   first diff line, following the header rule in Design, "Patches"); the resize
+   warning comes back; with an old scale task fixture
+   (`scale_task` removed from the test copy's setup record), only Run setup again
+   is named. Restore both after.
+9. Patches review, recorded in `proofs.md`: the files 0001 and 0002 touch show no
+   new `LG_TransportControl` type and no KVMFR or LGMP struct change; the IDD pin
+   in `lib/pins.sh` is unchanged; `COPYING`'s SHA-256 matches the one in Design,
+   "Licensing"; the README license paragraph and `manifest.json`'s license read
+   as planned.
+
+The too-large case is reviewed, not run (Design, "Refused sizes"). Fixes found
+here get their own phase, planned from the results, before the diff gate closes.
+
+### Phase E: first wait 2 s (TDD, C)
+
+From the hands-on (John's call, 2026-10-13; `proofs.md`, "Resize hands-on").
+Three starts from the bar after the window's size changed while Windows was off
+each matched 5.8 s after the session's first frame, past the 5 s bar. After a
+boot, Windows' display helper does not switch the desktop to the first ask's
+size: Windows shows the smallest built-in mode that fits the old desktop
+(1400x1050, 3840x2160 and 1600x1200 in the three starts) and stays there, and
+the ask 5 s later works. The slowest switch after a taken ask was 1.26 s, so the
+first wait becomes 2 s, not 1 s.
+
+- `resizeWait` in `resize.c` becomes 2, 5, 10 and 20 s. The comments in
+  `resize.c` and `resize.h` and 0001's header text that name the waits change to
+  match. Nothing else changes: at most 5 asks, the 60 s continuation, and the
+  5 s "did not take" wait after the fifth ask.
+- Tests first, in `resize_test.c` (line numbers are 0001's). With only the
+  waits changed, 8 of the 16 cases fail (review b found it by building them),
+  so retime each one to the new schedule, comments included:
+  - `never-takes`: asks at 0, 2, 7, 17 and 37 s, "did not take" once at 42 s.
+  - `six-picks` (688-729): asks 2, 5, 10 and 20 s apart (`askAt` 0, 2, 7, 17,
+    37); Windows takes each ask 0.5 s after it and the next pick lands 1 s
+    after it (today 1 s and 3 s, which lands after the new 2 s wait), so every
+    pick comes before its wait ends; "did not take" at t1+42 and the final run
+    to t1+37+600.
+  - `match-stops` (517): the match comes at 1 s, before ask 2 is due at 2 s.
+  - `responding` (540-556): rebuild the hold-while-due part around asks at 0,
+    2, 7, 17 and 37 s from the send.
+  - `send-fails` (591-599): the next ask 2 s after the first.
+  - `new-window` (609-619), `session` (681-684) and `replaced` (786-796): their
+    counts and times follow the new schedule.
+  - `late-change` (742-753), and 0002's `testResizeReturn`, still pass but
+    drift far past the 60 s boundary; retime them to 61 s after the new
+    last-ask times so they keep testing near it (in `late-change`, the check at
+    746 moves with 742; the second boundary becomes T0+63+37+61).
+  Then add two cases. The boot case: the first ask is answered at 0.5 s by a
+  frame at another size (`changes` 1, no match), ask 2 goes out at 2 s, and a
+  match then stops the asks; it fails against the old waits. The slow switch: a
+  taken ask whose match arrives 1.3 s later sends no second ask; it already
+  passes against the old waits and guards against a first wait under 1.3 s.
+  Keep today's six-pick timing (take at +1 s, pick at +3 s) as a third case:
+  each pick after the first lands after its wait ends, so its ask goes out at
+  once with the next number, as row 12b expects for picks made by hand. Name
+  cases with lowercase letters and hyphens only (for example `boot`,
+  `slow-switch`, `late-picks`): `test/client-patches.bats` reads
+  `RESIZE_CASES` with `[a-z-]*`. The other cases pass unchanged.
+- Register the new cases in `RESIZE_CASES` (`client/tests/CMakeLists.txt`,
+  patch 0002), since the tarball test checks that `resize-tests --list` names
+  the same cases. Regenerate 0001 against the pinned source and 0002 against
+  the tree with 0001 applied, as in phase B. Check the pair on a fresh unpack,
+  and run `test/client-patches.bats` with `LANAI_TEST_LG_TARBALL`. The patch id
+  changes, so the installed copy shows the update warning again.
+- In 0002's `config_message_test.c`, `testControl` asserts that the ask after
+  the first one of a sequence waits 5 s; make it 2 s, with its comment.
+- Files: `patches/looking-glass/0001-client-resize-module.patch`,
+  `0002-client-resize-hooks.patch` (the case list and `testControl`), this
+  plan, `proofs.md`.
+- Hands-on (John, test copy): click Update the Windows window, then reopen. 3
+  starts from the bar, each after the window's size changed while Windows was
+  off, to a smaller, a larger and a differently shaped size: each matches
+  within 5 s of the session's first frame, with ask 2 about 2 s after ask 1
+  when ask 1 does not take. Record each start's ask 2 time and match time.
+  One Windows restart with the window's size changed while Windows restarts:
+  it matches within 5 s of the session's first frame. A start that still
+  misses 5 s goes to John, as in phase D.
+  Then row 12b's full pick case, which phase D only partly ran: 5 picks in
+  Display settings, each more than a minute after the last ask, each undone
+  within 5 s; then 6 picks: the first more than a minute after the last ask,
+  each later one after Windows has taken the previous ask (the size snapped
+  back) and within 60 s of it, each kept with "Keep changes" before its
+  countdown ends while no ask has undone it. Expected: ask 1 at once, and
+  each later ask when its wait (2, 5, 10, 20 s) ends or at once for a pick
+  made after that, so ask 5 comes at least 37 s after ask 1; the sixth pick
+  gets no ask and its size holds for at least 60 s. A dialog frozen by an ask
+  does not fail the case: minimize and restore Settings. Record in
+  `proofs.md`, "Resize hands-on".
+- As built: 10 of the 19 cases fail against the old waits (`never-takes`,
+  `boot`, `responding`, `send-fails`, `new-window`, `session`, `six-picks`,
+  `late-picks`, `late-change`, `replaced`), and so do 0002's `control` and
+  `resize-return`. `match-stops` and `slow-switch` pass against both. Today's
+  six-pick timing (take at +1 s, pick at +3 s) does not put each pick after
+  its wait under the new waits: only the 2 s wait ends before +3 s. So
+  `late-picks` keeps the take at +1 s and puts each later pick 1 s after its
+  wait ends (picks at 0, 3, 9, 20 and 41 s, each asked at once with the next
+  number; the sixth at 44 s, "did not take" at 46 s). `resize-return` asks 5
+  times in 37 s, then its frames come 61 s after the last ask.
+
+### Phase F: the sign-in step (TDD, PowerShell and bash)
+
+From the phase E hands-on (spec amendment 3, John's call, 2026-10-13;
+`proofs.md`, "Resize hands-on, phase E"). After a boot, Windows' display
+helper cannot switch the desktop until the signed-in desktop is up (about
+6.7 s after the first frame with automatic sign-in), and it gives up after 20
+tries 100 ms apart. When the smallest built-in mode that fits the old desktop
+is the window's size, ask 1's frame matches the window while the desktop keeps
+the old size, and Lanai stops asking. A prototype logon task
+(`docs/plugin/proof-kit/display-backstop.ps1`) fixed that case 4.6 s after the desktop came up. Phase
+E's asks stay: on a normal start, ask 3 matches about 1 s after the desktop
+comes up.
+
+**Where.** In the scale task, `guest/lanai-scale.ps1`: no new task, no new
+`setup.cmd` line (setup already copies the script to the administrator-only
+`C:\Program Files\Lanai`, and requirements 7, 9 and 27 already cover the
+task). The step runs after the OEM check, so under `omarchy-windows-vm` (no
+`lanai-scale` string) the task still exits before it (requirement 4).
+
+**When.** Once per sign-in. Windows rebuilds `HKCU\Volatile Environment` at
+each sign-in and drops it at sign-out. On its first tick, inside the guarded
+tick (never before the loop), the step reads the value `LanaiSigninStep`
+there. Absent: it sets the value and runs. Present: this task start is not the
+first since the sign-in (for example the 5-minute repetition after the task
+exited), so it logs `Sign-in step: skipped (already ran since sign-in)` with
+`Write-Log` and does nothing. So a resolution kept in Display settings after
+Lanai's fifth ask is not undone mid-session. A failed read or write logs once
+and skips. The step's first line also gives the time since the task started
+and the process's start time (`Sign-in step: started`, with
+`[Diagnostics.Process]::GetCurrentProcess().StartTime.ToString('o')`; the
+loop's clock starts only after PowerShell's start-up, the C# compile and
+`Get-CimInstance`), so phase G sees the task's full start delay.
+
+**How.** Tick-driven inside the main loop, with no new thread: each pass of
+the 250 ms loop calls `Invoke-SigninTick`, which acts at most every 500 ms
+and does nothing once the step has ended. Like `Invoke-ScaleTick`, it changes
+its context and returns nothing (pipe stray output to `Out-Null`), since
+`Write-Log` writes to the output stream. Its state lives in a new field of
+the context `New-ScaleContext` builds, and it takes `$Now` from the loop's
+`$clock`, as `Invoke-ScaleTick` does. Each try reads `ExtraMode`
+(`HKLM\SOFTWARE\LookingGlass\IDD`, written by the pinned driver as
+`<w>x<h>@<refresh>[*]`) through `Get-StoredMode`, and the Looking Glass
+display's current desktop through `Size`, then asks the pure function
+`Get-SigninAction` what to do. The gate uses `Get-SigninMark` and
+`Set-SigninMark`. Tests replace all four; the registry does not exist under
+Linux pwsh. The wrappers use `[Microsoft.Win32.Registry]::CurrentUser` or
+`::LocalMachine`, `.OpenSubKey(...)` and `.GetValue(...)`, which return
+`$null` for a missing key or value: a missing value is `$null`, and only a
+real error throws. (`Get-ItemPropertyValue` throws on a missing value under
+`$ErrorActionPreference = 'Stop'`, which would make the gate skip every time
+and turn "no stored size" into a 2-minute retry.)
+
+| Input | Action |
+|---|---|
+| 120 s since the step started | stop: `gave up after 2 minutes`, with what it changed (nothing, or the switches) |
+| `ExtraMode` missing or not `<w>x<h>@...` with w, h > 0 | stop: `no stored size; changed nothing` |
+| no attached display whose `DeviceString` contains `Looking Glass` | wait; log `no Looking Glass display` once (a replug can hide it for a moment; the 2-minute stop ends it) |
+| desktop equals the stored size | stop: `desktop <w>x<h> matches after <n> switches`, with the time since the step started (0 switches: it found the desktop already matched) |
+| the last switch returned `DISP_CHANGE_BADMODE` (-2) for the size just read (the step keeps each switch's size with its result) | stop: `Windows does not support <w>x<h>`; a -2 for an older size does not count, and the step switches to the new one |
+| 3 switches returned success (0) and each was followed, at least 2 s later, by a desktop that still differs | stop: `3 switches did not take` |
+| a switch returned success less than 2 s ago | wait (the change is asynchronous; a switch took 1.26 s in phase D) |
+| otherwise | switch to the stored size; log the desktop, the stored size and the result when that line differs from the last one |
+
+A switch is `ChangeDisplaySettingsEx(<device>, mode, NULL, CDS_UPDATEREGISTRY,
+NULL)` with only `DM_PELSWIDTH | DM_PELSHEIGHT` set on the current mode (the
+helper also sets the frequency; the prototype's call without it worked).
+Every result other than success and -2 retries.
+
+`ExtraMode` is untrusted input: the IDD installer lets any interactive user
+write that key (`LGIddInstall.c:407-412`). The only effect of a bad value is
+a resolution change, which any user can make anyway. Still,
+`ConvertFrom-ExtraMode` accepts only 1 to 5 ASCII digits per side, so an
+overlong number is "no stored size", not an `[int]` overflow, and the step
+logs the parsed size, never the raw value.
+
+**Failures stay inside the step.** `Invoke-SigninTick` catches everything it
+calls, `Write-Log` included. The display can vanish between `Find()` and
+`Size()` or `Apply()` during a replug, and today the main loop's outer `catch`
+ends the whole task, which would stop live scale until the 5-minute restart.
+An exception counts as a failed try: the step logs it once per distinct
+message (a failed log write is dropped) and retries until a stop rule ends
+it. Nothing the step does ends the task.
+
+**C#.** Add a class to the existing `Add-Type` block: `Find()` (the device
+name, or null), `Size(device)` (`"<w>x<h>"` from `EnumDisplaySettings` with
+`ENUM_CURRENT_SETTINGS`) and `Apply(device, w, h)` (the result code). Its
+structs are public, so the size test can reach them. All struct handling
+stays in C#: the prototype's
+PowerShell `[ref]` struct calls to `EnumDisplayDevices` failed on the first
+call. Use the prototype's struct layouts (`DISPLAY_DEVICE`, `DEVMODE`, 220
+bytes), which worked on Windows 11 26200. Windows PowerShell 5.1 compiles C#
+5 only: no `$"..."`, `out var`, `?.` or `nameof`. Linux pwsh accepts newer C#,
+so a test compiles the block as C# 5 (below). A compile error before the
+`try` would end the task at every sign-in with no log line.
+
+**Log.** `Write-Log` already stamps each line with `Get-Date -Format o`
+(sub-millisecond), which row 12b's timing needs. Every step line starts
+`Sign-in step:`.
+
+**Scale.** The switch changes the resolution, and the task's existing tick
+already re-caps the applied scale on a resolution change (requirement 12's cap
+rule). Nothing to add; phase G checks it.
+
+**Script header.** Update the `.DESCRIPTION` comment of `lanai-scale.ps1` to
+describe the sign-in step.
+
+**Host side.**
+- `lib/setup.sh`: step 6 records `signin_step: 1` beside `scale_task: 2`
+  (the scale task now carries the sign-in step); the comment at the top names
+  it. A separate key leaves `scale_task` and `scale_task_kind` as they are,
+  so a Lanai from before this change still reads the record right (rollback:
+  it shows no sign-in warning, as before).
+- `lib/ui.sh`: a new `signin_step_missing` is true when setup is done, no
+  round runs, and `signin_step` is not 1.
+- `lib/panel.sh`, the resize warning: with the client old and the sign-in
+  step present, today's words and the **Update the Windows window** button.
+  With the sign-in step missing, one message that names **Run setup again** (with "shut Windows
+  down and" while running, as today), says what it fixes (the wrong size
+  after an update or a resize, when the client is old too; and staying at
+  the old size after Windows starts until the window is resized), and says
+  that it turns the Windows lock
+  off again. No Update button then. Requirement 8's update message still
+  replaces the warning. With the live-scale task old too (no mark), that one
+  message also says what Run setup again fixes for the scale (from
+  `old_task_note`), and the standing note under the scale list
+  (`panel.sh`, `old) note=...`) is not shown, so the panel names Run setup
+  again once (spec 12, the upgrade bullet). A scale save's reply keeps its
+  words, `oldtask` included: it answers the save, and the live-scale bullet
+  requires it.
+- `README.md`, the resize section: after Windows starts, Lanai sets the size
+  when the user who ran setup signs in; another Windows user may need to
+  resize the window once; the upgrade step's words as the panel's. Also fix
+  README:182-185 ("within 5 seconds", "also holds after Windows restarts":
+  starts and restarts now match within 15 s of the sign-in) and README:236-238
+  (the old-task note "under the scale list" moves into the warning).
+- Fixtures: test fixtures that mean "a current install" (the uses of mark 2,
+  found with `grep -n scale_task test/*.bats`, and the `state
+  '{"done":true}'` uses in `panel.bats` that mean current) gain both
+  `scale_task: 2` and `signin_step: 1`, since a step without the live task
+  cannot happen; for example `panel.bats:1933-1935` asserts no warning
+  with mark 2. Leave it out on purpose in `panel.bats:1922` ("older pin's
+  build", the requirement 8 guard) and in the new missing-step cases. Rewrite
+  `panel.bats:112-126` (the standing old-task note) for the new rule. When
+  requirement 8's message replaces the warning, the note under the scale list
+  shows again (it is then the only place that names the scale fix).
+
+**Tests first.**
+- `test/guest.bats` (pwsh, as the existing scale cases): `Get-SigninAction`
+  for each table row; a stored size that changes between two calls makes the
+  next switch use the new size, also right after a -2 for the old size; 2 switches that did not take still switch, the
+  third stops; `ConvertFrom-ExtraMode` accepts `1600x1000@60*` and
+  `1600x1000@59.94` and rejects empty, `x@60`, `0x0@60`, `1600x1000`, and
+  non-ASCII digits, and more than 5 digits a side.
+  Tick level, with `Get-StoredMode`, `Find`, `Size`, `Apply`,
+  `Get-SigninMark`, `Set-SigninMark` and `Write-Log` replaced by fakes: the happy path (a
+  switch, then a match, then a stop with no further `Find`, `Size` or `Apply`
+  calls); the 500 ms pacing (two ticks 250 ms apart make one try); the stored
+  size read again on each try; fakes that throw (the tick returns, the next
+  tick retries, the 2-minute stop still ends it, and an `Invoke-ScaleTick`
+  call after the throwing tick still runs); a repeated result (`Apply`
+  returning -1) and a repeated exception each log once over many ticks; the
+  gate (mark absent: sets it and runs; present: skips with its line; a
+  throwing read or a throwing `Set-SigninMark` skips); `no Looking Glass
+  display` logs once over many ticks. A static check that the wrappers use
+  `[Microsoft.Win32.Registry]` and `.GetValue`, not `Get-ItemPropertyValue`.
+- `test/guest.bats`, compile: pull the `Add-Type` here-string out of the
+  script's AST and compile it with `Add-Type -TypeDefinition $src
+  -CompilerOptions '-langversion:5'` (today's block passes; an interpolated
+  string fails with CS8026); assert `Marshal.SizeOf` of `DEVMODE` (220) and
+  `DISPLAY_DEVICE` (840). A static check that `Invoke-SigninTick` is called only in
+  the main loop, after the OEM exit (requirement 4).
+- `test/setup.bats`: a finished step 6 records `scale_task` 2 and
+  `signin_step` 1.
+- `test/ui.bats` or `test/panel.bats`: the warning for each case (client old
+  with the step present, missing, or no mark at all; client current with the
+  step missing or no mark; running and
+  stopped), the Update button only with the client old and the step present,
+  and the
+  live-scale save messages unchanged with and without `signin_step`. With no
+  mark (old task): the warning names Run setup again once with both fixes, the standing
+  note under the scale list is absent, and a scale save's reply still carries
+  `oldtask`.
+
+- Files: `guest/lanai-scale.ps1`, `lib/setup.sh`, `lib/ui.sh`,
+  `lib/panel.sh`, `README.md`, `test/guest.bats`, `test/setup.bats`,
+  `test/ui.bats`, `test/panel.bats`.
+- Verify: the focused bats files, then `bats test spike/test` with a short
+  `TMPDIR` and `LANAI_TEST_BTRFS_DIR` (CLAUDE.md); CI's ShellCheck line; the
+  C# 5 compile case. The pwsh cases, the compile included, skip in CI and
+  must run locally. A `-langversion:5` compile does not catch APIs found only
+  in .NET Core, so keep the C# to .NET Framework 4.x APIs, as the prototype
+  does. Then the diff gate.
+- As built (2026-10-13): 827 tests, 0 failed, 3 skipped (no pinned tarball,
+  no strace, no comma-decimal locale); ShellCheck clean; the C# compiles as C#
+  5 (`DEVMODE` 220, `DISPLAY_DEVICE` 840). Choices the table left open: a
+  throwing read is a "wait, log `error: <msg>` once" row after the 2-minute
+  row; "3 switches did not take" counts successful switches at least 2 s old
+  whose size is not the desktop now; the match line counts every `Apply`
+  call; `Set-SigninMark` throws (and the step skips) when `HKCU\Volatile
+  Environment` is missing, since a key Lanai made would not be volatile; the
+  sign-in warning also needs a finished setup plan, like `clientOld`, so a
+  pending update step (requirement 8 included) shows only its own step and
+  the old-task note returns under the scale list. Phase G's tools are in the
+  proof kit: `stamp-client-log`, `size-window-on-open`, `clock-ping` and
+  `pong.ps1`.
+
+### Phase G: hands-on (John and Claude, test copy)
+
+Paused after step 2's first three starts (2026-10-14): phase F's step loaded
+too slowly at sign-in and showed a window (`proofs.md`, "Resize hands-on,
+phase G"). It resumes from step 1 on phase H's build, with these changes:
+the step's log is `C:\Program Files\Lanai\lanai-signin.log`; step 1 upgrades
+from phase F's record (`signin_step` 1), so the warning shows first; then Run
+setup again once more on that build, so the rename meets a running program
+(spec row 9), and after the restart the new program runs (the running
+`lanai-start` process's path ends in `lanai-start.exe`, not `old-<n>`, and
+that file's last write time is after the rerun); at every timed sign-in John
+also confirms that no window appeared, and more than 10 minutes after one
+sign-in Claude has John list the scale task's processes (one
+`lanai-start.exe`, one `powershell.exe` running `lanai-scale.ps1`, and the
+hidden `conhost.exe` under it, which has no window); the start delay comes
+from the `Start program: started` line; step 5's plain sign-out and sign-in
+(no resize, no ask) takes its evidence from the client log (no new frame size
+since before the sign-out) plus the step's `matches after 0 switches` line,
+since the program's own start delay can put that line more than 5 s after
+the sign-in; the record ends at `signin_step` 2; step
+3's scale check counts from the later of 5 s after the switch and 20 s after
+the sign-in (spec 12); step 8's guard review reads `lanai-start.cs`. Also, by
+fixture (spec row 7b): make Windows refuse to start
+`C:\Program Files\Lanai\lanai-start.exe` on the test copy, then Run setup
+again: setup stops at step 6 with the blocked-program message; remove the
+fixture and run setup again. The fixture is an Image File Execution Options
+`Debugger` value for `lanai-start.exe` that names a missing file (every start
+then fails, as a policy block does); if that does not stop the start, an
+AppLocker executable deny rule (with AppIDSvc running); if neither works,
+record that and review the check instead. Before resuming, John removes the probe
+tasks in an admin PowerShell: `powershell -NoProfile -ExecutionPolicy Bypass
+-File <share>\lanai-proof\probe-exe.ps1 -Remove` (a scratch probe in the
+share, not in the proof kit). The process list: `$all = Get-CimInstance
+Win32_Process; $s = $all | Where-Object { $_.CommandLine -like
+'*lanai-scale.ps1*' }; $all | Where-Object { $_.Name -like 'lanai-start*' -or
+$s.ProcessId -contains $_.ProcessId -or ($_.Name -eq 'conhost.exe' -and
+$s.ProcessId -contains $_.ParentProcessId) } | Select-Object ProcessId,
+ParentProcessId, Name, CommandLine` (the admin PowerShell it runs in is not
+listed, and a running `lanai-start.old-<n>.exe` is).
+
+Before it: Claude confirms that the installed Lanai's storage location (from
+`lanai status` or the panel) is the rehearsal copy, not `~/.windows`, and
+stops otherwise; phase G boots Windows about 20 times and reruns setup. John
+runs `powershell -NoProfile -ExecutionPolicy Bypass -File
+C:\ProgramData\LanaiProof\display-backstop.ps1 -Remove` in an admin
+PowerShell, so only Lanai's step runs. The client log's times count from a start time in
+whole seconds, which is too coarse. Claude writes three proof-kit tools
+before phase G and commits them: `stamp-client-log` (`tail -F` the client
+log and prefix each line with the host's `date +%FT%T.%N%:z` as it arrives),
+`size-window-on-open` (step 3: float the Looking Glass window and set its
+exact size as soon as it appears, before the first frame), and
+`pong.ps1` (the guest side of the clock exchange below, so John runs a file
+rather than typing a loop: `powershell -NoProfile -ExecutionPolicy Bypass
+-File <share>\lanai-proof\pong.ps1`). Claude keeps the stamper's output per case. Each timed case starts its clock at the later of the session's first frame
+and the sign-in, which is the first `Using Clipboard: LGMP` line after the
+display session starts, or after the clipboard last fell back to SPICE (spec
+row 12b); both times are recorded. It reads the match time from the scale task's
+log (`C:\Program Files\Lanai\lanai-scale.log`; John pastes it). Offset, by a two-way exchange through the share: in each timed case, after
+the desktop is up, John starts a PowerShell loop that waits for each new line
+in `<share>\lanai-proof\ping.txt` (polling every 10 ms) and writes it back to
+`pong.txt` with `Get-Date -Format o` appended. Claude writes 10 pings, each
+with its number, noting the host time T1 as it writes and T2 as the matching
+pong lands. For each, the offset is the guest time minus (T1 + T2) / 2, bounded
+by plus or minus (T2 - T1) / 2; Claude uses the sample with the smallest bound
+and records the offset and the bound. A case whose result is within that bound
+(plus 0.1 s for the stamper) of its bar (15 s, or 5 s for the scale cap
+and the plain sign-in) is run again; a rerun that also lands within the bound
+goes to John. A `matches after 0
+switches` line counts as matched no later than its time.
+
+1. Update the installed plugin to the branch. The panel shows the Run setup
+   again message (the setup record has no `signin_step`). Check its words and
+   the lock note. Run setup again; the record then has `signin_step` 1, the
+   warning is gone, and
+   the Windows lock is off again.
+2. 10 starts from the bar with the window's size unchanged, then 3 after the
+   window's size changed while Windows was off (smaller, larger, another
+   shape). Each matches within 15 s of the sign-in, by the scale task's log,
+   and John confirms the size in Display settings. Phase D's 10 starts were
+   judged by frames only, so they do not count here.
+3. The made stuck case, on a start from the bar and on a restart. Claude first
+   sets the floating window to an old size A, mid-session, and Windows
+   matches. Then, while Windows is off or restarting, Claude sets the window to
+   B: A fits inside B, and B is no larger than the smallest built-in mode that
+   A fits inside (the phase E pair: A 1594x990, B 1600x1000). On the start from the bar, Claude's
+   script floats and sizes the window as it appears, before the first frame.
+   Expected: one ask, a frame at B, the step's switch, matched within 15 s of
+   the sign-in. On the start from the bar, John sets a scale target that A
+   caps lower than B, and the applied scale moves from the cap at A to the
+   cap at B within 5 s of the switch; record the scale task's ready time
+   (its first channel line) beside the switch time. Claude picks A and B before phase G,
+   from the driver's built-in modes (`LGCommon/DefaultDisplayModes.h`) and
+   Windows' Scale list at each size. If the built-in modes leave no such pair,
+   that check goes to John before phase G, not a weaker check.
+4. Automatic sign-in off: John sets `AutoAdminLogon` to `0` under
+   `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon` in an admin
+   PowerShell, and back to `1` at the end. Two starts from the bar: one after
+   the window changed to B (with the desktop at A), one after it changed to
+   another size. John signs in only after the client's log shows Lanai's asks
+   ended. Each matches within 15 s of the sign-in.
+5. Resize at the sign-in screen after a sign-out (the phase E case): the
+   client's log shows at most 5 asks and one "did not take" line before the
+   sign-in, and Windows matches within 15 s of the sign-in, by the scale
+   task's log, which shows `Sign-in step: started`, not `skipped`. Also a
+   plain sign-out
+   and sign-in with no resize and no ask at the sign-in screen: matched within
+   5 s of the sign-in (row 12b's "during a display session"), by the scale
+   task's log.
+6. Restarts from the Start menu: one with the window unchanged and one with
+   the window resized while Windows restarts (an ordinary size, not the made
+   stuck pair). Each matches within 15 s of the later of the sign-in and the
+   first frame, by the scale task's log.
+7. Driver disabled across a sign-in. With `-vga none`, a disabled display
+   driver leaves no picture, so: John disables the Looking Glass display
+   driver in Device Manager, shuts Windows down from the panel (the shutdown
+   request needs no picture), and starts it from the bar, so automatic
+   sign-in is the sign-in. After 2 minutes he shuts down from the panel again
+   and re-enables the driver from a session with a picture on the test copy
+   itself: `docs/plugin/proof-kit/proof-vm` on the rehearsal copy (it refuses
+   `~/.windows`), through its RDP or display (Claude checks `proof-vm help`
+   first), then Device Manager and the scale task's log. Never
+   `omarchy-windows-vm`: it boots the live `~/.windows`. Expected in the log: `no
+   Looking Glass display`, then `gave up after 2 minutes`, changed nothing.
+8. Guard review: Claude reads the built `lanai-scale.ps1` against the table
+   (no other display, no stored size, the size read again at each try, the
+   early stops, the 2-minute limit, the logon-age gate) and records it in
+   `proofs.md`, as phase D did for its patches.
+9. Phase E's open case: the full pick case of row 12b (5 slow picks, then 6
+   quick picks kept with "Keep changes"; ask 5 at least 37 s after ask 1; the
+   sixth pick stays for at least 60 s). Run it in a session whose sign-in
+   step logged `matches`, so frames count as evidence again (spec 12): not
+   after step 7.
+
+In every timed boot case (steps 2 to 6), John also confirms the final size
+in Display settings. A start that misses 15 s goes to John. Record each step in `proofs.md`, "Resize
+hands-on, phase G". If the cold-start stuck case takes more than about 12 s,
+bring the 15 s bar back to John (spec review log).
+
+Done (2026-10-17) on phase H's build `de0273b`: steps 1 to 9, the row 7b
+fixture and the 10-minute process list all passed (`proofs.md`, "Resumed
+on phase H's build"). The boot starts matched 5.1 to 7.9 s after the
+sign-in, the stuck cases 9.3 s (start) and 8.2 s (restart). Step 3 used A
+1434x894 and B 1440x900, since the phase E pair caps both sizes at 150%.
+For a rerun of step 4: `AutoAdminLogon` 0 alone still signs in at boot
+through Windows' automatic restart sign-on (turn off "Use my sign-in info
+to automatically finish setting up after an update" too), and turning
+automatic sign-in back on needs the password stored again (`netplwiz`).
+
+### Phase H: the start program (TDD, C#, PowerShell and bash)
+
+From phase G's first starts (spec amendment 4, John's call, 2026-10-14;
+`proofs.md`, "Resize hands-on, phase G"). At sign-in, Windows PowerShell took
+10.2 to 12.8 s to load in the scale task, so phase F's sign-in step first
+checked the desktop 11.3 to 14.1 s after the sign-in, at or past the 15 s bar.
+On the same boot a small C# program built with Windows' `csc.exe` reached its
+code 6.7 s after the sign-in, and `cmd.exe` ran at 4.5 s. The task's console
+window also showed until PowerShell loaded and hid it (`-WindowStyle Hidden`
+acts only then). Phase G resumes from step 1 on this phase's build.
+
+**What.** A small windowless program, `guest/lanai-start.cs`, that setup
+builds into `C:\Program Files\Lanai\lanai-start.exe`. The scale task runs it,
+with no arguments, instead of `powershell.exe`. Build it `/target:winexe`, so
+Windows gives it no console. `Main` is one call: `return Run(args,
+RealDeps())`. `Run(string[] args, Deps deps)` holds everything below, and its
+whole body is one `try`; its `catch (Exception e)` logs `Start program:
+error: <msg>` and returns 1. An unhandled exception would go to Windows Error
+Reporting, which can show a "stopped working" dialog (a window, spec 7) and
+keep the process, and so the job, alive while it collects a dump. No static
+initializers and nothing else in `Main`: a type-load failure there would
+escape the `try`. `Deps` holds delegates for the OEM read, the job, the
+script start, the step, the wait and the log, so tests drive every path with
+fakes. `Run`, in order:
+1. With the one argument `/check`: return 0 at once, before any log or
+   start. Setup's self-check (spec 7, row 7b): it changes nothing and starts
+   nothing. Any other argument: return 2.
+2. Requirement 4: read the SMBIOS table (below) and look for a type 11 string
+   that starts with `lanai-scale=`, ignoring case
+   (`StringComparison.OrdinalIgnoreCase`), as `Get-OemBaseline`'s `-like
+   'lanai-scale=*'` does. The script keeps the only copy of the value's
+   validation, so a malformed value still reaches the script, which throws on
+   it as today.
+   - Read and parsed, no such string: log `Start program: not Lanai's VM;
+     changed nothing` and return 0, with no job, no script and no step, so
+     under `omarchy-windows-vm` each task start ends within seconds (row 4),
+     not after PowerShell's 10 s load. The 5-minute repetition would add a
+     line each time, so this line follows `Write-ExitLog`'s rule: it is not
+     written when the log's last line already carries it.
+   - A failed read: log `Start program: error: <msg>`, skip the step (step 5),
+     and still start the script (step 4); it reads the OEM strings itself and
+     exits when they are not Lanai's.
+3. Log `Start program: started <s> s after the process started at <time>`
+   (`Process.GetCurrentProcess().StartTime.ToString("o")`), so phase G sees
+   the start delay.
+4. Make a job object, `CreateJobObject(IntPtr.Zero, null)`: no security
+   attributes, so its handle is not inheritable (`Process.Start` with
+   `UseShellExecute = false` passes inheritable handles to the child, and a
+   script that held the job's handle would keep the job open after the
+   program died). Set `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` through
+   `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` (144 bytes on x64). Declare
+   `CreateJobObject` to return `IntPtr`, store the handle in a static field
+   and never close it: a `SafeHandle` held in a local could be finalized after
+   its last use under `/optimize`, and closing the job's last handle would
+   kill the program and the script at a random moment. Put the program itself in the job
+   (`AssignProcessToJobObject(job, GetCurrentProcess())`; Windows 8 and later
+   nest jobs, so this works inside Task Scheduler's own job). Only then start
+   the scale script, which is born in the job: there is no moment when it
+   runs outside it. `powershell.exe` by absolute path from
+   `Environment.SystemDirectory` (`WindowsPowerShell\v1.0\powershell.exe`),
+   arguments `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File
+   "<folder>\lanai-scale.ps1"` with `<folder>` the program's own folder
+   (`AppDomain.CurrentDomain.BaseDirectory`), `UseShellExecute = false`,
+   `CreateNoWindow = true` (Windows still gives the script a hidden
+   `conhost.exe`, with no window). When the program ends for any reason, Task
+   Scheduler's stop included, Windows closes the job's last handle and ends
+   the script too, so a 5-minute repetition never finds a script without its
+   program (spec 27, one copy). If the job cannot be made, set or joined, the
+   program logs `Start program: error: <msg>`, starts no script, runs the
+   step, and returns 1: an unprotected script could outlive a crashed
+   program, and the 5-minute repetition tries again. A failed script start
+   logs `Start program: error: <msg>`, the step still runs, and the program
+   returns 1 after it.
+5. Run the sign-in step (below) on the main thread.
+6. Wait for the script to exit and return its exit code. The task lives as
+   long as the script, so `IgnoreNew` and the 5-minute repetition work as
+   today: if the script ends, the program ends; if the program ends, the job
+   ends the script; either way the next repetition starts both.
+
+**SMBIOS.** `GetSystemFirmwareTable(0x52534D42, 0, ...)` (the provider `'RSMB'`
+as a big-endian number; `'BMSR'` is the wrong byte order), called once for the
+size and once for the data. The parser is a pure function over the buffer it
+returns, with three results: found, not found, failed read. First the 8-byte
+`RawSMBIOSData` header (calling method, major, minor, DMI revision, then the
+table's length as a 32-bit little-endian number); a buffer shorter than 8
+bytes, or a length that runs past the buffer, is a failed read. Then, within
+that length, walk each structure (type, length, handle): skip its formatted
+area, read its strings up to the double NUL, and stop (not found, unless found
+already) at type 127, at a length byte under 4, or at anything that runs past
+the end. (WMI's `System.Management` does not compile under Linux pwsh, and the
+WMI service is busy at sign-in.)
+
+**The step.** Phase F's design moves to C# unchanged: the `HKCU\Volatile
+Environment` gate (`LanaiSigninStep`), `ExtraMode` as untrusted input (1 to 5
+ASCII digits a side), the decision table, the 500 ms pacing, the stop rules,
+failures that stay inside each try (one log line per distinct message), and
+every log line's words. After the gate passes, the step logs `Sign-in step:
+started`; a skip logs `Sign-in step: skipped (already ran since sign-in)` as
+today, so phase G step 5's check (`started`, not `skipped`) keeps its meaning.
+A class `SigninStep` takes its inputs as delegates (read and set the mark,
+read `ExtraMode`, `Find`, `Size`, `Apply`, the clock, the log), so tests drive
+it with fakes; `Tick(now)` returns whether the step has ended. `RealDeps`
+wires the real ones (`Microsoft.Win32.Registry`, the display calls from phase F's
+`LanaiDesktop`, a `Stopwatch`); its step delegate calls `Tick` every 250 ms until it ends.
+`RealDeps` only builds delegates: it opens no file or key, so `/check` still
+changes nothing;
+the 2-minute stop rule bounds it. Remove the step from `lanai-scale.ps1`:
+`Invoke-SigninTick`, its helpers, the `LanaiDesktop` class, the `Signin`
+context field; update the `.DESCRIPTION`. The script's own `Add-Type` stays:
+it is built at run time under the same rules (spec 27), with `TMP` pinned, as
+today.
+
+**Log.** The program writes `C:\Program Files\Lanai\lanai-signin.log`, not the
+script's log: two processes appending to one file can collide, and a failed
+`Add-Content` ends the script. Same format: `DateTime.Now.ToString("o")`, a
+space, the message. Open, append, close per line, `FileShare.Read`; a failed
+write is dropped. The writer is a static function that takes the path, the
+message and whether to skip a line equal to the last one (the not-Lanai
+line's rule), so tests run it on a temp file.
+
+**Setup (`guest/setup.cmd`).**
+- The up-front checks (before any change, beside the SID, writability and
+  media checks) gain the compiler: `csc.exe` in the folder that
+  `[Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()`
+  returns in Windows PowerShell (the .NET Framework 4.x that every Windows 10
+  and 11 carries). Missing: refuse with a line that names the compiler and its
+  path, before any change, through its own label that ends in `pause` and
+  `exit /b 1`, as `:media_broken` does (spec 7, row 7b by review).
+- Step 6, after the `:scale_task` label and before the task registration (a
+  rerun jumps past the `tmp` folder's `mkdir` to that label, so anything
+  before it would be skipped on every rerun): copy `lanai-start.cs`
+  beside the script. Delete every `lanai-start.old-*.exe` (ignore failures:
+  one may still run after a setup that stopped before its restart; this is
+  the one change with no exit code check, so the exit-code test exempts it as
+  it does the publisher trust line). If `lanai-start.exe` exists, rename it to
+  `lanai-start.old-<n>.exe`, with `<n>` a fresh number (the time in ticks): on
+  a rerun the old program still runs (the task started at sign-in), and
+  Windows lets a running program be renamed but not replaced or deleted (spec
+  row 9). The old one runs until setup's restart.
+- Every new elevated PowerShell one-liner (the compiler check, the rename,
+  the build, the self-check) first pins `$env:PSModulePath` to the system
+  module folders, as `lanai-scale.ps1` does, or uses only .NET calls
+  (`[IO.File]::Exists`, `[IO.File]::Move`, `[DateTime]::UtcNow.Ticks`):
+  cmdlets autoload modules, and the elevated stage runs with the user's
+  environment.
+- Build, from a PowerShell one-liner like the task's: working folder
+  `C:\Program Files\Lanai`; `TMP` and `TEMP` set to its `tmp`; `LIB` cleared
+  (csc searches the working folder, then the framework folder, then `LIB`);
+  `PATH` set to `[Environment]::SystemDirectory` only (the .NET Framework
+  `csc.exe` is a native program that loads its DLLs from its own folder and
+  System32, so this is belt and braces); the compiler by its full path;
+  `/nologo /noconfig /target:winexe /optimize /r:System.dll
+  /out:lanai-start.exe lanai-start.cs`. A failed build fails the step.
+- The self-check, in the same kind of one-liner, with `$ErrorActionPreference
+  = 'Stop'`: `try { $p = Start-Process -FilePath 'C:\Program
+  Files\Lanai\lanai-start.exe' -ArgumentList '/check' -Wait -PassThru; if
+  ($null -eq $p.ExitCode) { exit 1 }; exit $p.ExitCode } catch { exit 1 }`.
+  Not `&`: PowerShell
+  does not wait for a windows program and sets no `$LASTEXITCODE`, so the
+  check would pass when it should fail. A blocked start throws. Non-zero
+  fails the step; the message says that Windows blocked the program and what
+  to change per cause: with an App Control or AppLocker policy, allow
+  `C:\Program Files\Lanai\lanai-start.exe`; Smart App Control allows no
+  single program, so it has to be turned off (Windows Security > App & browser
+  control), which on many Windows versions only a reinstall undoes; then run
+  setup again (spec 7). Check the words against the test copy's Windows build.
+- The task's action becomes the program: `-Execute` with its full path in
+  quotes (`[char]34`, as the script path is quoted today; an unquoted path
+  with a space is CWE-428), no arguments. The rest of the registration stays.
+- Comments say why each part is there.
+
+**Host side.**
+- `lib/setup.sh`: the setup media gain `lanai-start.cs`; step 6 records
+  `signin_step: 2` (the form with the program). The header comment says to
+  bump it with any change to `lanai-start.cs` that an install must pick up.
+- `lib/ui.sh`: `signin_step_missing` is true unless `signin_step` is 2, so the
+  test copy's phase F record shows the warning. Keep the current mark in one
+  constant that both files read, so a bump touches one line. Panel words:
+  unchanged.
+- `README.md`:
+  - the sign-in step's log is `lanai-signin.log`;
+  - scale work that starts at a sign-in finishes within 20 s of it:
+    README:221 ("or when you next sign in") and the pick paragraph
+    (README:225-233); README:184's 5 s is the resolution and stays;
+  - the symptom and fix when Windows blocks the program later (spec 7: the
+    scale and the size at sign-in stop following; allow the program under App
+    Control or AppLocker, or turn Smart App Control off, which on many Windows
+    versions only a reinstall undoes; then Run setup again);
+  - the security paragraph (README:284-289): the program, its source, the
+    build and the logs sit in `C:\Program Files\Lanai`, where only
+    administrators can write;
+  - uninstall (README:357-366): `schtasks /End /TN "Lanai display scale"`
+    before `schtasks /Delete` (ending the program ends the job, and the job
+    ends the script; a running program would make `rmdir` fail), and "This
+    removes..." names `lanai-start.exe`, `lanai-start.cs`, `lanai-signin.log`
+    and any `lanai-start.old-*.exe`.
+- Fixtures: `signin_step: 1` becomes 2 wherever it means current; a case with
+  1 shows the warning.
+- `CLAUDE.md`: `guest/` gains `lanai-start.cs`.
+
+**Tests first.**
+- `test/guest.bats` (pwsh): compile `lanai-start.cs` with `Add-Type
+  -TypeDefinition (Get-Content -Raw ...) -CompilerOptions '-langversion:5'`
+  (`Main` is not called); `Marshal.SizeOf` of `DEVMODE` 220,
+  `DISPLAY_DEVICE` 840 and `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` 144. Port
+  phase F's `Get-SigninAction`, `ConvertFrom-ExtraMode` and tick cases to
+  `SigninStep`, with the same expectations, the `Sign-in step: started` line
+  after the gate included.
+- The SMBIOS parser, on whole `RSMB` buffers (the 8-byte header, then the
+  table): a type 11 `lanai-scale=100` string (found); `LANAI-SCALE=100`
+  (found); `lanai-scale=x` (found: the script validates); a realistic table
+  (type 0 and type 1 with strings, a structure with no strings, that is its
+  formatted area then `00 00`, a type 11 with `lanai-scale-save=5` first and
+  `lanai-scale=150` second, a second type 11, then type 127: found); other type 11
+  strings only (not found); an empty table (not found); a buffer under 8
+  bytes, and a header length past the buffer (failed read); a structure whose
+  length runs past the end, a length byte under 4, a string set with no double
+  NUL, and an end-of-table structure before a type 11 (no throw; not found).
+- The log writer on a temp file: the format, the last-line rule (two equal
+  lines with the rule leave one; without it, two), and an unwritable path
+  dropped with no throw.
+- The start order, through `Run` with fakes: `/check` returns 0 with no log
+  and no other call; another argument returns 2; no OEM string returns 0 with no job, script or step, and two such
+  starts leave one log line; a failed read starts the script and skips the
+  step; a failed job starts no script, runs the step and returns 1; a failed
+  script start runs the step and returns 1; the happy path joins the job, then
+  starts the script, then runs the step, then waits; an exception in any fake
+  is logged and returns 1.
+- Static checks on `lanai-start.cs`: `Main` holds only `return Run(args,
+  RealDeps())`; `Run`'s body is one `try` with a `catch (Exception`; `CreateNoWindow = true`, `UseShellExecute = false`,
+  `KILL_ON_JOB_CLOSE`; `CreateJobObject(IntPtr.Zero, null)`; the program
+  joins the job before `Process.Start`; `powershell.exe` from
+  `Environment.SystemDirectory`; the script path from the program's folder;
+  the provider `0x52534D42`; the job handle is an `IntPtr` in a static field,
+  with no `SafeHandle` and no `CloseHandle` on it; no `using System.Linq` and
+  no other assembly than `mscorlib` and `System.dll` (the Windows build has
+  only `/r:System.dll`, while Linux pwsh references everything); the mark key
+  opened with `OpenSubKey("Volatile Environment", true)`, never
+  `CreateSubKey` (phase F's rule: a key Lanai made would not be volatile).
+  On `lanai-scale.ps1`: no `Invoke-SigninTick` and
+  no `LanaiDesktop`.
+- `setup.cmd` (static, as the existing cases): the compiler check in the
+  up-front checks, before the first change; in step 6, after `:scale_task`,
+  the copy, the delete,
+  the rename, the build (`/target:winexe`, `/noconfig`, the working folder,
+  `TMP`, `TEMP`, `LIB`, `PATH`), the self-check as the exact `Start-Process
+  ... -Wait -PassThru` one-liner with the null-exit-code guard, and no `&`
+  call of `lanai-start.exe` (`-PassThru` then `WaitForExit()` can leave
+  `ExitCode` null on Windows PowerShell 5.1, which would fail every setup), then the task with the quoted
+  program path as its action; every change but the old-program delete
+  followed by its exit code check; the media list includes `lanai-start.cs`.
+- Existing tests that change (a cold session will meet them):
+  `guest.bats:135` (every change has its exit code check) gains the rename,
+  build and self-check in `CHANGE_RE`, its change count moves, and the delete
+  gets an exemption; `guest.bats:1190` (the task's `powershell.exe` action) asserts
+  the program instead; `guest.bats:1276-1517` (the sign-in step's
+  PowerShell cases) and `guest.bats:1519` (its registry wrappers) move to the
+  C# class; `guest.bats:1541` (the step's place in the main loop) goes; `guest.bats:1569` (the script's C# 5 compile with the `LanaiDesktop`
+  sizes) keeps the compile and drops the sizes, which move to
+  `lanai-start.cs`'s case.
+- `test/setup.bats`: the media; step 6 records `signin_step` 2.
+- `test/ui.bats` / `test/panel.bats`: `signin_step` 1 shows the warning, 2
+  does not.
+
+**Files.** `guest/lanai-start.cs` (new), `guest/lanai-scale.ps1`,
+`guest/setup.cmd`, `lib/setup.sh`, `lib/ui.sh`, `README.md`, `CLAUDE.md`,
+`test/guest.bats`, `test/setup.bats`, `test/ui.bats`, `test/panel.bats`.
+
+**Verify.** As phase F, plus the C# 5 compile of `lanai-start.cs`. A Linux
+compile does not catch an API found only in .NET Core: keep to .NET Framework
+4.x APIs. Phase G's step 1 builds it in Windows. Row 4's checks under
+`omarchy-windows-vm` (each task start ends within 10 seconds, no window, and
+`lanai-signin.log` says `not Lanai's VM`) run on phase 8's **Test install**
+(a separate machine or VM), as row 4 always has; never on John's host, where
+`omarchy-windows-vm` boots the live `~/.windows`. Then the diff gate (with
+phases A to F).
+
+### Upstream offer (John)
+
+After the hands-on passes, offer each patch to Looking Glass (github.com/gnif/
+LookingGlass): one issue that shows the bug with the client log excerpt, and the
+two patches rebased onto upstream's current `master` as a pull request, the
+tests included. John posts it, or gives Claude a go to post it. Record the link
+here. For the pull request, consider also dropping the `transportFeatures` gate in
+`core_updatePositionInfo`, which posts the window size only once a session has
+set the features. Lanai is unaffected: its VM runs `-vga none`, so no fallback
+display shows frames before the session. If upstream takes an equivalent fix, the next pin that includes it drops
+the patch.
+
+Also offer, as issues with the phase E evidence (`proofs.md`, "Resize
+hands-on, phase E"):
+- The display helper drops a mode after 20 tries 100 ms apart
+  (`CPipeClient.cpp`, `DisplayModeThread`), so after a boot it fails while the
+  signed-in desktop is not yet up. Retrying until the desktop takes the mode,
+  or again when the session's desktop becomes ready, would make Lanai's
+  sign-in step unneeded; the next pin with that fix drops the step.
+- The helper starts only with a signed-in user's token (`main.cpp`,
+  `WTSQueryUserToken`), so no ask reaches the sign-in screen. Running it on the
+  sign-in desktop as SYSTEM, as the capture host does, would cover the
+  follow-on "Resize at the sign-in screen".
+
+John's lock idea (offer only the window's size) is not offered yet. Its
+prototype failed at a boot, the same way as the helper above, so it is not
+proven to need a driver change. Retest it after phase G, with the sign-in
+step in place; offer it upstream only if the retest shows it needs one.
+
+### Risks
+
+- Known gap: CI never applies the patches to the real pinned source (the
+  tarball case runs only locally), so a pin bump that breaks 0002 shows only in
+  a local run or a real build.
+- The 15 s bar from sign-in: phase H's program reached its code 6.7 s after
+  the sign-in on one boot (PowerShell took up to 12.8 s more). One sample;
+  phase G's starts measure it.
+- No test has yet nested a job inside Task Scheduler's job on this Windows
+  (the probe program used no job). If joining fails, the program starts no
+  script, and phase G step 1 shows `Start program: error` in
+  `lanai-signin.log`.
+- Smart App Control, an App Control or AppLocker policy, or Defender can
+  block an unsigned program built in Windows. Setup's self-check catches it at
+  setup; later, the README names the symptom and the fix.
+- The sign-in step's switch and the script's scale ticks now run in two
+  processes, so a scale set can race the switch; the script re-caps on its
+  next observation, and phase G step 3 watches it.
+- The sign-in step relies on where the pinned driver stores the ask
+  (`ExtraMode`); a pin change rechecks it (spec 12).
+- The gate's `HKCU\Volatile Environment` value is exported as an environment
+  variable to the user's new processes (`LanaiSigninStep` shows in `set`), a
+  small side effect beyond the resolution. If Windows kept the user's hive
+  loaded across a quick sign-out and sign-in, the value would survive and the
+  step would skip; the helper still applies the last ask after a sign-out
+  (phase E), and phase G step 5 checks for `started`.
+- The scale script still loads in PowerShell, 10 to 14 s after the sign-in,
+  so scale work that starts at a sign-in has a 20 s bar (spec 12). Phase G
+  records the script's ready time beside the step's switch.
+
+### Routing
+
+Phase 0: Claude with John. Phase A: the bulk implementer (gpt-6-luna, `codex
+exec`) in a worktree: clear, mechanical bash. Phase B: the step-up (opus-5.5) in a
+worktree: a state machine across two threads, and README license words. Phase C:
+opus-5.5 in a worktree: panel and README words need taste >= 7. Claude verifies,
+signs, and runs the diff gate. Phase D and the upstream offer: John. Phase E:
+opus-5.5 in a worktree: eleven C test cases to retime with care, and both patches
+regenerated and checked against the pinned source. Phase F: opus-5.5 in a
+worktree: Windows display APIs through C# in PowerShell, pwsh tests, and
+panel and README words that need taste >= 7. Phase H: opus-5.5 in a
+worktree: Windows APIs in C# 5, a job object, the setup build, and README
+words. Phase G: John with Claude.
+
 ## Phase 8: Acceptance
 
 - Memory: before the rehearsal, the first Lanai boot on John's machine, set memory to
@@ -2741,3 +4115,36 @@ words, which need taste >= 7). Claude verifies, signs, and runs the diff gate.
 | impl (live scale) | b panel (opus-5.5) | 2 (full, 6 lenses) | 0 blockers, 6 should-fix, 25 nits (after merging duplicates), 0 refuted, 0 downgraded to nit; all integrated but one nit: a Hyprland instance counts only if it answers (dead instance folders and sockets stay behind; John's machine had about 48), with a search every 30 s while hyprctl fails; a SetScale error is logged once and retried at the next poll; boot and feed share one monitor rule (scale_target); the pinned notice swallows clicks and the panel can scroll under it; the RSS test is bounded under the CI limit; the task principal comes from the checked SID; step 6 has its own reason and words for a scale task that did not start; plan design text gets as-built notes. Not taken (nit): a user pick equal to an older of two unapplied requests is undone once; a second pick holds |
 | impl (live scale) | b panel (opus-5.5) | 3 (full, 6 lenses, cap) | 0 blockers, 5 should-fix, 28 nits, 0 refuted, 0 downgraded to nit; all integrated: a SetScale that keeps failing logs its applying line once (the round 2 retry had made it log every 2 s); an old-task install gets a standing note under the scale list, so the Run setup again step survives shutdown; old-task words no longer use "scale changes" two ways; tests now pin the 5 s settle after a resolution change and the remembered monitor over several closed-window passes; nits (reader reopens after any throw, restarted feed resends its last line, opaque notice, step 6 words, names, host_monitors timeout). Stage closed at the cap with these integrations unreviewed; stage a has no round left for the final-diff rerun. John (2026-10-11): accept the gate, do the hands-on session (phase 0 (6)-(7), phase C) first, then one extra stage a round on the final diff, hands-on fixes included |
 | impl (live scale) | a (gpt-6.1-sol) | 4 (full final diff at 71a9b71, hands-on fixes and phase D included; the extra round John called) | 0 findings, 0 refuted, 0 downgraded to nit: "The committed diff appears sound". Its sandbox could not create the test sockets, so it ran targeted tests (97 passed, 1 skipped) and ShellCheck; the full suite passed outside it (786 ok). Gate closed |
+| plan (resize) | a (gpt-6.1-sol) | 1 (full) | 2 should-fix, 0 refuted; both integrated: each patch is made against the tree with the earlier patches applied (0002 holds only the hooks), and the README keeps the no-change promise for the build step, not Run setup again |
+| plan (resize) | a (gpt-6.1-sol) | 2 (full) | 1 should-fix, 0 refuted; integrated: the frame thread also counts accepted format changes, so a size that changes and changes back between two main-loop polls still counts as a change of Windows' size (`resize_frame` takes the count), with a glue test |
+| plan (resize) | a (gpt-6.1-sol) | 3 (full, cap) | 1 should-fix, 0 refuted; integrated: size and change count are one packed 64-bit atomic (w << 48, h << 32, count), written only by the frame thread, so the main thread never pairs a size with another write's count. Stage closed at the cap; the fix is reviewed by stage b |
+| plan (resize) | b single (opus-5.5) | 1 (full) | 0 blockers, 5 should-fix, 9 nits, 0 refuted; all integrated: a session reset also resets the polled change count (else a driver restart at boot could go unseen); build order unpack, submodules, apply, configure with the apply lines kept in build-client.log; the update failure words name build-client.log; build-client gets its own panel group, so an interrupted update never names Run setup again and the done words show only while a stale client runs; a failed send warns once and waits 1 s; nits (shared nullglob patch list, no patches is a build error after phase B, mouse-tests and CI case set-up, test stubs, frame hook in the formatValid block, CLI message varies on a running client, old-task wording, John's copyright line, rollback note) |
+| plan (resize) | b single (opus-5.5) | 2 (full) | 0 blockers, 4 should-fix, 9 nits, 0 refuted; all integrated: build tests on client.bats lg_source with a fixture patch, and a helper for the setup.bats stamps; phase C names the QML result Note, the build log key and both group loops; a refused small ask may erase the IDD's one custom mode, so phase 0 probes where Windows ends and the spec words go to John if it does not keep its size; phase 0 requires exact pixel matches (odd width, fractional scale) or a rounding rule from John; nits (patch id in its own build-patches file so rollback is silent, client words gated on a stale client, one CLI message, non-size format changes accepted, more module cases, LC_ALL=C patch and basenames and .gitattributes, phase D timing notes, setup message, out-of-tree builds, upstream gate note) |
+| plan (resize) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 2 should-fix, 9 nits, 0 refuted; all integrated: phase 0 compares each Format size to round(hyprctl size × scale), the size the client asks for; phase D gains a patches review step; nits (a session restart from a refused ask is a stop rule, test locations, setup_command, absolute patch paths, header lines that look like diffs, making 0001 cold, resize warning naming and tooltip, done words until the next client starts, phase D monitor and pick timing, IDD anchors, a busy-build reply, the CI pin-drift gap under Risks). Stage closed at the cap with these integrations unreviewed |
+| plan (resize) | John | 2026-10-12: accepted the plan gate at the cap with round 3's integrations unreviewed; phase 0 runs next |
+| plan (resize) | John | 2026-10-12: phase 0 ran; (1)-(3) pass, (4) fired its stop rule (Windows moved to 1920x1080). John's call: never ask under 640x480. Design "Refused sizes", the module rule and tests, the README words and phase D (6) changed to match; the spec changed with it |
+| plan (resize) | John | 2026-10-13: phase D ran (`proofs.md`, "Resize hands-on"): starts with a changed window size fail (5.8 s, 3 of 3); the monitor move with another scale was not run (no second real monitor); the pick case was partly run (1 of 5 slow picks; the quick picks never reached the fifth ask); the other steps pass. John's call: first wait 2 s (waits 2, 5, 10 and 20 s). Design's wait rule and sequence times, the module tests and phase D (2) and (4) changed to match; phase E added |
+| plan (resize, phase E) | a (gpt-6.1-sol) | 1 (full) | 0 blockers, 3 should-fix, 0 nits, 0 refuted; all integrated: the six-pick fixture's match and pick events are retimed so picks land before the 2 s wait ends; new cases are registered in `RESIZE_CASES` and 0002 is regenerated; phase E's hands-on runs row 12b's full pick case, and the phase D log row states what was not run |
+| plan (resize, phase E) | a (gpt-6.1-sol) | 2 (full) | 0 blockers, 2 should-fix, 0 nits, 0 refuted; both integrated: 0002's `testControl` asserts the old 5 s wait and is retimed to 2 s; the hands-on quick picks each follow Windows taking the previous ask, as row 12b says, not a fixed 3 s apart. (A first round-2 run used a stale live-scale prompt by Claude's error and was discarded; it is not counted) |
+| plan (resize, phase E) | a (gpt-6.1-sol) | 3 (full, cap) | 0 findings: "The amendment is sound". Stage closed |
+| plan (resize, phase E) | b single (opus-5.5) | 1 (full) | 0 blockers, 1 should-fix, 6 nits, 0 refuted; all integrated. The reviewer built 0001 and both patches with the new waits: 8 of 16 resize cases fail, 6 of them not named; phase E now lists every case with its new times, retimes two boundary cases, says the slow-switch case passes before the change, gives the Windows restart an expected result and a stop rule, carries the restart case into phase D (2), and states the routing reason |
+| plan (resize, phase E) | b single (opus-5.5) | 2 (full) | 0 blockers, 0 should-fix, 6 nits, 0 refuted; nits only, stage stopped and all 6 integrated (case count, the late-change check at 746, a late-picks case for picks after their wait, phase B's times marked as phase E's, phase D (4) in the log row, case names the bats list check reads). The reviewer built both patches as phase E says: all resize and config-message tests pass with the new waits |
+| plan (resize, phases F and G) | a (gpt-6.1-sol) | 1 (full) | 0 blockers, 5 should-fix, 0 nits, 0 refuted; all integrated: the step's failures stay inside its tick (a replug can throw between calls, and the loop's outer catch would end live scale), with tick tests; with the live-scale task old too, one warning names Run setup again and the note under the scale list is not shown; the clock offset is measured through the share (guest writes, host stamps); phase G adds the 10 plain starts and a Display settings check per timed boot case; the cap transition runs on the start from the bar, and a missing size pair goes to John. "No separate confirmed defect was found in the amended spec wording" |
+| plan (resize, phases F and G) | a (gpt-6.1-sol) | 2 (full) | 0 blockers, 2 should-fix, 0 nits, 0 refuted; both integrated: a start is timed from the later of the sign-in and the first frame (row 12b now says so, as requirement 12 does; flagged in the spec log); the clock offset comes from a two-way ping and pong through the share, bounded by half the round trip |
+| plan (resize, phases F and G) | a (gpt-6.1-sol) | 3 (full, cap) | 0 blockers, 2 should-fix, 0 nits, 0 refuted; both integrated: the unsupported-size stop applies only to the size that switch tried, with a test; the spec's frame-evidence exception ends only when the step has seen the desktop match (flagged in the spec log). Stage closed at the cap with these integrations for stage b to review |
+| plan (resize, phases F and G) | b single (opus-5.5) | 1 (full) | 0 blockers, 9 should-fix, 7 nits, 0 refuted; all integrated: a C# 5 compile test for the `Add-Type` block (Windows PowerShell 5.1; a compile error would end the task silently); a switch counts as not taken only 2 s after success (the helper waits 2 s; a switch took 1.26 s); the logon-age gate runs inside the guarded tick, with the `WTSINFOW` layout given and failures skipping; fixtures that mean "current install" move to mark 3 and the old-task note test is rewritten; README:182-185 and 236-238; phase G adds the plain sign-out and sign-in, two restarts and a guard review, and runs the pick case only after a step that logged a match; the client log is stamped with host time as it arrives; `Get-StoredMode` and the happy-path and pacing tick tests; the driver-disabled case shuts down and starts from the bar and re-enables through RDP; nits (the helper also sets the frequency, `ExtraMode` is untrusted and bounded to 5 digits, the matches line counts switches, the skip line repeats without growing the log, Files and Verify bullets, a static loop check, the tick returns nothing, the lock idea leaves the offer until retested). The two spec edits flagged to John check out against the plan |
+| plan (resize, phases F and G) | b single (opus-5.5) | 2 (full) | 1 blocker, 1 should-fix, 13 nits, 0 refuted; all integrated. Blocker (phase G only): the driver-disabled case recovered through `omarchy-windows-vm`, which boots the live `~/.windows`; it now recovers on the test copy with `proof-vm`. Should-fix: the logon-age signal was undefined; replaced by the reviewer's simpler gate, a value in `HKCU\Volatile Environment` (rebuilt at each sign-in), with no WTS struct. Nits: the skip line uses `Write-Log`; repeated results log once; public structs and the prototype committed before phase F; the script's header; "until the window is resized" in the panel words; a separate `signin_step` key instead of mark 3 (an older Lanai still reads the record); "A fits inside B"; the stamper, window-sizing and pong tools in the proof kit, with dated, zoned stamps; the re-run rule covers the 5 s bars; step 5 checks the bounded asks; a risk and a ready time for the scale cap check; the spec log's flagged rows moved below John's acceptance |
+| plan (resize, phases F and G) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 3 should-fix, 7 nits, 0 refuted; all integrated: the registry wrappers return `$null` for a missing value (`Get-ItemPropertyValue` would throw and make the gate always skip), with a static check; the `started` line logs the process start time (the loop's clock starts after PowerShell's start-up and the C# compile); phase G first confirms Lanai's storage is the rehearsal copy, not `~/.windows`; nits (the How paragraph rewritten, the context field and `$Now`, the volatile value's side effects as a risk and step 5 checks `started`, the 2 s wait justified by phase D alone, the fixture grep and both keys, "no larger than" the smallest mode, exact commands for John, a rerun within the bound goes to John, a log-once test for no display, CI skips the pwsh cases, .NET Framework APIs only). Stage closed at the cap with these integrations unreviewed; the gate waits for John |
+| plan (resize, phases F and G) | John | 2026-10-13 | Accepted the gate at the cap with b round 3's integrations unreviewed; the diff gate checks the build against them |
+| plan (resize, phase H and G changes) | a (gpt-6.1-sol) | 1 (full) | 0 blockers, 1 should-fix, 0 nits, 0 refuted; integrated: the program joins its kill-on-close job before it starts the script, so no moment exists where the script runs outside the job (Codex proposed a suspended start; joining first is simpler); a failed join still starts the script |
+| plan (resize, phase H and G changes) | a (gpt-6.1-sol) | 2 (full) | 0 blockers, 2 should-fix, 0 nits, 0 refuted; both integrated: a failed job starts no script (an unprotected script could outlive a crashed program; the 5-minute repetition retries), with a fake-driven test; with no Lanai OEM string the program exits at once, with no script, so a task start under `omarchy-windows-vm` ends within seconds (row 4), while a failed read still starts the script |
+| plan (resize, phase H and G changes) | a (gpt-6.1-sol) | 3 (full, cap) | 0 blockers, 2 should-fix, 0 nits, 0 refuted; both integrated: the SMBIOS parser unwraps the 8-byte `RawSMBIOSData` header and checks its length, with whole-buffer fixtures and three results (found, not found, failed read); row 4's checks go to phase 8's separate test install, not the rehearsal copy (on John's host `omarchy-windows-vm` boots the live `~/.windows`). Stage at the cap with round 3's integrations unreviewed by stage a |
+| plan (resize, phase H and G changes) | b single (opus-5.5) | 1 (full) | 0 blockers, 4 should-fix, 11 nits, 0 refuted; all integrated: the self-check runs through `Start-Process -PassThru` and `WaitForExit` (`&` does not wait for a windows program); `Main` is one `try`, so no error dialog shows; the not-Lanai line follows the last-line rule and comes before `started`; README's uninstall ends the task first and names the new files, and its security paragraph names the program; nits: a `Start program:` prefix keeps `Sign-in step: started` meaning the gate passed, a non-inheritable job handle, the job struct's size, the `RSMB` value and a length under 4, the OEM prefix rule only (the script validates), the quoted task path, the existing tests that change, `PATH` set for the build, phase G's process check and fixture (an IFEO `Debugger` value), and two test and risk gaps |
+| plan (resize, phase H and G changes) | b single (opus-5.5) | 2 (full) | 0 blockers, 4 should-fix, 10 nits, 0 refuted; all integrated: a realistic multi-structure SMBIOS fixture (a double-NUL slip would read every real table as not Lanai's); the job handle an `IntPtr` in a static field, never a `SafeHandle` a finalizer could close; per-cause words for a blocked program (Smart App Control allows no single program, only off); phase G step 5's plain sign-in takes its evidence from the unchanged frame plus the 0-switch line; nits: `Run(args, deps)` with a wait delegate and the return-2 case, the other phase F tests that move, no LINQ, the exit-code test's pattern and count, `PSModulePath` pinned in the one-liners, a null exit code fails the check, README pointers, exact commands for John, a race risk, one constant for the mark |
+| plan (resize, phase H and G changes) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 2 should-fix, 6 nits, 0 refuted; all integrated: the static checks match the design (`Main` calls `Run`, whose body is the `try`; `RealDeps` wires the real step and opens nothing); the self-check test asserts the exact `-Wait -PassThru` one-liner (`-PassThru` then `WaitForExit()` can leave a null exit code on 5.1 and fail every setup); nits: the new step 6 lines go after `:scale_task` (a rerun skips what comes before), a log writer tested on a temp file, every new elevated one-liner pins `PSModulePath` or uses .NET calls, the compiler refusal's label, a misplaced risk sentence, a process list that skips John's own PowerShell and shows an old program, and softer Smart App Control words to check against the build. Stage at the cap with round 3's integrations unreviewed |
+| plan (resize, phase H and G changes) | John | 2026-10-14 | Accepted the gate at the cap with b round 3's integrations unreviewed; the diff gate checks the build against them |
+| diff (resize, phases A-C, E, F, H) | a (gpt-6.1-sol) | 1 (full, `plugin/live-scale...plugin/resize`) | 0 blockers, 1 should-fix (a test gap), 0 nits; 0 refuted, 0 downgraded to nit. Fixed: the offset fixture put the shift in the patch's base, so GNU patch failed outright and the test passed without the hunk check; the target is now shifted, a dry run proves GNU patch alone takes it with an offset, and removing the check makes the test fail |
+| diff (resize, phases A-C, E, F, H) | b panel (opus-5.5), 6 lenses | 1 (full) | 0 blockers, 6 should-fix (a failed update named a stale build log, found by two lenses; a hash rule for a blocked program breaks on each rebuild; three elevated one-liners load modules from the user's path; start program errors go to a log the panel does not name; the kill-on-close check passed without the flag; the 60 s continuation was pinned only to about 21 s), about 20 nits, 0 refuted, 0 downgraded to nit. All should-fix and 12 nits integrated. Not taken: a log-only nit (mark the sequence given up when the fifth ask matches), which would break phase B's six-pick rule; and the last-line rule for repeated start-program errors, which cannot work while another line always sits between two repeats (accepted: the log grows only if the job or the SMBIOS read fails at every start). Skipped as style: enums for the C# string tags, a nullglob subshell, the job list in three places, the panel's redundant guards |
+| diff (resize, phases A-C, E, F, H) | b panel (opus-5.5), 6 lenses | 2 (full) | 0 blockers, 7 should-fix (build failures after cmake and offset patches still left no reason in the build log, found by two lenses; the blocked-program message missed antivirus; a client build that fails during Run setup again got the setup words; test gaps: a stale patch id on the quick path, a failed update keeping the old client, `main.c` never compiled in the tarball case), about 20 nits, 2 refuted (the 60 s window and the give-up reset are tested: mutations to 59, 45 and 30 s and a dropped reset each fail `late-change`), 0 downgraded to nit. All should-fix and 15 nits integrated; skipped: the panel's redundant checks next to `.finished`, which the plan names |
+| diff (resize, phases A-C, E, F, H) | b panel (opus-5.5), 6 lenses | 3 (full, cap) | 0 blockers, 7 should-fix (an interrupted Run setup again named "Continue setup"; the run-time Add-Type working folder was not really pinned, found by two lenses; a zero-byte patch counted as applied; no pin-change reminder for where the IDD stores the ask; docs did not say CI skips the pwsh tests; test gaps: a one-side resize, and a setup round with stale patches), about 20 nits, 0 refuted, 0 downgraded to nit. All should-fix and 15 nits integrated; skipped: enums for the C# string tags, a parser check of setup.cmd's one-liners. Stage at the cap with round 3's fixes unreviewed by stage b |
+| diff (resize, phases A-C, E, F, H) | a (gpt-6.1-sol) | 2 (rerun on the final diff, 06c8416) | 0 findings, 0 refuted, 0 downgraded to nit: "The committed diff is sound; no actionable defects found across the requested scope". Gate closed |

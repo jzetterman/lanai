@@ -27,6 +27,11 @@
   elevated. Changes, caps, a current scale outside Windows' range (custom
   scaling) and distinct errors go to C:\Program Files\Lanai\lanai-scale.log.
 
+  The scale task runs C:\Program Files\Lanai\lanai-start.exe, a windowless
+  program setup builds from lanai-start.cs. It starts this script in a
+  hidden powershell.exe, in a job that ends the script when the program
+  ends, and runs the sign-in step itself (its log is lanai-signin.log).
+
 .PARAMETER Scale
   Use this percentage instead of the SMBIOS string. For testing.
 
@@ -41,10 +46,17 @@ $ErrorActionPreference = 'Stop'
 # The task runs elevated with the user's environment, so nothing it loads
 # may come from a folder that user can write: the system module folders
 # only, and Add-Type's compiler files in Lanai's own administrator-only
-# folder. Set before the first cmdlet or Add-Type.
+# folder. Set before the first cmdlet or Add-Type. As in setup's build,
+# LIB (the compiler's search path for references) is cleared and PATH is
+# the system folder only. Add-Type runs the compiler in this process's
+# working folder, which lanai-start.exe sets to Lanai's folder when it
+# starts the script. Set-Location would not change it: it moves only
+# PowerShell's own location.
 $env:PSModulePath = "$([Environment]::SystemDirectory)\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules"
 $env:TMP = 'C:\Program Files\Lanai\tmp'
 $env:TEMP = 'C:\Program Files\Lanai\tmp'
+$env:LIB = $null
+$env:PATH = [Environment]::SystemDirectory
 $LogFile = 'C:\Program Files\Lanai\lanai-scale.log'
 
 # Windows' scale steps, in order. The index of a step is what the relative
@@ -564,10 +576,11 @@ $ReaderScript = {
     }
 }
 
-# The display configuration API from user32.dll, and CreateFile for the
-# scale port. DPI_GET and DPI_SET use the undocumented device info types -3
-# and -4, which the Settings app uses for "Scale"; their scale fields count
-# steps relative to the recommended one.
+# The display configuration API from user32.dll and CreateFile for the
+# scale port. DPI_GET and DPI_SET use the undocumented device info types
+# -3 and -4, which the Settings app uses for "Scale"; their scale fields
+# count steps relative to the recommended one. Windows PowerShell 5.1 compiles C# 5 only: no
+# interpolated strings, ?., nameof or out var.
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
