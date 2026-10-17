@@ -11,6 +11,10 @@ Item {
   property string pendingToken: ""
   property double pendingAt: 0
   property bool refreshAgain: false
+  // Set when run() drops a click because the last action still runs; shown
+  // for at least 2 s (clickNoticeAt, ms) and at most 5 s.
+  property string clickNotice: ""
+  property double clickNoticeAt: 0
   signal panelRequested()
   signal settingsSaved(int memoryGib, int cores, var windowsScale)
   readonly property string tooltip: ["Lanai", view.label, view.headline, view.cause, view.next, view.notice, view.warning, view.right_click_tooltip].filter(function(s) { return !!s }).join("\n")
@@ -31,10 +35,16 @@ Item {
   }
 
   // Commands use literal argv and no deadline. Long work starts a session unit.
+  // A click while the last action runs is dropped, and clickNotice says so.
   function run(args, longJob) {
-    if (actionProcess.running) return
     var now = Math.floor(Date.now() / 1000)
-    if (longJob && pendingToken && now - pendingAt < 10) return
+    if (actionProcess.running || (longJob && pendingToken && now - pendingAt < 10)) {
+      clickNotice = "Your previous action is still running. Try again in a moment."
+      clickNoticeAt = Date.now()
+      clickNoticeTimer.interval = 5000
+      clickNoticeTimer.restart()
+      return
+    }
     var clickToken = token()
     if (longJob) {
       pendingToken = clickToken
@@ -55,6 +65,15 @@ Item {
     onTriggered: root.refresh()
   }
   onPanelOpenChanged: if (panelOpen) refresh()
+  // A dropped-click notice lasts at most 5 s. A quick action that ends
+  // sooner clears it, but not before it has shown 2 s; a dropped long job
+  // shows it the full 5 s. Closing the panel or clicking the notice clears
+  // it at once.
+  Timer {
+    id: clickNoticeTimer
+    interval: 5000
+    onTriggered: root.clickNotice = ""
+  }
 
   // Quickshell omits the C++ exit-status enum from its lint metadata.
   // qmllint disable signal-handler-parameters
@@ -82,6 +101,13 @@ Item {
     id: actionProcess
     stdout: StdioCollector { id: actionOutput; waitForEnd: true }
     onExited: function(code) {
+      if (root.clickNotice !== "") {
+        var left = 2000 - (Date.now() - root.clickNoticeAt)
+        if (left > 0) {
+          clickNoticeTimer.interval = left
+          clickNoticeTimer.restart()
+        } else root.clickNotice = ""
+      }
       try {
         var reply = JSON.parse(actionOutput.text)
         if (reply.panel_requested === true) root.panelRequested()

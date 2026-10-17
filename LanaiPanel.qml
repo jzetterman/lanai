@@ -21,6 +21,10 @@ Panel {
   property int memoryInput: root.model.view.settings.memory_gib || 1
   property int coresInput: root.model.view.settings.cores || 1
   property var windowsScaleInput: root.model.view.settings.windows_scale === undefined ? "auto" : root.model.view.settings.windows_scale
+  // Set by any choice in the scale list, even the entry already shown, and
+  // cleared only when the panel opens: while set, Save settings is a scale
+  // save (three arguments); otherwise it saves memory and cores only.
+  property bool scaleTouched: false
   // The shell supplies bar/theme fields dynamically on QObject groups.
   // qmllint disable missing-property
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -32,7 +36,8 @@ Panel {
       memoryInput = Qt.binding(function() { return root.model.view.settings.memory_gib || 1 })
       coresInput = Qt.binding(function() { return root.model.view.settings.cores || 1 })
       windowsScaleInput = Qt.binding(function() { return root.model.view.settings.windows_scale === undefined ? "auto" : root.model.view.settings.windows_scale })
-    } else { stopArmed = false; forceArmed = false; restoreArmed = ""; setupAgainArmed = false }
+      scaleTouched = false
+    } else { stopArmed = false; forceArmed = false; restoreArmed = ""; setupAgainArmed = false; root.model.clickNotice = "" }
   }
   Connections {
     target: root.model
@@ -60,11 +65,13 @@ Panel {
   }
 
   // Keep the keyboard-focused control visible on small screens.
+  // The click notice, when shown, covers the bottom (flick.bottomMargin).
   function reveal(item) {
     var y = item.mapToItem(column, 0, 0).y
+    var view = flick.height - flick.bottomMargin
     if (y < flick.contentY) flick.contentY = y
-    else if (y + item.height > flick.contentY + flick.height)
-      flick.contentY = Math.min(Math.max(0, flick.contentHeight - flick.height), y + item.height - flick.height)
+    else if (y + item.height > flick.contentY + view)
+      flick.contentY = Math.min(Math.max(0, flick.contentHeight + flick.bottomMargin - flick.height), y + item.height - view)
   }
 
   KeyboardPanel {
@@ -88,6 +95,9 @@ Panel {
         flickableDirection: Flickable.VerticalFlick
         QQC.ScrollBar.vertical: QQC.ScrollBar { policy: QQC.ScrollBar.AsNeeded }
         contentHeight: column.implicitHeight
+        // Room below the content while the click notice covers the bottom,
+        // so covered lines can scroll into view; the controls never move.
+        bottomMargin: clickNoticeBox.visible ? clickNoticeBox.height : 0
         clip: true
         Column {
           id: column
@@ -236,15 +246,18 @@ Panel {
                 // Picking an option assigns value inside Dropdown, which
                 // breaks the binding; restore it so saves and reopens show.
                 onChanged: function(value) {
+                  root.scaleTouched = true
                   root.windowsScaleInput = value === "auto" ? "auto" : Number(value)
                   scaleDropdown.value = Qt.binding(function() { return String(root.windowsScaleInput) })
                 }
               }
             }
           }
+          Note { text: root.model.view.settings.note || "" }
           // On its own line: a Flow aligns tops, so beside the labelled fields
           // the button lined up with their labels, not their inputs.
-          Action { control: "save_settings"; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value), String(root.windowsScaleInput)], false) }
+          Action { control: "save_settings"; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value)]
+              .concat(root.scaleTouched ? [String(root.windowsScaleInput)] : []), false) }
           Note { text: root.model.view.result.settings || "" }
 
           Column {
@@ -295,6 +308,38 @@ Panel {
             model: [root.model.view.logs.vm, root.model.view.logs.client, root.model.view.logs.job, root.model.view.logs.command]
             delegate: Note { required property var modelData; text: modelData || "" }
           }
+        }
+      }
+      // A dropped click's notice, pinned over the bottom of the popup and
+      // outside the scrolling content: always in view, and it never moves
+      // the controls under it. A click on it dismisses it and reaches no
+      // control below.
+      Rectangle {
+        id: clickNoticeBox
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        visible: root.model.clickNotice !== ""
+        height: clickNote.implicitHeight + 2 * Style.space(8)
+        // The popup's background, opaque so covered text never shows
+        // through. Color.popups is a grouped QtObject the lint metadata does
+        // not type.
+        // qmllint disable missing-property
+        color: Qt.rgba(Color.popups.background.r, Color.popups.background.g, Color.popups.background.b, 1)
+        // qmllint enable missing-property
+        border.color: Color.accent
+        border.width: 1
+        Note {
+          id: clickNote
+          objectName: "clickNotice"
+          x: Style.space(8)
+          y: Style.space(8)
+          width: parent.width - 2 * Style.space(8)
+          text: root.model.clickNotice
+        }
+        MouseArea {
+          anchors.fill: parent
+          onClicked: root.model.clickNotice = ""
         }
       }
     }

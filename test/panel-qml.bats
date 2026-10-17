@@ -53,7 +53,7 @@ QtObject {
   function space(n) { return n }
 }
 QML
-  echo 'pragma Singleton; import QtQuick; QtObject { property color foreground: "white"; property color accent: "#4080c0" }' >"$T/qml/imports/TestCommons/Color.qml"
+  echo 'pragma Singleton; import QtQuick; QtObject { property color foreground: "white"; property color accent: "#4080c0"; property color background: "black"; property QtObject popups: QtObject { property color background: "#80000000" } }' >"$T/qml/imports/TestCommons/Color.qml"
   echo 'pragma Singleton; import QtQuick; QtObject { function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) } }' >"$T/qml/imports/TestCommons/Util.qml"
   cat >"$T/qml/imports/TestUi/qmldir" <<'QML'
 module TestUi
@@ -368,7 +368,7 @@ TestCase {
     var save = objects(panel, function(o) { return o.control === 'save_settings' })[0]
     save.clicked()
     var action = objects(model, function(o) { return o.command && o.command[1] === 'ui-run' })[0]
-    compare(action.command.slice(3).join(' '), 'settings 9 3 auto')
+    compare(action.command.slice(3).join(' '), 'settings 9 3')
     action.complete('{"ok":false}', 0)
     model.view = view(16, 8)
     compare(memory.field.value, 9)
@@ -429,6 +429,104 @@ TestCase {
     panel.close(); panel.open()
     compare(scale.currentLabel(), '125%')
     panel.destroy(); wait(1)
+  }
+  function test_scale_list_touch_decides_a_scale_save() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    var v = {ok:true,buttons:{save_settings:{show:true,enable:true,label:'Save settings'}},setup:{},
+      settings:{memory_gib:8,cores:4,windows_scale:'auto',note:'Saving a scale replaces one you picked in Windows.',
+        scale_choices:[{value:'auto',label:'Match my monitor'},{value:125,label:'125%'}]},
+      snapshots:{names:[]},result:{},logs:{}}
+    // Finish the action, then answer the refresh it asks for with the same view.
+    function finish(action) {
+      action.complete('{"ok":true}', 0)
+      var poll = process(model, 'timeout')
+      if (poll && poll.running) poll.complete(JSON.stringify(v), 0)
+    }
+    model.view = v
+    var panel = createTemporaryObject(panelComponent, tests, {model:model})
+    panel.open()
+    var scale = objects(panel, function(o) { return o.objectName === 'windowsScale' })[0]
+    var save = objects(panel, function(o) { return o.control === 'save_settings' })[0]
+    verify(objects(panel, function(o) { return o.text === v.settings.note && o.visible }).length > 0)
+    // An untouched list saves memory and cores only.
+    save.clicked()
+    var action = process(model, model.cli)
+    compare(action.command.slice(3).join(' '), 'settings 8 4')
+    finish(action)
+    // Choosing the entry already shown is a scale save, and so is each save after it.
+    scale.select('auto')
+    save.clicked()
+    compare(action.command.slice(3).join(' '), 'settings 8 4 auto')
+    finish(action)
+    save.clicked()
+    compare(action.command.slice(3).join(' '), 'settings 8 4 auto')
+    finish(action)
+    // Reopening the panel clears the touch.
+    panel.close(); panel.open()
+    save.clicked()
+    compare(action.command.slice(3).join(' '), 'settings 8 4')
+    finish(action)
+    panel.destroy(); wait(1)
+  }
+  function test_a_dropped_click_says_the_last_action_still_runs() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    var panel = createTemporaryObject(panelComponent, tests, {model:model, opened:true})
+    var words = 'Your previous action is still running. Try again in a moment.'
+    model.run(['stop'], false)
+    var action = process(model, model.cli)
+    verify(action.running)
+    compare(model.clickNotice, '')
+    model.run(['open'], false)
+    compare(action.command.slice(3).join(' '), 'stop')
+    compare(model.clickNotice, words)
+    // Pinned outside the scrolling content, so it is always in view and
+    // never moves the controls.
+    var note = objects(panel, function(o) { return o.objectName === 'clickNotice' })[0]
+    verify(note !== undefined)
+    verify(note.visible)
+    for (var p = note.parent; p; p = p.parent) verify(p.contentY === undefined)
+    // The scrolling content gets room below, so nothing stays covered.
+    var flick = objects(panel, function(o) { return o.contentY !== undefined })[0]
+    compare(flick.bottomMargin, note.parent.height)
+    // It stays at least 2 s, even when the action ends sooner.
+    action.complete('{"ok":true}', 0)
+    wait(1500)
+    compare(model.clickNotice, words)
+    tryCompare(model, 'clickNotice', '', 1500)
+    verify(!note.visible)
+    compare(flick.bottomMargin, 0)
+    ready(model)
+    // A long job launched moments ago drops a second one, and says so too.
+    model.run(['setup'], true)
+    model.run(['snapshot'], true)
+    compare(model.clickNotice, words)
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'setup')
+    // A click on the notice dismisses it and reaches nothing under it.
+    mouseClick(note.parent)
+    compare(model.clickNotice, '')
+    // Closing the panel clears it too.
+    model.run(['open'], false)
+    model.run(['open'], false)
+    verify(model.clickNotice !== '')
+    panel.close()
+    compare(model.clickNotice, '')
+    // Its fill is opaque, whatever the popup's alpha.
+    compare(note.parent.color.a, 1)
+    panel.destroy(); wait(1)
+  }
+  function test_a_dropped_click_notice_goes_after_5_s_while_the_action_still_runs() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    model.run(['stop'], false)
+    var action = process(model, model.cli)
+    model.run(['open'], false)
+    verify(model.clickNotice !== '')
+    wait(4500)
+    verify(model.clickNotice !== '')
+    tryCompare(model, 'clickNotice', '', 1500)
+    verify(action.running)
   }
   function test_finished_setup_reveals_both_display_choices_without_a_bare_job() {
     var model = createTemporaryObject(modelComponent, tests)

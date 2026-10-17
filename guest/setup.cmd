@@ -3,7 +3,7 @@ rem setup.cmd: Lanai's setup inside Windows (spec req 7, plan phase 6).
 rem Run it from Lanai's setup drive as the user who uses Windows. It asks for
 rem administrator rights once, then, in order: installs the SPICE guest
 rem agent, the QEMU guest agent with its allow-list, WinFsp, the pinned
-rem virtio-fs driver and service, adds the sign-in scale task (its script in
+rem virtio-fs driver and service, adds the display scale task (its script in
 rem C:\Program Files\Lanai), turns the Windows lock off (lanai-lock.cmd), and installs
 rem the Looking Glass display driver last, since it turns this display black.
 rem Then Windows shuts down, and Lanai setup goes on at the next boot.
@@ -128,17 +128,32 @@ set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 :vfs_done
 
-echo [6/8] Adding the sign-in task for the display scale
-set "STEP=the sign-in task for the display scale"
+echo [6/8] Adding the display scale task
+set "STEP=the display scale task"
 rem The script goes beside virtiofs.exe: standard users cannot write under
 rem C:\Program Files, so no other account can swap the file the task runs.
 copy /y "%~dp0lanai-scale.ps1" "C:\Program Files\Lanai\lanai-scale.ps1" >nul
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
-rem An interactive task for this user (the SID check above), which stores no
-rem password. -Force replaces it on a rerun. [char]34 quotes the path, which
-rem holds a space, without nested quotes for cmd.
-powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $u = $env:USERDOMAIN + '\' + $env:USERNAME; $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + [char]34 + 'C:\Program Files\Lanai\lanai-scale.ps1' + [char]34); $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew; Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
+rem The task's temp folder: PowerShell compiles Add-Type there, then loads
+rem the DLL it built, so it must be one standard users cannot write.
+if exist "C:\Program Files\Lanai\tmp\" goto :scale_task
+mkdir "C:\Program Files\Lanai\tmp"
+set "RC=%errorlevel%"
+if not "%RC%"=="0" goto :failed
+:scale_task
+rem An interactive task for the SID the check above verified, which stores no
+rem password. It runs elevated (highest privileges, no prompt): Windows
+rem opens the scale port only to administrators. -Force replaces it on a
+rem rerun, so there is one task. The sign-in trigger repeats every 5 minutes
+rem with no end (a repetition pattern with no Duration), and IgnoreNew makes
+rem a start a no-op while the task runs, so a task that died is back within
+rem 5 minutes. RestartCount would cover only a failed start (phase C).
+rem powershell.exe by absolute path, from the system folder Windows
+rem reports, not an environment variable. [char]34 quotes the script's
+rem path, which holds a space, without nested quotes for cmd.
+set "LANAI_TASK_SID=%HAVE_SID%"
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $u = $env:LANAI_TASK_SID; $a = New-ScheduledTaskAction -Execute ([Environment]::SystemDirectory + '\WindowsPowerShell\v1.0\powershell.exe') -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + [char]34 + 'C:\Program Files\Lanai\lanai-scale.ps1' + [char]34); $t = New-ScheduledTaskTrigger -AtLogOn -User $u; $r = Get-CimClass -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClassName 'MSFT_TaskRepetitionPattern' | New-CimInstance -ClientOnly; $r.Interval = 'PT5M'; $t.Repetition = $r; $p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew; Register-ScheduledTask -TaskName 'Lanai display scale' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 

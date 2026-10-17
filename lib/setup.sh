@@ -9,6 +9,9 @@
 #             ended cleanly; true once record_previous_run saw it end with a
 #             clean guest shutdown that the panel did not ask for
 #   done      true once step 6 passed
+#   scale_task  2 once step 6 passed with the live scale task's port open:
+#             the task's version (Lanai before live scale never wrote
+#             it), so a finished setup without it has the old task
 #   round     true from a setup boot's start until step 7; while it is
 #             open, a done setup (a pin bump, or a rerun) does not read as
 #             finished, though lanai start still works (spec 8)
@@ -242,6 +245,9 @@ setup_guest() {
 # has booted); and a closed agent port is given up this long after step 6
 # first sees it closed, including after a Windows restart.
 LANAI_SETUP_GRACE=${LANAI_SETUP_GRACE:-60}
+# The display scale task starts at sign-in: once both answers are in (the
+# user is signed in), its port gets this long to open.
+LANAI_SETUP_SCALE_GRACE=${LANAI_SETUP_SCALE_GRACE:-$LANAI_SETUP_GRACE}
 LANAI_SETUP_BOOT_LIMIT=${LANAI_SETUP_BOOT_LIMIT:-300}
 
 # setup_reply <ok> <step> <message> <next> [details-json]: emit lanai setup's
@@ -300,10 +306,16 @@ setup_wait() {
 #   allow-list took effect); a part still not answering once the grace has
 #   passed sends setup back to step 5.
 # - Last, the user's two answers (~/Windows shows in Explorer, the text
-#   size is right): a no sends setup back to step 5, two yeses finish it,
-#   and otherwise it asks the questions.
+#   size is right): a no sends setup back to step 5, and otherwise it asks
+#   the questions. Two yeses finish it once the display scale task's port
+#   (scale0) is open: that task starts at sign-in, so it is judged only
+#   now. The time of both yeses is kept in $RUN/step6-answered for the
+#   panel's follow-ups, which carry no answers; a port still closed
+#   LANAI_SETUP_SCALE_GRACE after it sends setup back to step 5 (reason
+#   scale-task).
 setup_step6() {
-  local share=$1 scale=$2 run log stamp closed_stamp verdict="" guest="" build out wrong="" since="" age=-1
+  local share=$1 scale=$2 run log stamp closed_stamp verdict="" guest="" build chardevs out wrong="" since="" age=-1
+  local scale_open=false answered=""
   local -a missing=()
   if ! run=$(run_dir); then
     setup_reply false 6 "XDG_RUNTIME_DIR is not set, so Lanai cannot reach Windows." ""
@@ -314,11 +326,11 @@ setup_step6() {
   closed_stamp=$run/qga-closed-since
   read -r verdict guest < <(version_check "$log") || verdict=unknown
   build=$(log_client_build "$log")
-  if ! out=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}'); then
+  if ! chardevs=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}'); then
     setup_wait "QEMU did not answer Lanai's question about Windows' agents; it asks again next time."
     return 0
   fi
-  if chardev_open qga0 <<<"$out"; then
+  if chardev_open qga0 <<<"$chardevs"; then
     rm -f -- "$closed_stamp"
     [[ -s $stamp ]] || printf '%s\n' "$EPOCHSECONDS" >"$stamp" || true
     [[ ! -s $stamp ]] || since=$(<"$stamp")
@@ -367,7 +379,7 @@ setup_step6() {
       return 0
       ;;
   esac
-  chardev_open vdagent <<<"$out" || missing+=("the SPICE agent")
+  chardev_open vdagent <<<"$chardevs" || missing+=("the SPICE agent")
   # Only an open port is asked: a sync on a closed one waits 5 s.
   if ((age < 0)) ||
     ! qga_reply "$run/qga.sock" command '{"execute":"guest-set-time","arguments":{"time":@NOW_NS@}}' ||
@@ -383,19 +395,48 @@ setup_step6() {
     setup_back5 agents "In Windows, $out did not answer."
     return 1
   fi
+  # Only the elevated scale task opens scale0, and it starts at sign-in,
+  # which may come long after boot: it is judged after the answers, which
+  # need a signed-in user. QEMU's port state, not data from the guest
+  # (spec 27).
+  chardev_open scale0 <<<"$chardevs" && scale_open=true
+  if [[ -z $share$scale && -s $run/step6-answered ]]; then
+    # The panel's follow-ups after both answers carry none.
+    share=yes scale=yes
+    answered=$(<"$run/step6-answered")
+  fi
   [[ $share != no ]] || wrong="Explorer does not show ~/Windows."
-  [[ $scale != no ]] || wrong+="${wrong:+ }The text size is wrong (the sign-in scale task)."
+  [[ $scale != no ]] || wrong+="${wrong:+ }The text size is wrong (the display scale task)."
   if [[ -n $wrong ]]; then
     setup_back5 answers "$wrong"
     return 1
   fi
   if [[ $share != yes || $scale != yes ]]; then
     : >"$run/step6-asked" || return 1
-    setup_reply true 6 "Windows is set up. Two last checks, in Windows: does ~/Windows show in Explorer, and does text look the right size?" \
+    out="Windows is set up. Two last checks, in Windows:"
+    $scale_open || out="Windows is set up. If Windows asks for your password, sign in first. Then two last checks, in Windows:"
+    out+=" does ~/Windows show in Explorer, and does text look the right size?"
+    setup_reply true 6 "$out" \
       "answer with lanai setup --share-ok yes|no --scale-ok yes|no" '{"questions": ["share", "scale"]}'
     return 0
   fi
-  if ! setup_patch '{"done": true, "step5": null, "round": null}'; then
+  if ! $scale_open; then
+    if [[ ! $answered =~ ^[0-9]+$ ]]; then
+      answered=$EPOCHSECONDS
+      printf '%s\n' "$answered" >"$run/step6-answered" || return 1
+      rm -f -- "$run/step6-asked"
+    fi
+    if ((EPOCHSECONDS - answered < LANAI_SETUP_SCALE_GRACE)); then
+      setup_wait "Waiting up to a minute for the display scale task to start in Windows. It starts when you sign in."
+      return 0
+    fi
+    rm -f -- "$run/step6-answered"
+    setup_back5 scale-task "In Windows, the display scale task did not start."
+    return 1
+  fi
+  # The scale task's port is open, so Windows has the live task:
+  # scale_task 2. A record without it means the old task (spec 12).
+  if ! setup_patch '{"done": true, "step5": null, "round": null, "scale_task": 2}'; then
     setup_reply false 6 "Lanai cannot record its setup state." "run setup again"
     return 1
   fi
@@ -461,6 +502,9 @@ setup_plan() {
       run=$(run_dir) || run=''
       if [[ $st == active && -f $run/step6-asked ]]; then
         setup_decision 6 checks '' '{"questions":["share","scale"]}'
+      elif [[ $st == active && -f $run/step6-answered ]]; then
+        # Both answers are in; the display scale task's port is awaited.
+        setup_decision 6 checks '' '{"scale_wait":true}'
       elif [[ $st == active ]]; then setup_decision 6 checks
       else setup_decision 6 wait; fi
     else setup_decision 5 problem no-media; fi

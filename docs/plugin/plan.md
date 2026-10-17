@@ -242,7 +242,7 @@ proof findings are folded into phases 4 to 7 below.
 - `bin/lanai` dispatches to `lib/lanai.sh`; every path prints one JSON object.
 - `test/lanai.bats` (bats-support, bats-assert); move the spike's reusable functions
   and their tests; `spike/` stays unchanged.
-- `.github/workflows/test.yml`: `ubuntu-latest`, `container: archlinux:latest`,
+- `.github/workflows/test.yml`: `ubuntu-24.04`, `container: archlinux:latest`,
   `timeout-minutes: 20`. `pacman -Syu --noconfirm bats bats-assert bats-support
   shellcheck ffmpeg jq socat e2fsprogs diffutils qemu-system-x86 qemu-img` (the lock
   tests run QEMU under TCG with `-S`, no KVM needed). Checkout with
@@ -269,7 +269,7 @@ Tests first, against fixture directories, for each function:
 | `container_preparing` | a process in a `docker` cgroup whose argv shows dockur's entry script, with no QEMU yet (best effort; the image lock is the backstop) | 3 |
 | `disk_locked <img>` | from the spike | 3 |
 | `settings_seed` | only `RAM_SIZE` and `CPU_CORES` from a readable compose; else half the host's memory (at most 16 GiB) and half its threads (at most 8); never read `PASSWORD` or the credentials file. Test with a sentinel password in a fixture compose: it never appears in output, files, logs, or (through PATH shims) any child process's arguments or environment | 6 |
-| `host_scale` | focused monitor's scale from `hyprctl monitors -j`, computed at `lanai start` | 12 |
+| `scale_target` (was `host_scale`) | the scale of the window's monitor, else the focused one, else the first listed, from `hyprctl monitors -j`; at `lanai start` and in the scale feed (one rule for both since the live-scale review) | 12 |
 | `scale_step <scale>` | nearest of 100-250 by 25 and 300-500 by 50, ties down, clamped; tested with the spec's matrix | 12 |
 | `dockur_version` | the image version when readable without a prompt, for display only | 5a |
 
@@ -2114,6 +2114,470 @@ spec, plan and review gates before it is built.
   running and healthy, amber when running with a problem, red when running with a major
   issue, and no color (the normal foreground) when Windows is not running. Bash decides
   the level in the panel view; the tooltip keeps the words (req 10: never color alone).
+- **Continue setup shown before the host packages are installed.** Seen by John on a
+  second machine (2026-10-06): at setup's host-package step the panel says to click
+  Install in a terminal and then Continue setup, but Continue setup already shows
+  beside Install. Wanted: while packages are missing, show only Install in a terminal;
+  show Continue setup once they are present (or after the terminal closes), so the
+  order of the two clicks is the only one the panel offers.
+- **Rename "Continue setup" to "Windows Setup".** John's call (2026-10-06): "Continue
+  setup" reads as unclear to new users. Rename the button, and every panel line and
+  README step that tells the user to click it, in one change; decide then whether "Run
+  setup again" follows the same wording.
+
+## Follow-on: live scale (John, 2026-10-10)
+
+This implements the spec amendment of 2026-10-10: reqs 2, 4, 6, 7, 9, 12 and 27,
+"Out of scope for v1", and rows 4, 6, 7b, 12 and 22/25. It supersedes phase 7's
+"Phase A: display scale" where they differ: the scale no longer waits for the next
+start, and the guest no longer undoes every change made in Windows.
+
+Branch `plugin/live-scale`. Phases run in order; each starts from the previous
+phase's commit and is self-contained. Order: phase 0 parts (1)-(5), phase A,
+phase B, phase 0 parts (6)-(7), phase C. Bash: `set -euo pipefail` in entry points,
+callers' options kept in sourced libraries, clean under ShellCheck. Bash decides
+the panel view; QML renders it. Tests first (bats; guest logic through pwsh where
+it is installed, skipped in CI as today). Agents never touch John's live
+`~/.windows` or `~/.local/state/lanai`; the proof and hands-on checks run on the
+rehearsal copy (`~/lanai-proofs/lanai-setup-test`, where John's Lanai settings
+already point).
+
+### Design
+
+**The channel.** One virtio-serial port, like the guest agent's:
+`-chardev socket,id=scale0,path=$RUN/scale.sock,server=on,wait=off` and
+`-device virtserialport,chardev=scale0,name=io.lanai.scale.0`, added in `vm_args`
+(`lib/vm.sh`, which `vm_plan` calls) beside `qga0`. The socket is inside the 0700 runtime folder (req 25).
+QEMU is the server and accepts one client. Messages are one ASCII line each:
+
+    lanai-scale <step> <save>
+
+`<step>` is a listed step (100 to 500); `<save>` is the save number, a decimal
+integer below 10^9. Nothing else goes on the line (req 27). Windows' driver opens
+ports only to SYSTEM and Administrators (`SDDL_DEVOBJ_SYS_ALL_ADM_ALL` in
+virtio-win's `vioserial/sys/Port.c`), so the scale task runs elevated (req 27,
+John's call).
+
+**The save number.** `settings.json` gains `scale_save`, a non-negative integer
+written in the same atomic write as `windows_scale`. `cmd_settings` (`lib/ui.sh`)
+increments it on every scale save (three arguments, even when the step is
+unchanged); two-argument saves keep it. A missing key counts as 0; a present but
+invalid value refuses the save and the boot, as an invalid scale does today. The
+guest treats any change of the number as a save (req 27), so even a lost counter
+cannot strand a pick: the next save writes a number the guest has not seen.
+
+**The boot record.** `boot_vm` already resolves the step and writes `boot.json`.
+It also writes `scale_save` and the focused monitor's name (`boot_monitor`). This
+reverses today's "no monitor reads for a fixed setting" (`lib/vm.sh`, and
+`test/lifecycle.bats`' "every fixed step boots without querying a monitor"):
+update both, and a failed monitor read never blocks a fixed boot (it leaves
+`boot_monitor` empty). QEMU gets a second OEM string beside the first:
+`-smbios type=11,value=lanai-scale=<step>,value=lanai-scale-save=<n>`. `vm_args`
+gains the `<save>` argument, and so does `vm_plan` (`vm_plan <scale> <save>
+<media> [<window>]`), which both `vm_exec` (reading `boot.json`) and `boot_vm`'s
+dry run call; the existing `vm_args` calls in `test/vm.bats` gain it too; like every
+other `vm_args` input it is checked (`^[0-9]{1,9}$`), since it lands in a
+comma-separated value. The old task
+matches only `lanai-scale=*`, so it keeps working unchanged.
+
+**The feed (host).** A new supervised helper, `lanai-vm-helper scale-feed`, started
+in `vm_exec` beside `event-log` (`supervise scale-feed ...`). It needs no shell or
+panel, so following works with the panel closed and through shell restarts. The
+user manager's environment may lack the session's (`lib/client.sh`), so `boot_vm`
+writes `hyprland_instance_signature` into `boot.json` and the feed checks it
+(`^[A-Za-z0-9_]+$`) and exports it before calling `hyprctl` (an empty or invalid
+one is logged); a failing `hyprctl` is logged once, not silently. As built
+(implementation review): `hypr_signature` uses the boot record's instance only if
+it answers, else the inherited one if it answers, else the only live instance
+(Hyprland leaves dead instance folders and sockets behind); while `hyprctl` keeps
+failing, the feed looks again about every 30 s and logs only a changed instance.
+Every 2 s, measured start to start (`LANAI_SCALE_INTERVAL`), with a 1 s timeout
+on each `hyprctl` call, it:
+
+1. Reads `settings.json` once and takes the setting and the save number from that
+   one snapshot (a shared reader, `vm_scale_settings`, which replaced `vm_windows_scale`; `boot_vm` uses the same
+   reader), so a save landing between reads cannot pair a new number with an old
+   step.
+2. Finds the client window in `hyprctl clients -j` by the client unit's MainPID
+   (the pid `lanai open` focuses), maps its numeric `monitor` id to a name through
+   `hyprctl monitors -j`, and records the name in `$RUN/scale-monitor` (on change
+   only) whenever the window is open, whatever the setting, so a later switch to "match my
+   monitor" knows the monitor since the VM started. `boot_vm` records the focused
+   monitor's name (`boot_monitor`) for every boot, fixed or auto.
+3. Computes the target. A fixed step is the target. For `"auto"`, the monitor that
+   counts is the client window's monitor; with no window, the remembered monitor; with none
+   remembered yet, `boot.json`'s `boot_monitor`. If that monitor is not in
+   `hyprctl monitors -j`, the focused monitor counts; then the first one listed;
+   with no monitors, the last target stays. The step is `scale_step` of that
+   monitor's current scale (ties round down), so a scale change on the boot monitor
+   or the remembered one is followed too. `vm_exec` deletes `$RUN/scale-monitor`
+   at each start, so nothing carries over between VM runs.
+4. Sends `lanai-scale <target> <save>` on every loop (every 2 s), changed or not.
+   QEMU serves one client per QMP socket and all three are taken, so the feed
+   cannot watch `VSERPORT_CHANGE`; the steady resend meets "the latest target
+   whenever the task starts or reconnects" by construction. The backlog it builds
+   while nobody reads is bounded by the socket buffers, and the guest's drain
+   handles it (phase 0 (6)).
+
+The feed keeps working while the shell or plugin is down (req 12, as amended).
+
+Sending never blocks the loop. Each send is its own short connection:
+`printf '\n%s\n' "$line" | timeout "$LANAI_SCALE_SEND_TIMEOUT" socat -u -
+UNIX-CONNECT:$RUN/scale.sock` (deadline 1 s by default). It is one-way, never
+`sock_open`, whose socat reads the socket. A send that misses the deadline is
+killed; the next loop sends again. The leading newline ends any line a killed
+send cut short, so the next line arrives whole; the guest ignores empty lines.
+A failed send is logged once, and again only when sending recovers, so hours of
+a signed-out guest do not flood the journal. The feed seeds its last target from
+`boot.json`'s `scale`; if `settings.json` turns unreadable or invalid mid-run, it
+keeps sending the last good line and logs once. Lines that were accepted but not yet read may still reach the guest later;
+the guest makes that harmless by draining before it acts (below), and phase 0
+proves it on the real channel. The feed never reads from the
+socket; whatever the guest writes stays unread and is dropped when the connection
+closes (req 27). Pure functions (target choice, line format) are unit-tested with
+fixture `hyprctl` JSON; the loop is tested against a fake server that never reads.
+
+**The scale task (guest).** `guest/lanai-scale.ps1` keeps its 2 s loop and its
+`ScaleDecision` cap logic. Changes:
+
+- Start: no `lanai-scale` OEM string means Lanai is not running this VM; exit at
+  once and change nothing (req 4, as today). Otherwise the OEM step is the first
+  target.
+- A reader runspace opens `\\.\Global\io.lanai.scale.0` and loops on blocking
+  reads, putting each complete line and its arrival time into a
+  `ConcurrentQueue`. It keeps the handle open across the feed's connects and
+  disconnects: a 0-byte read or a read error reads again after 250 ms, and the
+  handle is reopened only when it is invalid or the open itself fails (retry every
+  2 s). As built: only error 1450 (no host connected, phase 0 proof 3) reads again
+  after 250 ms; any other read error closes the handle so the open runs again, and
+  open and read errors are logged once each. The main loop never
+  touches the port, so a silent port never blocks it. The main loop acts on the
+  queue only once no line has arrived for 300 ms (a backlog arrives at full speed,
+  so a quiet gap means it is drained), then dequeues everything. The feed sends
+  one line per connection, so a fresh batch holds one valid line. A batch with
+  more than one valid line is a stale backlog and is dropped whole: after a stall
+  the port delivers its oldest unread lines, and lines sent while its buffer is
+  full are lost (phase 0 proof 4). The next fresh line comes within one feed
+  period. Empty lines are ignored; malformed ones are dropped (logged once).
+- The main loop ticks every 250 ms, so the quiet gap is checked on its own
+  clock, never only at a display poll. It observes the display every 2 s, and
+  also on any tick that has a drained line to process.
+- Each pass that processes a line, or observes the display, runs in this order: observe the display and detect a pick; then
+  process the drained line; then apply. A save received in a pass therefore
+  clears a pick seen in the same pass.
+- State: `want` (the step from Lanai), `lastSave`, `pick` (null or a step). At
+  start, `want` and `lastSave` come from the two OEM strings; the task waits for
+  a first line before applying the OEM step, so a sign-in after a mid-run save
+  does not change the scale twice. The wait ends at the first valid line, or one
+  feed period plus the send deadline after the port opens (3 s by default), or 5 s
+  after the task starts, whichever comes first; a port that never opens (an older
+  host, or a failed open) still gets the OEM step within 5 s. As built: any
+  arrival before the first line (a line waiting for its quiet gap, or a stale
+  batch) moves the fallback to 2.5 s after it, so a fresh line applies alone
+  and the boot step never flashes first. The OEM values
+  give the baseline before any pick and before the channel connects. A line whose
+  save number differs from `lastSave` is a scale save: set `want`, clear `pick`, set
+  `lastSave`. A line with the same number updates `want` (a follow update) and
+  keeps `pick`.
+- Pick: the task keeps two values. `confirmed` is the last step it observed with
+  the recommended step and resolution at that moment. `pending` is a step it asked
+  Windows for and has not yet observed (null when none). On a poll, a current step
+  equal to `pending` confirms it (`confirmed` = it, `pending` = null). A current
+  step equal to `confirmed` while `pending` is set means Windows has not applied
+  the request yet: not a pick; retry once a minute, as today. A current step that
+  equals neither, with the same recommended step and a resolution unchanged for at
+  least 5 s, is a pick: `pick` = it, `confirmed` = it, `pending` = null. A moved
+  recommended step or resolution is never a pick; the task updates `confirmed` and
+  reapplies the applied scale. A pick right after the task's own change counts,
+  since that change is already in `confirmed`. As built (implementation review):
+  the task reads the scale back right after each set and confirms it at once; it
+  also keeps `requested`, every step asked for since the last confirmation, and a
+  step in it is never a pick (an older request that lands late); a display change,
+  a missing display, or a decision that needs no change drops an unapplied
+  request.
+- The first observation after the task starts, and the first after the Looking
+  Glass display path appears or changes (`monitorDevicePath`), sets `confirmed`
+  and is never a pick. A step that equals neither value, seen within 5 s of a
+  resolution or display-path change, updates `confirmed` and reapplies; it never
+  ripens into a pick later. Without a `lanai-scale-save` OEM string (a host older
+  than this change), `lastSave` starts empty and the first line sets it without
+  clearing anything.
+- Target = `pick` if set, else `want`; applied = `ScaleDecision` cap of the target.
+  The pick lives only in the task's memory, so sign-out, a Windows restart and a VM
+  stop end it; at the next sign-in the feed's next line brings the latest target.
+
+Because the task runs elevated, nothing it uses may be writable by the
+non-elevated user. Before its first `Add-Type` or cmdlet, it sets
+`$env:PSModulePath` to the system module folders (the user's
+`Documents\WindowsPowerShell\Modules` would otherwise autoload first) and
+`$env:TMP` and `$env:TEMP` to `C:\Program Files\Lanai\tmp` (PowerShell 5.1's
+`Add-Type` compiles through files in the temp folder, then loads the DLL it built).
+It logs to `C:\Program Files\Lanai\lanai-scale.log`. Both live in the folder
+setup.cmd already creates elevated for the script, where standard users cannot
+create anything and inherit read and execute only, so no ACL repair is needed (a
+folder under ProgramData or `C:\` would race its ACL, as phase 6 found for
+`C:\Lanai`). setup.cmd creates `tmp` there. The task action names
+`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` by absolute path,
+expanded when setup.cmd registers the task.
+One residual stays, recorded for John: a highest-privileges sign-in task
+runs with the user's environment variables (HKCU\Environment), a known UAC-bypass
+class. For example, `COR_ENABLE_PROFILING` and `COR_PROFILER_PATH` there make the
+elevated powershell.exe load a DLL at start, so the pins above stop an attacker
+who can only write files (a planted module in a synced Documents folder), not
+code already running as the user. With UAC on, as on John's install, malware already running as the user could
+use it to gain admin; Microsoft does not treat UAC as a security boundary, and the
+same malware has other ways to the same end. In PowerShell 5.1 a `FileStream` will
+not open a `\\.\` device path, so the reader calls `CreateFile` through the
+script's `Add-Type` block and wraps the handle; phase 0's script does the same.
+
+`guest/setup.cmd` registers the task with `-RunLevel Highest` in its principal, under
+the same name with `-Force`, so a rerun leaves exactly one task (req 9). The script
+stays in `C:\Program Files\Lanai\` (administrator-only writes).
+
+**The setup record.** In phase B, together with the new task. Step 6
+(`setup_step6`, `lib/setup.sh`) already reads `query-chardev` and checks
+`chardev_open qga0` and `vdagent`; it also checks `chardev_open scale0`, since only
+the new elevated task opens that port. That is QEMU's port state, not data from
+the guest (req 27). As built (implementation review): the task starts only at
+sign-in, so the port is judged after the user answers the two step 6 questions
+(they must be signed in to answer), not at the boot grace; until then the
+questions ask a user with a password to sign in first. With both answers yes and
+the port still closed after `LANAI_SETUP_SCALE_GRACE` (60 s, timed from the
+answers kept in `$RUN/step6-answered`), setup goes back to step 5 with its own
+reason, naming the task, the setup user and the task's log. `missing` keeps its
+two items. When setup finishes (`setup_patch '{"done": true, ...}'`) with
+the port open, it writes `"scale_task": 2`. A user who boots "Run setup again" and
+shuts down without running setup.cmd therefore never gets the marker. A record
+without it means the old task (req 12's last rule).
+
+**Panel and words.** `cmd_settings` returns structured fields; `panel_words` turns
+them into words (below), and for a scale save the CLI's own message says the same (a memory-and-cores save prints a full sentence where the panel shows "Saved."). `LanaiPanel.qml` tracks `scaleTouched` (set by the dropdown's
+`changed`, cleared only when the panel opens, so every save in that panel session
+counts as a scale save) and runs `settings <mem> <cores>` when
+untouched, `settings <mem> <cores> <scale>` when touched. `lib/panel.sh` adds a note
+under the scale list while Windows runs with the new task: "Saving a scale replaces
+one you picked in Windows." The panel shows `result.settings`. Added in the
+implementation (John's 2026-10-11 test): a click the model drops because another
+action still runs shows "The last action is still running. Try again in a
+moment." in a notice pinned over the panel's bottom edge for 2 to 5 s; before,
+such a click (a scale save among them) vanished with no word. Today `panel_words` (`lib/panel.sh`) returns nothing for
+a settings reply, and the Settings view hardcodes "Changes apply the next time
+Windows starts." The reply gains structured fields (`scale_saved`, `running`,
+`scale_task`; as built `scale_task_kind`, so it is not confused with the setup
+record's `scale_task` 2), `panel_words` maps them to the words below, and the Settings view's
+fixed line becomes "Memory and cores apply the next time Windows starts." The
+settings words clear when the VM unit's invocation differs from the record's
+(`ui_record` stores it), or once a running save's unit is no longer active (a
+failed unit keeps its invocation), so "within 5 seconds" never outlives the run it
+was about. The exact words below are as planned; the shipped ones were reworded in
+review (`lib/panel.sh`):
+
+- Scale save, VM running, new task: "Saved. Windows uses the new scale within 5
+  seconds if you're signed in, or when you next sign in."
+- Scale save, VM running, old task: "Saved. Windows uses the new scale the next time
+  it starts. For changes while Windows runs, click Run setup again (it also turns the
+  Windows lock off again). Until then, Windows undoes scale changes made in its own
+  settings, and Match my monitor does not follow the window while Windows runs."
+- VM stopped, or memory and cores only: "Saved. Changes apply the next time Windows
+  starts." (memory and cores: "Memory and cores apply ..."). On an old install the
+  stopped words add the Run setup again sentence too.
+- While setup is unfinished (no marker yet, and none expected), every scale save
+  uses the stopped words: the old-task words do not fit a first setup.
+
+The words above are drafts; the phase A implementer has the taste bar (>= 7) and
+may sharpen them, keeping each fact.
+
+### Phase 0: channel proof (John and Claude, test copy)
+
+Answer before building, and stop if (1) or (6) fails: (1) does an elevated process in the setup user's session
+open `\\.\Global\io.lanai.scale.0`, and does a non-elevated one get access denied;
+(2) do lines written to `scale.sock` arrive in order; (3) does a read with no host
+client connected block, return 0 bytes, or fail; (4) with the guest not reading,
+does a host write stall after the socket buffer fills, and after the host
+reconnects does the guest receive the old unread lines or only new ones; (5) the feed's connection model: the host connects, writes one line and
+disconnects every 2 s for 5 minutes; record each line's send and arrival times;
+every line arrives within 1 s and none is lost, and the reader neither stalls nor
+spins at each disconnect; (6) latest
+only: with the guest paused (not reading), the host sends saves 1, 2 and 3 with
+different steps, then reconnects and sends 3 again; when the guest resumes and
+drains, the last line it acts on is save 3. Run it with the shipped feed command
+and cadence, not hand-sent lines. If (4) shows QEMU delivering old unread lines
+at the port's open, the first-line wait collects for at least one feed period plus
+the send deadline and uses the last line. Run (6) with the phase B reader and
+quiet-gap rule itself, and once more with a backlog of 10,000 lines (larger than
+one read buffer); the task must never apply an earlier step first. (7) Flood: a
+guest process writes to the port as fast as it can for 10 minutes while the feed
+runs and John moves the window and saves twice; the panel, bar and following stay
+responsive, and the resident memory of the feed, QEMU and the shell grows by no
+more than 20 MB each. Phase 0 runs (6) and (7) after phase B's script exists, as
+phase B's last step; (1)-(5) run first.
+
+- Add `docs/plugin/proof-kit/proof-scale-port.ps1` (opens the port, prints each
+  line with a timestamp, reports open errors) and a `--scale-port` flag to
+  `proof-vm` that adds the chardev and port. Claude boots the test copy with it and
+  drives the host side with `socat`; John runs the script in an elevated and a
+  normal PowerShell. Record results in `proofs.md`.
+- Results for (1)-(5), 2026-10-11 (`proofs.md`): all pass. The port was hotplugged
+  into the running test copy over QMP instead of a `proof-vm` boot, so no reboot
+  was needed. A read with no host connected fails at once with "Insufficient
+  system resources" (error 1450), handled by the 250 ms retry above. Lines sent
+  while no guest holds the port open are lost, and so are lines sent while its
+  buffer is full; after a stall the guest gets the oldest unread lines, which is
+  why a multi-line batch is dropped as stale.
+- If (1) fails for the elevated process, stop and bring it to John (the SYSTEM
+  relay he declined becomes the fallback). If (5) shows lost or late lines, stop
+  and revise the connection model before phase A. (3) and (4) confirm the task's
+  read handling above.
+
+### Phase A: host and panel (TDD)
+
+- Tests first: `test/ui.bats` (save number: three-argument saves increment, also
+  for an unchanged step; two-argument saves do not; a missing key counts as 0; an
+  invalid one refuses the save; the reply's structured fields for each case),
+  `test/panel.bats` (`panel_words` for a live, stopped, memory-only and old-task
+  save; the Settings view's line), `test/vm.bats` (the chardev and port in
+  `vm_args`; socket path inside `$RUN`; a save argument holding a comma is
+  refused), a new `test/scale-feed.bats` (target
+  choice for fixed and auto across window present, closed with a remembered
+  monitor, gone monitor, no focus, no monitors; line format; a resend every loop, changed or not;
+  a fake server that never reads: with `LANAI_SCALE_INTERVAL` and `LANAI_SCALE_SEND_TIMEOUT`
+  shortened for the test (a QEMU-like server queues later connects, so each send
+  can take the whole deadline), the loop keeps its cadence and its RSS (from `/proc/<pid>/status`) stays
+  within 2 MB over 1,000 sends (as built: 500 measured sends after a 50-send warm-up, bounded at 90 s so CI's 120 s limit never cuts it); a cut write followed by a full line; a flooding guest is never read; the boot monitor's scale
+  change and unplug before the window opens; `scale-monitor` cleared between
+  runs; the monitor recorded under a fixed setting counts after a switch to auto
+  with the window closed; settings replaced between two reads cannot pair a new
+  save number with an old step, because the feed reads once), `test/lifecycle.bats` (the helper is supervised and stops with the unit;
+  `boot.json` carries the save number, boot monitor and Hyprland signature, and the
+  second OEM string the save number; a fixed boot with a failing monitor read
+  still boots),
+  `test/panel.bats` (the note shows only while running with the new task),
+  `test/panel-qml.bats` (an untouched list sends two arguments; choosing the shown
+  entry sends three; two saves after one selection both send three; reopening
+  clears the touch), and the old-task words name the lost following.
+- Files: `lib/vm.sh` (`vm_args`, with the save argument and its check; `vm_exec`, whose stale-socket loop gains
+  `scale`; `LANAI_HELPERS` gains `scale-feed` with its lost-function words, "the
+  Windows scale does not follow saves or monitors"; the feed),
+  `lib/lanai.sh` (`boot_vm`), `bin/lanai-vm-helper`, `lib/ui.sh`, `lib/panel.sh`,
+  `LanaiPanel.qml` (the touched-list rule).
+- Verify: `bats test spike/test` (TMPDIR under `$XDG_RUNTIME_DIR`), CI's ShellCheck
+  line, `test/qml-lint`.
+
+### Phase B: guest task and setup record (TDD where pwsh runs)
+
+- Shape the script so its logic is pure and testable: `Step-ScaleState` takes the
+  state, one display observation and the time, and returns the new state and an
+  action (none, set a step, or retry); `Get-DrainedLine` takes the queued lines and
+  the time and returns "wait", "stale" (more than one valid line) or the one
+  valid line; `ConvertFrom-ScaleLine`
+  parses one line. The main loop only wires them to the clock, the reader queue and
+  `SetScale`.
+- Tests first: `test/guest.bats` extracts those functions from `lanai-scale.ps1`
+  through the PowerShell AST, as the StepName tests do: line parsing (valid,
+  malformed, oversize, unlisted step, huge number), the save rule (greater, equal,
+  lower, first line), the pick rule (each condition alone fails to make a pick;
+  a recommended-step move is not a pick; the task's own set is not a pick), target
+  and cap; the baseline from the OEM strings, with a pick before the channel
+  connects and a save made in the meantime (the save clears it); a pick right
+  after a host-driven change; an unobserved pick followed by a save in the same
+  pass ends with the save applied; a drained batch of one valid line is used, a
+  batch of two or more is dropped as stale (empty and malformed lines do not
+  count), and a line that arrives inside the 300 ms gap delays acting; a resend every 2 s aligned
+  just after each display poll is still processed within one tick of its gap; a
+  set Windows accepts but does not apply is retried and never becomes a pick,
+  while a real pick right after it still counts. Pin the task
+  registration flags in `setup.cmd` (`-RunLevel Highest`, same name, `-Force`), the
+  absolute powershell.exe path, the log and `tmp` paths under
+  `C:\Program Files\Lanai\`, and that the script assigns `PSModulePath`, `TMP` and
+  `TEMP` before its first `Add-Type`. A port that never opens still gets the OEM
+  step within 5 s.
+  `test/setup.bats`: `scale_task` written only when the new task opened its port:
+  step 6 with `scale0` closed after the grace period
+  reports the missing task and writes no marker; with it open, the marker is
+  written (fake QMP). As built: a slow sign-in past the boot grace still asks, a
+  closed task after the answers is waited for and then named, and the task opening
+  after the answers finishes setup with its mark.
+- Files: `guest/lanai-scale.ps1`, `guest/setup.cmd`, `lib/setup.sh`, `README.md`
+  (live scale, picks, custom scaling, apps that redraw only after restart, "Run
+  setup again" for existing installs).
+- Verify: the suites above.
+
+### Phase C: hands-on (John, test copy)
+
+Run setup again on the test copy, then walk row 12 on two monitors and row 4's
+RDP check on the test install when phase 8 reaches it. Record results in
+`proofs.md`. Phase 0's part (7) is the measured flood check; phase A's tests cover the
+never-read feed. The hands-on adds the two-monitor, pick, cap, sign-out and
+restart cases.
+
+Results (2026-10-11): `proofs.md`, "Live-scale hands-on". All one-monitor cases
+passed; the two-monitor cases and RDP wait. Three fixes follow (Phase D).
+
+### Phase D: hands-on fixes (TDD where pwsh runs)
+
+From the hands-on (John's calls, 2026-10-11). The README stays a user manual: none
+of this goes into it.
+
+1. **Cap line.** When Windows' range caps the target (target step above
+   `maxIdx`), the task logs one line naming the target, the capped step and the
+   resolution, for example "Windows allows at most 150% at 1901x1046; using 150%
+   until the window grows (target 175%)." It logs whether or not a set follows,
+   once per change of (target, capped step, resolution), and again only after a
+   pass without a cap. Today a capped target that is already applied logs
+   nothing.
+2. **Custom scaling line.** When `curScaleRel` falls outside `minScaleRel` to
+   `maxScaleRel`, the task logs once: "Windows reports the current scale out of
+   range (curScaleRel <n>). Custom scaling is probably on (Settings > System >
+   Display); Lanai's scale has no effect until it is off." Logged again only after
+   a pass with an in-range value. Behavior stays as it is.
+3. **Restart a dead task.** Task Scheduler's `RestartCount` covers a failed start
+   only (hands-on). Give the sign-in trigger a 5-minute repetition with no end;
+   `MultipleInstances IgnoreNew` already makes a start a no-op while the task
+   runs, so a dead task comes back within 5 minutes. Drop `RestartCount` and
+   `RestartInterval`, which do nothing here. A start that ends the same way as the
+   run before must not grow the log every 5 minutes: the "No lanai-scale OEM
+   string" exit and the "Error:" exit skip their line when the log's last line
+   carries the same message.
+
+- Tests first (`test/guest.bats`, pwsh): the cap line (capped and already
+  applied, capped with a set, unchanged on the next pass, again after an uncapped
+  pass, a new resolution); the custom scaling line (out of range once, quiet
+  while it stays, again after an in-range pass; a value below `minScaleRel` counts);
+  the repeated exit lines (the same message twice adds one line; a different one
+  adds it). Pin the trigger's repetition in `setup.cmd` (5 minutes, no
+  duration) and the absence of `RestartCount`.
+- Files: `guest/lanai-scale.ps1`, `guest/setup.cmd`, `test/guest.bats`, this plan.
+- Hands-on (John): Run setup again; `(Get-ScheduledTask -TaskName 'Lanai display
+  scale').Triggers.Repetition` shows `PT5M` and no duration; a task killed with
+  `Stop-Process` is back within 5 minutes and applies the latest save.
+- As built: `Get-CapLine` (pure, through `ScaleDecision`) builds the cap line,
+  and `Step-ScaleState` returns the uncapped `Target`. Only a pass that made a
+  decision logs or clears the cap (`LoggedCap`); a pass before the first-line
+  wait ends, or with no display, does neither.
+- As built: `Write-RangeOnce` checks every display observation before
+  `Step-ScaleState` runs, so the custom scaling line is logged even when that
+  pass then fails. `minScaleRel` and `maxScaleRel` themselves are in range. A
+  new out-of-range value does not log again; only an in-range one rearms it.
+- As built: a pick must be a listed step (0 <= current < `$Steps.Count`).
+  Before, an out-of-range current that moved at a settled resolution became a
+  pick outside the list, and `ScaleDecision` threw on every pass until the
+  next save.
+- As built: `Write-ExitLog` compares the text after the timestamp on the log's
+  last line, exactly. A skipped line still goes to the console, for a run by
+  hand. An unreadable log counts as a different line.
+- As built: setup.cmd builds the repetition as a client-only
+  `MSFT_TaskRepetitionPattern` CIM instance with `Interval = 'PT5M'` and no
+  `Duration` (Task Scheduler's schema: no duration repeats indefinitely). It
+  does not copy the pattern from `New-ScheduledTaskTrigger -Once
+  -RepetitionInterval`, since what that cmdlet writes for an omitted
+  `-RepetitionDuration` has differed across Windows versions. Not yet run on
+  Windows: the hands-on check above settles it.
+
+### Routing
+
+Phase 0: Claude with John. Phases A and B: an Opus 5.5 implementer in a worktree
+(the step-up: concurrency in the feed and the pick rule; phase A also carries UI
+words, which need taste >= 7). Claude verifies, signs, and runs the diff gate.
 
 ## Phase 8: Acceptance
 
@@ -2264,3 +2728,16 @@ spec, plan and review gates before it is built.
 | diff (scale, progress, clicks) | John | 2026-10-05 | John chose to simplify instead of patching: a named different snapshot always replaces an unfinished restore, the failed-verification state goes away, and the panel offers every snapshot while a restore is unfinished (plan, phase B). One more stage b round, past the cap, on his OK |
 | diff (scale, progress, clicks) | b single (opus-5.5) | 4 (full; past the cap on John's OK; single by his Claude-usage rule) | 1 should-fix, 2 nits, 0 refuted, 0 downgraded to nit; all fixed by Claude, each with a test that fails without it: a damaged small file in the snapshot did not say "Restore another snapshot by name." and showed the snapshot path; a progress file left by a killed run carried its counts into the next run; "Right-click" spelling. The reviewer found no failure that leaves Windows unable to start with no way out while a valid snapshot exists. Stage b closed |
 | diff (scale, progress, clicks) | a (gpt-6.1-sol) | 4 (full, the rerun on the final diff, past the cap on John's OK) | 0 findings, 0 refuted, 0 downgraded to nit. Clean (its sandbox cannot bind sockets; Claude ran the full suite on 45bc98b: 707 pass). The gate is closed. Next: John's hands-on checks on the test copy |
+| plan (live scale) | a (gpt-6.1-sol) | 1 (full) | 1 blocker, 7 should-fix, 0 refuted; 6 integrated in the plan (guest drains before acting and phase 0 proves latest-only delivery; boot monitor recorded and per-run monitor state reset; picks judged against the task's own expected step, no 5 s after-set window; save number in settings.json, a changed number is a save, invalid refuses; baseline from a second OEM string before any pick; marker moves to phase B with the new script; structured reply fields through panel_words and the Settings line), 1 resolved in the spec (following keeps working with the shell down, flagged to John) |
+| plan (live scale) | a (gpt-6.1-sol) | 2 (full) | 5 should-fix, 0 refuted; all integrated: a reader runspace and a 300 ms quiet gap replace the pending-read drain test, proven with a 10,000-line backlog; each pass observes, then processes the line, then applies; the touched flag clears only on open; the old-task words name the lost following; a measured 10-minute guest flood in phase 0 |
+| plan (live scale) | a (gpt-6.1-sol) | 3 (full, cap) | 1 blocker, 3 should-fix, 0 refuted; all integrated: a 250 ms tick checks the quiet gap on its own clock (a 2 s poll could miss every gap); the window's monitor is recorded whatever the setting, and boot_monitor for every boot; pending and confirmed steps kept apart, so a set Windows ignores is never a pick; one settings snapshot for step and save number. Stage closed at the cap with these integrations for stage b to review |
+| plan (live scale) | b single (opus-5.5) | 1 (full) | 0 blockers, 6 should-fix, 9 nits, 0 refuted; all integrated: first observation and in-window changes are never picks; the setup marker needs `chardev_open scale0` in step 6; a steady 2 s resend replaces the QMP event idea (no free QMP socket); a newline on each connection recovers a cut line; the elevated task pins PSModulePath and logs to an admin-only folder, and the HKCU environment residual is recorded for John; the Hyprland signature travels in boot.json; nits (socat -u with timeout, test interval, fixed-boot contract, CreateFile for the device path, settings words cleared per run, CLI words, monitor id mapping, stale socket and helper table, wording) |
+| plan (live scale) | b single (opus-5.5) | 2 (full) | 0 blockers, 3 should-fix, 8 nits, 0 refuted; all integrated: TMP and TEMP pinned to an admin-only folder before Add-Type; setup.cmd removes a planted ProgramData link and sets owner and ACL; one short connection per send, the reader keeps its handle across host disconnects, and phase 0 (5) proves that model; nits (join every missing part, vm_args as the site with a checked save argument, feed seeds and keeps the last good line, a 2.5 s wait for the first line, words for unfinished setup and stopped old installs, a send-timeout test knob, named pure functions for the guest, send failures logged once) |
+| plan (live scale) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 2 should-fix, 7 nits, 0 refuted; all integrated: the log and temp folder move under C:\Program Files\Lanai (ProgramData raced its ACL, as C:\Lanai did in phase 6), dropping the ACL repair; the first-line wait is bounded from task start, so a port that never opens still gets the OEM step; nits (residual reach and absolute powershell.exe path, phase 0 (6) uses the shipped feed, start-to-start cadence and hyprctl timeout, vm_plan signature, qml-lint in phase A, signature check). Stage closed at the cap with these integrations unreviewed; John accepted the plan at the cap (2026-10-11). Phase 0 proof 4 then changed the drain rule (a multi-line batch is stale and dropped); the implementation diff gate reviews it |
+| impl (live scale) | a (gpt-6.1-sol) | 1 (full) | 3 should-fix (P2), 0 refuted, 0 downgraded to nit; all integrated test-first: a set is read back and confirmed at once, so a pick of the old step before the next poll holds; a display change drops an unapplied request so it is asked again at once; a first line waiting for its quiet gap holds back the OEM fallback |
+| impl (live scale) | a (gpt-6.1-sol) | 2 (full) | 3 should-fix (P2), 0 refuted, 0 downgraded to nit; all integrated test-first: a stale batch before the first line holds the OEM fallback for one feed period; a failed observation resets the baseline so a returning display never makes a pick (a pick survives); every step the task asked for since the last confirmation is never a pick |
+| impl (live scale) | a (gpt-6.1-sol) | 3 (full, cap) | 1 should-fix (P2), 0 refuted, 0 downgraded to nit; integrated test-first: panel setup jobs forward HYPRLAND_INSTANCE_SIGNATURE to the detached worker, so boot_vm records it for the scale feed |
+| impl (live scale) | b panel (opus-5.5) | 1 (full, 6 lenses) | 0 blockers, 13 should-fix, 30 nits, 0 refuted, 0 downgraded to nit; all integrated test-first: setup step 6 judges the scale task after the user answers (a slow password sign-in no longer loops back to step 5); the guest reader retries only error 1450, reopens on other errors and logs open and read errors once; the feed picks a live Hyprland instance (boot record, inherited, or the only one) and finds it again after hyprctl fails; the guest's first-line hold folded into one LastArrival rule and the baseline reset into Step-ScaleState; the dropped-click notice is pinned and stays 2 to 5 s; tests pin the client-unit query, the hyprctl timeout and the real display observation; panel words and README corrected. Security lens: no defects |
+| impl (live scale) | b panel (opus-5.5) | 2 (full, 6 lenses) | 0 blockers, 6 should-fix, 25 nits (after merging duplicates), 0 refuted, 0 downgraded to nit; all integrated but one nit: a Hyprland instance counts only if it answers (dead instance folders and sockets stay behind; John's machine had about 48), with a search every 30 s while hyprctl fails; a SetScale error is logged once and retried at the next poll; boot and feed share one monitor rule (scale_target); the pinned notice swallows clicks and the panel can scroll under it; the RSS test is bounded under the CI limit; the task principal comes from the checked SID; step 6 has its own reason and words for a scale task that did not start; plan design text gets as-built notes. Not taken (nit): a user pick equal to an older of two unapplied requests is undone once; a second pick holds |
+| impl (live scale) | b panel (opus-5.5) | 3 (full, 6 lenses, cap) | 0 blockers, 5 should-fix, 28 nits, 0 refuted, 0 downgraded to nit; all integrated: a SetScale that keeps failing logs its applying line once (the round 2 retry had made it log every 2 s); an old-task install gets a standing note under the scale list, so the Run setup again step survives shutdown; old-task words no longer use "scale changes" two ways; tests now pin the 5 s settle after a resolution change and the remembered monitor over several closed-window passes; nits (reader reopens after any throw, restarted feed resends its last line, opaque notice, step 6 words, names, host_monitors timeout). Stage closed at the cap with these integrations unreviewed; stage a has no round left for the final-diff rerun. John (2026-10-11): accept the gate, do the hands-on session (phase 0 (6)-(7), phase C) first, then one extra stage a round on the final diff, hands-on fixes included |
+| impl (live scale) | a (gpt-6.1-sol) | 4 (full final diff at 71a9b71, hands-on fixes and phase D included; the extra round John called) | 0 findings, 0 refuted, 0 downgraded to nit: "The committed diff appears sound". Its sandbox could not create the test sockets, so it ran targeted tests (97 passed, 1 skipped) and ShellCheck; the full suite passed outside it (786 ok). Gate closed |
