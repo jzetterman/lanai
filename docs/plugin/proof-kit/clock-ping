@@ -20,18 +20,27 @@ cd -- "$dir"
 ping=ping.txt pong=pong.txt
 rm -f -- "$pong"
 best=""
+# Each run's pings carry its own id, so a line left in ping.txt by an earlier
+# run never matches this run's pongs.
+run=$(date +%s%N)
 for n in $(seq 1 10); do
   tmp=$(mktemp -- ".ping.XXXXXX")
-  printf 'ping %s\n' "$n" >"$tmp"
+  printf 'ping %s %s\n' "$n" "$run" >"$tmp"
   t1=$(date +%s.%N)
   mv -fT -- "$tmp" "$ping"
-  while ! grep -q "^ping $n " "$pong" 2>/dev/null; do
+  late=""
+  while ! grep -q "^ping $n $run " "$pong" 2>/dev/null; do
     sleep 0.005
     awk -v t="$t1" -v now="$(date +%s.%N)" 'BEGIN { exit !(now - t > 5) }' &&
-      { echo "no pong for ping $n in 5 s; is pong.ps1 running?" >&2; exit 1; }
+      { late=1; break; }
   done
+  if [[ -n $late ]]; then
+    echo "no pong for ping $n in 5 s; is pong.ps1 running?" >&2
+    [[ -n $best ]] || exit 1
+    break
+  fi
   t2=$(date +%s.%N)
-  guest=$(grep "^ping $n " "$pong" | tail -n 1 | cut -d' ' -f3)
+  guest=$(grep "^ping $n $run " "$pong" | tail -n 1 | cut -d' ' -f4)
   g=$(date -d "$guest" +%s.%N)
   line=$(awk -v t1="$t1" -v t2="$t2" -v g="$g" -v n="$n" \
     'BEGIN { printf "%d offset %+.3f s bound %.3f s\n", n, g - (t1 + t2) / 2, (t2 - t1) / 2 }')

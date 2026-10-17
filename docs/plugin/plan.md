@@ -2142,6 +2142,12 @@ spec, plan and review gates before it is built.
   scale work that starts at a sign-in has a 20 s bar (spec 12). Moving it into
   `lanai-start.cs` would bring that to about 7 s and drop the run-time
   `Add-Type`. About 1,000 lines of PowerShell; its own plan and gates.
+  Measured on phase H's build (phase G, 2026-10-17): the program is up 7.4
+  to 8.5 s after the sign-in and switches the resolution 0.2 s later, but
+  the scale script opens its port 3.6 to 4.0 s after that and applies the
+  scale at +12.7 to +13.3 s. John sees the resolution change as the desktop
+  appears and the scale change seconds later. John's call (2026-10-17): do
+  this next, after phase G.
 
 ## Follow-on: live scale (John, 2026-10-10)
 
@@ -3586,6 +3592,16 @@ In every timed boot case (steps 2 to 6), John also confirms the final size
 in Display settings. A start that misses 15 s goes to John. Record each step in `proofs.md`, "Resize
 hands-on, phase G". If the cold-start stuck case takes more than about 12 s,
 bring the 15 s bar back to John (spec review log).
+
+Done (2026-10-17) on phase H's build `de0273b`: steps 1 to 9, the row 7b
+fixture and the 10-minute process list all passed (`proofs.md`, "Resumed
+on phase H's build"). The boot starts matched 5.1 to 7.9 s after the
+sign-in, the stuck cases 9.3 s (start) and 8.2 s (restart). Step 3 used A
+1434x894 and B 1440x900, since the phase E pair caps both sizes at 150%.
+For a rerun of step 4: `AutoAdminLogon` 0 alone still signs in at boot
+through Windows' automatic restart sign-on (turn off "Use my sign-in info
+to automatically finish setting up after an update" too), and turning
+automatic sign-in back on needs the password stored again (`netplwiz`).
 
 ### Phase H: the start program (TDD, C#, PowerShell and bash)
 

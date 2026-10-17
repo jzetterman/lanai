@@ -226,15 +226,20 @@ win:setGuestRes=yes"
   assert [ ! -e "$T/client.args" ]
 }
 
-# Answer clock-ping in <dir> as pong.ps1 does: each new ping line goes back
-# to pong.txt with the time appended. Stops after 15 s.
+# Answer clock-ping in <dir> as pong.ps1 does: the line already in ping.txt
+# is the last run's and gets no pong; each new ping line goes back to
+# pong.txt with the time appended. Stops after <max> pongs (0, the default,
+# for no limit) or 15 s. <skip> 0 answers the line already there too, for a
+# pong that starts after the first ping.
 fake_pong() {
-  local dir=$1 last='' line end=$((EPOCHSECONDS + 15))
-  while ((EPOCHSECONDS < end)); do
+  local dir=$1 max=${2:-0} skip=${3:-1} count=0 last='' line end=$((EPOCHSECONDS + 15))
+  if ((skip)); then last=$(cat "$dir/ping.txt" 2>/dev/null) || last=''; fi
+  while ((EPOCHSECONDS < end)) && ((max == 0 || count < max)); do
     line=$(cat "$dir/ping.txt" 2>/dev/null) || line=''
     if [[ -n $line && $line != "$last" ]]; then
       printf '%s %s\n' "$line" "$(date +%FT%T.%N%:z)" >>"$dir/pong.txt"
       last=$line
+      count=$((count + 1))
     fi
     sleep 0.01
   done
@@ -251,7 +256,7 @@ fake_pong() {
   assert_output --partial 'best: '
   assert_equal "$(cat "$T/victim")" keep
   assert [ ! -L "$T/share/ping.txt" ]
-  assert_equal "$(cat "$T/share/ping.txt")" 'ping 10'
+  [[ $(cat "$T/share/ping.txt") =~ ^ping\ 10\ [0-9]+$ ]] || fail "ping.txt: $(cat "$T/share/ping.txt")"
   # No temporary file is left behind.
   run find "$T/share" -mindepth 1 -not -name ping.txt -not -name pong.txt
   assert_output ''
@@ -265,15 +270,47 @@ fake_pong() {
     while [[ ! -s $T/share/ping.txt ]]; do sleep 0.01; done
     mv "$T/share" "$T/moved"
     ln -s "$T/elsewhere" "$T/share"
-    fake_pong "$T/moved"
+    fake_pong "$T/moved" 0 0
   ) 3>&- &
   BG_PIDS+=("$!")
   run timeout 30 "$KIT/clock-ping" "$T/share"
   assert_success
   assert_output --partial 'best: '
-  assert_equal "$(cat "$T/moved/ping.txt")" 'ping 10'
+  [[ $(cat "$T/moved/ping.txt") =~ ^ping\ 10\ [0-9]+$ ]] || fail "ping.txt: $(cat "$T/moved/ping.txt")"
   run find "$T/elsewhere" -mindepth 1
   assert_output ''
+}
+
+@test "clock-ping: a ping left by an earlier run does not stop a full exchange" {
+  mkdir "$T/share"
+  # A failed run left its first ping, and the new pong skips that line.
+  echo 'ping 1' >"$T/share/ping.txt"
+  fake_pong "$T/share" 3>&- &
+  BG_PIDS+=("$!")
+  run timeout 30 "$KIT/clock-ping" "$T/share"
+  assert_success
+  assert_line --partial '10 offset '
+  assert_output --partial 'best: '
+}
+
+@test "clock-ping: when pong stops early it reports the best sample so far" {
+  mkdir "$T/share"
+  fake_pong "$T/share" 3 3>&- &
+  BG_PIDS+=("$!")
+  run timeout 30 "$KIT/clock-ping" "$T/share"
+  assert_success
+  assert_line --partial '3 offset '
+  refute_line --partial '4 offset '
+  assert_output --partial 'no pong for ping 4 in 5 s'
+  assert_output --regexp 'best: [123] offset '
+}
+
+@test "clock-ping: with no pong at all it fails" {
+  mkdir "$T/share"
+  run timeout 30 "$KIT/clock-ping" "$T/share"
+  assert_failure
+  assert_output --partial 'no pong for ping 1 in 5 s'
+  refute_output --partial 'best: '
 }
 
 @test "clock-ping: a folder that is a link is refused before any write" {

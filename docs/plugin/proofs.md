@@ -1236,6 +1236,221 @@ builds in Windows, which starts the scale script with no window and runs the
 sign-in step itself (spec amendment 4, plan phase H). The starts above count
 for phase G's record but get run again on phase H's build.
 
+### Resumed on phase H's build (2026-10-17)
+
+Build `de0273b` installed; storage `~/lanai-proofs/lanai-setup-test`. The
+probe tasks first survived a `-Remove` run (most likely not elevated; the
+scratch script hid the error) and opened two console windows at the 17:00
+sign-in. John removed them in an elevated PowerShell, and only `Lanai display
+scale` is left.
+
+- Step 1 passed. With the record at `"signin_step":1`, the panel warning read
+  "... To fix this, shut Windows down and click Run setup again. Running
+  setup again also turns the Windows lock off again." After Run setup again,
+  setup reached step 7, the record has `"signin_step":2`, and the warning is
+  gone. The client rebuilt as `B7-826-236efcb1`.
+- Row 9 passed. Run setup again once more, with the program running: the old
+  file is `lanai-start.old-639278678123546225.exe` (16:56:28), the new
+  `lanai-start.exe` was written at 17:03:32, and after the restart the
+  running process is `"C:\Program Files\Lanai\lanai-start.exe"`, with one
+  `powershell.exe` running `lanai-scale.ps1` and its `conhost.exe` under it.
+  No window appeared at that sign-in. The two `lanai-scale.ps1` engine
+  events per boot in the PowerShell log are the script's own reader runspace,
+  not a second process.
+- Start delays (`Start program: started`): 6.59 s, 5.93 s and 7.68 s. Each
+  step matched the desktop with 0 switches within 0.4 s of the program's
+  start line.
+- Step 2 passed: 13 of 13 within the 15 s bar. Host times; the offset is
+  guest minus host from `clock-ping` (best sample's bound in brackets). "Up"
+  is when the program reached its code, after its process started; "matched"
+  is the step's `matches after 0 switches` line. Every step found the desktop
+  already matching (0 switches), and Display settings showed the size each
+  time. In every start Windows started the program 0.1 to 0.9 s before the
+  sign-in, so the program's own start (5.2 to 8.0 s) sets the time.
+
+  | # | Case | Offset | Sign-in | Desktop at the size | Up | Matched |
+  |---|---|---|---|---|---|---|
+  | 1 | 946x1046, unchanged | -0.647 (0.008) | 17:07:42.74 | +5.7 s (ask 3) | 6.82 s | +7.02 s |
+  | 2 | same | -0.933 (0.008) | 17:09:39.08 | first frame | 6.84 s | +6.69 s |
+  | 3 | same | -0.944 (0.012) | 17:12:11.20 | first frame | 7.3 s | +7.37 s |
+  | 4 | same | -0.897 (0.012) | 17:16:30.10 | first frame | 6.79 s | +6.75 s |
+  | 5 | same | -1.109 (0.012) | 17:19:05.70 | first frame | 8.01 s | +7.85 s |
+  | 6 | same | -0.217 (0.009) | 17:21:34.08 | first frame | 6.76 s | +7.03 s |
+  | 7 | same | -0.524 (0.012) | 17:22:55.73 | first frame | 7 s | +7.14 s |
+  | 8 | same | -0.250 (0.008) | 17:23:57.43 | first frame | 5.2 s | +5.46 s |
+  | 9 | same | -0.501 (0.009) | 17:24:46.96 | first frame | 5.63 s | +5.12 s |
+  | 10 | same | -0.346 (0.012) | 17:25:41.00 | first frame | 6.35 s | +6.44 s |
+  | 11 | larger, 800x600 to 1600x1000 | -0.809 (0.011) | 17:31:30.32 | +2.91 s (ask 2) | 6.2 s | +6.24 s |
+  | 12 | shape, 1600x1000 to 1400x700 | -1.115 (0.008) | 17:33:15.11 | +5.58 s (ask 3) | 7.61 s | +7.68 s |
+  | 13 | smaller, 1400x700 to 800x600 | -0.511 (0.008) | 17:34:25.56 | +3.25 s (ask 2) | 7.66 s | +7.90 s |
+
+  The three size changes used `size-window-on-open`, which floated and sized
+  the new window before Windows' first frame. A first try at 800x600 does
+  not count: the window opened a few seconds after Windows signed in, so
+  the change met a running session (Windows matched 3.0 s after the
+  window's sign-in line). During two sign-ins Windows briefly showed its
+  own mode (1600x1024, 1440x900) before taking the ask. The first clock
+  exchange of start 2 failed: `pong.ps1` answered the line the last run left
+  in `ping.txt`. It now ignores the line it finds at its start.
+- Step 3's pair: A 1434x894 and B 1440x900. The phase E pair (1594x990,
+  1600x1000) leaves both sizes at a 150% cap, so it cannot show the scale
+  move. 1440x900 is the smallest built-in mode that holds A. Checked live
+  at 17:38 with a 150% target: at B the scale task read `maxScaleRel 2`
+  (150%), at A `maxScaleRel 1`, and Settings offered 125% and 100% only.
+- Step 3, start from the bar, passed. `size-window-on-open 1440 900` set
+  the new window at 17:40:23.39. Offset -0.587 (0.008). First frame A at
+  17:40:51.38, one ask at 51.92, a B frame at 52.05 and no more asks (the
+  trap). Sign-in 52.40. The step found desktop 1434x894 against stored
+  1440x900 and switched at 17:41:01.15, then matched after 1 switch at
+  01.71 (+9.31 s). The scale port opened at 04.54 (the task's ready time)
+  and it applied 150% over 125% at 05.12: 4.0 s after the switch, 7.3 s
+  before the bar (20 s after the sign-in, the later of the two). Settings:
+  1440x900, 150%.
+- Step 3, restart, passed on the second try. A watcher resized the window
+  to B when the client logged `Waiting for the host to restart...`
+  (17:45:20.23). Offset -1.261 (0.011). First frame A at 17:45:25.90, one
+  ask at 25.93, a B frame at 26.06 and no more asks. Sign-in 27.91. Switch
+  at 35.52, matched after 1 switch at 36.08 (+8.16 s). The scale task
+  applied 150% at 41.25. Settings: 1440x900, 150%. The first try's watcher
+  never resized (its `grep` matched, but the pipeline waited on `tail`), so
+  that restart had the window unchanged and counts for step 6: offset
+  -1.026 (0.009), first frame 1434x894 at 17:43:18.67, sign-in 20.66,
+  matched after 0 switches at 27.18 (+6.52 s). Settings: 1434x894, 125%.
+- Step 4 passed, after one setup problem. With `AutoAdminLogon` set to 0,
+  Windows still signed in at boot: the Security log shows a type 2 logon
+  (`User32`) at 17:51:31.8 guest time, before the first frame, and John's
+  password at what he took for the sign-in screen was an unlock (type 7,
+  17:52:06.8). That is Windows' automatic restart sign-on ("Use my sign-in
+  info to automatically finish setting up after an update"), which signs in
+  and locks. The step had matched the stuck case (1 switch) 24 s before the
+  unlock. With that setting off too, the password prompt had no session
+  behind it (no `Using Clipboard: LGMP` line until the sign-in):
+  - Made stuck size (desktop A, window set to B at 17:59:51.43). Offset
+    -0.676 (0.009). One ask and a B frame at 17:59:59.42, so the asks
+    ended at once. John signed in at 18:00:20.27. The step found the
+    desktop already at 1440x900 (0 switches) at 24.61 (+4.34 s): at a real
+    sign-in the helper applies the stored size itself, as after a sign-out
+    in phase E. The trap needs a sign-in during boot. Scale 150% at 31.20.
+  - Another size (window set to 1200x800 at 18:02:03.75, desktop
+    1440x900). Offset -0.952 (0.012). Asks at 18:02:10.72, 12.73, 17.73,
+    27.73 and 47.74, then `Windows did not take 1200x800` at 52.74; the
+    sign-in screen showed black bars meanwhile. John signed in at
+    18:03:06.59, a 1200x800 frame came at 07.98, and the step matched with
+    0 switches at 08.84 (+2.25 s). Settings: 1200x800 at 125%, the 150%
+    target capped (125% at 15.47). The program reached its code 1.15 s
+    after its process started, against 5 to 9 s at boot sign-ins.
+- Automatic sign-in back on: `AutoAdminLogon` 1 and the restart sign-on
+  setting on still gave a password prompt (no stored password left), so
+  John stored it again with `netplwiz`.
+- Step 6 passed. The restart with the window unchanged is under step 3
+  above (+6.52 s). Restart with the window resized from 1200x800 to
+  1600x900 when the session ended (18:06:14.47), signed in by hand at the
+  prompt above: offset -2.616 (0.012). First frame 1200x800 at
+  18:06:21.23, asks 1 to 5 by 18:06:58.31, sign-in 18:07:02.81, `did not
+  take` at 03.33, a 1600x900 frame at 03.99, matched after 0 switches at
+  07.01 (+4.21 s). Settings: 1600x900, 150%.
+- Step 5 passed (same boot, offset -2.618, bound 0.012). Sign-out at
+  18:09:33.49; the window went from 1600x900 to 1300x850 at 33.49. Five
+  asks (18:09:34.00 to 18:10:11.04) and one `Windows did not take
+  1300x850` (18:10:16.05) before the sign-in at 18:10:36.15. The log says
+  `Sign-in step: started`; the step found 1600x900 against the stored
+  1300x850, its first switch returned -1, the second took, and it matched
+  after 2 switches at 36.68 (+0.53 s). Settings: 1300x850, 125% (cap).
+  Plain sign-out and sign-in: no ask and no new frame size; the step
+  matched after 0 switches at 18:14:24.23, 0.5 s before the sign-in line
+  (18:14:24.73). The program reached its code 0.22 to 0.3 s after its
+  process started on these warm sign-ins. Two clock exchanges failed first:
+  a stale `ping 1` in `ping.txt` matched the next run's first ping, which
+  pong now skips. `clock-ping` now tags each run's pings with a run id and
+  reports its best sample when pong stops early.
+- Step 9 passed (the pick case, in the session of step 5's plain sign-in,
+  which logged `matches`). Window 1300x850, picks of 1024x768 in Display
+  settings. Five slow picks (18:16:30.62, 18:18:11.67, 18:20:04.36,
+  18:21:13.81 and 18:22:20.66), each more than a minute after the last
+  ask, were each undone in 0.14 to 0.18 s. An extra pick at 18:16:58.86,
+  28 s after an ask, went out as ask 2 of 5 and was undone in 0.14 s.
+  Then 6 quick picks, each made after the previous undo and kept with
+  "Keep changes" where the undo left time:
+
+  | Pick | Picked | Ask | Ask after the previous ask |
+  |---|---|---|---|
+  | 1 | 18:23:33.17 | 1 of 5 at 33.18 | (first) |
+  | 2 | 36.54 | 2 of 5 at 36.54, at once | 3.36 s (wait 2 s over) |
+  | 3 | 40.04 | 3 of 5 at 41.54 | 5.00 s |
+  | 4 | 45.37 | 4 of 5 at 51.54 | 10.00 s |
+  | 5 | 54.46 | 5 of 5 at 18:24:11.56 | 20.01 s |
+  | 6 | 18:24:14.77 | none | |
+
+  Ask 5 came 38.38 s after ask 1. The sixth pick stayed: 1024x768 still at
+  18:25:28 (73.8 s), and John saw it hold. The client logged `Windows did
+  not take 1300x850` at 18:24:16.56, 5 s after ask 5, because the frame was
+  the sixth pick. The words fit a size Windows refused better than a kept
+  pick; a wording note for the client patch (follow-on).
+- Spec row 7b's fixture passed. An Image File Execution Options `Debugger`
+  value for `lanai-start.exe` naming a missing file, then Run setup again:
+  setup.cmd ran steps 1 to 5 and stopped at `[6/8] Adding the display scale
+  task` with "Lanai setup stopped: Windows blocked the program setup built
+  for the display scale task, C:\Program Files\Lanai\lanai-start.exe", the
+  antivirus, App Control or AppLocker (by path; a hash rule breaks on each
+  rebuild) and Smart App Control fixes, and "Then run setup.cmd again." The
+  panel kept its setup.cmd step. With the value deleted, setup.cmd ran
+  again, setup finished at step 7, and the record kept `signin_step` 2. The
+  boot reached the desktop by itself (automatic sign-in back). An admin
+  process list after it: `lanai-start.exe` (written 18:30:16), one
+  `powershell.exe` running `lanai-scale.ps1` and its `conhost.exe`; the
+  blocked run's build is `lanai-start.old-639278730159940719.exe`
+  (18:28:15). A PowerShell that is not elevated shows the task's command
+  lines blank, so the list needs an admin window. The same list at about
+  18:53, 22 minutes after that sign-in (18:30:53 guest time), showed the
+  same three processes with the same ids (6052, 10952, 10960): one program
+  and one scale script.
+- Step 7 passed. John disabled Looking Glass Indirect Display in Device
+  Manager, shut down from the panel and started from the bar at about
+  18:55; automatic sign-in signed in with no picture (the client logged
+  `Waiting for the source to start...`). The log: `Start program: started
+  7.13 s after the process started at 18:55:07.06`, `Sign-in step:
+  started`, `no Looking Glass display` (18:55:14.46), then `gave up after 2
+  minutes; changed nothing` (18:57:14.66). John shut down from the panel,
+  and Claude booted the test copy with `proof-vm run` (QEMU's display off;
+  RDP on 127.0.0.1:13389); John signed in over RDP with `spike/lgtest rdp`
+  and enabled the driver again. That boot logged `Start program: not
+  Lanai's VM; changed nothing` (18:58:46): the proof VM has no Lanai
+  SMBIOS string. `proof-vm stop` shut it down at 23:01:03Z.
+- Step 8, guard review of `guest/lanai-start.cs` (`SigninStep.Decide` and
+  `Tick`, `LanaiRegistry`, `LanaiDesktop`):
+  - No other display: `Find` returns only a display attached to the desktop
+    whose adapter string names Looking Glass, and `Apply` and `Size` act on
+    that device name only. With none, each try waits and logs `no Looking
+    Glass display` once, until the 2-minute stop.
+  - No stored size: a missing key or value, or a malformed one (not a
+    string, a side of 0, or not 1 to 5 ASCII digits a side), is null, and
+    the step stops with `no stored size; changed nothing`. Only the parsed
+    size is logged.
+  - The stored size, the display and its desktop are read again at each
+    try (`Tick`, every 500 ms).
+  - Early stops: a `DISP_CHANGE_BADMODE` (-2) for the stored size stops with
+    `Windows does not support <size>`; 3 successful switches, each at least
+    2 s old, whose size the desktop does not show stop with `3 switches did
+    not take`. Other failures (such as step 5's -1) are retried each try,
+    logged once per line.
+  - The 2-minute limit is checked first on every try: `gave up after 2
+    minutes`, with what Windows reported done.
+  - The gate (the plan's "logon-age gate", built as a mark): the first task
+    start since a sign-in, by a value in `HKCU\Volatile Environment`, which
+    Windows rebuilds at each sign-in. A set mark, a mark that cannot be
+    read, or a missing key skips; the step never creates the key, since a
+    key Lanai made would outlive the sign-in. Step 5's sign-ins logged
+    `started`.
+  - Every call is caught per try; an exception is a failed try, logged once
+    per message, and never ends the program.
+  Sound against the table; no finding.
+- The scale log at the 17:38 change to A said "Windows reports the current
+  scale out of range (curScaleRel 2). Custom scaling is probably on". That
+  is wrong: the old 150% was above the new range until the task set 125%
+  in the same pass. It came again at 18:03:12, with 150% left over from
+  1440x900 at a 1200x800 start. A wording fix for `lanai-scale.ps1`
+  (follow-on).
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with
