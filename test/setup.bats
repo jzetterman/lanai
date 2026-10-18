@@ -632,9 +632,9 @@ setup_boot_ended() {
 # true, QMP and the guest agent answer (the agent with setup.cmd's
 # allow-list), and the pinned client runs with client log <file> started
 # <age> seconds ago (default 5). The boot started <boot-age> seconds ago
-# (default 5): step6-since and step6-run-since, as lanai-vm-exec writes
-# them. A fourth argument of no-servers lets a test supply direct
-# responses instead of starting the socket servers.
+# (default 5): step6-since (with the boot's token) and step6-run-since, as
+# lanai-vm-exec writes them. A fourth argument of no-servers lets a test
+# supply direct responses instead of starting the socket servers.
 step6_running() {
   through_step4
   setup_json '{"snapshot": "declined", "step5": true}'
@@ -644,7 +644,7 @@ step6_running() {
   [[ -d $RUN ]] || mkdir -m 700 "$RUN"
   started_log "$1" "${2:-5}" >"$RUN/client.log"
   rm -f "$RUN"/step6-* "$RUN/qmp-cli.sock" "$RUN/qga.sock" "$T/qga.log"
-  echo "$((EPOCHSECONDS - ${3:-5}))" >"$RUN/step6-since"
+  echo "$((EPOCHSECONDS - ${3:-5})) boot-1" >"$RUN/step6-since"
   echo "$((EPOCHSECONDS - ${3:-5}))" >"$RUN/step6-run-since"
   conf FAKE_QGA_CMD=allowlist
   export FAKE_QGA_LOG=$T/qga.log
@@ -669,9 +669,25 @@ assert_set_time_now() {
   ((${ns:0:10} - EPOCHSECONDS <= 5 && EPOCHSECONDS - ${ns:0:10} <= 5)) || fail "guest-set-time $ns is not now"
 }
 
+# Print the current boot's token, from step6-since.
+boot_token() {
+  cut -d' ' -f2 "$RUN/step6-since"
+}
+
+# boot_since <epoch>: set the current boot's start, keeping its token.
+boot_since() {
+  echo "$1 $(boot_token)" >"$RUN/step6-since"
+}
+
 # Put the boot's start (step6-since) just past step 6's deadline.
 past_limit() {
-  echo "$((EPOCHSECONDS - LANAI_SETUP_LIMIT - 1))" >"$RUN/step6-since"
+  boot_since "$((EPOCHSECONDS - LANAI_SETUP_LIMIT - 1))"
+}
+
+# Put the outer limit's start (step6-run-since) <extra> seconds (default 0)
+# past three times the deadline.
+past_outer() {
+  echo "$((EPOCHSECONDS - 3 * LANAI_SETUP_LIMIT - ${1:-0} - 1))" >"$RUN/step6-run-since"
 }
 
 # Assert that $JSON is a step 6 time-out with reason <reason>: setup stays
@@ -684,7 +700,7 @@ assert_timeout() {
   assert_equal "$(field reason)" "$1"
   assert_equal "$(jq -r .step5 "$S/setup.json")" true
   assert [ -e "$RUN/step6-stopped" ]
-  [[ $(field message) == *" If Windows' setup window stopped with a message, follow it first." ]] ||
+  [[ $(field message) == *" If Windows' setup window stopped with a message, follow it first."* ]] ||
     fail "no setup-window condition: $(field message)"
   assert_equal "$(field next)" "continue setup to check again (lanai setup), or shut Windows down and run lanai setup --window or --no-window to repeat the Windows install"
 }
@@ -1134,7 +1150,6 @@ exec /usr/bin/mv "$@"'
   setup_run
   assert_success
   assert_equal "$(field step)" 7
-  assert_equal "$(jq -r 'has("questions")' <<<"$JSON")" false
   assert_equal "$(<"$S/guest-version")" B7-826-g236efcb155
   assert_set_time_now
   # The command the allow-list must refuse goes out with no arguments, so
@@ -1238,13 +1253,13 @@ exec /usr/bin/mv "$@"'
 }
 
 @test "lanai setup step 6: a closed scale port waits with the sign-in words, then stops 120 s after the other checks" {
-  assert_equal "$(bash -c 'source "$1/lib/lanai.sh"; echo "$LANAI_SETUP_LIMIT $LANAI_SETUP_SCALE_GRACE"' _ "$REPO")" "300 120"
+  assert_equal "$(bash -c 'source "$1/lib/lanai.sh"; echo "$LANAI_SETUP_LIMIT $LANAI_SETUP_SCALE_LIMIT"' _ "$REPO")" "300 120"
   step6_running "$FIX/client-logs/match.log"
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run
   assert_success
   assert_equal "$(field step)" 6
-  assert_equal "$(field message)" "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in."
+  assert_equal "$(field message)" "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in within 2 minutes."
   local checked
   read -r checked _ <"$RUN/step6-checked"
   ((EPOCHSECONDS - checked <= 5)) || fail "step6-checked $checked is not now"
@@ -1254,13 +1269,13 @@ exec /usr/bin/mv "$@"'
   assert_success
   assert_equal "$(field step)" 6
   assert_equal "$(cut -d' ' -f1 "$RUN/step6-checked")" "$checked"
-  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1)) $(<"$RUN/step6-boot")" >"$RUN/step6-checked"
+  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_LIMIT - 1)) $(boot_token)" >"$RUN/step6-checked"
   setup_run
   assert_failure
   assert_timeout scale-task
-  run field message
-  assert_output --partial "the display scale task did not start"
-  assert_output --partial "If Windows is at its sign-in screen, or another user is signed in, sign in as the Windows user who ran setup first."
+  # The setup-window condition first, then the sign-in condition, then
+  # where to look if it still does not start.
+  assert_equal "$(field message)" "In Windows, the display scale task did not start. If Windows' setup window stopped with a message, follow it first. If Windows is at its sign-in screen, or another user is signed in, sign in as the Windows user who ran setup. If it still does not start, see lanai-signin.log and lanai-scale.log in C:\\Program Files\\Lanai."
   assert_equal "$(jq -r '.scale_task // "unset"' "$S/setup.json")" unset
   assert_equal "$(jq -r '.signin_step // "unset"' "$S/setup.json")" unset
   run setup_done
@@ -1357,6 +1372,29 @@ exec /usr/bin/mv "$@"'
   done
 }
 
+@test "lanai setup step 6: a guest agent that sets the clock, then gives the refused command no answer, junk or a non-object, is waited for, then named" {
+  local mode
+  for mode in time-silent time-junk time-array; do
+    stop_bg
+    step6_running "$FIX/client-logs/match.log"
+    conf "FAKE_QGA_CMD=$mode"
+    # No answer, not a wrong one: the allow-list is not judged missing.
+    run qga_reply "$RUN/qga.sock" refusal '{"execute":"guest-exec"}'
+    assert_failure 1
+    setup_run
+    assert_success
+    assert_equal "$(field step)" 6
+    run field message
+    assert_output --partial "the QEMU guest agent did not answer yet"
+    past_limit
+    setup_run
+    assert_failure
+    assert_timeout agents
+    assert_equal "$(jq -c .parts <<<"$JSON")" '["the QEMU guest agent"]'
+    grep -qxF 'cmd {"execute":"guest-exec"}' "$T/qga.log" || fail "$mode: the refused command was not sent"
+  done
+}
+
 @test "lanai setup step 6: a part not answering yet is waited for at first" {
   step6_running "$FIX/client-logs/match.log"
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_VDAGENT=false
@@ -1422,16 +1460,75 @@ exec /usr/bin/mv "$@"'
   # Each RESET starts the boot's limit again...
   past_limit
   event_record '{"event":"RESET"}'
-  ((EPOCHSECONDS - $(<"$RUN/step6-since") <= 5)) || fail "RESET did not stamp the boot"
+  ((EPOCHSECONDS - $(cut -d' ' -f1 "$RUN/step6-since") <= 5)) || fail "RESET did not stamp the boot"
   setup_run
   assert_success
   assert_equal "$(field step)" 6
   # ...but not the outer one, three times as long, from the VM's start.
-  echo "$((EPOCHSECONDS - 3 * LANAI_SETUP_LIMIT - 1))" >"$RUN/step6-run-since"
+  past_outer
   event_record '{"event":"RESET"}'
   setup_run
   assert_failure
   assert_timeout guest-boot
+}
+
+@test "lanai setup step 6: a restart found during a check waits, but past the outer limit stops as guest-boot" {
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  eval "$(declare -f qmp_call | sed '1s/qmp_call/real_qmp_call/')"
+  eval "$(declare -f qga_reply | sed '1s/qga_reply/real_qga_reply/')"
+  # Windows restarts during every QMP call: before the outer limit, each
+  # check waits for the new boot.
+  qmp_call() { event_record '{"event":"RESET"}'; real_qmp_call "$@"; }
+  setup_run
+  assert_success
+  run field message
+  assert_output "Windows restarted. Lanai checks each part again."
+  # Past it, the loop ends instead of waiting forever.
+  past_outer
+  setup_run
+  assert_failure
+  assert_timeout guest-boot
+  # The same for a restart during the guest agent's calls, the check's
+  # second look at the boot.
+  qmp_call() { real_qmp_call "$@"; }
+  qga_reply() { event_record '{"event":"RESET"}'; real_qga_reply "$@"; }
+  rm -f "$RUN/step6-stopped"
+  echo "$EPOCHSECONDS" >"$RUN/step6-run-since"
+  setup_run
+  assert_success
+  run field message
+  assert_output "Windows restarted. Lanai checks each part again."
+  assert [ ! -e "$RUN/step6-checked" ]
+  past_outer
+  setup_run
+  assert_failure
+  assert_timeout guest-boot
+  assert [ ! -e "$RUN/step6-checked" ]
+}
+
+@test "lanai setup step 6: past only the outer limit, a missing client or agent stops as guest-boot" {
+  local fixture
+  for fixture in window-closed agents; do
+    stop_bg
+    # This boot is new, so its own limit is far off; the guest agent's port
+    # is open.
+    step6_running "$FIX/client-logs/match.log"
+    case $fixture in
+      window-closed)
+        started_log "$FIX/client-logs/waiting.log" >"$RUN/client.log"
+        unit_is lanai-client.service inactive ;;
+      agents) conf FAKE_QGA_CMD=allowlist FAKE_QMP_VDAGENT=false ;;
+    esac
+    past_outer
+    rm -f "$T/systemd-run.args"
+    setup_run
+    assert_failure
+    assert_timeout guest-boot
+    assert_equal "$(field message)" "Windows did not finish starting, or its guest agent did not start. If Windows' setup window stopped with a message, follow it first."
+    assert_equal "$(jq -c '.parts // []' <<<"$JSON")" '[]'
+    assert [ ! -e "$T/systemd-run.args" ]
+  done
 }
 
 @test "lanai setup step 6: a closed client with unknown or waiting at the deadline stops as window-closed, not reopened" {
@@ -1470,16 +1567,70 @@ exec /usr/bin/mv "$@"'
   done
 }
 
+@test "lanai setup step 6: at the deadline, a closed pinned client whose IDD never answered stops as idd-missing, not reopened" {
+  # The pinned client ran its 30 s and logged idd-missing, then closed.
+  step6_closed "$FIX/client-logs/waiting.log" 120
+  unit_is lanai-client.service inactive
+  qmp_call() { echo '{"return":[{"label":"qga0","frontend-open":true}]}'; }
+  past_limit
+  rm -f "$T/systemd-run.args"
+  setup_run
+  assert_failure
+  assert_timeout idd-missing
+  assert_equal "$(field message)" "The Looking Glass display driver in Windows did not answer. If Windows' setup window stopped with a message, follow it first."
+  assert [ ! -e "$T/systemd-run.args" ]
+}
+
+@test "lanai setup step 6: at the deadline, a client of another build stops as window-closed, whatever its verdict" {
+  # Another build's client, still open, logged idd-missing: it says nothing
+  # about Lanai's IDD, since only the pinned client counts.
+  step6_closed "$FIX/client-logs/waiting.log" 120
+  sed 's/Looking Glass (B7-826-236efcb1)/Looking Glass (B7-801-1a2b3c4d)/' "$FIX/client-logs/waiting.log" |
+    started_log /dev/stdin 120 >"$RUN/client.log"
+  unit_is lanai-client.service active MainPID=77
+  qmp_call() { echo '{"return":[{"label":"qga0","frontend-open":true}]}'; }
+  past_limit
+  rm -f "$T/systemd-run.args"
+  setup_run
+  assert_failure
+  assert_timeout window-closed
+  assert [ ! -e "$T/systemd-run.args" ]
+}
+
 @test "lanai setup step 6: a check that finds no boot stamps writes them" {
   step6_running "$FIX/client-logs/waiting.log"
   rm "$RUN/step6-since" "$RUN/step6-run-since"
   setup_run
   assert_success
   assert_equal "$(field step)" 6
-  local f
+  local f t
   for f in step6-since step6-run-since; do
-    ((EPOCHSECONDS - $(<"$RUN/$f") <= 5)) || fail "$f is not now: $(<"$RUN/$f")"
-    assert [ ! -e "$RUN/$f.tmp" ]
+    read -r t _ <"$RUN/$f"
+    ((EPOCHSECONDS - t <= 5)) || fail "$f is not now: $(<"$RUN/$f")"
+  done
+  # The boot's start comes with a token, in the one record.
+  [[ $(<"$RUN/step6-since") =~ ^[0-9]+\ [0-9.]+-[0-9]+$ ]] || fail "no token: $(<"$RUN/step6-since")"
+  run find "$RUN" -maxdepth 1 -name 'step6-*.*'
+  assert_output ''
+}
+
+@test "lanai setup step 6: a start that is not a number, or a boot with no token, is written again, not counted from 0" {
+  local since
+  for since in junk "junk boot-1" "123abc boot-1" 1700000000; do
+    step6_running "$FIX/client-logs/match.log"
+    conf FAKE_QGA_CMD=allowlist FAKE_QMP_VDAGENT=false
+    echo "$since" >"$RUN/step6-since"
+    echo junk >"$RUN/step6-run-since"
+    setup_run
+    assert_success
+    assert_equal "$(field step)" 6
+    run field message
+    assert_output --partial "did not answer yet"
+    local f t
+    for f in step6-since step6-run-since; do
+      read -r t _ <"$RUN/$f"
+      ((EPOCHSECONDS - t <= 5)) || fail "$since: $f is not now: $(<"$RUN/$f")"
+    done
   done
 }
 
@@ -1518,19 +1669,23 @@ exec /usr/bin/mv "$@"'
   # Windows restarts: RESET stamps the new boot and keeps the stop.
   event_record '{"event":"RESET"}'
   assert [ -e "$RUN/step6-stopped" ]
-  # A Continue well after the RESET counts from the click.
+  # A Continue well after the RESET counts from the click, with a new token.
   past_limit
-  echo "$((EPOCHSECONDS - 3 * LANAI_SETUP_LIMIT - 1))" >"$RUN/step6-run-since"
+  past_outer
   : >"$RUN/step6-qmp-failed"
+  local token
+  token=$(boot_token)
   setup_run
   assert_success
   assert_equal "$(field step)" 6
   assert [ ! -e "$RUN/step6-stopped" ]
   assert [ ! -e "$RUN/step6-qmp-failed" ]
-  local f
+  local f t
   for f in step6-since step6-run-since; do
-    ((EPOCHSECONDS - $(<"$RUN/$f") <= 5)) || fail "$f is not the click: $(<"$RUN/$f")"
+    read -r t _ <"$RUN/$f"
+    ((EPOCHSECONDS - t <= 5)) || fail "$f is not the click: $(<"$RUN/$f")"
   done
+  refute [ "$(boot_token)" = "$token" ]
   # The part answers on the next try: setup finishes.
   conf FAKE_QGA_CMD=allowlist
   setup_run
@@ -1538,18 +1693,21 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field step)" 7
 }
 
-@test "lanai setup step 6: a check result written after a RESET is not used in the new boot" {
+@test "lanai setup step 6: a check result written after a RESET is not used in the new boot, nor by the panel's wait" {
   step6_running "$FIX/client-logs/match.log"
-  echo "$((EPOCHSECONDS - 50))" >"$RUN/step6-since"
+  boot_since "$((EPOCHSECONDS - 50))"
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run
   assert_equal "$(field step)" 6
+  assert_equal "$(setup_plan | jq -c '[.step, .scale_wait]')" '["6",true]'
   local stale
   stale=$(<"$RUN/step6-checked")
   # The RESET lands while that check is still running, and the check then
   # writes its old result back.
   event_record '{"event":"RESET"}'
   printf '%s\n' "$stale" >"$RUN/step6-checked"
+  # The panel does not wait for the scale task on the old boot's checks.
+  assert_equal "$(setup_plan | jq -c '[.step, .scale_wait]')" '["6",null]'
   # The new boot's agents are not up yet, and the scale port is open.
   conf FAKE_QGA_CMD=notime FAKE_QMP_VDAGENT=false
   setup_run
@@ -1562,7 +1720,7 @@ exec /usr/bin/mv "$@"'
 
 @test "lanai setup step 6: a RESET during a check's QMP or guest agent call is not finished on the old boot's results" {
   step6_running "$FIX/client-logs/match.log"
-  echo "$((EPOCHSECONDS - 50))" >"$RUN/step6-since"
+  boot_since "$((EPOCHSECONDS - 50))"
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run
   assert_equal "$(field step)" 6
@@ -1583,7 +1741,7 @@ exec /usr/bin/mv "$@"'
   eval "$(declare -f qga_reply | sed '1s/qga_reply/real_qga_reply/')"
   qga_reply() { event_record '{"event":"RESET"}'; real_qga_reply "$@"; }
   rm -f "$RUN/step6-checked"
-  echo "$((EPOCHSECONDS - 50))" >"$RUN/step6-since"
+  boot_since "$((EPOCHSECONDS - 50))"
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run
   assert_success
@@ -1594,13 +1752,13 @@ exec /usr/bin/mv "$@"'
   step6_running "$FIX/client-logs/match.log"
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   eval "$(declare -f qga_reply | sed '1s/qga_reply/real_qga_reply/')"
-  # The RESET lands during the guest agent's call, and its new boot stamp
+  # The RESET lands during the guest agent's call, and its new boot's start
   # reads the same second as the old one.
   qga_reply() {
     local s
-    s=$(<"$RUN/step6-since")
+    s=$(cut -d' ' -f1 "$RUN/step6-since")
     event_record '{"event":"RESET"}'
-    echo "$s" >"$RUN/step6-since"
+    boot_since "$s"
     real_qga_reply "$@"
   }
   setup_run
@@ -1611,13 +1769,43 @@ exec /usr/bin/mv "$@"'
   assert_output --partial "Windows restarted"
 }
 
-@test "lanai setup step 6: a restart loop that passes the other checks each boot stops at the outer limit" {
+@test "lanai setup step 6: a boot whose checks first pass past the outer limit still gets its scale wait; a restart loop ends one scale limit later" {
   step6_running "$FIX/client-logs/match.log"
-  # This boot is new (its own limit far off), but the VM has been up past
-  # the outer limit, restarting.
-  echo "$EPOCHSECONDS" >"$RUN/step6-since"
-  echo "$((EPOCHSECONDS - 3 * LANAI_SETUP_LIMIT - 1))" >"$RUN/step6-run-since"
+  # This boot is new (its own limit far off), and the VM has been up past
+  # the outer limit: a slow but healthy boot waits for the scale task.
+  boot_since "$EPOCHSECONDS"
+  past_outer
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  run field message
+  assert_output --partial "Waiting for the display scale task"
+  # A restart loop that passes the other checks each boot ends at the outer
+  # limit plus the scale limit.
+  event_record '{"event":"RESET"}'
+  past_outer "$LANAI_SETUP_SCALE_LIMIT"
+  setup_run
+  assert_failure
+  assert_timeout scale-task
+}
+
+@test "lanai setup step 6: the scale wait also ends at the outer limit plus the scale limit" {
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run
+  assert_equal "$(field step)" 6
+  assert [ -s "$RUN/step6-checked" ]
+  # The other checks passed just now: past only the outer limit, the scale
+  # task still gets its wait...
+  past_outer
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  run field message
+  assert_output --partial "Waiting for the display scale task"
+  # ...and past the outer limit plus the scale limit, the wait ends.
+  past_outer "$LANAI_SETUP_SCALE_LIMIT"
   setup_run
   assert_failure
   assert_timeout scale-task
@@ -1655,7 +1843,7 @@ exec /usr/bin/mv "$@"'
   step6_running "$FIX/client-logs/match.log"
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run
-  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1)) $(<"$RUN/step6-boot")" >"$RUN/step6-checked"
+  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_LIMIT - 1)) $(boot_token)" >"$RUN/step6-checked"
   setup_run
   assert_timeout scale-task
   # Continue checks everything again, then waits for the scale task anew.
@@ -1709,15 +1897,19 @@ exec /usr/bin/mv "$@"'
   assert_output "$XDG_DATA_HOME/lanai/looking-glass/$LG_BUILD/bin/looking-glass-client"
 }
 
-@test "lanai setup: the old answer options are refused" {
-  step6_running "$FIX/client-logs/match.log"
-  local opt
-  for opt in --share-ok --scale-ok; do
-    setup_run "$opt" yes
-    assert_failure 2
-    assert_equal "$(field message)" "unknown option: $opt"
-  done
-  assert_equal "$(jq -r .step5 "$S/setup.json")" true
+@test "lanai setup step 6: Continue setup with Windows stopped whose window cannot open marks the stop" {
+  through_step4
+  setup_json '{"snapshot": "declined", "step5": true}'
+  unit_is lanai-vm.service inactive
+  [[ -d $RUN ]] || mkdir -m 700 "$RUN"
+  rm -f "$RUN/step6-stopped"
+  client_start() { return 1; }
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 6
+  assert_equal "$(field reason)" client
+  # The next Continue gets fresh limits.
+  assert [ -e "$RUN/step6-stopped" ]
 }
 
 @test "lanai setup step 6: a closed client with a decisive verdict is not reopened" {

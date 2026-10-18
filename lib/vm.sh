@@ -148,6 +148,8 @@ vm_args() {
     -chardev "spicevmc,id=usbredir0,name=usbredir"
     -device "usb-redir,chardev=usbredir0"
     -chardev "socket,id=vfs,path=$run/virtiofs.sock"
+    # guest/lanai-share-check.ps1 finds the share by this tag as its
+    # VolumeLabel: renaming it stops every setup at setup.cmd's [5/8].
     -device "vhost-user-fs-pci,chardev=vfs,tag=lanai"
     -qmp "unix:$run/qmp.sock,server=on,wait=off"
     -qmp "unix:$run/qmp-events.sock,server=on,wait=off"
@@ -612,40 +614,16 @@ clock_sync() {
   done
 }
 
-# step6_token: print a new boot token for $RUN/step6-boot. It names one boot
-# of Windows, apart from the boot stamps, which count whole seconds: two
-# boots can start in the same second.
-step6_token() {
-  printf '%s-%s\n' "$EPOCHREALTIME" "$SRANDOM"
-}
-
-# step6_stamp <file> [<epoch>]: write <epoch> (default now) to <file>, one
-# of setup step 6's time stamps in $RUN, through a temporary file of its own
-# and mv: Continue setup and a RESET may write the same stamp at once.
-step6_stamp() {
-  local tmp
-  tmp=$(mktemp -- "$1.XXXXXX") || return 1
-  if printf '%s\n' "${2:-$EPOCHSECONDS}" >"$tmp" && mv -f -- "$tmp" "$1"; then
-    return 0
-  fi
-  rm -f -- "$tmp"
-  return 1
-}
-
 # Write the QMP line <line> to <state>/last-shutdown when it is a SHUTDOWN
 # event, stamped with this run's $INVOCATION_ID: {"invocation", "guest",
 # "reason"}. A RESET (Windows restarting) starts setup step 6's checks
-# again: it gives the new boot its token (step6-boot), stamps its start
-# (step6-since) and removes
-# step6-checked; step6-run-since and step6-stopped stay. Other lines are
+# again for the new boot (step6_new_boot, lib/setup.sh). Other lines are
 # ignored.
 event_record() {
   local rec s run
   if jq -e '.event == "RESET"' <<<"$1" >/dev/null 2>&1; then
     if run=$(run_dir); then
-      rm -f -- "$run/step6-checked"
-      step6_stamp "$run/step6-boot" "$(step6_token)" || true
-      step6_stamp "$run/step6-since" || true
+      step6_new_boot "$run" false || true
     fi
     return 0
   fi
@@ -1034,10 +1012,8 @@ vm_exec() {
   # Setup's step 6 counts its limits from this start and keeps no marker
   # from an earlier run, and the scale feed's window monitor and last line
   # belong to one run.
-  rm -f -- "$run/ivshmem" "$run/step6-checked" "$run/step6-stopped" "$run/step6-qmp-failed" "$run/scale-monitor" "$run/scale-line"
-  step6_stamp "$run/step6-boot" "$(step6_token)" || return 1
-  step6_stamp "$run/step6-since" || return 1
-  step6_stamp "$run/step6-run-since" || return 1
+  rm -f -- "$run/ivshmem" "$run/scale-monitor" "$run/scale-line"
+  step6_new_boot "$run" true || return 1
   : >"$run/client.log"
 
   run_once virtiofsd "$LANAI_VIRTIOFSD" --sandbox namespace --shared-dir "$HOME/Windows" \

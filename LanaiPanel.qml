@@ -181,8 +181,8 @@ Panel {
               Note { text: root.model.control("continue_setup").hint || "" }
               Note { text: root.model.view.setup.again_line || ""; visible: root.setupAgainArmed }
               // After a step 6 time-out with Windows off, the display buttons
-              // show directly: they repeat the Windows install, no arming.
-              Note { text: root.model.view.setup.repeat_line || "" }
+              // show directly: they repeat the Windows install, no arming. The
+              // time-out's words below name them.
               Column {
                 width: parent.width
                 spacing: Style.space(6)

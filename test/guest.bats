@@ -322,7 +322,8 @@ stage1_code() {
   # Also stopped right before the driver update, so pnputil never meets a
   # running service (dockur's, on a first setup). Its result is ignored.
   four=$(line_is 'echo [4/8] Installing the virtio-fs driver')
-  first=$(line_is 'net stop VirtioFsSvc >nul 2>&1')
+  # The new lines call net.exe by its full path.
+  first=$(line_is '"%SystemRoot%\System32\net.exe" stop VirtioFsSvc >nul 2>&1')
   pnp=$(line_is 'pnputil /add-driver "%~dp0viofs\w11\amd64\viofs.inf" /install')
   ((four < first && first + 1 == pnp)) || fail "[4/8] $four, net stop $first, pnputil $pnp"
   query=$(line_is 'if "%errorlevel%"=="1060" set "VFS_NEW=1"')
@@ -337,7 +338,7 @@ stage1_code() {
   create=$(line_of 'sc.exe create VirtioFsSvc binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"')
   ((pnp < query && query < stop && stop < copy && copy < dispatch && dispatch < config && config < create)) ||
     fail "pnputil $pnp, query $query, stop $stop, copy $copy, config $config, create $create"
-  run grep -c 'net stop' < <(setup_code)
+  run grep -cE 'net(\.exe")? stop' < <(setup_code)
   assert_output 2
 }
 
@@ -347,7 +348,7 @@ stage1_code() {
   create=$(line_of 'sc.exe create VirtioFsSvc')
   set=$(line_is ':vfs_done')
   words=$(line_is 'echo Checking that the shared folder from Linux appears in Windows (up to 30 seconds)...')
-  start=$(line_is 'net start VirtioFsSvc >nul 2>&1')
+  start=$(line_is '"%SystemRoot%\System32\net.exe" start VirtioFsSvc >nul 2>&1')
   check=$(line_is "$SHARE_CHECK")
   six=$(line_is 'echo [6/8] Adding the display scale task')
   ((config < create && create < set && set < words && words < start && start < check && check < six)) ||
@@ -357,7 +358,7 @@ stage1_code() {
   assert_line "$((start + 1)):$SHARE_CHECK"
   assert_line "$((check + 1)):set \"RC=%errorlevel%\""
   assert_line "$((check + 2)):if not \"%RC%\"==\"0\" goto :share_missing"
-  run grep -c 'net start' < <(setup_code)
+  run grep -cE 'net(\.exe")? start' < <(setup_code)
   assert_output 1
 }
 
@@ -416,9 +417,12 @@ share_missing_words() {
     run share_missing_words "$rc"
     [[ $output == $'\nLanai setup stopped: '* ]] || fail "no empty line first: $output"
     assert_line --index 0 'Lanai setup stopped: the check for the shared folder could not run'
-    assert_line --index 1 "(exit code $rc). If a security tool blocks scripts, allow Windows"
-    assert_line --index 2 'PowerShell to run lanai-share-check.ps1 from the setup drive.'
-    assert_equal "$(tail -n +5 <<<"$output")" "$fix"
+    assert_line --index 1 "(exit code $rc)."
+    # The security-tool step is the first fix, inside the list.
+    assert_line --index 2 'To fix this:'
+    assert_line --index 3 '- If a security tool blocks scripts, allow Windows PowerShell to run'
+    assert_line --index 4 '  lanai-share-check.ps1 from the setup drive.'
+    assert_equal "$(tail -n +7 <<<"$output")" "$(tail -n +2 <<<"$fix")"
   done
   # Every word sits outside an if ( ) block, where a ")" would end it.
   section=$(setup_code | cut -d: -f2- | sed -n '/^:share_missing$/,/^exit/p')
@@ -433,11 +437,11 @@ share_missing_words() {
     'msiexec /i "%~dp0qemu-ga.msi" /qn /norestart'
     'sc.exe config QEMU-GA'
     'msiexec /i "%~dp0winfsp.msi" /qn /norestart'
-    'net stop VirtioFsSvc >nul 2>&1'
+    '"%SystemRoot%\System32\net.exe" stop VirtioFsSvc >nul 2>&1'
     'pnputil /add-driver'
     'sc.exe query VirtioFsSvc'
     'sc.exe create VirtioFsSvc'
-    'net start VirtioFsSvc >nul 2>&1'
+    '"%SystemRoot%\System32\net.exe" start VirtioFsSvc >nul 2>&1'
     '-File "%~dp0lanai-share-check.ps1"'
     'copy /y "%~dp0lanai-scale.ps1"'
     'copy /y "%~dp0lanai-start.cs"'
@@ -586,8 +590,11 @@ share_ps() {
   assert_output ok
 }
 
-@test "guest share check: a drive not ready, or whose format throws, is skipped" {
+@test "guest share check: a drive not ready, or whose format reads as nothing, is skipped" {
   command -v pwsh >/dev/null || skip "pwsh is not installed"
+  # PowerShell reads a property whose getter throws as $null, as for a
+  # DriveInfo that is not ready, so this case does not reach Find-Share's
+  # try/catch, which stays as a guard.
   run share_ps '
     $bad = Drive "X:\"
     $bad | Add-Member -Force -MemberType ScriptProperty -Name DriveFormat -Value { throw "The device is not ready." }

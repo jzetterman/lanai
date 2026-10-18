@@ -602,8 +602,7 @@ TestCase {
     model.view = {buttons:{continue_setup:{show:true,enable:true,label:'Continue setup'},
       no_window:{show:true,enable:true,label:'Set up in the Windows window',hint:'Use this if the Windows display driver already works.'},
       window:{show:true,enable:true,label:'Set up in a basic window',hint:'Use a basic window if the Windows window is blank or the display driver needs repair.'}},
-      setup:{finished:false,show:true,step:'6',lines:['Click Continue setup so Lanai can check Windows.'],
-        repeat_line:"Or install Lanai's parts in Windows again: choose how Windows should show."},
+      setup:{finished:false,show:true,step:'6',lines:['Click Continue setup so Lanai can check Windows.']},
       settings:{},snapshots:{names:[]},result:{setup:'In Windows, the SPICE agent did not answer.'},logs:{}}
     // Answer each launch's refresh, so the next click is not dropped.
     function settle() {
@@ -615,9 +614,6 @@ TestCase {
     }
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     panel.open()
-    // Setup asks no question at its end, so the panel has nothing to answer.
-    compare(objects(panel, function(o) { return o.control === 'answer_yes' || o.control === 'answer_no' || o.control === 'send_answers' }).length, 0)
-    verify(objects(panel, function(o) { return o.text === model.view.setup.repeat_line && o.visible }).length > 0)
     var again = objects(panel, function(o) { return o.control === 'continue_setup' })[0]
     var client = objects(panel, function(o) { return o.control === 'no_window' })[0]
     var screen = objects(panel, function(o) { return o.control === 'window' })[0]

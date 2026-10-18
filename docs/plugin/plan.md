@@ -130,7 +130,8 @@ use.
   mode other than 0700 (checked before any runtime file is created). It holds
   `qmp.sock`, `qmp-events.sock`, `qmp-cli.sock`, `spice.sock`, `qga.sock`, `virtiofs.sock`, `ivshmem`,
   passt's pid file, `client.log`, `qga-open-since`, `qga-closed-since` (setup's step 6,
-  phase 6), and a pid file per helper (`virtiofsd.pid`,
+  phase 6; superseded by step 6's own records, see "Follow-on: setup checks (John,
+  2026-10-17)"), and a pid file per helper (`virtiofsd.pid`,
   `shutdown-watch.pid`, `sleep-watch.pid`, `event-log.pid`). Not `RuntimeDirectory=`,
   which would delete the
   client log at stop.
@@ -3985,7 +3986,7 @@ This implements the spec amendment of 2026-10-17: requirement 7's last bullet,
 requirement 27's two additions (the refused guest-agent command and the IDD's
 reported build) and row 7's closing clauses. Setup asks no question at its end.
 It supersedes the earlier text about step 6's two questions where they differ:
-lines 918, 944-946, 1029, 1076, 1115-1130, 1211-1212, 1236-1240, 1261-1268,
+lines 132, 918, 944-946, 1029, 1076, 1115-1130, 1211-1212, 1236-1240, 1261-1268,
 1274-1298, 1316, 1364-1366, 1378, 1394, 1864, 1955-1958, 2028, 2361-2373 and
 2522-2523 (as of `main` 7f24300). Phase B points each of them here.
 
@@ -4106,14 +4107,29 @@ task's port.
   phase C records each step 6 boot's time. Every waiting path checks the
   deadlines, the
   failed `query-chardev` path included. The scale task's limit,
-  `LANAI_SETUP_SCALE_GRACE`, is 120 s, counted from `$RUN/step6-checked`, which
+  `LANAI_SETUP_SCALE_LIMIT`, is 120 s, counted from `$RUN/step6-checked`, which
   step 6 writes the first time the other checks pass. Once `step6-checked`
-  exists, step 6 skips the earlier checks and the 300 s and outer deadlines and
-  waits only for the scale task's port, so a short-lived fault while the user
+  exists, step 6 skips the earlier checks and the 300 s deadline and waits
+  only for the scale task's port, so a short-lived fault while the user
   signs in cannot stop setup with the wrong reason. A `RESET` removes
   `step6-checked`, so a restart checks everything again. While it waits, the reply
   and the panel say: "Waiting for the display scale task. It starts when the
-  Windows user who ran setup signs in. If Windows asks for a password, sign in."
+  Windows user who ran setup signs in. If Windows asks for a password, sign in
+  within 2 minutes."
+
+  As built (diff gate): `step6-since` holds the boot's start and its token
+  ("<epoch> <token>", one record written by one rename), so a reader never
+  pairs one boot's start with another's token; `step6_new_boot` in
+  `lib/setup.sh` writes it for `vm_exec`, `event_record` and a Continue after a
+  stop, and `lib/vm.sh` names no step 6 file. `step6-checked` holds "<epoch>
+  <token>" and counts only for the boot token it was written under, in step 6
+  and in the panel's scale wait alike (`step6_checked`). A record that cannot
+  be written stops step 6 with reason `record`. The outer limit ends the scale
+  wait at 3 x `LANAI_SETUP_LIMIT` + `LANAI_SETUP_SCALE_LIMIT` from
+  `step6-run-since`, so a restart loop still ends and a slow but healthy boot
+  still gets its full scale wait. A check that finds Windows restarted under it
+  waits for the new boot, or stops as `guest-boot` once the outer limit has
+  passed.
 - **Continue setup gets fresh limits.** A step 6 `lanai setup` call without
   `--follow` that finds `$RUN/step6-stopped` removes it, `step6-checked` and
   `step6-qmp-failed` and rewrites `step6-since` and `step6-run-since` before it
@@ -4157,8 +4173,12 @@ task's port.
   Lanai's parts in Windows again, shut Windows down and choose a display
   below." So the panel itself carries both of the spec's conditions. Delete the
   `answers` words. (As built: "Click Continue setup to check again. To install
-  Lanai's parts in Windows again, choose a display below once Windows is off.",
-  which reads right whether Windows is on or off.)
+  Lanai's parts in Windows again, shut Windows down, then click Set up in a
+  basic window or Set up in the Windows window." The words show under the
+  display buttons, so they name them. The scale task's words put the
+  setup-window condition before the sign-in condition, and add "If it still
+  does not start, see lanai-signin.log and lanai-scale.log in C:\Program
+  Files\Lanai.")
 - `continue_setup` keeps its current rules and label.
 - At a step 6 time-out (the setup job record's `reply.stop` is `timeout`, its
   step 6 matching the plan) with Windows off, the panel also shows the two
@@ -4167,7 +4187,8 @@ task's port.
   parts in Windows again: choose how Windows should show." They send `setup
   --window` or `setup --no-window`, which makes `setup_plan` take `5
   setup-boot` (setup.sh:530). No arming step: `setupAgainArmed` stays for a
-  finished setup only.
+  finished setup only. (As built: no `repeat_line`; the time-out's words name
+  the buttons.)
 - The job worker (`lib/ui.sh`) follows step 6 while replies are `ok:true`; drop
   its "no questions" condition.
 
@@ -4386,6 +4407,9 @@ Run setup again after a scale-task stop.
   window, past its 30 s. Accepted: the user can still close the window and
   use Shut down in the panel, as the README says for a setup.cmd that stops
   responding.
+- Host sleep counts against step 6's limits: they count wall-clock seconds, so a
+  laptop suspend during step 6 can cause a time-out. Accepted: Continue setup
+  recovers with fresh limits.
 
 ### Routing
 
@@ -4600,3 +4624,4 @@ and runs the diff gate.
 | diff (setup checks, phases A-B) | a (gpt-6.1-sol) | 1 (full) | 2 P2, 0 refuted, 0 downgraded to nit; both confirmed and integrated by Claude, test first: step6-checked now holds the boot stamp it ran under and counts only while that stamp is current, so a check still running at a RESET cannot carry its results into the new boot (reproduced before the fix: setup finished on the old boot's results); a step 6 stamp that cannot be written stops with reason record instead of waiting without a limit |
 | diff (setup checks, phases A-B) | a (gpt-6.1-sol) | 2 (full) | 2 P2, 0 refuted, 0 downgraded to nit; both confirmed and integrated by Claude, test first: step 6 checks that the boot stamp is unchanged after its QMP call and again before it records its results, so a RESET during a QMP or guest-agent call cannot finish setup on the old boot (reproduced before the fix; the test fails with either check removed); step6_stamp writes through its own mktemp file, so Continue and a RESET writing the same stamp cannot collide |
 | diff (setup checks, phases A-B) | a (gpt-6.1-sol) | 3 (full, cap) | 3 P2, 1 refuted, 0 downgraded to nit; 2 confirmed and integrated by Claude, test first: a boot token (step6-boot, new at VM start and at each RESET) replaces the whole-second boot stamp for telling boots apart, so a RESET in the same second still counts; the outer limit also ends the scale wait, so a restart loop that passes the other checks each boot stops. Refuted: "a RESET after the final check, during the stamp write, finishes setup on pre-reset states": every result that call uses (the ports, the agents' replies) was read in one boot, before the restart, so the checks did pass in that boot. Full suite 886/886 |
+| diff (setup checks, phases A-B) | b panel (opus-5.5), 6 lenses | 1 (full) | 0 blockers, 7 should-fix, 25 nits, 0 refuted, 0 downgraded to nit (correctness and security: sound, nits only). Integrated (fixes by an opus-5.5 implementer, verified by Claude): the boot token merged into step6-since as one record written by one mv, with the step 6 file lifecycle and the one step6-checked reader in lib/setup.sh; the scale wait bounded at 3 x LANAI_SETUP_LIMIT + the scale limit, and restart waits past the outer limit stop as guest-boot; tests for the refusal's no-answer case, the deadline's closed-client and other-build reasons, the outer limit's guest-boot override and four more, each failing without its code; the time-out words name the two display buttons (repeat_line dropped), the scale words give the log files and "sign in within 2 minutes", README and setup.cmd words aligned; net.exe qualified; LANAI_SETUP_SCALE_LIMIT; deletion-guard tests removed; plan line 132 and as-built notes. Not taken: host sleep counting against the limits (a Risk; Continue recovers), an in-call QMP retry in place of the marker, agent ids in place of names. Full suite 894/894 |

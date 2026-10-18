@@ -24,9 +24,13 @@ panel_words() {
     def oldtask: " Until you run setup again, the old scale task undoes scales you pick in Windows," +
       " and \u201cMatch my monitor\u201d does not follow the window. Running setup again also turns the Windows lock off again.";
     # Every step 6 time-out ends with the setup-window condition and both
-    # ways on (spec 7): Continue setup, or a display choice once Windows is off.
-    def tail: " If Windows\u0027 setup window stopped with a message, follow it first. Click Continue setup to check again." +
-      " To install Lanai\u0027s parts in Windows again, choose a display below once Windows is off.";
+    # ways on (spec 7): Continue setup, or a display button once Windows is
+    # off. These words show under the buttons, so they name them.
+    def setupwin: " If Windows\u0027 setup window stopped with a message, follow it first.";
+    def again: " Click Continue setup to check again.";
+    def repeat: " To install Lanai\u0027s parts in Windows again, shut Windows down, then click" +
+      " Set up in a basic window or Set up in the Windows window.";
+    def tail: setupwin + again + repeat;
     # An agents time-out names its parts, from a fixed list only.
     def parts: [(.parts // [] | if type == "array" then .[] else empty end) |
       select(. == "the SPICE agent" or . == "the QEMU guest agent")] |
@@ -51,7 +55,8 @@ panel_words() {
       "window-closed":("The Windows window kept closing, so Lanai could not check the display driver." + tail),
       "idd-missing":("The display driver in Windows did not answer." + tail),
       "scale-task":("The display scale task in Windows did not start. It starts when the Windows user who ran setup signs in." +
-        " If Windows is at its sign-in screen, or another user is signed in, sign in as that user first." + tail),
+        setupwin + " If Windows is at its sign-in screen, or another user is signed in, sign in as that user." + again +
+        " If it still does not start, see lanai-signin.log and lanai-scale.log in C:\\Program Files\\Lanai." + repeat),
       mismatch:"The display driver in Windows needs an update. Shut down and set up Windows again.",
       allowlist:"The QEMU guest agent in Windows is missing its allow-list. Shut down and set up Windows again.",
       client:"The Windows window could not open. Check the Windows window log and try again.",
@@ -314,7 +319,6 @@ cmd_panel() {
          $reopen or ($setupBoot and $st.state != "starting") or ($busy|not))),step:$p.step,
        choices:(if $p.finished then ["--no-window","--window"] else $p.choices end),
        again_line:"Choose how Windows should show during setup.",
-       repeat_line:(if $repeat then "Or install Lanai\u0027s parts in Windows again: choose how Windows should show." else "" end),
        lines:([if $st.state == "not-installed" and ($p.reason == "missing" or $p.reason == "layout") then empty
          elif $problem_line != "" then $problem_line else {"1":"Check the Windows install and the shared Windows folder before continuing.",
          "2":"Click Install in a terminal, complete installation there, then continue setup.",
@@ -327,7 +331,7 @@ cmd_panel() {
            elif $st.active then "Shut Windows down before continuing setup."
            else "Continue setup to install the drivers in Windows." end),
          "6":(if $st.state == "stopping" then "Wait for Windows to shut down, then click Continue setup."
-           elif $setupJob and $p.scale_wait == true then "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in."
+           elif $setupJob and $p.scale_wait == true then "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in within 2 minutes."
            elif $setupJob then "Windows is starting or being checked."
            else "Click Continue setup so Lanai can check Windows." end),
          "7":"Setup is finished."}[$p.step] end])},

@@ -103,7 +103,7 @@ rem Always, not only when missing: dockur's older driver fails with the
 rem pinned virtiofs.exe (proof 2). 259 means it is already current. The
 rem service stops first, so the update never meets a running service
 rem (dockur's, on a first setup); its result is ignored, as in [5/8].
-net stop VirtioFsSvc >nul 2>&1
+"%SystemRoot%\System32\net.exe" stop VirtioFsSvc >nul 2>&1
 pnputil /add-driver "%~dp0viofs\w11\amd64\viofs.inf" /install
 set "RC=%errorlevel%"
 if not "%RC%"=="0" if not "%RC%"=="3010" if not "%RC%"=="259" goto :failed
@@ -146,7 +146,7 @@ rem by its full path, running the script from the setup drive; it exits 0,
 rem 10 (no drive) or 11 (no listing), and anything else means it could not
 rem run. :share_missing tells them apart.
 echo Checking that the shared folder from Linux appears in Windows (up to 30 seconds)...
-net start VirtioFsSvc >nul 2>&1
+"%SystemRoot%\System32\net.exe" start VirtioFsSvc >nul 2>&1
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0lanai-share-check.ps1"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :share_missing
@@ -293,16 +293,19 @@ exit /b 1
 
 :share_missing
 rem One goto per code, so no word sits inside an if ( ) block, where a ")"
-rem would end it. Every code ends with the same steps. A panel shutdown in
-rem this boot leaves setup at step 5, so the panel offers the displays
-rem again, and the next setup boot checks the folder on Linux first.
+rem would end it. Every code ends with the same steps; when the check could
+rem not run, the security-tool step comes first. A panel shutdown in this
+rem boot leaves setup at step 5, so the panel offers the displays again,
+rem and the next setup boot checks the folder on Linux first.
 echo.
 if "%RC%"=="10" goto :share_absent
 if "%RC%"=="11" goto :share_unreadable
 echo Lanai setup stopped: the check for the shared folder could not run
-echo (exit code %RC%). If a security tool blocks scripts, allow Windows
-echo PowerShell to run lanai-share-check.ps1 from the setup drive.
-goto :share_fix
+echo (exit code %RC%).
+echo To fix this:
+echo - If a security tool blocks scripts, allow Windows PowerShell to run
+echo   lanai-share-check.ps1 from the setup drive.
+goto :share_steps
 :share_absent
 echo Lanai setup stopped: the shared folder from Linux did not appear in Windows
 echo as a drive.
@@ -312,6 +315,7 @@ echo Lanai setup stopped: the shared folder from Linux appeared as a drive, but
 echo Windows could not read it.
 :share_fix
 echo To fix this:
+:share_steps
 echo - Restart Windows from the Start menu. The setup drive stays attached.
 echo - If setup stopped here before, shut Windows down from the Lanai panel
 echo   instead, and choose a display there. Lanai then checks the folder on Linux.

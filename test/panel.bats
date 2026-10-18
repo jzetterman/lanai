@@ -78,16 +78,22 @@ setup() {
 }
 
 # The words that end every step 6 time-out: the setup-window condition and
-# both ways on (spec 7).
-TIMEOUT_TAIL="If Windows' setup window stopped with a message, follow it first. Click Continue setup to check again. To install Lanai's parts in Windows again, choose a display below once Windows is off."
+# both ways on (spec 7). They show under the display buttons, so they name
+# them (LanaiPanel.qml).
+TIMEOUT_REPEAT="To install Lanai's parts in Windows again, shut Windows down, then click Set up in a basic window or Set up in the Windows window."
+TIMEOUT_TAIL="If Windows' setup window stopped with a message, follow it first. Click Continue setup to check again. $TIMEOUT_REPEAT"
 
 @test "panel words: each step 6 time-out names what did not answer, with both conditions and ways on" {
   local reason words
   for reason in qmp guest-boot window-closed idd-missing agents scale-task; do
     words=$(panel_words setup "$(jq -nc --arg r "$reason" '{ok:false,step:"6",stop:"timeout",reason:$r,parts:["the SPICE agent"],message:"UNTRUSTED",next:"UNTRUSTED"}')")
-    [[ $words == ?*" $TIMEOUT_TAIL" ]] || fail "$reason: $words"
+    [[ $words == ?*" If Windows' setup window stopped with a message, follow it first."*" Click Continue setup to check again. "*"$TIMEOUT_REPEAT" ]] ||
+      fail "$reason: $words"
     [[ $words != *UNTRUSTED* ]] || fail "$reason shows CLI prose: $words"
   done
+  # The display buttons' labels, as the panel shows them.
+  run cmd_panel
+  assert_equal "$(jq -r '.buttons.window.label + "|" + .buttons.no_window.label' <<<"$output")" "Set up in a basic window|Set up in the Windows window"
   run panel_words setup '{"ok":false,"step":"6","stop":"timeout","reason":"qmp"}'
   assert_output "Lanai could not reach Windows' virtual machine to check it. $TIMEOUT_TAIL"
   run panel_words setup '{"ok":false,"step":"6","stop":"timeout","reason":"guest-boot"}'
@@ -97,7 +103,9 @@ TIMEOUT_TAIL="If Windows' setup window stopped with a message, follow it first. 
   run panel_words setup '{"ok":false,"step":"6","stop":"timeout","reason":"idd-missing"}'
   assert_output "The display driver in Windows did not answer. $TIMEOUT_TAIL"
   run panel_words setup '{"ok":false,"step":"6","stop":"timeout","reason":"scale-task"}'
-  assert_output "The display scale task in Windows did not start. It starts when the Windows user who ran setup signs in. If Windows is at its sign-in screen, or another user is signed in, sign in as that user first. $TIMEOUT_TAIL"
+  # The setup-window condition before the sign-in condition, then where to
+  # look if the task still does not start.
+  assert_output "The display scale task in Windows did not start. It starts when the Windows user who ran setup signs in. If Windows' setup window stopped with a message, follow it first. If Windows is at its sign-in screen, or another user is signed in, sign in as that user. Click Continue setup to check again. If it still does not start, see lanai-signin.log and lanai-scale.log in C:\\Program Files\\Lanai. $TIMEOUT_REPEAT"
 }
 
 @test "panel words: an agents time-out names each part that did not answer, and only known parts" {
@@ -128,14 +136,13 @@ TIMEOUT_TAIL="If Windows' setup window stopped with a message, follow it first. 
   run cmd_panel
   assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Windows is starting or being checked.'
   # The other checks passed, and the setup job waits for the scale task.
-  echo "$EPOCHSECONDS" >"$RUN/step6-checked"
+  checks_passed
   run cmd_panel
   exec {fd}>&-
-  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in.'
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in within 2 minutes.'
   # With no setup job running, nothing waits: Continue setup checks again.
   run cmd_panel
   assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Click Continue setup so Lanai can check Windows.'
-  assert_equal "$(jq -r '.setup | has("questions")' <<<"$output")" false
 }
 
 # Write a step 6 time-out with <reason> as the setup job's ended record.
@@ -159,7 +166,6 @@ timeout_record() {
   assert_equal "$(jq -c '[.buttons.continue_setup.show, .buttons.continue_setup.enable, .buttons.continue_setup.label]' <<<"$output")" '[true,true,"Continue setup"]'
   # The display buttons wait for Windows to shut down.
   assert_equal "$(jq -r '.buttons.window.show or .buttons.no_window.show' <<<"$output")" false
-  assert_equal "$(jq -r .setup.repeat_line <<<"$output")" ''
 }
 
 @test "panel: a step 6 time-out with Windows off offers Continue setup and both display buttons, with no arming" {
@@ -172,10 +178,9 @@ timeout_record() {
     assert_success
     assert_equal "$(jq -r .setup.step <<<"$output")" 6
     assert_equal "$(jq -r .setup.finished <<<"$output")" false
-    [[ $(jq -r .result.setup <<<"$output") == ?*" $TIMEOUT_TAIL" ]] || fail "$reason: $(jq -r .result.setup <<<"$output")"
+    [[ $(jq -r .result.setup <<<"$output") == ?*" $TIMEOUT_REPEAT" ]] || fail "$reason: $(jq -r .result.setup <<<"$output")"
     assert_equal "$(jq -c '[.buttons.continue_setup.show, .buttons.continue_setup.enable]' <<<"$output")" '[true,true]'
     assert_equal "$(jq -c '[.buttons.window.show, .buttons.window.enable, .buttons.no_window.show, .buttons.no_window.enable]' <<<"$output")" '[true,true,true,true]'
-    assert_equal "$(jq -r .setup.repeat_line <<<"$output")" "Or install Lanai's parts in Windows again: choose how Windows should show."
     # Each display button repeats the Windows install: setup's plan takes
     # the setup boot for either explicit choice.
     assert_equal "$(setup_plan "$(shared_facts)" true | jq -r '.step + " " + .action')" '5 setup-boot'
@@ -194,7 +199,6 @@ timeout_record() {
     assert [ -n "$(jq -r .result.setup <<<"$output")" ]
     assert_equal "$(jq -r .buttons.continue_setup.enable <<<"$output")" true
     assert_equal "$(jq -r '.buttons.window.show or .buttons.no_window.show' <<<"$output")" false
-    assert_equal "$(jq -r .setup.repeat_line <<<"$output")" ''
   done
   # A time-out from an earlier step 6 is over once the plan moved on.
   state '{"snapshot":"declined","step5":false}'
@@ -202,7 +206,6 @@ timeout_record() {
   run cmd_panel
   assert_equal "$(jq -r .setup.step <<<"$output")" 5
   assert_equal "$(jq -r .result.setup <<<"$output")" ''
-  assert_equal "$(jq -r .setup.repeat_line <<<"$output")" ''
 }
 
 @test "panel: a wrong answer's words show while Windows runs and after it shuts down, with Continue setup" {
@@ -222,7 +225,6 @@ timeout_record() {
     assert_equal "$(jq -r .setup.step <<<"$output")" 5
     assert_equal "$(jq -r .result.setup <<<"$output")" "$(panel_words setup "$reply")"
     assert_equal "$(jq -c '[.buttons.continue_setup.show, .buttons.continue_setup.enable]' <<<"$output")" '[true,true]'
-    assert_equal "$(jq -r .setup.repeat_line <<<"$output")" ''
   done
 }
 
@@ -307,6 +309,13 @@ timeout_record() {
   done
 }
 state() { jq -nc --arg l "$STORE" --argjson d "$1" '$d + {location:$l}' >"$S/setup.json"; }
+
+# Mark step 6's other checks passed in the current boot, as step 6 writes
+# them: step6-since and step6-checked under one boot token.
+checks_passed() {
+  echo "1 boot-1" >"$RUN/step6-since"
+  echo "1 boot-1" >"$RUN/step6-checked"
+}
 
 # Leave a stopped setup boot's evidence; a panel request is clean but incomplete.
 ended() {
@@ -501,20 +510,20 @@ assert_plan_agreement() {
   ST=active
   state '{"snapshot":"declined","step5":true}'
   echo '{"setup":false}' >"$S/boot.json"
-  echo 1 >"$RUN/step6-checked"
-  echo 1 >"$RUN/step6-since"
+  checks_passed
   echo 1 >"$RUN/step6-run-since"
-  echo old-boot >"$RUN/step6-boot"
   : >"$RUN/step6-stopped"
   run setup_plan "$(shared_facts)"
   assert_equal "$(jq -c '[.step, .action, .scale_wait]' <<<"$output")" '["6","checks",true]'
-  assert_equal "$(jq -r 'has("questions")' <<<"$output")" false
+  # Windows restarts.
   event_record '{"event":"RESET"}'
   assert [ ! -e "$RUN/step6-checked" ]
-  ((EPOCHSECONDS - $(<"$RUN/step6-since") <= 5)) || fail "RESET did not stamp the boot"
-  # A new boot token, even within the same second.
-  assert [ -s "$RUN/step6-boot" ]
-  refute [ "$(<"$RUN/step6-boot")" = old-boot ]
+  # The new boot's start and a new token, even within the same second, in
+  # one record.
+  local t token
+  read -r t token <"$RUN/step6-since"
+  ((EPOCHSECONDS - t <= 5)) || fail "RESET did not stamp the boot"
+  [[ -n $token && $token != boot-1 ]] || fail "no new token: $(<"$RUN/step6-since")"
   run find "$RUN" -maxdepth 1 -name 'step6-*.*'
   assert_output ''
   # The outer limit and the stop stay: a Continue after the restart still
@@ -527,6 +536,24 @@ assert_plan_agreement() {
   setup_back5 allowlist 'The QEMU guest agent in Windows is missing its allow-list.' >/dev/null
   run setup_plan "$(shared_facts)"
   assert_equal "$(jq -r .step <<<"$output")" 5
+}
+
+@test "setup plan: a step6-checked from another boot, or with no boot record, is not the scale wait" {
+  ST=active
+  state '{"snapshot":"declined","step5":true}'
+  echo '{"setup":false}' >"$S/boot.json"
+  local since checked
+  for since in "1 boot-2" "" "1"; do
+    for checked in "1 boot-1" "1"; do
+      if [[ -n $since ]]; then echo "$since" >"$RUN/step6-since"; else rm -f "$RUN/step6-since"; fi
+      echo "$checked" >"$RUN/step6-checked"
+      run setup_plan "$(shared_facts)"
+      assert_equal "$(jq -c '[.step, .action, .scale_wait]' <<<"$output")" '["6","checks",null]'
+    done
+  done
+  checks_passed
+  run setup_plan "$(shared_facts)"
+  assert_equal "$(jq -c '[.step, .action, .scale_wait]' <<<"$output")" '["6","checks",true]'
 }
 
 @test "panel: stopping keeps Shut down enabled and only force_stop enables Force stop" {
@@ -675,7 +702,7 @@ assert_plan_agreement() {
       setup-wait) expected=5; fixture_facts+=$'\nActiveState=active'; echo '{"setup":true}' >"$S/boot.json" ;;
       scale-wait|checking|wait) expected=6; state '{"snapshot":"declined","step5":true}'; fixture_facts+=$'\nActiveState=active'
         [[ $fixture != wait ]] || fixture_facts+=$'\nActiveState=activating'
-        [[ $fixture != scale-wait ]] || echo 1 >"$RUN/step6-checked" ;;
+        [[ $fixture != scale-wait ]] || checks_passed ;;
       done) expected=7; state "$CURRENT" ;;
     esac
     plan=$(setup_plan "$fixture_facts")
@@ -833,7 +860,7 @@ assert_plan_agreement() {
         base) : >"$STORE/windows.base" ;;
         active-setup) ST=active; echo '{"setup":true}' >"$S/boot.json" ;;
         checks|scale-wait|starting) ST=active; state '{"snapshot":"declined","step5":true}';
-          [[ $fixture != scale-wait ]] || echo 1 >"$RUN/step6-checked"
+          [[ $fixture != scale-wait ]] || checks_passed
           [[ $fixture != starting ]] || ST=activating ;;
         wrong-boot) ST=active ;;
         share) share_check() { return 1; } ;;
@@ -918,10 +945,9 @@ assert_plan_agreement() {
 }
 
 @test "vm exec: stamps step 6's limits and clears its markers at start before running only stubbed helpers" {
-  echo 1 >"$RUN/step6-checked"
+  checks_passed
   : >"$RUN/step6-stopped"
   : >"$RUN/step6-qmp-failed"
-  echo 1 >"$RUN/step6-since"
   echo 1 >"$RUN/step6-run-since"
   echo "lanai-scale 300 99" >"$RUN/scale-line"
   vm_plan() { echo arguments; }
@@ -935,10 +961,14 @@ assert_plan_agreement() {
   assert [ ! -e "$RUN/step6-stopped" ]
   assert [ ! -e "$RUN/step6-qmp-failed" ]
   assert [ ! -e "$RUN/scale-line" ]
-  local f
+  local f t
   for f in step6-since step6-run-since; do
-    ((EPOCHSECONDS - $(<"$RUN/$f") <= 5)) || fail "$f is not this boot's start: $(<"$RUN/$f")"
+    read -r t _ <"$RUN/$f"
+    ((EPOCHSECONDS - t <= 5)) || fail "$f is not this boot's start: $(<"$RUN/$f")"
   done
+  local token
+  read -r _ token <"$RUN/step6-since"
+  [[ -n $token && $token != boot-1 ]] || fail "no new token: $(<"$RUN/step6-since")"
 }
 
 @test "panel: interrupted setup always offers Continue setup, including the snapshot offer" {
@@ -1428,7 +1458,7 @@ setup_worker() {
   done
   ST=active
   # The scale wait waits quietly too; a time-out needs the user.
-  echo "$EPOCHSECONDS" >"$RUN/step6-checked"
+  checks_passed
   run cmd_panel
   assert_equal "$(jq -r .setup.attention <<<"$output")" false
   rm "$RUN/step6-checked"
