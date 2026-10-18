@@ -23,14 +23,12 @@ panel_words() {
     def log: {setup:"setup log",snapshot:"snapshot log",restore:"restore log","build-client":"update log"}[$c] // "button actions log";
     def oldtask: " Until you run setup again, the old scale task undoes scales you pick in Windows," +
       " and \u201cMatch my monitor\u201d does not follow the window. Running setup again also turns the Windows lock off again.";
-    # Every step 6 time-out ends with the setup-window condition and both
-    # ways on (spec 7): Continue setup, or a display button once Windows is
-    # off. These words show under the buttons, so they name them.
-    def setupwin: " If Windows\u0027 setup window stopped with a message, follow it first.";
-    def again: " Click Continue setup to check again.";
-    def repeat: " To install Lanai\u0027s parts in Windows again, shut Windows down, then click" +
+    # Every step 6 time-out ends with both ways on (spec 7): Continue setup,
+    # or a display button once Windows is off, which also covers a setup.cmd
+    # that stopped. These words show under the buttons, so they name them.
+    def tail: " Click Continue setup to check again. If setup.cmd stopped with a message in Windows," +
+      " or to install Lanai\u0027s parts in Windows again, shut Windows down, then click" +
       " Set up in a basic window or Set up in the Windows window.";
-    def tail: setupwin + again + repeat;
     # An agents time-out names its parts, from a fixed list only.
     def parts: [(.parts // [] | if type == "array" then .[] else empty end) |
       select(. == "the SPICE agent" or . == "the QEMU guest agent")] |
@@ -52,13 +50,13 @@ panel_words() {
       incomplete:"The setup boot did not finish. Choose a display below and run setup.cmd again.",
       qmp:("Lanai could not reach Windows\u0027 virtual machine to check it." + tail),
       "guest-boot":("Windows did not finish starting, or its guest agent did not start." + tail),
-      "window-closed":("The Windows window kept closing, so Lanai could not check the display driver." + tail),
+      "window-closed":("The Windows window did not stay open long enough to check the display driver." + tail),
       "idd-missing":("The display driver in Windows did not answer." + tail),
-      "scale-task":("The display scale task in Windows did not start. It starts when the Windows user who ran setup signs in." +
-        setupwin + " If Windows is at its sign-in screen, or another user is signed in, sign in as that user." + again +
-        " If it still does not start, see lanai-signin.log and lanai-scale.log in C:\\Program Files\\Lanai." + repeat),
-      mismatch:"The display driver in Windows needs an update. Shut down and set up Windows again.",
-      allowlist:"The QEMU guest agent in Windows is missing its allow-list. Shut down and set up Windows again.",
+      "scale-task":("The display scale task in Windows did not start. It starts at sign-in: if Windows is at its" +
+        " sign-in screen, or another user is signed in, sign in as the Windows user who ran setup. If it still" +
+        " does not start, see lanai-signin.log and lanai-scale.log in C:\\Program Files\\Lanai." + tail),
+      mismatch:"The display driver in Windows needs an update. Shut Windows down, then click Continue setup to set up Windows again.",
+      allowlist:"The QEMU guest agent in Windows is missing its allow-list. Shut Windows down, then click Continue setup to set up Windows again.",
       client:"The Windows window could not open. Check the Windows window log and try again.",
       "build-busy":"Another build of the Windows window is running. Try again when it finishes.",
       "restore-unsupported":"The restore was refused because Lanai cannot verify an instant copy in this storage location. Choose storage that supports verified instant copies, then try again.",

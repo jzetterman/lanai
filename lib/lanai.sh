@@ -1501,7 +1501,10 @@ setup_command() {
         out=$(boot_vm false auto true) || rc=$?
         # Step 6 checks the IDD with the pinned client, not build_select's.
         if ((rc == 0)) && ! { client_active || client_start "$(pinned_client)" >&2; }; then
-          step6_mark_stop
+          if ! step6_mark_stop; then
+            step6_record_failed "$(run_dir)"
+            return 1
+          fi
           setup_reply false 6 "Lanai could not open the Windows window." "see the client log" '{"reason":"client"}'
           return 1
         fi

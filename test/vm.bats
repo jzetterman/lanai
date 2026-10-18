@@ -970,22 +970,15 @@ start_exec() {
   # Record helper startup without creating a socket or reaching QEMU.
   shim virtiofsd 'echo started >"$T/virtiofsd.started"; exec sleep 30'
   mkdir -m 700 "$RUN"
-  echo "1700000000 old-boot" >"$RUN/step6-since"
-  echo 1700000000 >"$RUN/step6-run-since"
-  echo "1700000000 old-boot" >"$RUN/step6-checked"
+  echo 1700000000 >"$RUN/step6-since"
+  echo 1700000000 >"$RUN/step6-checked"
   : >"$RUN/step6-stopped"
   : >"$RUN/step6-qmp-failed"
   start_exec
   wait_for_file "$T/virtiofsd.started" "virtiofsd never started: $(cat "$T/exec.out")"
-  local f t token
-  for f in step6-since step6-run-since; do
-    read -r t _ <"$RUN/$f"
-    ((t >= EPOCHSECONDS - 5)) || fail "$f is not this boot's start: $(<"$RUN/$f")"
-  done
-  # A new boot token beside the start, in the one record, apart from the
-  # start's whole seconds.
-  read -r _ token <"$RUN/step6-since"
-  [[ -n $token && $token != old-boot ]] || fail "no new token: $(<"$RUN/step6-since")"
+  local t
+  t=$(<"$RUN/step6-since")
+  ((t >= EPOCHSECONDS - 5)) || fail "step6-since is not this boot's start: $t"
   assert [ ! -e "$RUN/step6-checked" ]
   assert [ ! -e "$RUN/step6-stopped" ]
   assert [ ! -e "$RUN/step6-qmp-failed" ]
@@ -999,7 +992,7 @@ start_exec() {
   : >"$RUN/scale.sock"
   : >"$RUN/ivshmem"
   echo "old client log" >"$RUN/client.log"
-  echo "1700000000 old-boot" >"$RUN/step6-checked"
+  echo 1700000000 >"$RUN/step6-checked"
   # The window's monitor from the last run must not carry over.
   echo DP-9 >"$RUN/scale-monitor"
   mkdir -p "$S"

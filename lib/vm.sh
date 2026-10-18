@@ -616,17 +616,10 @@ clock_sync() {
 
 # Write the QMP line <line> to <state>/last-shutdown when it is a SHUTDOWN
 # event, stamped with this run's $INVOCATION_ID: {"invocation", "guest",
-# "reason"}. A RESET (Windows restarting) starts setup step 6's checks
-# again for the new boot (step6_new_boot, lib/setup.sh). Other lines are
+# "reason"}. Other lines, a RESET (Windows restarting) included, are
 # ignored.
 event_record() {
-  local rec s run
-  if jq -e '.event == "RESET"' <<<"$1" >/dev/null 2>&1; then
-    if run=$(run_dir); then
-      step6_new_boot "$run" false || true
-    fi
-    return 0
-  fi
+  local rec s
   rec=$(jq -c --arg inv "${INVOCATION_ID:-}" 'select(.event == "SHUTDOWN") |
     {invocation: $inv, guest: (.data.guest == true), reason: (.data.reason // "")}' <<<"$1" 2>/dev/null) ||
     return 0
@@ -1013,7 +1006,10 @@ vm_exec() {
   # from an earlier run, and the scale feed's window monitor and last line
   # belong to one run.
   rm -f -- "$run/ivshmem" "$run/scale-monitor" "$run/scale-line"
-  step6_new_boot "$run" true || return 1
+  step6_start "$run" || {
+    echo "lanai: cannot record setup's time limits in $run" >&2
+    return 1
+  }
   : >"$run/client.log"
 
   run_once virtiofsd "$LANAI_VIRTIOFSD" --sandbox namespace --shared-dir "$HOME/Windows" \

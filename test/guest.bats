@@ -47,7 +47,7 @@ SETUP_CMD=$BATS_TEST_DIRNAME/../guest/setup.cmd
 
 # The command lines that change Windows (ERE on a line's text): with the
 # start program's rename, build and self-check, and the share check.
-CHANGE_RE="^(msiexec |sc\\.exe (config|create) |icacls |copy |mkdir |rd |del |pnputil |call |\"%~dp0looking-glass-idd-setup\\.exe\"|\"%SystemRoot%[^\"]*powershell\\.exe\" .*lanai-share-check\\.ps1\"|powershell .*(Register-ScheduledTask|X509Store|\\[IO\\.File\\]::Move|/target:winexe|lanai-start\\.exe' -ArgumentList '/check'))"
+CHANGE_RE="^(msiexec |sc\\.exe (config|create) |icacls |copy |mkdir |rd |del |pnputil |call |\"%~dp0looking-glass-idd-setup\\.exe\"|powershell .*(lanai-share-check\\.ps1\"|Register-ScheduledTask|X509Store|\\[IO\\.File\\]::Move|/target:winexe|lanai-start\\.exe' -ArgumentList '/check'))"
 
 # The start program's lines in step 6 (plan, resize phase H).
 START_COPY='copy /y "%~dp0lanai-start.cs" "C:\Program Files\Lanai\lanai-start.cs" >nul'
@@ -57,8 +57,9 @@ PIN_MODULES="\$env:PSModulePath = [Environment]::SystemDirectory + '\\WindowsPow
 START_BUILD="powershell -NoProfile -NonInteractive -Command \"\$ErrorActionPreference = 'Stop'; $PIN_MODULES \$csc = [Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory() + 'csc.exe'; Set-Location -LiteralPath 'C:\\Program Files\\Lanai'; \$env:TMP = 'C:\\Program Files\\Lanai\\tmp'; \$env:TEMP = 'C:\\Program Files\\Lanai\\tmp'; \$env:LIB = \$null; \$env:PATH = [Environment]::SystemDirectory; & \$csc /nologo /noconfig /target:winexe /optimize /r:System.dll /out:lanai-start.exe lanai-start.cs; exit \$LASTEXITCODE\""
 START_CHECK="powershell -NoProfile -NonInteractive -Command \"\$ErrorActionPreference = 'Stop'; $PIN_MODULES try { \$p = Start-Process -FilePath 'C:\\Program Files\\Lanai\\lanai-start.exe' -ArgumentList '/check' -Wait -PassThru; if (\$null -eq \$p.ExitCode) { exit 1 }; exit \$p.ExitCode } catch { exit 1 }\""
 # The share check in step 5 (plan, setup checks phase A): Windows
-# PowerShell by its full path, the script from the setup drive.
-SHARE_CHECK='"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0lanai-share-check.ps1"'
+# PowerShell by its bare name, as the lines around it, the script from the
+# setup drive.
+SHARE_CHECK='powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0lanai-share-check.ps1"'
 COMPILER_CHECK="powershell -NoProfile -NonInteractive -Command \"if ([IO.File]::Exists([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory() + 'csc.exe')) { exit 0 }; exit 1\""
 
 # Print setup.cmd's command lines (no rem or blank lines), CR removed, each
@@ -279,8 +280,8 @@ stage1_code() {
   done < <(sed -n '/^:elevated/,$p' "$SETUP_CMD"; cat "$REPO/guest/lanai-lock.cmd")
   # setup.cmd's compiler check, move, build, self-check, task and IDD
   # trust, and lanai-lock.cmd's domain check; the check and move use .NET
-  # calls only.
-  assert_equal "$n $pinned" "7 5"
+  # calls only. The share check runs a script, which pins its own path.
+  assert_equal "$n $pinned" "8 5"
 }
 
 @test "setup.cmd: a blocked start program stops setup with what to change" {
@@ -322,8 +323,8 @@ stage1_code() {
   # Also stopped right before the driver update, so pnputil never meets a
   # running service (dockur's, on a first setup). Its result is ignored.
   four=$(line_is 'echo [4/8] Installing the virtio-fs driver')
-  # The new lines call net.exe by its full path.
-  first=$(line_is '"%SystemRoot%\System32\net.exe" stop VirtioFsSvc >nul 2>&1')
+  # By its bare name, as the lines around it.
+  first=$(line_is 'net stop VirtioFsSvc >nul 2>&1')
   pnp=$(line_is 'pnputil /add-driver "%~dp0viofs\w11\amd64\viofs.inf" /install')
   ((four < first && first + 1 == pnp)) || fail "[4/8] $four, net stop $first, pnputil $pnp"
   query=$(line_is 'if "%errorlevel%"=="1060" set "VFS_NEW=1"')
@@ -338,7 +339,7 @@ stage1_code() {
   create=$(line_of 'sc.exe create VirtioFsSvc binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"')
   ((pnp < query && query < stop && stop < copy && copy < dispatch && dispatch < config && config < create)) ||
     fail "pnputil $pnp, query $query, stop $stop, copy $copy, config $config, create $create"
-  run grep -cE 'net(\.exe")? stop' < <(setup_code)
+  run grep -c 'net stop' < <(setup_code)
   assert_output 2
 }
 
@@ -348,7 +349,7 @@ stage1_code() {
   create=$(line_of 'sc.exe create VirtioFsSvc')
   set=$(line_is ':vfs_done')
   words=$(line_is 'echo Checking that the shared folder from Linux appears in Windows (up to 30 seconds)...')
-  start=$(line_is '"%SystemRoot%\System32\net.exe" start VirtioFsSvc >nul 2>&1')
+  start=$(line_is 'net start VirtioFsSvc >nul 2>&1')
   check=$(line_is "$SHARE_CHECK")
   six=$(line_is 'echo [6/8] Adding the display scale task')
   ((config < create && create < set && set < words && words < start && start < check && check < six)) ||
@@ -358,7 +359,7 @@ stage1_code() {
   assert_line "$((start + 1)):$SHARE_CHECK"
   assert_line "$((check + 1)):set \"RC=%errorlevel%\""
   assert_line "$((check + 2)):if not \"%RC%\"==\"0\" goto :share_missing"
-  run grep -cE 'net(\.exe")? start' < <(setup_code)
+  run grep -c 'net start' < <(setup_code)
   assert_output 1
 }
 
@@ -397,7 +398,8 @@ share_missing_words() {
   fix=$(printf '%s\n' 'To fix this:' \
     '- Restart Windows from the Start menu. The setup drive stays attached.' \
     '- If setup stopped here before, shut Windows down from the Lanai panel' \
-    '  instead, and choose a display there. Lanai then checks the folder on Linux.' \
+    '  instead, then click Set up in a basic window or Set up in the Windows' \
+    '  window. Lanai then checks the folder on Linux.' \
     'Then run setup.cmd again.' '<pause>' '<exit /b 1>')
   # Each starts with an empty line (echo.), which bats leaves out of lines.
   run share_missing_words 10
@@ -437,11 +439,11 @@ share_missing_words() {
     'msiexec /i "%~dp0qemu-ga.msi" /qn /norestart'
     'sc.exe config QEMU-GA'
     'msiexec /i "%~dp0winfsp.msi" /qn /norestart'
-    '"%SystemRoot%\System32\net.exe" stop VirtioFsSvc >nul 2>&1'
+    'net stop VirtioFsSvc >nul 2>&1'
     'pnputil /add-driver'
     'sc.exe query VirtioFsSvc'
     'sc.exe create VirtioFsSvc'
-    '"%SystemRoot%\System32\net.exe" start VirtioFsSvc >nul 2>&1'
+    'net start VirtioFsSvc >nul 2>&1'
     '-File "%~dp0lanai-share-check.ps1"'
     'copy /y "%~dp0lanai-scale.ps1"'
     'copy /y "%~dp0lanai-start.cs"'
@@ -679,6 +681,30 @@ share_ps() {
   # The body calls Find-Share once, with the script's own limit.
   run grep -cE '^[^#]*Find-Share .*-TimeoutSec \$TimeoutSec' "$SHARE_PS1"
   assert_output 1
+}
+
+@test "lanai-share-check.ps1: a check that throws exits 1, and each result says what it found" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  # The script's own try catches everything, says so and ends in exit 1,
+  # which setup.cmd reads as "could not run". The switch's words run with
+  # each code, as the body leaves $rc and the share's root.
+  PS1=$SHARE_PS1 run pwsh -NoProfile -NonInteractive -Command '
+    $L = [System.Management.Automation.Language.Parser]
+    $ast = $L::ParseFile($env:PS1, [ref]$null, [ref]$null)
+    $top = @($ast.EndBlock.Statements)
+    $try = @($top | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })
+    $c = $try[0].CatchClauses
+    "$($try.Count) try, $($c.Count) catch, all types: $($c[0].IsCatchAll)"
+    $last = $c[0].Body.Statements[-1]
+    "last: $($last.GetType().Name) $($last.Pipeline.Extent.Text)"
+    $sw = @($top | Where-Object { $_ -is [System.Management.Automation.Language.SwitchStatementAst] })[0]
+    $TimeoutSec = 30; $script:ShareRoot = "Z:\"
+    foreach ($rc in 0, 10, 11) { & ([scriptblock]::Create($sw.Extent.Text)) }'
+  assert_success
+  assert_output "$(printf '%s\n' '1 try, 1 catch, all types: True' 'last: ExitStatementAst 1' \
+    'The shared folder from Linux is drive Z:\.' \
+    'The shared folder from Linux did not appear as a drive in 30 seconds.' \
+    'The shared folder from Linux appeared as drive Z:\, but Windows could not list it.')"
 }
 
 # --- guest/lanai-scale.ps1 ---

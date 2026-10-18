@@ -186,8 +186,10 @@ Neither needs GPU acceleration.
      what did not answer and offers two ways on: Continue setup, which runs the
      checks again with fresh time limits, counted from the click (or from the boot it
      starts, when Windows is stopped), without repeating the guest install; and Run
-     setup again, which repeats it. The message also says, as a condition, to follow
-     Windows' setup window first if setup.cmd stopped there with a message. For the
+     setup again, which repeats it. The message also says, as a condition, that if
+     setup.cmd stopped in Windows with a message, the way on is to repeat the guest
+     install, where setup.cmd runs again. A Windows restart during these checks resets
+     no time limit. For the
      scale task, it also says to sign in to Windows first, as the Windows user who
      ran setup, if Windows is waiting at its sign-in screen or another user is signed
      in; Lanai cannot see that screen, so the message says it as a condition.
@@ -644,3 +646,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | setup-checks amendment review b single (opus-5.5) | 2026-10-17 | Round 2 (full): 0 blockers, 4 should-fix, 4 nits, 0 refuted; all integrated: Continue setup runs the checks with fresh time limits (from the click, or the boot it starts); a wrong answer stops at once and says what is wrong (requirement 8's mismatch message; a guest agent missing its allow-list), with a fixture per checked component and a check that the allow-list refuses after setup; the refused command changes nothing and starts nothing; the wait names the sign-in, and the stop message's sign-in hint is a condition, since Lanai cannot see the sign-in screen; Run setup again named for the scale fixture; a drive that appears but cannot be listed; the IDD's build; the checks bullet follows the restart bullet; the one-prompt count holds for a setup that does not stop |
 | spec | setup-checks amendment review b single (opus-5.5) | 2026-10-17 | Round 3 (full, cap): 0 blockers, 2 should-fix, 5 nits, 0 refuted; all integrated, not reviewed again: a guest agent missing its allow-list stops with Run setup again as the way on, and row 7's wrong-answer cases end with Run setup again finishing; requirement 27 lists the IDD's build the client reports, used only to compare with the pin and name it (a gap from requirement 8 that the amendment states outright); the time-out message also says to follow Windows' setup window first if setup.cmd stopped there, and names the Windows user who ran setup in the sign-in hint; the share must be visible to the user's non-elevated session; row 7's one-prompt and one-restart counts hold for a setup that does not stop; a Continue setup case with Windows stopped |
 | spec | John | 2026-10-17 | Setup-checks amendment: accepted the gate at stage b's cap, with round 3's edits integrated and not reviewed again |
+| spec | John | 2026-10-18 | Setup checks, from the diff gate: a Windows restart during setup's final checks resets no time limit (one limit from the check boot or the Continue, then the scale task's from when the other checks passed); and since the setup drive is not attached at that point, a setup.cmd stop is answered by repeating the guest install, not by following setup.cmd first |

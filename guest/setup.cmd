@@ -103,7 +103,7 @@ rem Always, not only when missing: dockur's older driver fails with the
 rem pinned virtiofs.exe (proof 2). 259 means it is already current. The
 rem service stops first, so the update never meets a running service
 rem (dockur's, on a first setup); its result is ignored, as in [5/8].
-"%SystemRoot%\System32\net.exe" stop VirtioFsSvc >nul 2>&1
+net stop VirtioFsSvc >nul 2>&1
 pnputil /add-driver "%~dp0viofs\w11\amd64\viofs.inf" /install
 set "RC=%errorlevel%"
 if not "%RC%"=="0" if not "%RC%"=="3010" if not "%RC%"=="259" goto :failed
@@ -141,13 +141,14 @@ if not "%RC%"=="0" goto :failed
 :vfs_done
 rem The share check (spec 7): the service starts now, and the shared folder
 rem must appear as a drive that lists before setup goes on. net start's
-rem result is ignored: the check covers it. The check is Windows PowerShell
-rem by its full path, running the script from the setup drive; it exits 0,
-rem 10 (no drive) or 11 (no listing), and anything else means it could not
-rem run. :share_missing tells them apart.
+rem result is ignored: the check covers it. net and powershell go by their
+rem bare names, as elsewhere here: they resolve from System32, the elevated
+rem stage's working folder. The script runs from the setup drive; it exits
+rem 0, 10 (no drive) or 11 (no listing), and anything else means it could
+rem not run. :share_missing tells them apart.
 echo Checking that the shared folder from Linux appears in Windows (up to 30 seconds)...
-"%SystemRoot%\System32\net.exe" start VirtioFsSvc >nul 2>&1
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0lanai-share-check.ps1"
+net start VirtioFsSvc >nul 2>&1
+powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0lanai-share-check.ps1"
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :share_missing
 
@@ -318,7 +319,8 @@ echo To fix this:
 :share_steps
 echo - Restart Windows from the Start menu. The setup drive stays attached.
 echo - If setup stopped here before, shut Windows down from the Lanai panel
-echo   instead, and choose a display there. Lanai then checks the folder on Linux.
+echo   instead, then click Set up in a basic window or Set up in the Windows
+echo   window. Lanai then checks the folder on Linux.
 echo Then run setup.cmd again.
 pause
 exit /b 1

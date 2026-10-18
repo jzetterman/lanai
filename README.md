@@ -109,10 +109,16 @@ the administrator prompt as the same Windows user; approval as a different accou
 is refused. The setup drive must stay **read-only**: do not attach writable setup
 media or substitute files written by Windows. Setup shuts Windows down when the guest
 install finishes. Let that shutdown finish; Shut down from the panel does not count.
-Use Shut down only if setup.cmd stops responding. If setup.cmd stops because the
-shared folder from Linux did not appear in Windows, restart Windows from the Start
-menu and run setup.cmd again. If it stopped there before, shut Windows down from the
-Lanai panel instead and choose a display there; Lanai then checks the folder on Linux.
+Use Shut down only if setup.cmd stops responding, or when its shared-folder check
+tells you to.
+setup.cmd checks that the shared folder from Linux appears in Windows as a drive it
+can read. It stops if the folder did not appear, if Windows could not read it, or if
+the check could not run. When the check could not run and a security tool blocks
+scripts, allow Windows PowerShell to run `lanai-share-check.ps1` from the setup
+drive. Then restart Windows from the Start menu and run setup.cmd again. If
+setup.cmd stopped at this check before, shut Windows down from the Lanai panel
+instead, then click **Set up in a basic window** or **Set up in the Windows window**.
+Lanai then checks the folder on Linux.
 When a setup operation is running, the panel continues setup after Windows shuts
 down. Otherwise, click **Continue setup** when the setup script finishes. If Windows
 stops during the final checks, click **Continue setup** to start it again.
@@ -120,14 +126,15 @@ Setup then checks its own work and asks you nothing: the display driver, the SPI
 agent, the guest agent and its allow-list, and last the display scale task. The
 scale task starts when the Windows user who ran setup signs in. If Windows asks for
 a password, sign in within 2 minutes. If a part does not answer in time, setup stops
-and the panel names it. **Continue setup** checks again. To install Lanai's parts in
-Windows again, shut Windows down and click **Set up in a basic window** or **Set up in
-the Windows window**. When the panel says the display driver in Windows needs an
-update, or the QEMU guest agent in Windows is missing its allow-list, shut Windows
-down and click **Continue setup**, which sets Windows up again.
-If a setup boot stopped unfinished, the panel offers **Set up in a basic window**
-until the Lanai display driver is installed,
-or **Set up in the Windows window** afterward. **Start Windows** and **Open window**
+and the panel names it. Click **Continue setup** to check again. If setup.cmd
+stopped with a message in Windows, or to install Lanai's parts in Windows again,
+shut Windows down, then click **Set up in a basic window** or **Set up in the Windows
+window**. When the panel says the display driver in Windows needs an update, or the
+QEMU guest agent in Windows is missing its allow-list, shut Windows down, then click
+**Continue setup** to set up Windows again.
+If a setup boot stopped unfinished, the panel shows both **Set up in a basic window**
+and **Set up in the Windows window**. Use the basic window until the Lanai display
+driver is installed, and the Windows window afterward. **Start Windows** and **Open window**
 are hidden only before first-time setup finishes for this location or while a setup
 boot or final check boot is running. Lanai starts Windows and opens its window itself
 for those boots. A working install keeps those controls when a client or driver

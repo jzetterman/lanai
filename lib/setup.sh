@@ -256,21 +256,16 @@ setup_guest() {
 
 # --- lanai setup: the resumable steps (plan phase 6, the step table) ---
 
-# Step 6's time limits, in seconds (spec 7). One deadline covers every
-# check before the scale task: LANAI_SETUP_LIMIT from the boot's start in
-# $RUN/step6-since (step6_new_boot). A Windows that restarts in a loop
-# stops at three times that from $RUN/step6-run-since (the VM's start, or
-# a Continue after a stop; never a RESET). The scale task starts at
-# sign-in: its port gets LANAI_SETUP_SCALE_LIMIT from $RUN/step6-checked,
-# when the other checks first passed, and the wait ends by the outer limit
-# plus LANAI_SETUP_SCALE_LIMIT, so a restart loop still ends.
+# Step 6's time limits, in seconds (spec 7). LANAI_SETUP_LIMIT covers every
+# check before the scale task, from $RUN/step6-since: the check boot's
+# start, or a Continue after a stop. The scale task starts at sign-in, so
+# its port gets LANAI_SETUP_SCALE_LIMIT from $RUN/step6-checked, when the
+# other checks first passed. A Windows restart (QMP RESET) resets neither.
 LANAI_SETUP_LIMIT=${LANAI_SETUP_LIMIT:-300}
 LANAI_SETUP_SCALE_LIMIT=${LANAI_SETUP_SCALE_LIMIT:-120}
 
-# Step 6's replies that more than one path gives.
-LANAI_STEP6_GUEST_BOOT="Windows did not finish starting, or its guest agent did not start."
+# Step 6's reply that more than one path gives.
 LANAI_STEP6_IDD_MISSING="The Looking Glass display driver in Windows did not answer."
-LANAI_STEP6_RESTARTED="Windows restarted. Lanai checks each part again."
 
 # setup_reply <ok> <step> <message> <next> [details-json]: emit lanai setup's
 # answer, with the step it stands at ("1" to "7", or "3a").
@@ -306,63 +301,33 @@ setup_wait() {
 # ran out of time. Setup stays at step 6 with step5 kept, so Continue setup
 # checks again, and either display choice repeats the Windows install. The
 # reply carries stop "timeout" (the panel's time-out words and display
-# buttons read it) and, for agents, the parts that did not answer. Every
-# message adds the setup-window condition; the scale task's then adds the
-# sign-in condition and the logs to read.
+# buttons read it) and, for agents, the parts that did not answer. The
+# scale task's message adds the sign-in condition and the logs to read;
+# every message ends with the setup.cmd condition.
 setup_stop6() {
   local reason=$1 msg=$2 more=""
   shift 2
   [[ $reason != scale-task ]] ||
-    more=" If Windows is at its sign-in screen, or another user is signed in, sign in as the Windows user who ran setup. If it still does not start, see lanai-signin.log and lanai-scale.log in C:\\Program Files\\Lanai."
-  setup_reply false 6 "$msg If Windows' setup window stopped with a message, follow it first.$more" \
+    more=" It starts at sign-in: if Windows is at its sign-in screen, or another user is signed in, sign in as the Windows user who ran setup. If it still does not start, see lanai-signin.log and lanai-scale.log in C:\\Program Files\\Lanai."
+  setup_reply false 6 "$msg$more If setup.cmd stopped with a message in Windows, shut Windows down and repeat the Windows install." \
     "continue setup to check again (lanai setup), or shut Windows down and run lanai setup --window or --no-window to repeat the Windows install" \
     "$(jq -nc --arg r "$reason" '{reason: $r, stop: "timeout"} +
       (if $ARGS.positional == [] then {} else {parts: $ARGS.positional} end)' --args -- "$@")"
 }
 
-# step6_timeout <outer true|false> <reason> <message> [<part>...]: setup_stop6,
-# except past only the outer limit: Windows restarted in a loop, so the
-# reason is guest-boot whatever was missing.
-step6_timeout() {
-  if [[ $1 == true ]]; then
-    setup_stop6 guest-boot "$LANAI_STEP6_GUEST_BOOT"
-  else
-    shift
-    setup_stop6 "$@"
-  fi
-}
-
-# step6_restarted <outer late true|false>: a check found that Windows
-# restarted (a new boot token). It waits for the new boot's checks, or,
-# once the outer limit has passed, stops as guest-boot, so a restart loop
-# cannot wait forever. Returns the check's status.
-step6_restarted() {
-  if [[ $1 == true ]]; then
-    setup_stop6 guest-boot "$LANAI_STEP6_GUEST_BOOT"
-    return 1
-  fi
-  setup_wait "$LANAI_STEP6_RESTARTED"
-}
-
 # --- step 6's records in $RUN ---
-#   step6-since       "<epoch> <token>": the current boot's start and its
-#                     token, which names one boot of Windows (two boots can
-#                     start in the same second). One file, written by one
-#                     rename, so a reader always gets a matching pair.
-#   step6-run-since   <epoch>: the start of the outer limit.
-#   step6-checked     "<epoch> <token>": when the other checks passed, and
-#                     the boot they passed in; it counts only for that boot.
+#   step6-since       <epoch>: the check boot's start, or the Continue after
+#                     a stop (step6_start); LANAI_SETUP_LIMIT counts from it.
+#   step6-checked     <epoch>: when the other checks first passed;
+#                     LANAI_SETUP_SCALE_LIMIT counts from it.
 #   step6-stopped     present after a step 6 failure (step6_mark_stop).
 #   step6-qmp-failed  present while the last query-chardev failed.
-
-# step6_token: print a new boot token.
-step6_token() {
-  printf '%s-%s\n' "$EPOCHREALTIME" "$SRANDOM"
-}
+# A Windows restart (QMP RESET) changes none of them.
 
 # step6_stamp <file> [<value>]: write <value> (default the time now) to
 # <file>, one of step 6's records, through a temporary file of its own and
-# mv: Continue setup and a RESET may write the same record at once.
+# mv: the panel's job and a command-line lanai setup may write the same
+# record at once.
 step6_stamp() {
   local tmp
   tmp=$(mktemp -- "$1.XXXXXX") || return 1
@@ -373,58 +338,28 @@ step6_stamp() {
   return 1
 }
 
-# step6_new_boot <run dir> <vm start true|false>: record a new boot for
-# step 6: a new step6-since (now and a new token) and no step6-checked, so
-# the new boot is checked again. vm_exec calls it with true at the VM's
-# start, and a Continue after a stop does too: true also clears the stop
-# and QMP failure markers and starts the outer limit again. A RESET
-# (event_record) calls it with false, which keeps them. Fails when a write
-# fails.
-step6_new_boot() {
-  local run=$1
-  if [[ $2 == true ]]; then
-    rm -f -- "$run/step6-stopped" "$run/step6-qmp-failed"
-    step6_stamp "$run/step6-run-since" || return 1
-  fi
-  step6_stamp "$run/step6-since" "$EPOCHSECONDS $(step6_token)" || return 1
-  rm -f -- "$run/step6-checked"
+# step6_start <run dir>: start step 6's limits from now. vm_exec calls it
+# at the VM's start, and step6_check for a Continue after a stop. It removes
+# the other records, then writes step6-since. Fails when a record cannot be
+# removed or written.
+step6_start() {
+  rm -f -- "$1/step6-stopped" "$1/step6-qmp-failed" "$1/step6-checked" || return 1
+  step6_stamp "$1/step6-since"
 }
 
-# step6_boot <run dir>: print the current boot's "<epoch> <token>" from
-# step6-since. Fails when the record is missing or malformed.
-step6_boot() {
-  local t="" k=""
-  [[ ! -s $1/step6-since ]] || read -r t k _ <"$1/step6-since" || true
-  [[ $t =~ ^[0-9]+$ && -n $k ]] || return 1
-  printf '%s %s\n' "$t" "$k"
-}
-
-# step6_same_boot <run dir> <token>: whether the boot token is still
-# <token>, the one this check started under. A RESET writes a new one, also
-# while a check waits on QEMU or the guest agent.
-step6_same_boot() {
-  local boot
-  boot=$(step6_boot "$1") && [[ ${boot#* } == "$2" ]]
-}
-
-# step6_checked <run dir> [<token>]: print the time in step6-checked when
-# it was written under boot token <token> (default: the current boot's);
-# fails otherwise. setup_plan's scale_wait and step6_check both read it
-# here, so the panel's wait for the scale task agrees with step 6.
+# step6_checked <run dir>: print the time in step6-checked; fails when it
+# is missing or not a number. setup_plan's scale_wait and step6_check both
+# read it here, so the panel's wait for the scale task agrees with step 6.
 step6_checked() {
-  local token=${2:-} boot t="" k=""
-  if [[ -z $token ]]; then
-    boot=$(step6_boot "$1") || return 1
-    token=${boot#* }
-  fi
-  [[ ! -s $1/step6-checked ]] || read -r t k _ <"$1/step6-checked" || true
-  [[ $t =~ ^[0-9]+$ && $k == "$token" ]] || return 1
+  local t=""
+  [[ ! -s $1/step6-checked ]] || t=$(<"$1/step6-checked")
+  [[ $t =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$t"
 }
 
-# step6_since <file>: print the time in <file> (step6-run-since), writing
-# now when it is missing or not a number. Fails when that write fails,
-# since a limit with no start would never run out.
+# step6_since <file>: print the time in <file> (step6-since), writing now
+# when it is missing or not a number. Fails when that write fails, since a
+# limit with no start would never run out.
 step6_since() {
   local t=""
   [[ ! -s $1 ]] || t=$(<"$1")
@@ -442,20 +377,26 @@ step6_record_failed() {
 }
 
 # Mark a step 6 failure in $RUN/step6-stopped, so the next Continue setup
-# gets fresh limits (setup_step6).
+# gets fresh limits (step6_check). Fails when the marker cannot be written;
+# with no run directory there is nothing to mark.
 step6_mark_stop() {
   local run
   run=$(run_dir) || return 0
-  : >"$run/step6-stopped" 2>/dev/null || true
+  : >"$run/step6-stopped"
 }
 
 # setup_step6 [<follow step>]: check the running step 6 boot (step6_check)
-# and mark every failure with step6_mark_stop. <follow step> is set for the
-# panel job's follow-ups (lanai setup --follow), which keep the limits.
+# and mark every failure with step6_mark_stop. A marker that cannot be
+# written replies the record failure instead of the check's own. <follow
+# step> is set for the panel job's follow-ups (lanai setup --follow), which
+# keep the limits.
 setup_step6() {
   local out rc=0
   out=$(step6_check "${1:-}") || rc=$?
-  ((rc == 0)) || step6_mark_stop
+  if ((rc != 0)) && ! step6_mark_stop; then
+    step6_record_failed "$(run_dir)"
+    return 1
+  fi
   printf '%s\n' "$out"
   return "$rc"
 }
@@ -464,34 +405,30 @@ setup_step6() {
 # question: a wrong answer stops at once (setup_back5), and a part that has
 # not answered is waited for until its limit, then stops (setup_stop6).
 # - Limits: a call without <follow step> that finds step6-stopped starts
-#   every limit again from now (Continue setup, step6_new_boot); other
-#   calls keep them, so repeated calls still meet them. A boot record found
-#   missing or malformed is written now. Port state starts no timer. A
-#   record that cannot be written stops step 6 (record).
-# - Once the other checks passed in this boot (step6_checked), only the
-#   scale task's port is awaited, so a short fault while the user signs in
-#   cannot stop setup with the wrong reason. The record counts only for
-#   the boot token it was written under: a RESET writes a new token, so a
-#   check still running then cannot carry its results into the new boot.
-#   The scale wait ends at its own limit, or at the outer limit plus the
-#   scale limit, so a restart loop that gets that far each boot still
-#   stops and a slow but healthy boot still gets its full wait.
-# - A check that finds Windows restarted under it waits for the new boot,
-#   or past the outer limit stops as guest-boot (step6_restarted).
-# - QMP's query-chardev must answer, else it tries again. Past the deadline
-#   a failure stops as qmp only when the call before it failed too
+#   them again from now (Continue setup, step6_start); other calls keep
+#   them, so repeated calls still meet them. A step6-since found missing or
+#   malformed is written now. Port state starts no timer, and a Windows
+#   restart resets nothing. A record that cannot be written stops step 6
+#   (record).
+# - Once the other checks passed (step6-checked), only the scale task's
+#   port is awaited, until its own limit. So a short fault while the user
+#   signs in cannot stop setup with the wrong reason, and a Windows that
+#   restarts in a loop after the checks passed still stops at that limit.
+# - QMP's query-chardev must answer, else it tries again. Past the limit a
+#   failure stops as qmp only when the call before it failed too
 #   (step6-qmp-failed), since the panel's status shares QEMU's one client
 #   socket.
-# - Past the deadline, the first part missing names the stop, in this
-#   order: guest-boot (the guest agent's port is closed), window-closed,
-#   idd-missing, agents; past only the outer limit, guest-boot.
-# - The pinned client must be the one logging. Before the deadline, a
-#   client of another build is replaced, and one that closed with unknown,
-#   waiting or idd-missing is reopened for a fresh 30 s (match and mismatch
-#   stand). The client starts its 30 s count when QEMU starts, so an early
-#   idd-missing means wait. At the deadline, a closed or replaced client
-#   is window-closed, and the pinned client without an IDD verdict
-#   (unknown, waiting or idd-missing) is idd-missing.
+# - Past the limit, the first part missing names the stop, in this order:
+#   guest-boot (the guest agent's port is closed), window-closed,
+#   idd-missing, agents.
+# - The pinned client must be the one logging. Before the limit, a client
+#   of another build is replaced, and one that closed with unknown, waiting
+#   or idd-missing is reopened for a fresh 30 s (match and mismatch stand).
+#   The client starts its 30 s count when QEMU starts, so an early
+#   idd-missing means wait. At the limit, a client closed with no verdict,
+#   or replaced, is window-closed, and the pinned client whose IDD did not
+#   answer (idd-missing, or still open with unknown or waiting) is
+#   idd-missing.
 # - mismatch sends setup back to step 5, keeping the guest version record;
 #   match records the pin from this log (guest_version_note).
 # - Then the SPICE agent's port must be open, and the guest agent must set
@@ -499,8 +436,7 @@ setup_step6() {
 #   reply to it means the allow-list is missing: back to step 5.
 # - Last, step6_scale.
 step6_check() {
-  local follow=$1 run log now boot since token run_since checked="" late=false outer=false outer_late=false
-  local scale_late=false qga_open=false verdict="" guest="" build pinned=true chardevs out rc
+  local follow=$1 run log now since checked late=false qga_open=false verdict="" guest="" build pinned=true chardevs out rc
   local -a missing=()
   if ! run=$(run_dir); then
     setup_reply false 6 "XDG_RUNTIME_DIR is not set, so Lanai cannot reach Windows." ""
@@ -508,53 +444,39 @@ step6_check() {
   fi
   log=$run/client.log
   now=$EPOCHSECONDS
-  if [[ -z $follow && -e $run/step6-stopped ]] && ! step6_new_boot "$run" true; then
+  if [[ -z $follow && -e $run/step6-stopped ]] && ! step6_start "$run"; then
     step6_record_failed "$run"
     return 1
   fi
-  if ! boot=$(step6_boot "$run"); then
-    boot="$now $(step6_token)"
-    if ! step6_stamp "$run/step6-since" "$boot"; then
-      step6_record_failed "$run"
-      return 1
-    fi
-  fi
-  since=${boot%% *} token=${boot#* }
-  if ! run_since=$(step6_since "$run/step6-run-since"); then
+  if ! since=$(step6_since "$run/step6-since"); then
     step6_record_failed "$run"
     return 1
   fi
-  ((now - run_since < 3 * LANAI_SETUP_LIMIT)) || outer_late=true
-  ((now - run_since < 3 * LANAI_SETUP_LIMIT + LANAI_SETUP_SCALE_LIMIT)) || scale_late=true
-  if checked=$(step6_checked "$run" "$token"); then
-    ((now - checked < LANAI_SETUP_SCALE_LIMIT)) || scale_late=true
-    late=$scale_late
+  if checked=$(step6_checked "$run"); then
+    ((now - checked < LANAI_SETUP_SCALE_LIMIT)) || late=true
   elif ((now - since >= LANAI_SETUP_LIMIT)); then
     late=true
-  elif $outer_late; then
-    late=true outer=true
   fi
   if ! chardevs=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}'); then
     if $late && [[ -e $run/step6-qmp-failed ]]; then
       setup_stop6 qmp "QEMU did not answer when Lanai checked Windows' agents."
       return 1
     fi
-    : >"$run/step6-qmp-failed" || true
+    if ! : >"$run/step6-qmp-failed"; then
+      step6_record_failed "$run"
+      return 1
+    fi
     setup_wait "QEMU did not answer Lanai's question about Windows' agents; it asks again next time."
     return 0
   fi
   rm -f -- "$run/step6-qmp-failed"
-  if ! step6_same_boot "$run" "$token"; then
-    step6_restarted "$outer_late"
-    return
-  fi
   if [[ -n $checked ]]; then
     step6_scale "$chardevs" "$late"
     return
   fi
   chardev_open qga0 <<<"$chardevs" && qga_open=true
   if $late && ! $qga_open; then
-    step6_timeout "$outer" guest-boot "$LANAI_STEP6_GUEST_BOOT"
+    setup_stop6 guest-boot "Windows did not finish starting, or its guest agent did not start."
     return 1
   fi
   read -r verdict guest < <(version_check "$log") || verdict=unknown
@@ -562,10 +484,10 @@ step6_check() {
   [[ -z $build || $build == "$LG_BUILD" ]] || pinned=false
   if ! $pinned || { [[ $verdict == unknown || $verdict == waiting || $verdict == idd-missing ]] && ! client_active; }; then
     if $late && $pinned && [[ $verdict == idd-missing ]]; then
-      step6_timeout "$outer" idd-missing "$LANAI_STEP6_IDD_MISSING"
+      setup_stop6 idd-missing "$LANAI_STEP6_IDD_MISSING"
       return 1
     elif $late; then
-      step6_timeout "$outer" window-closed "The Windows window did not stay open long enough to check the display driver."
+      setup_stop6 window-closed "The Windows window did not stay open long enough to check the display driver."
       return 1
     fi
     ! client_active || systemctl --user stop "$LANAI_CLIENT_UNIT" >&2 || true
@@ -586,7 +508,7 @@ step6_check() {
     *)
       # The pinned client is open, and the IDD has not answered it yet.
       if $late; then
-        step6_timeout "$outer" idd-missing "$LANAI_STEP6_IDD_MISSING"
+        setup_stop6 idd-missing "$LANAI_STEP6_IDD_MISSING"
         return 1
       fi
       setup_wait "Windows is starting. Lanai checks each part once it has booted."
@@ -612,21 +534,17 @@ step6_check() {
   if ((${#missing[@]})); then
     out="${missing[0]}${missing[1]:+ and ${missing[1]}}"
     if $late; then
-      step6_timeout "$outer" agents "In Windows, $out did not answer." "${missing[@]}"
+      setup_stop6 agents "In Windows, $out did not answer." "${missing[@]}"
       return 1
     fi
     setup_wait "Windows is still starting: $out did not answer yet."
     return 0
   fi
-  if ! step6_same_boot "$run" "$token"; then
-    step6_restarted "$outer_late"
-    return
-  fi
-  if ! step6_stamp "$run/step6-checked" "$now $token"; then
+  if ! step6_stamp "$run/step6-checked" "$now"; then
     step6_record_failed "$run"
     return 1
   fi
-  step6_scale "$chardevs" "$scale_late"
+  step6_scale "$chardevs" false
 }
 
 # step6_scale <query-chardev reply> <late true|false>: the last check, once
