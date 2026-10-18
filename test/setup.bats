@@ -671,7 +671,13 @@ assert_set_time_now() {
 
 # Put the boot's start (step6-since) just past step 6's deadline.
 past_limit() {
-  echo "$((EPOCHSECONDS - LANAI_SETUP_LIMIT - 1))" >"$RUN/step6-since"
+  local since=$((EPOCHSECONDS - LANAI_SETUP_LIMIT - 1)) checked
+  echo "$since" >"$RUN/step6-since"
+  # The same boot, only later: step6-checked keeps its boot stamp in step.
+  if [[ -s $RUN/step6-checked ]]; then
+    read -r checked _ <"$RUN/step6-checked"
+    echo "$checked $since" >"$RUN/step6-checked"
+  fi
 }
 
 # Assert that $JSON is a step 6 time-out with reason <reason>: setup stays
@@ -1246,15 +1252,15 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field step)" 6
   assert_equal "$(field message)" "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in."
   local checked
-  checked=$(<"$RUN/step6-checked")
+  read -r checked _ <"$RUN/step6-checked"
   ((EPOCHSECONDS - checked <= 5)) || fail "step6-checked $checked is not now"
   # Its limit counts from the other checks passing, not from the boot.
   past_limit
   setup_run
   assert_success
   assert_equal "$(field step)" 6
-  assert_equal "$(<"$RUN/step6-checked")" "$checked"
-  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1))" >"$RUN/step6-checked"
+  assert_equal "$(cut -d' ' -f1 "$RUN/step6-checked")" "$checked"
+  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1)) $(<"$RUN/step6-since")" >"$RUN/step6-checked"
   setup_run
   assert_failure
   assert_timeout scale-task
@@ -1538,11 +1544,52 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field step)" 7
 }
 
+@test "lanai setup step 6: a check result written after a RESET is not used in the new boot" {
+  step6_running "$FIX/client-logs/match.log"
+  echo "$((EPOCHSECONDS - 50))" >"$RUN/step6-since"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run
+  assert_equal "$(field step)" 6
+  local stale
+  stale=$(<"$RUN/step6-checked")
+  # The RESET lands while that check is still running, and the check then
+  # writes its old result back.
+  event_record '{"event":"RESET"}'
+  printf '%s\n' "$stale" >"$RUN/step6-checked"
+  # The new boot's agents are not up yet, and the scale port is open.
+  conf FAKE_QGA_CMD=notime FAKE_QMP_VDAGENT=false
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  run field message
+  assert_output --partial "did not answer yet"
+  assert_equal "$(jq -r '.signin_step // "unset"' "$S/setup.json")" unset
+}
+
+@test "lanai setup step 6: a time stamp that cannot be written stops step 6 instead of waiting without a limit" {
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  mkdir "$RUN/step6-checked.tmp"
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 6
+  assert_equal "$(field reason)" record
+  assert [ ! -e "$RUN/step6-checked" ]
+  # The same for the boot's own stamp.
+  rmdir "$RUN/step6-checked.tmp"
+  rm -f "$RUN/step6-since" "$RUN/step6-stopped"
+  mkdir "$RUN/step6-since.tmp"
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 6
+  assert_equal "$(field reason)" record
+}
+
 @test "lanai setup step 6: a scale-task stop, then Continue: the scale task gets its limit again" {
   step6_running "$FIX/client-logs/match.log"
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run
-  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1))" >"$RUN/step6-checked"
+  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1)) $(<"$RUN/step6-since")" >"$RUN/step6-checked"
   setup_run
   assert_timeout scale-task
   # Continue checks everything again, then waits for the scale task anew.
@@ -1551,7 +1598,9 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field step)" 6
   run field message
   assert_output --partial "Waiting for the display scale task"
-  ((EPOCHSECONDS - $(<"$RUN/step6-checked") <= 5)) || fail "step6-checked is not new"
+  local checked
+  read -r checked _ <"$RUN/step6-checked"
+  ((EPOCHSECONDS - checked <= 5)) || fail "step6-checked is not new"
 }
 
 @test "lanai setup step 6: a window that could not open, a wait past the limit, then Continue: fresh limits and a pass" {

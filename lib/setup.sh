@@ -324,15 +324,22 @@ step6_timeout() {
 }
 
 # step6_since <file>: print the time in step 6 stamp <file>, writing now
-# when the stamp is missing or not a number.
+# when the stamp is missing or not a number. Fails when that write fails,
+# since a limit with no stamp would never run out.
 step6_since() {
   local t=""
   [[ ! -s $1 ]] || t=$(<"$1")
   if [[ ! $t =~ ^[0-9]+$ ]]; then
     t=$EPOCHSECONDS
-    step6_stamp "$1" "$t" || true
+    step6_stamp "$1" "$t" || return 1
   fi
   printf '%s\n' "$t"
+}
+
+# Reply that a step 6 time stamp could not be written in <run dir>.
+step6_record_failed() {
+  setup_reply false 6 "Lanai could not record setup's time limits in $1." \
+    "check the setup log, then continue setup" '{"reason":"record"}'
 }
 
 # Mark a step 6 failure in $RUN/step6-stopped, so the next Continue setup
@@ -363,7 +370,11 @@ setup_step6() {
 #   now. Port state starts no timer.
 # - Once step6-checked exists, only the scale task's port is awaited (its
 #   own limit; no other deadline), so a short fault while the user signs
-#   in cannot stop setup with the wrong reason. A RESET removes it.
+#   in cannot stop setup with the wrong reason. It holds the time the other
+#   checks passed and the boot stamp (step6-since) they ran under, and
+#   counts only while that boot stamp is current: a RESET rewrites the boot
+#   stamp, so a check still running then cannot carry its results into the
+#   new boot. A stamp that cannot be written stops step 6 (record).
 # - QMP's query-chardev must answer, else it tries again. Past the deadline
 #   a failure stops as qmp only when the call before it failed too
 #   (step6-qmp-failed), since the panel's status shares QEMU's one client
@@ -385,7 +396,7 @@ setup_step6() {
 #   reply to it means the allow-list is missing: back to step 5.
 # - Last, step6_scale.
 step6_check() {
-  local follow=$1 run log now since run_since checked="" late=false outer=false qga_open=false
+  local follow=$1 run log now since run_since checked="" checked_since="" late=false outer=false qga_open=false
   local verdict="" guest="" build pinned=true chardevs out rc
   local -a missing=()
   if ! run=$(run_dir); then
@@ -396,13 +407,17 @@ step6_check() {
   now=$EPOCHSECONDS
   if [[ -z $follow && -e $run/step6-stopped ]]; then
     rm -f -- "$run/step6-stopped" "$run/step6-checked" "$run/step6-qmp-failed"
-    step6_stamp "$run/step6-since" "$now" || true
-    step6_stamp "$run/step6-run-since" "$now" || true
+    if ! step6_stamp "$run/step6-since" "$now" || ! step6_stamp "$run/step6-run-since" "$now"; then
+      step6_record_failed "$run"
+      return 1
+    fi
   fi
-  since=$(step6_since "$run/step6-since")
-  run_since=$(step6_since "$run/step6-run-since")
-  [[ ! -s $run/step6-checked ]] || checked=$(<"$run/step6-checked")
-  [[ $checked =~ ^[0-9]+$ ]] || checked=""
+  if ! since=$(step6_since "$run/step6-since") || ! run_since=$(step6_since "$run/step6-run-since"); then
+    step6_record_failed "$run"
+    return 1
+  fi
+  [[ ! -s $run/step6-checked ]] || read -r checked checked_since <"$run/step6-checked" || true
+  [[ $checked =~ ^[0-9]+$ && ${checked_since:-} == "$since" ]] || checked=""
   if [[ -n $checked ]]; then
     ((now - checked < LANAI_SETUP_SCALE_GRACE)) || late=true
   elif ((now - since >= LANAI_SETUP_LIMIT)); then
@@ -490,7 +505,10 @@ step6_check() {
     setup_wait "Windows is still starting: $out did not answer yet."
     return 0
   fi
-  step6_stamp "$run/step6-checked" "$now" || true
+  if ! step6_stamp "$run/step6-checked" "$now $since"; then
+    step6_record_failed "$run"
+    return 1
+  fi
   step6_scale "$chardevs" false
 }
 
