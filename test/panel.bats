@@ -80,13 +80,13 @@ setup() {
 # The words that end every step 6 time-out: both ways on, with the setup.cmd
 # condition (spec 7). They show under the display buttons, so they name them
 # (LanaiPanel.qml).
-TIMEOUT_TAIL="Click Continue setup to check again. If setup.cmd stopped with a message in Windows, or to install Lanai's parts in Windows again, shut Windows down, then click Set up in a basic window or Set up in the Windows window."
+TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in Windows again, shut Windows down, then click Set up in a basic window or Set up in the Windows window. Do this too if setup.cmd stopped with a message in Windows."
 
 @test "panel words: each step 6 time-out names what did not answer, with the setup.cmd condition and both ways on" {
   local reason words
   for reason in qmp guest-boot window-closed idd-missing agents scale-task; do
     words=$(panel_words setup "$(jq -nc --arg r "$reason" '{ok:false,step:"6",stop:"timeout",reason:$r,parts:["the SPICE agent"],message:"UNTRUSTED",next:"UNTRUSTED"}')")
-    [[ $words == ?*" $TIMEOUT_TAIL" ]] ||
+    [[ $words == ?*" $TIMEOUT_TAIL"* ]] ||
       fail "$reason: $words"
     [[ $words != *UNTRUSTED* ]] || fail "$reason shows CLI prose: $words"
   done
@@ -104,7 +104,7 @@ TIMEOUT_TAIL="Click Continue setup to check again. If setup.cmd stopped with a m
   run panel_words setup '{"ok":false,"step":"6","stop":"timeout","reason":"scale-task"}'
   # The sign-in condition names the user, then where to look if the task
   # still does not start.
-  assert_output "The display scale task in Windows did not start. It starts at sign-in: if Windows is at its sign-in screen, or another user is signed in, sign in as the Windows user who ran setup. If it still does not start, see lanai-signin.log and lanai-scale.log in C:\\Program Files\\Lanai. $TIMEOUT_TAIL"
+  assert_output "The display scale task in Windows did not start. If Windows is at its sign-in screen, or another user is signed in, sign in as the Windows user who ran setup. $TIMEOUT_TAIL If the task still does not start, see lanai-signin.log and lanai-scale.log in C:\\Program Files\\Lanai."
 }
 
 @test "panel words: an agents time-out names each part that did not answer, and only known parts" {
@@ -177,7 +177,7 @@ timeout_record() {
     assert_success
     assert_equal "$(jq -r .setup.step <<<"$output")" 6
     assert_equal "$(jq -r .setup.finished <<<"$output")" false
-    [[ $(jq -r .result.setup <<<"$output") == ?*" $TIMEOUT_TAIL" ]] || fail "$reason: $(jq -r .result.setup <<<"$output")"
+    [[ $(jq -r .result.setup <<<"$output") == ?*" $TIMEOUT_TAIL"* ]] || fail "$reason: $(jq -r .result.setup <<<"$output")"
     assert_equal "$(jq -c '[.buttons.continue_setup.show, .buttons.continue_setup.enable]' <<<"$output")" '[true,true]'
     assert_equal "$(jq -c '[.buttons.window.show, .buttons.window.enable, .buttons.no_window.show, .buttons.no_window.enable]' <<<"$output")" '[true,true,true,true]'
     # Each display button repeats the Windows install: setup's plan takes
@@ -1244,7 +1244,7 @@ assert_plan_agreement() {
   exec {fd}>"$S/panel-job.lock"; flock "$fd"
   run cmd_panel
   assert_equal "$(jq -r .busy.line <<<"$output")" 'Waiting for Windows to finish setup. You can close this panel.'
-  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" "In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Use Shut down only if setup.cmd stops responding."
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" "In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Use Shut down only if setup.cmd stops responding, or when its shared-folder check tells you to."
   exec {fd}>&-
 }
 
@@ -1284,7 +1284,7 @@ assert_plan_agreement() {
       assert_success
       if [[ $step == 5 ]]; then
         expected="In Windows, open Lanai's setup drive and run setup.cmd. Then click Continue setup so Lanai can restart Windows and check it when setup.cmd finishes."
-        [[ $fixture != following ]] || expected="In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Use Shut down only if setup.cmd stops responding."
+        [[ $fixture != following ]] || expected="In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Use Shut down only if setup.cmd stops responding, or when its shared-folder check tells you to."
       else
         expected='Click Continue setup so Lanai can check Windows.'
         [[ $fixture != following ]] || expected='Windows is starting or being checked.'

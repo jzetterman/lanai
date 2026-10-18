@@ -142,8 +142,9 @@ if not "%RC%"=="0" goto :failed
 rem The share check (spec 7): the service starts now, and the shared folder
 rem must appear as a drive that lists before setup goes on. net start's
 rem result is ignored: the check covers it. net and powershell go by their
-rem bare names, as elsewhere here: they resolve from System32, the elevated
-rem stage's working folder. The script runs from the setup drive; it exits
+rem bare names, as elsewhere here: net resolves from System32, the elevated
+rem stage's working folder, and powershell through the system PATH. The
+rem script runs from the setup drive; it exits
 rem 0, 10 (no drive) or 11 (no listing), and anything else means it could
 rem not run. :share_missing tells them apart.
 echo Checking that the shared folder from Linux appears in Windows (up to 30 seconds)...

@@ -1245,6 +1245,18 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field window)" false
 }
 
+@test "lanai setup step 6: other checks that first pass after the boot's limit still give the scale task its wait" {
+  # One plain call, well after the boot's limit, finds everything but the
+  # scale task: the scale limit counts from now, not from the boot.
+  step6_running "$FIX/client-logs/match.log" 5 $((LANAI_SETUP_LIMIT + 1))
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  run field message
+  assert_output --partial "Waiting for the display scale task"
+}
+
 @test "lanai setup step 6: a closed scale port waits with the sign-in words, then stops 120 s after the other checks" {
   assert_equal "$(bash -c 'source "$1/lib/lanai.sh"; echo "$LANAI_SETUP_LIMIT $LANAI_SETUP_SCALE_LIMIT"' _ "$REPO")" "300 120"
   step6_running "$FIX/client-logs/match.log"

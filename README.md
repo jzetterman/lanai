@@ -126,10 +126,10 @@ Setup then checks its own work and asks you nothing: the display driver, the SPI
 agent, the guest agent and its allow-list, and last the display scale task. The
 scale task starts when the Windows user who ran setup signs in. If Windows asks for
 a password, sign in within 2 minutes. If a part does not answer in time, setup stops
-and the panel names it. Click **Continue setup** to check again. If setup.cmd
-stopped with a message in Windows, or to install Lanai's parts in Windows again,
-shut Windows down, then click **Set up in a basic window** or **Set up in the Windows
-window**. When the panel says the display driver in Windows needs an update, or the
+and the panel names it. Click **Continue setup** to check again. To install
+Lanai's parts in Windows again, shut Windows down, then click **Set up in a basic
+window** or **Set up in the Windows window**. Do this too if setup.cmd stopped with a
+message in Windows. When the panel says the display driver in Windows needs an update, or the
 QEMU guest agent in Windows is missing its allow-list, shut Windows down, then click
 **Continue setup** to set up Windows again.
 If a setup boot stopped unfinished, the panel shows both **Set up in a basic window**
@@ -314,7 +314,8 @@ While the Windows window runs, Windows can read **anything copied on Linux,
 including files**. Files copied in Windows appear on Linux in a read-only folder
 under your runtime directory. This is an accepted guest-to-host exposure alongside
 Looking Glass's frames and cursor, SPICE input/audio/clipboard, the network backend,
-the confined `~/Windows` share, the clock-only QEMU guest agent channel and the
+the confined `~/Windows` share, the QEMU guest agent channel (the clock, plus one
+command at setup that its allow-list must refuse) and the
 scale channel. The scale channel runs one way: each message holds a scale step and
 a save number, and Lanai never reads what Windows writes to it.
 

@@ -440,8 +440,9 @@ or 6008).
     keeps (CPU, disk controller, NIC, firmware, clock, USB controller and tablet), the
     accepted guest-to-host surfaces are: the frames, cursor data, and clipboard contents
     (text, images and files) the Looking Glass client exchanges over shared memory, and
-    the IDD's build it reports there, which Lanai only compares with the pin and names
-    in its mismatch message (requirement 8);
+    the IDD's build it reports there, which Lanai only compares with the pin, names in
+    its mismatch message, and on a match records to pick the matching installed client
+    (requirement 8);
     SPICE (input, audio and clipboard); the network backend; the file share; the QEMU
     guest agent channel, which Lanai uses only to set the guest clock (requirement 21)
     and, at setup's checks, to send one command that the allow-list must refuse;
