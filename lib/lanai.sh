@@ -1403,14 +1403,15 @@ cmd_setup_host() {
     "enter your password in the terminal, then continue setup" "$details"
 }
 
-# setup [--no-snapshot] [--window|--no-window] [--share-ok yes|no
-# --scale-ok yes|no]: Lanai's one-time setup, resumable (spec 7, 9; plan
-# phase 6). Each call finds the first step not done and answers it, with
-# "step" ("1" to "7", or "3a"): it does what needs no user decision (the
-# client build, the setup boot, step 6's boot and checks), and otherwise
-# says what the user must do. --no-snapshot declines step 3's snapshot;
-# --window and --no-window pick the setup boot's display; --share-ok and
-# --scale-ok answer step 6's two questions. The builds and boots run after
+# setup [--no-snapshot] [--window|--no-window]: Lanai's one-time setup,
+# resumable (spec 7, 9; plan phase 6). Each call finds the first step not
+# done and answers it, with "step" ("1" to "7", or "3a"): it does what
+# needs no user decision (the client build, the setup boot, step 6's boot
+# and checks, which ask nothing), and otherwise says what the user must
+# do. --no-snapshot declines step 3's snapshot; --window and --no-window
+# pick the setup boot's display, and repeat the Windows install after a
+# step 6 stop. The panel's job adds --follow <step> <invocation> to its
+# follow-ups (cmd_ui_job_worker). The builds and boots run after
 # the state check has released the lock, since boot_vm takes it itself. It
 # can run for minutes (the client build, the downloads, a boot), so the
 # panel runs it detached and reads the reply, which also goes, atomically,
@@ -1437,7 +1438,7 @@ cmd_setup() {
 
 # The body of lanai setup: prints its one JSON reply (see cmd_setup).
 setup_command() {
-  local window=auto nosnap=false share="" scale="" follow_step="" follow_inv="" out rc built=false
+  local window=auto nosnap=false follow_step="" follow_inv="" out rc built=false
   while (($#)); do
     case $1 in
       --follow)
@@ -1450,14 +1451,6 @@ setup_command() {
       --window) window=true ;;
       --no-window) window=false ;;
       --no-snapshot) nosnap=true ;;
-      --share-ok | --scale-ok)
-        if [[ ${2:-} != yes && ${2:-} != no ]]; then
-          emit false "" "unknown option: $1 ${2:-}" "answer $1 yes or $1 no"
-          return 2
-        fi
-        if [[ $1 == --share-ok ]]; then share=$2; else scale=$2; fi
-        shift
-        ;;
       *)
         emit false "" "unknown option: $1" "run lanai help"
         return 2
@@ -1467,7 +1460,7 @@ setup_command() {
   done
   while :; do
     rc=0
-    out=$(setup_resume "$window" "$nosnap" "$share" "$scale" "$follow_step" "$follow_inv") || rc=$?
+    out=$(setup_resume "$window" "$nosnap" "$follow_step" "$follow_inv") || rc=$?
     case $out in
       build)
         if $built; then
@@ -1508,6 +1501,7 @@ setup_command() {
         out=$(boot_vm false auto true) || rc=$?
         # Step 6 checks the IDD with the pinned client, not build_select's.
         if ((rc == 0)) && ! { client_active || client_start "$(pinned_client)" >&2; }; then
+          step6_mark_stop
           setup_reply false 6 "Lanai could not open the Windows window." "see the client log" '{"reason":"client"}'
           return 1
         fi

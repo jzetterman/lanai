@@ -633,17 +633,33 @@ wait_for_line() {
   ((now - ns >= 0 && now - ns < 3000000000)) || fail "time $ns is not the send time ($now)"
 }
 
-@test "qga_reply refusal: passes only on the 'has been disabled' CommandNotFound" {
+@test "qga_reply refusal: 0 for the 'has been disabled' refusal, 2 for any other reply, 1 for none" {
   serve "$T/g.sock" "$FIX/fake-qga"
   conf FAKE_QGA_CMD=disabled
   run qga_reply "$T/g.sock" refusal '{"execute":"guest-exec"}'
   assert_success
+  # A well-formed reply that is not the refusal is a wrong answer: open is
+  # the GenericError ("Parameter 'path' is missing") that an agent without
+  # an allow-list gives an argument-free guest-exec.
   local reply
-  for reply in empty other generic notfound; do
+  for reply in empty other generic notfound open; do
     conf "FAKE_QGA_CMD=$reply"
     run qga_reply "$T/g.sock" refusal '{"execute":"guest-exec"}'
-    assert_failure
+    assert_failure 2
   done
+  # No reply, or one over 4 KiB, is no answer.
+  for reply in big len4097; do
+    conf "FAKE_QGA_CMD=$reply"
+    run qga_reply "$T/g.sock" refusal '{"execute":"guest-exec"}'
+    assert_failure 1
+  done
+  conf FAKE_QGA=stale-only
+  run qga_reply "$T/g.sock" refusal '{"execute":"guest-exec"}'
+  assert_failure 1
+  # command mode keeps 1 for a reply it does not accept.
+  conf FAKE_QGA_CMD=generic
+  run qga_reply "$T/g.sock" command '{"execute":"guest-set-time"}'
+  assert_failure 1
 }
 
 @test "qga_reply: refuses an unknown mode, a missing command, and a missing socket" {
@@ -948,15 +964,25 @@ start_exec() {
   BG_PIDS+=("$EXEC_PID")
 }
 
-@test "lanai-vm-exec: removes a stale closed-port stamp before starting helpers" {
+@test "lanai-vm-exec: stamps the boot's start for setup's step 6 before starting helpers" {
   exec_shims
   # Record helper startup without creating a socket or reaching QEMU.
   shim virtiofsd 'echo started >"$T/virtiofsd.started"; exec sleep 30'
   mkdir -m 700 "$RUN"
-  echo 1700000000 >"$RUN/qga-closed-since"
+  echo 1700000000 >"$RUN/step6-since"
+  echo 1700000000 >"$RUN/step6-run-since"
+  echo 1700000000 >"$RUN/step6-checked"
+  : >"$RUN/step6-stopped"
+  : >"$RUN/step6-qmp-failed"
   start_exec
   wait_for_file "$T/virtiofsd.started" "virtiofsd never started: $(cat "$T/exec.out")"
-  assert [ ! -e "$RUN/qga-closed-since" ]
+  local f
+  for f in step6-since step6-run-since; do
+    (($(<"$RUN/$f") >= EPOCHSECONDS - 5)) || fail "$f is not this boot's start: $(<"$RUN/$f")"
+  done
+  assert [ ! -e "$RUN/step6-checked" ]
+  assert [ ! -e "$RUN/step6-stopped" ]
+  assert [ ! -e "$RUN/step6-qmp-failed" ]
   assert [ ! -e "$T/qemu.args" ]
 }
 
@@ -967,23 +993,21 @@ start_exec() {
   : >"$RUN/scale.sock"
   : >"$RUN/ivshmem"
   echo "old client log" >"$RUN/client.log"
-  echo 1700000000 >"$RUN/qga-open-since"
-  echo 1700000000 >"$RUN/qga-closed-since"
+  echo 1700000000 >"$RUN/step6-checked"
   # The window's monitor from the last run must not carry over.
   echo DP-9 >"$RUN/scale-monitor"
   mkdir -p "$S"
   echo '{"scale": 150, "scale_save": 7, "setup": false}' >"$S/boot.json"
   start_exec
   wait_for_file "$T/qemu.args" "QEMU never started: $(cat "$T/exec.out")"
-  # The stale files are gone and the log is empty. Setup's step 6 times the
-  # guest agent's port from this boot only.
+  # The stale files are gone and the log is empty. Setup's step 6 checks
+  # this boot only.
   assert [ ! -e "$RUN/qmp.sock" ]
   assert [ ! -e "$RUN/scale.sock" ]
   assert [ ! -e "$RUN/scale-monitor" ]
   assert [ ! -e "$RUN/ivshmem" ]
   assert [ ! -s "$RUN/client.log" ]
-  assert [ ! -e "$RUN/qga-open-since" ]
-  assert [ ! -e "$RUN/qga-closed-since" ]
+  assert [ ! -e "$RUN/step6-checked" ]
   assert_equal "$(stat -c %a "$RUN")" 700
   # QEMU runs as the unit's main process, with the arguments vm_args builds.
   assert_equal "$(<"$T/qemu.args")" "$(vm_args "$T/win" 02:4B:81:73:3C:96 8 4 150 7 192.168.1.1)"

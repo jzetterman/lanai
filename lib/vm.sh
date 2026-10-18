@@ -385,9 +385,10 @@ chardev_open() {
 # {"return": <that id>}. command mode then sends <command-json>, with any
 # @NOW_NS@ replaced by the host's time in nanoseconds at that moment, and
 # accepts only {"return": {}}. refusal mode (setup's step 6) passes only on a
-# CommandNotFound error saying the command has been disabled, and fails on
-# any return. All fail on a reply over 4 KiB, junk or wrong JSON, and after
-# 5 s in all.
+# CommandNotFound error saying the command has been disabled, and returns 2
+# for any other well-formed reply (a return or another error: a wrong
+# answer, so the allow-list is missing). All fail with 1 on no reply, a
+# reply over 4 KiB, junk or wrong JSON, and after 5 s in all.
 qga_reply() {
   local sock=$1 mode=$2 cmd=${3:-} id deadline t skipped line rc=1 test
   local LC_ALL=C
@@ -426,8 +427,13 @@ qga_reply() {
     cmd=${cmd//@NOW_NS@/${EPOCHREALTIME//[!0-9]/}000}
     if sock_send "$cmd" && t=$(time_left "$deadline") &&
       IFS= read -r -n 4097 -t "$t" -u "$LANAI_SOCK_R" line 2>/dev/null &&
-      ((${#line} <= 4096)) && jq -e "$test" <<<"$line" >/dev/null 2>&1; then
-      rc=0
+      ((${#line} <= 4096)); then
+      if jq -e "$test" <<<"$line" >/dev/null 2>&1; then
+        rc=0
+      elif [[ $mode == refusal ]] &&
+        jq -e 'type == "object" and (has("return") or (.error | type) == "object")' <<<"$line" >/dev/null 2>&1; then
+        rc=2
+      fi
     fi
   fi
   sock_close
@@ -606,13 +612,25 @@ clock_sync() {
   done
 }
 
+# step6_stamp <file> [<epoch>]: write <epoch> (default now) to <file>, one
+# of setup step 6's time stamps in $RUN, through a temporary file and mv.
+step6_stamp() {
+  printf '%s\n' "${2:-$EPOCHSECONDS}" >"$1.tmp" && mv -f -- "$1.tmp" "$1"
+}
+
 # Write the QMP line <line> to <state>/last-shutdown when it is a SHUTDOWN
 # event, stamped with this run's $INVOCATION_ID: {"invocation", "guest",
-# "reason"}. RESET retires step 6's questions; other lines are ignored.
+# "reason"}. A RESET (Windows restarting) starts setup step 6's checks
+# again: it stamps the new boot's start (step6-since) and removes
+# step6-checked; step6-run-since and step6-stopped stay. Other lines are
+# ignored.
 event_record() {
   local rec s run
   if jq -e '.event == "RESET"' <<<"$1" >/dev/null 2>&1; then
-    if run=$(run_dir); then rm -f -- "$run/step6-asked" "$run/step6-answered"; fi
+    if run=$(run_dir); then
+      rm -f -- "$run/step6-checked"
+      step6_stamp "$run/step6-since" || true
+    fi
     return 0
   fi
   rec=$(jq -c --arg inv "${INVOCATION_ID:-}" 'select(.event == "SHUTDOWN") |
@@ -997,9 +1015,12 @@ vm_exec() {
   for name in "${!LANAI_HELPERS[@]}"; do
     rm -f -- "$run/$name.pid"
   done
-  # Setup's step 6 times the guest agent's open and closed port per boot,
-  # and the scale feed's window monitor and last line belong to one run.
-  rm -f -- "$run/ivshmem" "$run/qga-open-since" "$run/qga-closed-since" "$run/step6-asked" "$run/step6-answered" "$run/scale-monitor" "$run/scale-line"
+  # Setup's step 6 counts its limits from this start and keeps no marker
+  # from an earlier run, and the scale feed's window monitor and last line
+  # belong to one run.
+  rm -f -- "$run/ivshmem" "$run/step6-checked" "$run/step6-stopped" "$run/step6-qmp-failed" "$run/scale-monitor" "$run/scale-line"
+  step6_stamp "$run/step6-since" || return 1
+  step6_stamp "$run/step6-run-since" || return 1
   : >"$run/client.log"
 
   run_once virtiofsd "$LANAI_VIRTIOFSD" --sandbox namespace --shared-dir "$HOME/Windows" \

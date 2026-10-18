@@ -915,7 +915,7 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 | 3a. Normalize base | if `windows.base` is empty or missing (a missing file counts as empty everywhere, as it does for dockur's `readBase`), write the same name dockur's `readBase` would write, so a later container start rewrites nothing, and tell the user. Runs after the snapshot, so a restore returns the original empty file; `layout_check` itself stays read-only. Tested: restore after normalizing an empty base matches the pre-adoption hashes |
 | 4. Client build | `client_version` (phase 5) reports the pinned version for the pinned binary |
 | 5. Guest setup boot | `record_previous_run` set `step5`: the setup boot ended in a clean guest shutdown that was not the panel's Shut down or a forced stop (`setup.cmd`'s shutdown, or another the user started, which step 6 catches) |
-| 6. Normal boot | each guest component is checked, not assumed: the pinned client, started directly, logs `match` (`version_check`, phase 5), and that log records the pin; the guest agent answers a sync and a `guest-set-time` to the current host time (the channel's allowed use, which also proves the clock path), and refuses an argument-free `guest-exec` with `CommandNotFound ... has been disabled`, the reply proof 3 recorded (the allow-list took effect; spec req 27; without arguments the command could not run anything even if the allow-list had failed); QMP `query-chardev` shows `frontend-open: true` for the SPICE agent's port (`vdagent`), as it does for the guest agent; the panel asks the user two one-click questions: does `~/Windows` show in Explorer, and does Windows' text look the right size (the scale task). Any missing component sends setup back to step 5 with "setup did not finish: run setup.cmd again"; `setup.cmd` is idempotent (each installer skips what is already installed at the pinned version). Tests cover a shutdown after a partly failed `setup.cmd` |
+| 6. Normal boot | each guest component is checked, not assumed: the pinned client, started directly, logs `match` (`version_check`, phase 5), and that log records the pin; the guest agent answers a sync and a `guest-set-time` to the current host time (the channel's allowed use, which also proves the clock path), and refuses an argument-free `guest-exec` with `CommandNotFound ... has been disabled`, the reply proof 3 recorded (the allow-list took effect; spec req 27; without arguments the command could not run anything even if the allow-list had failed); QMP `query-chardev` shows `frontend-open: true` for the SPICE agent's port (`vdagent`), as it does for the guest agent; the panel asks the user two one-click questions: does `~/Windows` show in Explorer, and does Windows' text look the right size (the scale task). Any missing component sends setup back to step 5 with "setup did not finish: run setup.cmd again"; `setup.cmd` is idempotent (each installer skips what is already installed at the pinned version). Tests cover a shutdown after a partly failed `setup.cmd`. Superseded: step 6 asks no question, and a part that does not answer stops at step 6; see "Follow-on: setup checks (John, 2026-10-17)" |
 | 7. Done | all of the above |
 
   A step 6 start failure reports "Windows did not start." and points to the logs.
@@ -928,7 +928,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   is a host client failure: step 6 replies `ok: false`, "The Windows window did
   not stay open long enough to check the display driver.", with next step
   "see the logs with journalctl --user -u lanai-client, then run setup again".
-  That call stays at step 6 and does not reopen the client.
+  That call stays at step 6 and does not reopen the client. (Superseded: the port
+  timers are gone, and one deadline from the boot's start covers these checks; see
+  "Follow-on: setup checks (John, 2026-10-17)".)
 
   bats tests interrupt the flow after each step and check that `lanai setup` resumes at
   the right step.
@@ -944,6 +946,8 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
 - `lanai setup` options: `--no-snapshot` declines step 3, `--window` and
   `--no-window` pick step 5's display, and `--share-ok yes|no --scale-ok yes|no`
   answer step 6's two questions (two yeses finish setup; a lone no sends it back).
+  (Superseded: the answer options are gone; see "Follow-on: setup checks (John,
+  2026-10-17)".)
   Replies carry `step` (`"1"` to `"7"`, or `"3a"`) except option errors and
   setup resume's own lock or user-manager refusals, which precede step detection.
   Refusals from `setup_guest` or `boot_vm` on the setup-boot path go through
@@ -1026,7 +1030,8 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   regardless of the client's start time, whether its start line exists, or whether
   it keeps closing. The guest agent is asked only while its port is open (a sync
   on a closed port waits 5 s).
-  A lone `--share-ok no` or `--scale-ok no` sends setup back too.
+  A lone `--share-ok no` or `--scale-ok no` sends setup back too. (Superseded:
+  step 6's limits and answers are in "Follow-on: setup checks (John, 2026-10-17)".)
 - `lanai setup-guest` refuses until step 3 has a decision for this location. It holds
   the lock, with the VM stopped, for the whole media build (downloads included), and
   removes the old media first, so a failed build leaves none. The media use fixed
@@ -1076,6 +1081,8 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   The panel reads reply detail keys `choices` (step 5), `questions` (step 6),
   `missing`/`command` (step 2), `active`/`window` (step 5 while running), and
   `window` (boot replies), alongside `ok`, `step`, `message` and `next`.
+  (Superseded: `questions` is gone, and step 6 time-outs carry `stop` and
+  `parts`; see "Follow-on: setup checks (John, 2026-10-17)".)
 - Both client build callers use `build_client_locked` for `build.lock` and `flock`.
   A build still reporting the wrong version stops with an `ok: false` step 4 reply
   instead of looping. Only `cmd_setup` marks its emitted reply in the parent shell.
@@ -1128,7 +1135,8 @@ reviews look hard at the panel's wording, layout and states.
   `missing`/`command`, `active`/`window` and boot `window` as listed in phase 6's
   "For phase 7" contract); settings
   (memory, cores); the error view with cause, next step, log path and the
-  `omarchy-windows-vm` fallback.
+  `omarchy-windows-vm` fallback. (Superseded: step 6 asks no question; see
+  "Follow-on: setup checks (John, 2026-10-17)".)
 - Guest-controlled text (from phase 5 review): show `client.log`, the guest's driver
   version and any other text from the guest or its logs with `Text.PlainText`, never
   QML's default `AutoText`, which would render markup the guest wrote.
@@ -1209,7 +1217,9 @@ pins that the view ignores it. The view holds:
   settings), `show` and `enable`, plus the label where it varies; the snapshot list
   comes with every view, so there is no list control;
 - `setup`: whether the section shows, `finished`, the current step, its lines, the
-  step 6 questions and the step 5 display choices when they apply;
+  step 6 questions and the step 5 display choices when they apply; (superseded: no
+  questions or answer controls, and a `repeat_line` at a step 6 time-out; see
+  "Follow-on: setup checks (John, 2026-10-17)")
 - `result`: per control group, an outcome that the state cannot say by itself,
   shown beside its controls (below);
 - `settings` (memory, cores, or the read error), `snapshots` (names, or the read
@@ -1236,7 +1246,8 @@ agree.
 **Setup's step comes from durable state.** `setup_resume` is split. A read-only
 `setup_plan` decides the step and what it needs (an action such as a package install
 or the snapshot offer, the step 5 display choices, a boot to wait for, step 6's
-checks or its questions, done). `setup_resume` becomes: lock, `record_previous_run`,
+checks or its questions, done; superseded: step 6 has no questions, see "Follow-on:
+setup checks (John, 2026-10-17)"). `setup_resume` becomes: lock, `record_previous_run`,
 `setup_follow`, the shared facts, `setup_plan`, then act. Because the panel calls
 `setup_plan` without the first two, `setup_plan` applies their pending effects to
 what it reads, without writing:
@@ -1265,7 +1276,9 @@ already records SHUTDOWN events, deletes it on any `RESET` event (a Windows rest
 exists and the plan is at step 6 (step5 true, the unit active, not a setup boot), so a
 "no" answer that sends setup back to step 5 hides them. Step 6's other verdicts
 (waiting, back to step 5) need QMP and the guest agent, so they come from the setup
-job's own result, not from `setup_plan`. A bats test pins that `setup_plan` and
+job's own result, not from `setup_plan`. (Superseded: `step6-asked` is gone, and
+`setup_plan`'s scale wait comes from `step6-checked`; see "Follow-on: setup checks
+(John, 2026-10-17)".) A bats test pins that `setup_plan` and
 `setup_resume` agree on the step, action and JSON reply reason for every fixture,
 both with the markers still on disk (as the view sees them) and consumed (as setup sees them), including a panel
 Shut down during the setup boot (a clean guest shutdown with a matching stop request
@@ -1274,7 +1287,9 @@ gives the display choices, and the setup job stops following).
 **The setup job follows its own waits.** The panel never decides when to call setup
 again. `ui-job setup` runs `lanai setup` with the click's arguments (a display choice,
 answers, `--no-snapshot`); while the reply is an ok:true wait (step 5, or step 6 with
-no questions; step 3a's and step 7's ok:true replies are not waits), the job checks
+no questions; step 3a's and step 7's ok:true replies are not waits; superseded: every
+ok:true step 6 reply is a wait, and there are no answers, see "Follow-on: setup checks
+(John, 2026-10-17)"), the job checks
 every 2 s for that wait's expected next state (an activating unit counts as active)
 and then calls `lanai setup --follow <step> <invocation>` again, never repeating
 the click's arguments (a repeated `--window` would start another setup boot):
@@ -1313,7 +1328,8 @@ directly. Through a new `lanai ui-run`, which the QML runs as a `Process` withou
 deadline (never killed partway) and refreshes when it exits: `start`, `open`, `stop`,
 `force-stop`, `notice-seen`, `settings`, `setup-host`. Through `lanai ui-job`
 (detached, as above): every `lanai setup` call (including step 3's skip, the display
-choices and the answers), `snapshot` (including step 3's take) and `restore`. Groups:
+choices and the answers; superseded: no answers, see "Follow-on: setup checks (John,
+2026-10-17)"), `snapshot` (including step 3's take) and `restore`. Groups:
 `vm` (start, open, stop, force-stop, notice-seen), `setup` (setup, setup-host),
 `settings` (settings), `snapshots` (snapshot and restore). Each group has one record, `panel-result-<group>.json`, written by
 atomic rename: the token, the command and its arguments, the VM's `InvocationID`,
@@ -1363,7 +1379,9 @@ the user.
 - Settings stay: they apply at the next start.
 - `setup.attention` is true when the user must act (an action such as Continue
   setup, the snapshot offer, the display choices, running setup.cmd, the step 6
-  questions, or a failure) and false while Lanai works by itself, including every
+  questions, or a failure; superseded: no questions, and a step 6 time-out is a
+  failure, see "Follow-on: setup checks (John, 2026-10-17)") and false while Lanai
+  works by itself, including every
   shutdown wait regardless of the setup reason. QML changes the Setup section's
   accent border and light background while keeping its inset constant. It uses
   the shell's selected accent fill when available, else a light accent fill.
@@ -1375,7 +1393,8 @@ polls fast. It has a 10 s deadline, skips a tick while a call runs, and an
 action asks for exactly one fresh call after it ends. It renders the view's fields as
 plain text (`Text.PlainText`), shows and enables controls from `buttons`, and runs
 every command through `ui-run` or `ui-job`. Besides moment-to-moment input that
-decides nothing on its own (the selected answers, unsaved settings edits, an armed
+decides nothing on its own (the selected answers, gone since "Follow-on: setup
+checks (John, 2026-10-17)"; unsaved settings edits, an armed
 second-click confirmation for the forced stop or a restore, whose controls and labels
 come from the view), it keeps one value: the token and time of a long job it launched
 (`--pending <token> <epoch>`), passed to `lanai panel` until its record appears
@@ -1392,7 +1411,9 @@ deadline in the worst case.
 the group records and lock, `last-run`, settings and snapshots): every state
 `status_map` can return; every setup step, including step 5 during and after the
 setup boot, step 6 waiting, questions, a restart that retires them and a "no" answer
-that hides them, the display choices, and a back-to-step-5 failure; a finished
+that hides them (superseded by the time-out and wrong-answer cases in "Follow-on:
+setup checks (John, 2026-10-17)"), the display choices, and a back-to-step-5
+failure; a finished
 install with omarchy-windows-vm running or `~/Windows` missing (still finished); a
 job running, interrupted and never started; a pending restore (stopped,
 setup-needed, in-use); a restore success and failure; the forced-stop notice; Shut
@@ -1861,7 +1882,8 @@ The orchestrator runs the gate; delegates run no review stage.
   Setup offers Reopen the Windows window only while the usual window controls are
   hidden, a client-mode boot's unit is active (not activating or reloading), the
   client is not running, and shutdown is not in progress, including after a step 6
-  failure or no answer rolls back to step 5.
+  failure or no answer rolls back to step 5. (Superseded: only a wrong answer rolls
+  back; see "Follow-on: setup checks (John, 2026-10-17)".)
   Boot flags also cover activation before status reports the display.
   Reopen uses `ui-run open`. `snapshots.show` and its control descriptors hide
   the section only when the usual controls are hidden with an active unit;
@@ -1956,7 +1978,8 @@ The orchestrator runs the gate; delegates run no review stage.
   verified existing installs and new builds get the stamp, and pruning removes it
   with the build. Step 6 writes its question marker, RESET events retire it, and
   VM startup clears it. A negative answer hides the questions by returning to
-  step 5. Plan/resume agreement tests cover both present and consumed markers,
+  step 5. (Superseded: the markers are now step 6's limit stamps; see "Follow-on:
+  setup checks (John, 2026-10-17)".) Plan/resume agreement tests cover both present and consumed markers,
   early and active phases, and a panel-requested shutdown, comparing steps,
   actions and JSON reply reasons. Both agreement tests include runs that started
   then failed with `Result=exit-code`, with `step5` true and false. Resume passes
@@ -2025,8 +2048,8 @@ The orchestrator runs the gate; delegates run no review stage.
   deadline. It skips routine overlapping calls and requests one fresh read after
   an action, discarding an older in-flight read. Direct `ui-run` actions use a
   Process without a deadline; `ui-job` launches are detached so pending-token
-  checks remain possible even if launch stalls. QML retains transient answers,
-  unsaved settings, second-click confirmations and the pending token/time, with
+  checks remain possible even if launch stalls. QML retains transient answers
+  (gone since "Follow-on: setup checks (John, 2026-10-17)"), unsaved settings, second-click confirmations and the pending token/time, with
   transport state only for serializing reads/actions. It renders plain text and
   backend control descriptors; `SetupCalls.js` and its test are deleted. Settings
   fields freeze their transient input on the SpinBox's `valueModified`
@@ -2372,7 +2395,9 @@ reason, naming the task, the setup user and the task's log. `missing` keeps its
 two items. When setup finishes (`setup_patch '{"done": true, ...}'`) with
 the port open, it writes `"scale_task": 2`. A user who boots "Run setup again" and
 shuts down without running setup.cmd therefore never gets the marker. A record
-without it means the old task (req 12's last rule).
+without it means the old task (req 12's last rule). (Superseded: the scale task's
+port is awaited once the other checks pass, with no questions, for 120 s; see
+"Follow-on: setup checks (John, 2026-10-17)".)
 
 **Panel and words.** `cmd_settings` returns structured fields; `panel_words` turns
 them into words (below), and for a scale save the CLI's own message says the same (a memory-and-cores save prints a full sentence where the panel shows "Saved."). `LanaiPanel.qml` tracks `scaleTouched` (set by the dropdown's
@@ -2520,7 +2545,8 @@ phase B's last step; (1)-(5) run first.
   reports the missing task and writes no marker; with it open, the marker is
   written (fake QMP). As built: a slow sign-in past the boot grace still asks, a
   closed task after the answers is waited for and then named, and the task opening
-  after the answers finishes setup with its mark.
+  after the answers finishes setup with its mark. (Superseded: no answers; see
+  "Follow-on: setup checks (John, 2026-10-17)".)
 - Files: `guest/lanai-scale.ps1`, `guest/setup.cmd`, `lib/setup.sh`, `README.md`
   (live scale, picks, custom scaling, apps that redraw only after restart, "Run
   setup again" for existing installs).
@@ -4130,7 +4156,9 @@ task's port.
   message, follow it first." and end "Continue setup checks again. To install
   Lanai's parts in Windows again, shut Windows down and choose a display
   below." So the panel itself carries both of the spec's conditions. Delete the
-  `answers` words.
+  `answers` words. (As built: "Click Continue setup to check again. To install
+  Lanai's parts in Windows again, choose a display below once Windows is off.",
+  which reads right whether Windows is on or off.)
 - `continue_setup` keeps its current rules and label.
 - At a step 6 time-out (the setup job record's `reply.stop` is `timeout`, its
   step 6 matching the plan) with Windows off, the panel also shows the two

@@ -596,6 +596,46 @@ TestCase {
     verify(objects(panel, function(o) { return o.text === model.control('continue_setup').hint && o.visible }).length > 0)
     panel.destroy(); wait(1)
   }
+  function test_a_step6_timeout_with_windows_off_sends_either_display_choice_without_arming() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    model.view = {buttons:{continue_setup:{show:true,enable:true,label:'Continue setup'},
+      no_window:{show:true,enable:true,label:'Set up in the Windows window',hint:'Use this if the Windows display driver already works.'},
+      window:{show:true,enable:true,label:'Set up in a basic window',hint:'Use a basic window if the Windows window is blank or the display driver needs repair.'}},
+      setup:{finished:false,show:true,step:'6',lines:['Click Continue setup so Lanai can check Windows.'],
+        repeat_line:"Or install Lanai's parts in Windows again: choose how Windows should show."},
+      settings:{},snapshots:{names:[]},result:{setup:'In Windows, the SPICE agent did not answer.'},logs:{}}
+    // Answer each launch's refresh, so the next click is not dropped.
+    function settle() {
+      var poll = process(model, 'timeout')
+      var reply = model.view
+      reply.ok = true; reply.pending_ack = model.pendingToken
+      poll.complete(JSON.stringify(reply), 0)
+      compare(model.pendingToken, '')
+    }
+    var panel = createTemporaryObject(panelComponent, tests, {model:model})
+    panel.open()
+    // Setup asks no question at its end, so the panel has nothing to answer.
+    compare(objects(panel, function(o) { return o.control === 'answer_yes' || o.control === 'answer_no' || o.control === 'send_answers' }).length, 0)
+    verify(objects(panel, function(o) { return o.text === model.view.setup.repeat_line && o.visible }).length > 0)
+    var again = objects(panel, function(o) { return o.control === 'continue_setup' })[0]
+    var client = objects(panel, function(o) { return o.control === 'no_window' })[0]
+    var screen = objects(panel, function(o) { return o.control === 'window' })[0]
+    verify(again.visible)
+    verify(client.visible)
+    verify(screen.visible)
+    client.clicked()
+    compare(panel.setupAgainArmed, false)
+    compare(Quickshell.lastCommand[1], 'ui-job')
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'setup --no-window')
+    settle()
+    screen.clicked()
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'setup --window')
+    settle()
+    again.clicked()
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'setup')
+    panel.destroy(); wait(1)
+  }
   function test_long_job_pending_and_no_deadline() {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)

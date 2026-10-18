@@ -109,12 +109,21 @@ the administrator prompt as the same Windows user; approval as a different accou
 is refused. The setup drive must stay **read-only**: do not attach writable setup
 media or substitute files written by Windows. Setup shuts Windows down when the guest
 install finishes. Let that shutdown finish; Shut down from the panel does not count.
-Use Shut down only if setup.cmd stops responding.
+Use Shut down only if setup.cmd stops responding. If setup.cmd stops because the
+shared folder from Linux did not appear in Windows, restart Windows from the Start
+menu and run setup.cmd again.
 When a setup operation is running, the panel continues setup after Windows shuts
 down. Otherwise, click **Continue setup** when the setup script finishes. If Windows
-stops during the final checks, click **Continue setup** to start it again. In File Explorer, select
-This PC and check for a drive with the files from Linux's `~/Windows` folder.
-Answer that question and whether text looks the right size. If a setup boot stopped unfinished,
+stops during the final checks, click **Continue setup** to start it again.
+Setup then checks its own work and asks you nothing: the display driver, the SPICE
+agent, the guest agent and its allow-list, and last the display scale task. The
+scale task starts when the Windows user who ran setup signs in, so sign in if
+Windows asks for a password. If a part does not answer in time, setup stops and the
+panel names it. **Continue setup** checks again. To install Lanai's parts in Windows
+again, shut Windows down and click **Set up in a basic window** or **Set up in the
+Windows window**. When the panel says the display driver or the guest agent in
+Windows is wrong, shut Windows down and click **Continue setup**, which sets Windows
+up again. If a setup boot stopped unfinished,
 the panel offers **Set up in a basic window** until the Lanai display driver is installed,
 or **Set up in the Windows window** afterward. **Start Windows** and **Open window**
 are hidden only before first-time setup finishes for this location or while a setup
