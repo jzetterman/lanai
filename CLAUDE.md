@@ -20,7 +20,8 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   reflink copy helpers, `ficlone.py` the in-place clone, `image-proof.py` the
   one-read image hash, FIEMAP proof and progress record),
   `systemd/` (the VM unit template), `guest/` (what runs in
-  Windows: `setup.cmd`, `lanai-lock.cmd`, `lanai-scale.ps1`, and `lanai-start.cs`,
+  Windows: `setup.cmd`, `lanai-lock.cmd`, `lanai-scale.ps1`, `lanai-share-check.ps1`,
+  setup's check that the shared folder appears as a drive, and `lanai-start.cs`,
   the scale task's start program, which setup builds in Windows), `patches/looking-glass/`
   (Lanai's Looking Glass client patches, `NNNN-<topic>.patch`, with the GPL-2.0 text
   in `COPYING`) and `test/` (bats; fake

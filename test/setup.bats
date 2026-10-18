@@ -499,11 +499,12 @@ setup_guest_run() {
   assert_equal "$(field window)" true
   local media=$S/setup-media
   run bash -c 'cd "$1" && find . -mindepth 1 | LC_ALL=C sort' _ "$media"
-  assert_output "$(printf '%s\n' ./lanai-lock.cmd ./lanai-scale.ps1 ./lanai-start.cs \
+  assert_output "$(printf '%s\n' ./lanai-lock.cmd ./lanai-scale.ps1 ./lanai-share-check.ps1 ./lanai-start.cs \
     ./looking-glass-idd-setup.exe ./qemu-ga.msi ./setup.cmd ./spice-vdagent.msi ./viofs ./viofs/w11 \
     ./viofs/w11/amd64 ./viofs/w11/amd64/viofs.inf ./viofs/w11/amd64/virtiofs.exe ./winfsp.msi)"
   cmp "$media/setup.cmd" "$REPO/guest/setup.cmd"
   cmp "$media/lanai-lock.cmd" "$REPO/guest/lanai-lock.cmd"
+  cmp "$media/lanai-share-check.ps1" "$REPO/guest/lanai-share-check.ps1"
   # The start program's source, which setup builds in Windows: no prebuilt
   # Lanai program on the media (spec 27).
   cmp "$media/lanai-start.cs" "$REPO/guest/lanai-start.cs"

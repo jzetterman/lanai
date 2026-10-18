@@ -179,7 +179,8 @@ setup_media_build() {
   if ! cp -- "$dl/spice-vdagent-x64-$VDAGENT_VERSION.msi" "$part/spice-vdagent.msi" ||
     ! cp -- "$dl/qemu-ga-x86_64-$QEMU_GA_VERSION.msi" "$part/qemu-ga.msi" ||
     ! cp -- "$dl/winfsp-$WINFSP_VERSION.msi" "$part/winfsp.msi" ||
-    ! cp -- "$guest/setup.cmd" "$guest/lanai-lock.cmd" "$guest/lanai-scale.ps1" "$guest/lanai-start.cs" "$part/"; then
+    ! cp -- "$guest/setup.cmd" "$guest/lanai-lock.cmd" "$guest/lanai-scale.ps1" "$guest/lanai-start.cs" \
+      "$guest/lanai-share-check.ps1" "$part/"; then
     echo "cannot assemble $media"
     rm -rf -- "$part"
     return 1

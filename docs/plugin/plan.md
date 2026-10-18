@@ -4000,10 +4000,13 @@ Lanai setup stopped: the shared folder from Linux did not appear in Windows
 as a drive.
 To fix this:
 - Restart Windows from the Start menu. The setup drive stays attached.
-- Then run setup.cmd again.
-If it stops here again, shut Windows down from the Lanai panel and choose a
-display there to start setup again. Lanai then checks the folder on Linux.
+- If setup stopped here before, shut Windows down from the Lanai panel
+  instead, and choose a display there. Lanai then checks the folder on Linux.
+Then run setup.cmd again.
 ```
+
+(As built: the panel fallback moved into the steps, so the words end with
+running setup.cmd again, as requirement 7 and this section require.)
 
 Code 11 says "appeared as a drive, but Windows could not read it". Any other code
 says "Lanai setup stopped: the check for the shared folder could not run (exit

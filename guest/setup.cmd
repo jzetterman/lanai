@@ -3,10 +3,12 @@ rem setup.cmd: Lanai's setup inside Windows (spec req 7, plan phase 6).
 rem Run it from Lanai's setup drive as the user who uses Windows. It asks for
 rem administrator rights once, then, in order: installs the SPICE guest
 rem agent, the QEMU guest agent with its allow-list, WinFsp, the pinned
-rem virtio-fs driver and service, builds the display scale task's start
-rem program and adds the task (its program and script in C:\Program
-rem Files\Lanai), turns the Windows lock off (lanai-lock.cmd), and installs
-rem the Looking Glass display driver last, since it turns this display black.
+rem virtio-fs driver and service, checks that the shared folder from Linux
+rem appears as a drive (lanai-share-check.ps1), builds the display scale
+rem task's start program and adds the task (its program and script in
+rem C:\Program Files\Lanai), turns the Windows lock off (lanai-lock.cmd),
+rem and installs the Looking Glass display driver last, since it turns this
+rem display black.
 rem Then Windows shuts down, and Lanai setup goes on at the next boot.
 rem Safe to rerun. It parses no localized text.
 setlocal EnableExtensions DisableDelayedExpansion
@@ -64,7 +66,7 @@ copy /y nul "%~dp0%WTEST%" >nul 2>&1
 if not errorlevel 1 goto :writable_copy
 
 rem Every file first, so a broken setup drive changes nothing.
-for %%f in (spice-vdagent.msi qemu-ga.msi winfsp.msi looking-glass-idd-setup.exe lanai-lock.cmd lanai-scale.ps1 lanai-start.cs viofs\w11\amd64\viofs.inf viofs\w11\amd64\virtiofs.exe) do if not exist "%~dp0%%f" goto :media_broken
+for %%f in (spice-vdagent.msi qemu-ga.msi winfsp.msi looking-glass-idd-setup.exe lanai-lock.cmd lanai-scale.ps1 lanai-start.cs lanai-share-check.ps1 viofs\w11\amd64\viofs.inf viofs\w11\amd64\virtiofs.exe) do if not exist "%~dp0%%f" goto :media_broken
 rem The compiler step 6 builds the start program with: the .NET Framework
 rem 4.x csc.exe that every Windows 10 and 11 carries. .NET calls only: a
 rem cmdlet would load modules from the user's module path.
@@ -98,7 +100,10 @@ if not "%RC%"=="0" if not "%RC%"=="3010" goto :failed
 echo [4/8] Installing the virtio-fs driver
 set "STEP=the virtio-fs driver"
 rem Always, not only when missing: dockur's older driver fails with the
-rem pinned virtiofs.exe (proof 2). 259 means it is already current.
+rem pinned virtiofs.exe (proof 2). 259 means it is already current. The
+rem service stops first, so the update never meets a running service
+rem (dockur's, on a first setup); its result is ignored, as in [5/8].
+net stop VirtioFsSvc >nul 2>&1
 pnputil /add-driver "%~dp0viofs\w11\amd64\viofs.inf" /install
 set "RC=%errorlevel%"
 if not "%RC%"=="0" if not "%RC%"=="3010" if not "%RC%"=="259" goto :failed
@@ -108,9 +113,10 @@ set "STEP=the file-sharing service"
 set "VFS_NEW="
 sc.exe query VirtioFsSvc >nul 2>&1
 if "%errorlevel%"=="1060" set "VFS_NEW=1"
-rem On a rerun the service holds Lanai's own virtiofs.exe open. net stop
-rem waits for the stop; its result is ignored (2 both for "not started" and
-rem for real failures, with a localized message): a held file fails the copy.
+rem On a rerun the service holds Lanai's own virtiofs.exe open, and it may
+rem have started again since [4/8]. net stop waits for the stop; its result
+rem is ignored (2 both for "not started" and for real failures, with a
+rem localized message): a held file fails the copy.
 if not defined VFS_NEW net stop VirtioFsSvc >nul 2>&1
 if exist "C:\Program Files\Lanai\" goto :vfs_copy
 mkdir "C:\Program Files\Lanai"
@@ -133,6 +139,17 @@ sc.exe create VirtioFsSvc binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" sta
 set "RC=%errorlevel%"
 if not "%RC%"=="0" goto :failed
 :vfs_done
+rem The share check (spec 7): the service starts now, and the shared folder
+rem must appear as a drive that lists before setup goes on. net start's
+rem result is ignored: the check covers it. The check is Windows PowerShell
+rem by its full path, running the script from the setup drive; it exits 0,
+rem 10 (no drive) or 11 (no listing), and anything else means it could not
+rem run. :share_missing tells them apart.
+echo Checking that the shared folder from Linux appears in Windows (up to 30 seconds)...
+net start VirtioFsSvc >nul 2>&1
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0lanai-share-check.ps1"
+set "RC=%errorlevel%"
+if not "%RC%"=="0" goto :share_missing
 
 echo [6/8] Adding the display scale task
 set "STEP=the display scale task"
@@ -270,6 +287,34 @@ echo   working, because setup builds the program again on each run.
 echo - With Smart App Control on, turn it off: Windows Security ^> App ^& browser control.
 echo   It allows no single program, and on many Windows versions only a
 echo   reinstall turns it back on.
+echo Then run setup.cmd again.
+pause
+exit /b 1
+
+:share_missing
+rem One goto per code, so no word sits inside an if ( ) block, where a ")"
+rem would end it. Every code ends with the same steps. A panel shutdown in
+rem this boot leaves setup at step 5, so the panel offers the displays
+rem again, and the next setup boot checks the folder on Linux first.
+echo.
+if "%RC%"=="10" goto :share_absent
+if "%RC%"=="11" goto :share_unreadable
+echo Lanai setup stopped: the check for the shared folder could not run
+echo (exit code %RC%). If a security tool blocks scripts, allow Windows
+echo PowerShell to run lanai-share-check.ps1 from the setup drive.
+goto :share_fix
+:share_absent
+echo Lanai setup stopped: the shared folder from Linux did not appear in Windows
+echo as a drive.
+goto :share_fix
+:share_unreadable
+echo Lanai setup stopped: the shared folder from Linux appeared as a drive, but
+echo Windows could not read it.
+:share_fix
+echo To fix this:
+echo - Restart Windows from the Start menu. The setup drive stays attached.
+echo - If setup stopped here before, shut Windows down from the Lanai panel
+echo   instead, and choose a display there. Lanai then checks the folder on Linux.
 echo Then run setup.cmd again.
 pause
 exit /b 1
