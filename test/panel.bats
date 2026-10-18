@@ -504,6 +504,7 @@ assert_plan_agreement() {
   echo 1 >"$RUN/step6-checked"
   echo 1 >"$RUN/step6-since"
   echo 1 >"$RUN/step6-run-since"
+  echo old-boot >"$RUN/step6-boot"
   : >"$RUN/step6-stopped"
   run setup_plan "$(shared_facts)"
   assert_equal "$(jq -c '[.step, .action, .scale_wait]' <<<"$output")" '["6","checks",true]'
@@ -511,7 +512,11 @@ assert_plan_agreement() {
   event_record '{"event":"RESET"}'
   assert [ ! -e "$RUN/step6-checked" ]
   ((EPOCHSECONDS - $(<"$RUN/step6-since") <= 5)) || fail "RESET did not stamp the boot"
-  assert [ ! -e "$RUN/step6-since.tmp" ]
+  # A new boot token, even within the same second.
+  assert [ -s "$RUN/step6-boot" ]
+  refute [ "$(<"$RUN/step6-boot")" = old-boot ]
+  run find "$RUN" -maxdepth 1 -name 'step6-*.*'
+  assert_output ''
   # The outer limit and the stop stay: a Continue after the restart still
   # gets fresh limits.
   assert_equal "$(<"$RUN/step6-run-since")" 1

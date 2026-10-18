@@ -336,13 +336,25 @@ step6_since() {
   printf '%s\n' "$t"
 }
 
-# step6_same_boot <run dir> <since>: whether the boot stamp is still <since>,
-# the one this check started under. A RESET rewrites it, also while a check
-# waits on QEMU or the guest agent.
+# step6_boot <file>: print the boot token in <file>, writing a new one when
+# it is missing. Fails when that write fails.
+step6_boot() {
+  local t=""
+  [[ ! -s $1 ]] || t=$(<"$1")
+  if [[ -z $t ]]; then
+    t=$(step6_token)
+    step6_stamp "$1" "$t" || return 1
+  fi
+  printf '%s\n' "$t"
+}
+
+# step6_same_boot <run dir> <boot>: whether the boot token is still <boot>,
+# the one this check started under. A RESET writes a new one, also while a
+# check waits on QEMU or the guest agent.
 step6_same_boot() {
-  local now_since=""
-  [[ ! -s $1/step6-since ]] || now_since=$(<"$1/step6-since")
-  [[ $now_since == "$2" ]]
+  local now_boot=""
+  [[ ! -s $1/step6-boot ]] || now_boot=$(<"$1/step6-boot")
+  [[ $now_boot == "$2" ]]
 }
 
 # Reply that a step 6 time stamp could not be written in <run dir>.
@@ -380,10 +392,12 @@ setup_step6() {
 # - Once step6-checked exists, only the scale task's port is awaited (its
 #   own limit; no other deadline), so a short fault while the user signs
 #   in cannot stop setup with the wrong reason. It holds the time the other
-#   checks passed and the boot stamp (step6-since) they ran under, and
-#   counts only while that boot stamp is current: a RESET rewrites the boot
-#   stamp, so a check still running then cannot carry its results into the
-#   new boot. A stamp that cannot be written stops step 6 (record).
+#   checks passed and the boot token (step6-boot) they ran under, and
+#   counts only while that token is current: a RESET writes a new token, so
+#   a check still running then cannot carry its results into the new boot.
+#   The outer limit also ends the scale wait, so a restart loop that gets
+#   that far each boot still stops. A stamp that cannot be written stops
+#   step 6 (record).
 # - QMP's query-chardev must answer, else it tries again. Past the deadline
 #   a failure stops as qmp only when the call before it failed too
 #   (step6-qmp-failed), since the panel's status shares QEMU's one client
@@ -405,7 +419,7 @@ setup_step6() {
 #   reply to it means the allow-list is missing: back to step 5.
 # - Last, step6_scale.
 step6_check() {
-  local follow=$1 run log now since run_since checked="" checked_since="" late=false outer=false qga_open=false
+  local follow=$1 run log now since run_since boot checked="" checked_boot="" late=false outer=false outer_late=false qga_open=false
   local verdict="" guest="" build pinned=true chardevs out rc
   local -a missing=()
   if ! run=$(run_dir); then
@@ -421,14 +435,18 @@ step6_check() {
       return 1
     fi
   fi
-  if ! since=$(step6_since "$run/step6-since") || ! run_since=$(step6_since "$run/step6-run-since"); then
+  if ! since=$(step6_since "$run/step6-since") || ! run_since=$(step6_since "$run/step6-run-since") ||
+    ! boot=$(step6_boot "$run/step6-boot"); then
     step6_record_failed "$run"
     return 1
   fi
-  [[ ! -s $run/step6-checked ]] || read -r checked checked_since <"$run/step6-checked" || true
-  [[ $checked =~ ^[0-9]+$ && ${checked_since:-} == "$since" ]] || checked=""
+  ((now - run_since < 3 * LANAI_SETUP_LIMIT)) || outer_late=true
+  [[ ! -s $run/step6-checked ]] || read -r checked checked_boot <"$run/step6-checked" || true
+  [[ $checked =~ ^[0-9]+$ && ${checked_boot:-} == "$boot" ]] || checked=""
   if [[ -n $checked ]]; then
-    ((now - checked < LANAI_SETUP_SCALE_GRACE)) || late=true
+    if ((now - checked >= LANAI_SETUP_SCALE_GRACE)) || $outer_late; then
+      late=true
+    fi
   elif ((now - since >= LANAI_SETUP_LIMIT)); then
     late=true
   elif ((now - run_since >= 3 * LANAI_SETUP_LIMIT)); then
@@ -444,7 +462,7 @@ step6_check() {
     return 0
   fi
   rm -f -- "$run/step6-qmp-failed"
-  if ! step6_same_boot "$run" "$since"; then
+  if ! step6_same_boot "$run" "$boot"; then
     setup_wait "Windows restarted. Lanai checks each part again."
     return 0
   fi
@@ -518,15 +536,15 @@ step6_check() {
     setup_wait "Windows is still starting: $out did not answer yet."
     return 0
   fi
-  if ! step6_same_boot "$run" "$since"; then
+  if ! step6_same_boot "$run" "$boot"; then
     setup_wait "Windows restarted. Lanai checks each part again."
     return 0
   fi
-  if ! step6_stamp "$run/step6-checked" "$now $since"; then
+  if ! step6_stamp "$run/step6-checked" "$now $boot"; then
     step6_record_failed "$run"
     return 1
   fi
-  step6_scale "$chardevs" false
+  step6_scale "$chardevs" "$outer_late"
 }
 
 # step6_scale <query-chardev reply> <late true|false>: the last check, once

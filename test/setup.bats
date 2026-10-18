@@ -671,13 +671,7 @@ assert_set_time_now() {
 
 # Put the boot's start (step6-since) just past step 6's deadline.
 past_limit() {
-  local since=$((EPOCHSECONDS - LANAI_SETUP_LIMIT - 1)) checked
-  echo "$since" >"$RUN/step6-since"
-  # The same boot, only later: step6-checked keeps its boot stamp in step.
-  if [[ -s $RUN/step6-checked ]]; then
-    read -r checked _ <"$RUN/step6-checked"
-    echo "$checked $since" >"$RUN/step6-checked"
-  fi
+  echo "$((EPOCHSECONDS - LANAI_SETUP_LIMIT - 1))" >"$RUN/step6-since"
 }
 
 # Assert that $JSON is a step 6 time-out with reason <reason>: setup stays
@@ -1260,7 +1254,7 @@ exec /usr/bin/mv "$@"'
   assert_success
   assert_equal "$(field step)" 6
   assert_equal "$(cut -d' ' -f1 "$RUN/step6-checked")" "$checked"
-  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1)) $(<"$RUN/step6-since")" >"$RUN/step6-checked"
+  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1)) $(<"$RUN/step6-boot")" >"$RUN/step6-checked"
   setup_run
   assert_failure
   assert_timeout scale-task
@@ -1596,6 +1590,39 @@ exec /usr/bin/mv "$@"'
   assert [ ! -e "$RUN/step6-checked" ]
 }
 
+@test "lanai setup step 6: a RESET in the same second as the boot stamp still counts as a new boot" {
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  eval "$(declare -f qga_reply | sed '1s/qga_reply/real_qga_reply/')"
+  # The RESET lands during the guest agent's call, and its new boot stamp
+  # reads the same second as the old one.
+  qga_reply() {
+    local s
+    s=$(<"$RUN/step6-since")
+    event_record '{"event":"RESET"}'
+    echo "$s" >"$RUN/step6-since"
+    real_qga_reply "$@"
+  }
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert [ ! -e "$RUN/step6-checked" ]
+  run field message
+  assert_output --partial "Windows restarted"
+}
+
+@test "lanai setup step 6: a restart loop that passes the other checks each boot stops at the outer limit" {
+  step6_running "$FIX/client-logs/match.log"
+  # This boot is new (its own limit far off), but the VM has been up past
+  # the outer limit, restarting.
+  echo "$EPOCHSECONDS" >"$RUN/step6-since"
+  echo "$((EPOCHSECONDS - 3 * LANAI_SETUP_LIMIT - 1))" >"$RUN/step6-run-since"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run
+  assert_failure
+  assert_timeout scale-task
+}
+
 @test "lanai setup step 6: step 6's stamps use their own temporary files, so concurrent writers do not collide" {
   mkdir -p "$RUN"
   # A temporary file another writer left at the old fixed name.
@@ -1628,7 +1655,7 @@ exec /usr/bin/mv "$@"'
   step6_running "$FIX/client-logs/match.log"
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   setup_run
-  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1)) $(<"$RUN/step6-since")" >"$RUN/step6-checked"
+  echo "$((EPOCHSECONDS - LANAI_SETUP_SCALE_GRACE - 1)) $(<"$RUN/step6-boot")" >"$RUN/step6-checked"
   setup_run
   assert_timeout scale-task
   # Continue checks everything again, then waits for the scale task anew.

@@ -972,6 +972,7 @@ start_exec() {
   echo 1700000000 >"$RUN/step6-since"
   echo 1700000000 >"$RUN/step6-run-since"
   echo 1700000000 >"$RUN/step6-checked"
+  echo old-boot >"$RUN/step6-boot"
   : >"$RUN/step6-stopped"
   : >"$RUN/step6-qmp-failed"
   start_exec
@@ -980,6 +981,9 @@ start_exec() {
   for f in step6-since step6-run-since; do
     (($(<"$RUN/$f") >= EPOCHSECONDS - 5)) || fail "$f is not this boot's start: $(<"$RUN/$f")"
   done
+  # A new boot token, apart from the stamps' whole seconds.
+  assert [ -s "$RUN/step6-boot" ]
+  refute [ "$(<"$RUN/step6-boot")" = old-boot ]
   assert [ ! -e "$RUN/step6-checked" ]
   assert [ ! -e "$RUN/step6-stopped" ]
   assert [ ! -e "$RUN/step6-qmp-failed" ]
