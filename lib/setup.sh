@@ -336,6 +336,15 @@ step6_since() {
   printf '%s\n' "$t"
 }
 
+# step6_same_boot <run dir> <since>: whether the boot stamp is still <since>,
+# the one this check started under. A RESET rewrites it, also while a check
+# waits on QEMU or the guest agent.
+step6_same_boot() {
+  local now_since=""
+  [[ ! -s $1/step6-since ]] || now_since=$(<"$1/step6-since")
+  [[ $now_since == "$2" ]]
+}
+
 # Reply that a step 6 time stamp could not be written in <run dir>.
 step6_record_failed() {
   setup_reply false 6 "Lanai could not record setup's time limits in $1." \
@@ -435,6 +444,10 @@ step6_check() {
     return 0
   fi
   rm -f -- "$run/step6-qmp-failed"
+  if ! step6_same_boot "$run" "$since"; then
+    setup_wait "Windows restarted. Lanai checks each part again."
+    return 0
+  fi
   if [[ -n $checked ]]; then
     step6_scale "$chardevs" "$late"
     return
@@ -503,6 +516,10 @@ step6_check() {
       return 1
     fi
     setup_wait "Windows is still starting: $out did not answer yet."
+    return 0
+  fi
+  if ! step6_same_boot "$run" "$since"; then
+    setup_wait "Windows restarted. Lanai checks each part again."
     return 0
   fi
   if ! step6_stamp "$run/step6-checked" "$now $since"; then

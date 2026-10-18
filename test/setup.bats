@@ -1566,19 +1566,58 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(jq -r '.signin_step // "unset"' "$S/setup.json")" unset
 }
 
+@test "lanai setup step 6: a RESET during a check's QMP or guest agent call is not finished on the old boot's results" {
+  step6_running "$FIX/client-logs/match.log"
+  echo "$((EPOCHSECONDS - 50))" >"$RUN/step6-since"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run
+  assert_equal "$(field step)" 6
+  assert [ -s "$RUN/step6-checked" ]
+  # Windows restarts while step 6 waits on QEMU: its agents are not up yet,
+  # and the scale port reads open.
+  eval "$(declare -f qmp_call | sed '1s/qmp_call/real_qmp_call/')"
+  qmp_call() { event_record '{"event":"RESET"}'; real_qmp_call "$@"; }
+  conf FAKE_QGA_CMD=notime FAKE_QMP_VDAGENT=false
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  assert_equal "$(jq -r '.signin_step // "unset"' "$S/setup.json")" unset
+  # The same during the guest agent's calls in a full check, which would
+  # write step6-checked (a boot that started earlier, so the RESET's new
+  # stamp differs).
+  qmp_call() { real_qmp_call "$@"; }
+  eval "$(declare -f qga_reply | sed '1s/qga_reply/real_qga_reply/')"
+  qga_reply() { event_record '{"event":"RESET"}'; real_qga_reply "$@"; }
+  rm -f "$RUN/step6-checked"
+  echo "$((EPOCHSECONDS - 50))" >"$RUN/step6-since"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run
+  assert_success
+  assert [ ! -e "$RUN/step6-checked" ]
+}
+
+@test "lanai setup step 6: step 6's stamps use their own temporary files, so concurrent writers do not collide" {
+  mkdir -p "$RUN"
+  # A temporary file another writer left at the old fixed name.
+  mkdir "$RUN/step6-since.tmp"
+  run step6_stamp "$RUN/step6-since" 1234
+  assert_success
+  assert_equal "$(<"$RUN/step6-since")" 1234
+  run find "$RUN" -maxdepth 1 -name 'step6-since.*' ! -name 'step6-since.tmp'
+  assert_output ''
+}
+
 @test "lanai setup step 6: a time stamp that cannot be written stops step 6 instead of waiting without a limit" {
   step6_running "$FIX/client-logs/match.log"
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
-  mkdir "$RUN/step6-checked.tmp"
+  step6_stamp() { return 1; }
   setup_run
   assert_failure
   assert_equal "$(field step)" 6
   assert_equal "$(field reason)" record
   assert [ ! -e "$RUN/step6-checked" ]
-  # The same for the boot's own stamp.
-  rmdir "$RUN/step6-checked.tmp"
+  # The same for the boot's own stamp, found missing.
   rm -f "$RUN/step6-since" "$RUN/step6-stopped"
-  mkdir "$RUN/step6-since.tmp"
   setup_run
   assert_failure
   assert_equal "$(field step)" 6

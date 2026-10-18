@@ -613,9 +613,16 @@ clock_sync() {
 }
 
 # step6_stamp <file> [<epoch>]: write <epoch> (default now) to <file>, one
-# of setup step 6's time stamps in $RUN, through a temporary file and mv.
+# of setup step 6's time stamps in $RUN, through a temporary file of its own
+# and mv: Continue setup and a RESET may write the same stamp at once.
 step6_stamp() {
-  printf '%s\n' "${2:-$EPOCHSECONDS}" >"$1.tmp" && mv -f -- "$1.tmp" "$1"
+  local tmp
+  tmp=$(mktemp -- "$1.XXXXXX") || return 1
+  if printf '%s\n' "${2:-$EPOCHSECONDS}" >"$tmp" && mv -f -- "$tmp" "$1"; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
 }
 
 # Write the QMP line <line> to <state>/last-shutdown when it is a SHUTDOWN
