@@ -1451,6 +1451,32 @@ scale` is left.
   1440x900 at a 1200x800 start. A wording fix for `lanai-scale.ps1`
   (follow-on).
 
+## Setup checks, phase 0 (2026-10-17)
+
+John ran the commands; Claude read the results. All times EDT.
+
+- Share identity, on the test copy (`~/lanai-proofs/lanai-setup-test`, set up):
+  `Z:\`, DriveType `Fixed`, DriveFormat `VirtIO-FS`, VolumeLabel `lanai`. The
+  label is the virtio-fs tag Lanai gives the device (`tag=lanai`,
+  `lib/vm.sh:151`). A normal (not elevated) PowerShell and an admin one saw the
+  same line, and the normal one listed the share (`lanai-proof`). The drive
+  rule for phase A: DriveFormat `VirtIO-FS` and VolumeLabel `lanai`.
+- Restart time: `net stop VirtioFsSvc`, then `net start VirtioFsSvc`; the drive
+  was back 0.18 s later. With the service stopped, the drive list showed only
+  `C:\`.
+- First install, on a fresh reflink copy of the pre-setup snapshot
+  `20261004T230202Z` (never ran setup.cmd: no `C:\Program Files\Lanai`, and no
+  `VirtioFsSvc` service at all), booted with `proof-vm run --share <scratch>
+  --setup <copy of the setup media>`. Over RDP, in an admin PowerShell, in the
+  new order: the WinFsp install (exit 0), `pnputil /add-driver ... /install`
+  (exit 0, not 3010), the copy of `virtiofs.exe`, the service created, then
+  started. `Z:\` (`VirtIO-FS`, `lanai`) appeared 0.69 s after the start and
+  listed the scratch share's `trial.txt`. No restart was needed, so the check
+  can run inside the setup boot. The copy was deleted after.
+- The snapshot's `data.img` is NOCOW, and btrfs refuses a clone between a
+  NOCOW file and a normal one: the trial folder was set `chattr +C` before the
+  copy, and its small files were copied without a clone.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

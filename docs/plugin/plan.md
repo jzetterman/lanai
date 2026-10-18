@@ -4185,6 +4185,12 @@ Record the results in `proofs.md` ("Setup checks, phase 0"). The drive rule for
 phase A is the share's DriveType plus DriveFormat; if DriveFormat is empty or
 generic (such as "NTFS"), bring it to John before phase A.
 
+Done (2026-10-17): the share is `Fixed`, `VirtIO-FS`, label `lanai` (Lanai's
+virtio-fs tag), seen and listed by the normal session; it returns 0.18 s after
+a service start; and on a Windows that never ran setup.cmd, the new order
+mounted it 0.69 s after the start with no restart (`pnputil` 0). Phase A's rule:
+DriveFormat `VirtIO-FS` and VolumeLabel `lanai`.
+
 ### Phase A: the check in Windows (TDD, PowerShell and cmd)
 
 - Files: new `guest/lanai-share-check.ps1`; `guest/setup.cmd` (the added `net stop`
