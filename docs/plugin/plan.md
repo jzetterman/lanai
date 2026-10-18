@@ -2146,8 +2146,8 @@ spec, plan and review gates before it is built.
   to 8.5 s after the sign-in and switches the resolution 0.2 s later, but
   the scale script opens its port 3.6 to 4.0 s after that and applies the
   scale at +12.7 to +13.3 s. John sees the resolution change as the desktop
-  appears and the scale change seconds later. John's call (2026-10-17): do
-  this next, after phase G.
+  appears and the scale change seconds later. John's call (2026-10-17): on
+  hold, not a major issue.
 
 ## Follow-on: live scale (John, 2026-10-10)
 
