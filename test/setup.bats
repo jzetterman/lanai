@@ -1245,6 +1245,20 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field window)" false
 }
 
+@test "lanai setup step 6: the scale task's limit counts from when the other checks passed, not from before slow calls" {
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  # The guest agent answers, but slowly.
+  eval "$(declare -f qga_reply | sed '1s/qga_reply/real_qga_reply/')"
+  qga_reply() { sleep 2; real_qga_reply "$@"; }
+  local before
+  before=$EPOCHSECONDS
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 6
+  (($(<"$RUN/step6-checked") >= before + 4)) || fail "step6-checked $(<"$RUN/step6-checked") is from before the slow calls ($before)"
+}
+
 @test "lanai setup step 6: other checks that first pass after the boot's limit still give the scale task its wait" {
   # One plain call, well after the boot's limit, finds everything but the
   # scale task: the scale limit counts from now, not from the boot.

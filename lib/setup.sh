@@ -540,7 +540,7 @@ step6_check() {
     setup_wait "Windows is still starting: $out did not answer yet."
     return 0
   fi
-  if ! step6_stamp "$run/step6-checked" "$now"; then
+  if ! step6_stamp "$run/step6-checked" "$EPOCHSECONDS"; then
     step6_record_failed "$run"
     return 1
   fi
