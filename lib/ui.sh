@@ -297,8 +297,7 @@ cmd_ui_job_worker() {
     out=$reply
     inv=$(unit_invocation) at=$(ui_now)
     panel_result_write "$group" "$(ui_record "$token" "$command" "$args" "$started" "$inv" "$out" null)"
-    if [[ $command != setup ]] || ! jq -e '.ok == true and
-      (.step == "5" or (.step == "6" and ((.questions // []) | length) == 0))' <<<"$out" >/dev/null; then break; fi
+    if [[ $command != setup ]] || ! jq -e '.ok == true and (.step == "5" or .step == "6")' <<<"$out" >/dev/null; then break; fi
     ui_setup_next "$out" "$inv" "$at" || break
     set -- --follow "$(jq -r .step <<<"$out")" "$inv"
   done

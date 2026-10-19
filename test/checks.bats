@@ -1085,7 +1085,7 @@ image_activity_fixture() {
   assert_output --partial 'first 100 KB of data.img are all zero'
   assert_output --partial 'LanaiProblemReason=layout'
   exec {LANAI_FLOCK_FD}>&-
-  run setup_resume auto false '' ''
+  run setup_resume auto false
   assert_failure
   assert_equal "$(jq -r .step <<<"$output")" 1
   assert_equal "$(jq -r .reason <<<"$output")" layout

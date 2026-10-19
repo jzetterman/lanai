@@ -18,8 +18,6 @@ Panel {
   property bool forceArmed: false
   property bool stopArmed: false
   property string restoreArmed: ""
-  property string shareAnswer: ""
-  property string scaleAnswer: ""
   property bool setupAgainArmed: false
   property int memoryInput: root.model.view.settings.memory_gib || 1
   property int coresInput: root.model.view.settings.cores || 1
@@ -48,7 +46,6 @@ Panel {
       if (!root.model.control("stop").confirm || !root.model.control("stop").show) root.stopArmed = false
       if (!root.model.control("force_stop").show) root.forceArmed = false
       if (!root.model.control("restore_snapshot").enable) root.restoreArmed = ""
-      if (!root.model.control("send_answers").show) { root.shareAnswer = ""; root.scaleAnswer = "" }
       if (!root.model.view.setup.finished) root.setupAgainArmed = false
     }
     function onSettingsSaved(memoryGib: int, cores: int, windowsScale: var) {
@@ -145,7 +142,7 @@ Panel {
             visible: root.model.view.setup.show === true || root.setupAgainArmed
               || root.model.control("continue_setup").show || root.model.control("reopen_window").show
               || root.model.control("install").show || root.model.control("setup_snapshot").show
-              || root.model.control("skip_snapshot").show || root.model.control("send_answers").show
+              || root.model.control("skip_snapshot").show
               || (!root.model.view.setup.finished && (root.model.control("window").show || root.model.control("no_window").show))
               || (root.model.control("continue_setup").hint || "") !== ""
               || (root.model.view.result.setup || "") !== ""
@@ -183,6 +180,9 @@ Panel {
               Note { text: root.model.control("setup_snapshot").show ? root.model.view.result.snapshots || "" : "" }
               Note { text: root.model.control("continue_setup").hint || "" }
               Note { text: root.model.view.setup.again_line || ""; visible: root.setupAgainArmed }
+              // After a step 6 time-out with Windows off, the display buttons
+              // show directly: they repeat the Windows install, no arming. The
+              // time-out's words below name them.
               Column {
                 width: parent.width
                 spacing: Style.space(6)
@@ -191,30 +191,6 @@ Panel {
                 Note { text: root.model.control("no_window").show ? root.model.control("no_window").hint || "" : "" }
                 Action { control: "window"; onClicked: root.model.run(["setup", "--window"], true) }
                 Note { text: root.model.control("window").show ? root.model.control("window").hint || "" : "" }
-              }
-              Column {
-                width: parent.width
-                spacing: Style.space(6)
-                visible: root.model.control("send_answers").show
-                Note { text: root.model.view.setup.share_question || "" }
-                Flow {
-                  width: parent.width
-                  spacing: Style.space(6)
-                  Action { control: "answer_yes"; selected: root.shareAnswer === "yes"; onClicked: root.shareAnswer = "yes" }
-                  Action { control: "answer_no"; selected: root.shareAnswer === "no"; onClicked: root.shareAnswer = "no" }
-                }
-                Note { text: root.model.view.setup.scale_question || "" }
-                Flow {
-                  width: parent.width
-                  spacing: Style.space(6)
-                  Action { control: "answer_yes"; selected: root.scaleAnswer === "yes"; onClicked: root.scaleAnswer = "yes" }
-                  Action { control: "answer_no"; selected: root.scaleAnswer === "no"; onClicked: root.scaleAnswer = "no" }
-                }
-                Action {
-                  control: "send_answers"
-                  enabled: descriptor.enable && root.shareAnswer !== "" && root.scaleAnswer !== ""
-                  onClicked: root.model.run(["setup", "--share-ok", root.shareAnswer, "--scale-ok", root.scaleAnswer], true)
-                }
               }
               Action { control: "cancel"; visible: root.setupAgainArmed && descriptor.show; onClicked: root.setupAgainArmed = false }
               Note { text: root.model.view.result.setup || "" }

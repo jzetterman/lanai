@@ -21,7 +21,9 @@
 #   error proof 3 recorded; notfound a CommandNotFound "has not been found";
 #   allowlist and open answer by the command, as an agent with and without
 #   setup.cmd's allow-list does (guest-set-time works in both); notime
-#   refuses guest-set-time too, as an allow-list without it would
+#   refuses guest-set-time too, as an allow-list without it would;
+#   time-silent, time-junk and time-array set the time, then answer any
+#   other command with nothing, a line that is not JSON, or a JSON array
 set -uo pipefail
 # Knobs come from the environment, or from FAKE_CONF, which a test may
 # rewrite between connections.
@@ -76,6 +78,15 @@ case ${FAKE_QGA_CMD:-empty} in
       printf '{"error": {"class": "CommandNotFound", "desc": "Command guest-exec has been disabled: the command is not allowed"}}\n'
     else
       printf '{"error": {"class": "GenericError", "desc": "Parameter '"'"'path'"'"' is missing"}}\n'
+    fi
+    ;;
+  time-silent | time-junk | time-array)
+    if [[ $cmd == *'"guest-set-time"'* ]]; then
+      printf '{"return": {}}\n'
+    elif [[ $FAKE_QGA_CMD == time-junk ]]; then
+      printf 'not json at all\n'
+    elif [[ $FAKE_QGA_CMD == time-array ]]; then
+      printf '[{"error": {"class": "CommandNotFound", "desc": "Command guest-exec has been disabled"}}]\n'
     fi
     ;;
 esac

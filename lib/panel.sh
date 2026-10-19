@@ -23,6 +23,16 @@ panel_words() {
     def log: {setup:"setup log",snapshot:"snapshot log",restore:"restore log","build-client":"update log"}[$c] // "button actions log";
     def oldtask: " Until you run setup again, the old scale task undoes scales you pick in Windows," +
       " and \u201cMatch my monitor\u201d does not follow the window. Running setup again also turns the Windows lock off again.";
+    # Every step 6 time-out ends with both ways on (spec 7): Continue setup,
+    # or a display button once Windows is off, which also covers a setup.cmd
+    # that stopped. These words show under the buttons, so they name them.
+    def tail: " Click Continue setup to check again. To install Lanai\u0027s parts in Windows again, shut" +
+      " Windows down, then click Set up in a basic window or Set up in the Windows window. Do this" +
+      " too if setup.cmd stopped with a message in Windows.";
+    # An agents time-out names its parts, from a fixed list only.
+    def parts: [(.parts // [] | if type == "array" then .[] else empty end) |
+      select(. == "the SPICE agent" or . == "the QEMU guest agent")] |
+      if length == 0 then "the Windows agents" else join(" and ") end;
     def reasons: {
       busy:"Lanai is busy with another task. Try again in a moment.",
       session:"Lanai can run setup only while you are signed in to the desktop.",
@@ -38,12 +48,15 @@ panel_words() {
       "no-media":"Shut Windows down, then continue setup to attach the setup drive.",
       nostart:"Windows did not start. Check the Windows VM log before trying again.",
       incomplete:"The setup boot did not finish. Choose a display below and run setup.cmd again.",
-      "guest-boot":"Windows did not finish starting, or its guest agent is missing. Shut down and set up Windows again.",
-      "idd-missing":"The display driver in Windows did not answer. Shut down and set up Windows again.",
-      mismatch:"The display driver in Windows needs an update. Shut down and set up Windows again.",
-      agents:"The Windows agents did not answer. Shut down and set up Windows again.",
-      answers:"The final checks did not pass. Shut down and set up Windows again.",
-      "scale-task":"The display scale task in Windows did not start. It starts when the Windows user who ran setup.cmd signs in. Shut down and set up Windows again, then sign in as that user. If it happens again, in Windows check lanai-scale.log and lanai-signin.log in C:\\Program Files\\Lanai.",
+      qmp:("Lanai could not reach Windows\u0027 virtual machine to check it." + tail),
+      "guest-boot":("Windows did not finish starting, or its guest agent did not start." + tail),
+      "window-closed":("The Windows window did not stay open long enough to check the display driver." + tail),
+      "idd-missing":("The display driver in Windows did not answer." + tail),
+      "scale-task":("The display scale task in Windows did not start. If Windows is at its sign-in screen, or" +
+        " another user is signed in, sign in as the Windows user who ran setup." + tail +
+        " If the task still does not start, see lanai-signin.log and lanai-scale.log in C:\\Program Files\\Lanai."),
+      mismatch:"The display driver in Windows needs an update. Shut Windows down, then click Continue setup to set up Windows again.",
+      allowlist:"The QEMU guest agent in Windows is missing its allow-list. Shut Windows down, then click Continue setup to set up Windows again.",
       client:"The Windows window could not open. Check the Windows window log and try again.",
       "build-busy":"Another build of the Windows window is running. Try again when it finishes.",
       "restore-unsupported":"The restore was refused because Lanai cannot verify an instant copy in this storage location. Choose storage that supports verified instant copies, then try again.",
@@ -56,6 +69,7 @@ panel_words() {
         (if $step == "3" or ($step == "" and .step == "3") then
           "Continue without a snapshot or take a snapshot again."
         else "Continue setup." end)
+      elif .reason == "agents" then "In Windows, " + parts + " did not answer." + tail
       elif .reason and (reasons[.reason] != null) then reasons[.reason]
       elif $c == "setup" and .step == "4" then
         (if $step == "7" then "Setup could not update the Windows window. Check the Windows window build log, then click Run setup again."
@@ -267,6 +281,10 @@ cmd_panel() {
     ($rec.held or $pending or $progress != null) as $busy |
     ($rec.held and $job.command == "setup") as $setupJob |
     (($rec.held|not) and ($rec.records.setup|has("started")) and ($rec.records.setup|has("ended")|not)) as $interruptedSetup |
+    # A step 6 time-out with Windows off: the display buttons repeat the
+    # Windows install, beside Continue setup, with no arming step.
+    ($rec.records.setup.reply as $sr | $sr.ok == false and $sr.step == "6" and $sr.stop == "timeout" and
+      $p.step == "6" and ($p.finished|not) and ($st.active|not)) as $repeat |
     ($token != "" and ($seen|not) and $now - $at >= 10) as $launchFailed |
     ($st.active|not) as $off | ($st.state != "in-use") as $available |
     ($off and $available and ($st.restore_pending|not)) as $idle |
@@ -296,24 +314,22 @@ cmd_panel() {
      setup:{show:($p.finished|not),finished:$p.finished,
        attention:(($p.finished|not) and $st.state != "stopping" and ($p.reason != "" or $r.setup != "" or $launchFailed or
          ($p.step == "3" and $rec.records.snapshots.reply.ok == false) or $st.state == "failed" or
-         $reopen or ($setupBoot and $st.state != "starting") or ($p.questions|length)>0 or ($busy|not))),step:$p.step,questions:$p.questions,
+         $reopen or ($setupBoot and $st.state != "starting") or ($busy|not))),step:$p.step,
        choices:(if $p.finished then ["--no-window","--window"] else $p.choices end),
        again_line:"Choose how Windows should show during setup.",
-       share_question:"Does Explorer show the files from your Linux Windows folder?",scale_question:"Does text in Windows look the right size?",
        lines:([if $st.state == "not-installed" and ($p.reason == "missing" or $p.reason == "layout") then empty
          elif $problem_line != "" then $problem_line else {"1":"Check the Windows install and the shared Windows folder before continuing.",
          "2":"Click Install in a terminal, complete installation there, then continue setup.",
          "3":"Before the first boot, take a snapshot so you can undo changes, or make a backup and continue without one.",
          "3a":"Continue setup to prepare the Windows install.",
          "4":"Continue setup to prepare the Windows window. This may take several minutes.",
-         "5":(if $p.action == "setup-wait" then (if $setupJob then "In Windows, open Lanai\u0027s setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Use Shut down only if setup.cmd stops responding."
+         "5":(if $p.action == "setup-wait" then (if $setupJob then "In Windows, open Lanai\u0027s setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Use Shut down only if setup.cmd stops responding, or when its shared-folder check tells you to."
            else "In Windows, open Lanai\u0027s setup drive and run setup.cmd. Then click Continue setup so Lanai can restart Windows and check it when setup.cmd finishes." end)
            elif ($p.choices|length)>0 then "The setup boot did not finish. Choose the screen to use for another setup boot."
            elif $st.active then "Shut Windows down before continuing setup."
            else "Continue setup to install the drivers in Windows." end),
          "6":(if $st.state == "stopping" then "Wait for Windows to shut down, then click Continue setup."
-           elif ($p.questions|length)>0 then "Sign in to Windows if it asks for your password. Then check the shared drive in Explorer and the text size, and send both answers."
-           elif $setupJob and $p.scale_wait == true then "Waiting up to a minute for the display scale task to start in Windows. It starts when you sign in."
+           elif $setupJob and $p.scale_wait == true then "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in within 2 minutes."
            elif $setupJob then "Windows is starting or being checked."
            else "Click Continue setup so Lanai can check Windows." end),
          "7":"Setup is finished."}[$p.step] end])},
@@ -327,20 +343,17 @@ cmd_panel() {
        force_confirm:button($st.force_stop;$st.force_stop;"Force stop and lose unsaved work"),
        cancel:button(true;true;"Cancel"),
        dismiss_notice:button(($st.notice != null);true;"Dismiss notice"),
-       continue_setup:button($interruptedSetup or (($p.choices|length)==0 and ($p.questions|length)==0 and $p.step != "3");
+       continue_setup:button($interruptedSetup or (($p.choices|length)==0 and $p.step != "3");
          ($busy|not) and $available and ($st.restore_pending|not) and (($p.finished|not) or $off) and
          $p.reason != "no-media" and $p.reason != "active" and ($p.step != "6" or $st.state != "stopping");(if $p.finished then "Run setup again" else "Continue setup" end)) +
          {hint:(if $p.finished and ($off|not) then "Shut Windows down to run setup again." else "" end)},
        install:button($p.step == "2";($busy|not);"Install in a terminal"),
        setup_snapshot:button($p.step == "3";$idle and ($busy|not);"Take a snapshot"),
        skip_snapshot:button($p.step == "3";$idle and ($busy|not);"Continue without a snapshot"),
-       window:(button($p.finished or ($p.choices|length)>0;$idle and ($busy|not);"Set up in a basic window") +
+       window:(button($p.finished or ($p.choices|length)>0 or $repeat;$idle and ($busy|not);"Set up in a basic window") +
          {hint:"Use a basic window if the Windows window is blank or the display driver needs repair."}),
-       no_window:(button($p.finished or ($p.choices|length)>0;$idle and ($busy|not);"Set up in the Windows window") +
+       no_window:(button($p.finished or ($p.choices|length)>0 or $repeat;$idle and ($busy|not);"Set up in the Windows window") +
          {hint:"Use this if the Windows display driver already works."}),
-       answer_yes:button(($p.questions|length)>0;($busy|not);"Yes"),
-       answer_no:button(($p.questions|length)>0;($busy|not);"No"),
-       send_answers:button(($p.questions|length)>0;($busy|not) and $st.active;"Send answers"),
        finish_restore:button($snapshotsShow and $st.restore_pending;$off and $available and ($busy|not);"Finish the unfinished restore"),
        take_snapshot:button($snapshotsShow;$idle and ($busy|not);"Take a snapshot"),
        restore_snapshot:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore snapshot") +

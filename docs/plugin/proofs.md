@@ -1451,6 +1451,72 @@ scale` is left.
   1440x900 at a 1200x800 start. A wording fix for `lanai-scale.ps1`
   (follow-on).
 
+## Setup checks, phase 0 (2026-10-17)
+
+John ran the commands; Claude read the results. All times EDT.
+
+- Share identity, on the test copy (`~/lanai-proofs/lanai-setup-test`, set up):
+  `Z:\`, DriveType `Fixed`, DriveFormat `VirtIO-FS`, VolumeLabel `lanai`. The
+  label is the virtio-fs tag Lanai gives the device (`tag=lanai`,
+  `lib/vm.sh:151`). A normal (not elevated) PowerShell and an admin one saw the
+  same line, and the normal one listed the share (`lanai-proof`). The drive
+  rule for phase A: DriveFormat `VirtIO-FS` and VolumeLabel `lanai`.
+- Restart time: `net stop VirtioFsSvc`, then `net start VirtioFsSvc`; the drive
+  was back 0.18 s later. With the service stopped, the drive list showed only
+  `C:\`.
+- First install, on a fresh reflink copy of the pre-setup snapshot
+  `20261004T230202Z` (never ran setup.cmd: no `C:\Program Files\Lanai`, and no
+  `VirtioFsSvc` service at all), booted with `proof-vm run --share <scratch>
+  --setup <copy of the setup media>`. Over RDP, in an admin PowerShell, in the
+  new order: the WinFsp install (exit 0), `pnputil /add-driver ... /install`
+  (exit 0, not 3010), the copy of `virtiofs.exe`, the service created, then
+  started. `Z:\` (`VirtIO-FS`, `lanai`) appeared 0.69 s after the start and
+  listed the scratch share's `trial.txt`. No restart was needed, so the check
+  can run inside the setup boot. The copy was deleted after.
+- The snapshot's `data.img` is NOCOW, and btrfs refuses a clone between a
+  NOCOW file and a normal one: the trial folder was set `chattr +C` before the
+  copy, and its small files were copied without a clone.
+
+## Setup checks, phase C (2026-10-18)
+
+John ran the steps on the test copy (`~/lanai-proofs/lanai-setup-test`) with the
+branch's build (`plugin/setup-checks` c3114dc, installed from the local
+checkout); Claude read the setup record, the panel and `$RUN`. All times EDT.
+
+- Step 1, a clean Run setup again: setup.cmd printed "Checking that the shared
+  folder from Linux appears in Windows (up to 30 seconds)..." and went on at
+  once (John: "It immediately detected the linux drive"). Setup finished at
+  step 7 at 20:05:52 with no question, the record at `signin_step` 2.
+- Step 2, the shared folder: Run setup again; in the setup boot, an Image File
+  Execution Options `Debugger` value for `virtiofs.exe` naming a missing file,
+  then setup.cmd. It stopped at [5/8] after 30 s with "The shared folder from
+  Linux did not appear as a drive in 30 seconds." and "Lanai setup stopped:
+  the shared folder from Linux did not appear in Windows as a drive.", the
+  restart and panel steps, and "Then run setup.cmd again." With the value
+  deleted, setup.cmd ran again in the same boot, and setup finished at 20:11:48.
+- Step 3, automatic sign-in off (`AutoAdminLogon` 0 and the restart sign-on
+  setting off): Run setup again, John signed in to run setup.cmd, then stayed
+  at the sign-in screen at the check boot. The boot started at 20:14:48
+  (`step6-since`); the other checks passed at the sign-in screen at 20:14:58
+  (`step6-checked`); the scale task stopped at 20:17:01 (123 s, the 120 s limit
+  plus one poll) with the scale-task words, Continue setup shown, and the
+  display buttons hidden while Windows ran. After Shut down from the panel,
+  both display buttons showed beside Continue setup (John). Continue setup
+  started Windows (`step6-since` 20:18:27), the other checks passed at
+  20:18:37, John signed in, and setup finished at 20:19:09. John then stored
+  the password again with `netplwiz` and turned the restart sign-on setting
+  back on.
+- Step 4, the guest agent: Run setup again; in the setup boot, the IFEO value
+  for `qemu-ga.exe`, then setup.cmd, which finished (the agent already running
+  in that boot was not restarted). The check boot started at 20:22:43; step 6
+  stopped at 20:27:50 (307 s) as `guest-boot`, "Windows did not finish
+  starting, or its guest agent did not start." with the time-out ending. With
+  the value deleted and Windows restarted, Continue setup reset the limits
+  (20:29:18) and setup finished at once, at step 7.
+- By test only, as the plan says: the IDD mismatch, a guest agent without its
+  allow-list, the `idd-missing`, SPICE agent and `qmp` time-outs, a drive that
+  appears but cannot be listed, and Run setup again after a scale-task stop.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

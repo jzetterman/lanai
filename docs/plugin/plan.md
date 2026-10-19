@@ -130,7 +130,8 @@ use.
   mode other than 0700 (checked before any runtime file is created). It holds
   `qmp.sock`, `qmp-events.sock`, `qmp-cli.sock`, `spice.sock`, `qga.sock`, `virtiofs.sock`, `ivshmem`,
   passt's pid file, `client.log`, `qga-open-since`, `qga-closed-since` (setup's step 6,
-  phase 6), and a pid file per helper (`virtiofsd.pid`,
+  phase 6; superseded by step 6's own records, see "Follow-on: setup checks (John,
+  2026-10-17)"), and a pid file per helper (`virtiofsd.pid`,
   `shutdown-watch.pid`, `sleep-watch.pid`, `event-log.pid`). Not `RuntimeDirectory=`,
   which would delete the
   client log at stop.
@@ -915,7 +916,7 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
 | 3a. Normalize base | if `windows.base` is empty or missing (a missing file counts as empty everywhere, as it does for dockur's `readBase`), write the same name dockur's `readBase` would write, so a later container start rewrites nothing, and tell the user. Runs after the snapshot, so a restore returns the original empty file; `layout_check` itself stays read-only. Tested: restore after normalizing an empty base matches the pre-adoption hashes |
 | 4. Client build | `client_version` (phase 5) reports the pinned version for the pinned binary |
 | 5. Guest setup boot | `record_previous_run` set `step5`: the setup boot ended in a clean guest shutdown that was not the panel's Shut down or a forced stop (`setup.cmd`'s shutdown, or another the user started, which step 6 catches) |
-| 6. Normal boot | each guest component is checked, not assumed: the pinned client, started directly, logs `match` (`version_check`, phase 5), and that log records the pin; the guest agent answers a sync and a `guest-set-time` to the current host time (the channel's allowed use, which also proves the clock path), and refuses an argument-free `guest-exec` with `CommandNotFound ... has been disabled`, the reply proof 3 recorded (the allow-list took effect; spec req 27; without arguments the command could not run anything even if the allow-list had failed); QMP `query-chardev` shows `frontend-open: true` for the SPICE agent's port (`vdagent`), as it does for the guest agent; the panel asks the user two one-click questions: does `~/Windows` show in Explorer, and does Windows' text look the right size (the scale task). Any missing component sends setup back to step 5 with "setup did not finish: run setup.cmd again"; `setup.cmd` is idempotent (each installer skips what is already installed at the pinned version). Tests cover a shutdown after a partly failed `setup.cmd` |
+| 6. Normal boot | each guest component is checked, not assumed: the pinned client, started directly, logs `match` (`version_check`, phase 5), and that log records the pin; the guest agent answers a sync and a `guest-set-time` to the current host time (the channel's allowed use, which also proves the clock path), and refuses an argument-free `guest-exec` with `CommandNotFound ... has been disabled`, the reply proof 3 recorded (the allow-list took effect; spec req 27; without arguments the command could not run anything even if the allow-list had failed); QMP `query-chardev` shows `frontend-open: true` for the SPICE agent's port (`vdagent`), as it does for the guest agent; the panel asks the user two one-click questions: does `~/Windows` show in Explorer, and does Windows' text look the right size (the scale task). Any missing component sends setup back to step 5 with "setup did not finish: run setup.cmd again"; `setup.cmd` is idempotent (each installer skips what is already installed at the pinned version). Tests cover a shutdown after a partly failed `setup.cmd`. Superseded: step 6 asks no question, and a part that does not answer stops at step 6; see "Follow-on: setup checks (John, 2026-10-17)" |
 | 7. Done | all of the above |
 
   A step 6 start failure reports "Windows did not start." and points to the logs.
@@ -928,7 +929,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   is a host client failure: step 6 replies `ok: false`, "The Windows window did
   not stay open long enough to check the display driver.", with next step
   "see the logs with journalctl --user -u lanai-client, then run setup again".
-  That call stays at step 6 and does not reopen the client.
+  That call stays at step 6 and does not reopen the client. (Superseded: the port
+  timers are gone, and one deadline from the boot's start covers these checks; see
+  "Follow-on: setup checks (John, 2026-10-17)".)
 
   bats tests interrupt the flow after each step and check that `lanai setup` resumes at
   the right step.
@@ -944,6 +947,8 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
 - `lanai setup` options: `--no-snapshot` declines step 3, `--window` and
   `--no-window` pick step 5's display, and `--share-ok yes|no --scale-ok yes|no`
   answer step 6's two questions (two yeses finish setup; a lone no sends it back).
+  (Superseded: the answer options are gone; see "Follow-on: setup checks (John,
+  2026-10-17)".)
   Replies carry `step` (`"1"` to `"7"`, or `"3a"`) except option errors and
   setup resume's own lock or user-manager refusals, which precede step detection.
   Refusals from `setup_guest` or `boot_vm` on the setup-boot path go through
@@ -1026,7 +1031,8 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   regardless of the client's start time, whether its start line exists, or whether
   it keeps closing. The guest agent is asked only while its port is open (a sync
   on a closed port waits 5 s).
-  A lone `--share-ok no` or `--scale-ok no` sends setup back too.
+  A lone `--share-ok no` or `--scale-ok no` sends setup back too. (Superseded:
+  step 6's limits and answers are in "Follow-on: setup checks (John, 2026-10-17)".)
 - `lanai setup-guest` refuses until step 3 has a decision for this location. It holds
   the lock, with the VM stopped, for the whole media build (downloads included), and
   removes the old media first, so a failed build leaves none. The media use fixed
@@ -1076,6 +1082,8 @@ code is in `lib/setup.sh`; the tests are in `test/setup.bats` and `test/guest.ba
   The panel reads reply detail keys `choices` (step 5), `questions` (step 6),
   `missing`/`command` (step 2), `active`/`window` (step 5 while running), and
   `window` (boot replies), alongside `ok`, `step`, `message` and `next`.
+  (Superseded: `questions` is gone, and step 6 time-outs carry `stop` and
+  `parts`; see "Follow-on: setup checks (John, 2026-10-17)".)
 - Both client build callers use `build_client_locked` for `build.lock` and `flock`.
   A build still reporting the wrong version stops with an `ok: false` step 4 reply
   instead of looping. Only `cmd_setup` marks its emitted reply in the parent shell.
@@ -1128,7 +1136,8 @@ reviews look hard at the panel's wording, layout and states.
   `missing`/`command`, `active`/`window` and boot `window` as listed in phase 6's
   "For phase 7" contract); settings
   (memory, cores); the error view with cause, next step, log path and the
-  `omarchy-windows-vm` fallback.
+  `omarchy-windows-vm` fallback. (Superseded: step 6 asks no question; see
+  "Follow-on: setup checks (John, 2026-10-17)".)
 - Guest-controlled text (from phase 5 review): show `client.log`, the guest's driver
   version and any other text from the guest or its logs with `Text.PlainText`, never
   QML's default `AutoText`, which would render markup the guest wrote.
@@ -1209,7 +1218,10 @@ pins that the view ignores it. The view holds:
   settings), `show` and `enable`, plus the label where it varies; the snapshot list
   comes with every view, so there is no list control;
 - `setup`: whether the section shows, `finished`, the current step, its lines, the
-  step 6 questions and the step 5 display choices when they apply;
+  step 6 questions and the step 5 display choices when they apply; (superseded: no
+  questions or answer controls, and at a step 6 time-out with Windows off, the two
+  display buttons, which the time-out's words name; see "Follow-on: setup checks
+  (John, 2026-10-17)")
 - `result`: per control group, an outcome that the state cannot say by itself,
   shown beside its controls (below);
 - `settings` (memory, cores, or the read error), `snapshots` (names, or the read
@@ -1236,7 +1248,8 @@ agree.
 **Setup's step comes from durable state.** `setup_resume` is split. A read-only
 `setup_plan` decides the step and what it needs (an action such as a package install
 or the snapshot offer, the step 5 display choices, a boot to wait for, step 6's
-checks or its questions, done). `setup_resume` becomes: lock, `record_previous_run`,
+checks or its questions, done; superseded: step 6 has no questions, see "Follow-on:
+setup checks (John, 2026-10-17)"). `setup_resume` becomes: lock, `record_previous_run`,
 `setup_follow`, the shared facts, `setup_plan`, then act. Because the panel calls
 `setup_plan` without the first two, `setup_plan` applies their pending effects to
 what it reads, without writing:
@@ -1265,7 +1278,9 @@ already records SHUTDOWN events, deletes it on any `RESET` event (a Windows rest
 exists and the plan is at step 6 (step5 true, the unit active, not a setup boot), so a
 "no" answer that sends setup back to step 5 hides them. Step 6's other verdicts
 (waiting, back to step 5) need QMP and the guest agent, so they come from the setup
-job's own result, not from `setup_plan`. A bats test pins that `setup_plan` and
+job's own result, not from `setup_plan`. (Superseded: `step6-asked` is gone, and
+`setup_plan`'s scale wait comes from `step6-checked`; see "Follow-on: setup checks
+(John, 2026-10-17)".) A bats test pins that `setup_plan` and
 `setup_resume` agree on the step, action and JSON reply reason for every fixture,
 both with the markers still on disk (as the view sees them) and consumed (as setup sees them), including a panel
 Shut down during the setup boot (a clean guest shutdown with a matching stop request
@@ -1274,7 +1289,9 @@ gives the display choices, and the setup job stops following).
 **The setup job follows its own waits.** The panel never decides when to call setup
 again. `ui-job setup` runs `lanai setup` with the click's arguments (a display choice,
 answers, `--no-snapshot`); while the reply is an ok:true wait (step 5, or step 6 with
-no questions; step 3a's and step 7's ok:true replies are not waits), the job checks
+no questions; step 3a's and step 7's ok:true replies are not waits; superseded: every
+ok:true step 6 reply is a wait, and there are no answers, see "Follow-on: setup checks
+(John, 2026-10-17)"), the job checks
 every 2 s for that wait's expected next state (an activating unit counts as active)
 and then calls `lanai setup --follow <step> <invocation>` again, never repeating
 the click's arguments (a repeated `--window` would start another setup boot):
@@ -1313,7 +1330,8 @@ directly. Through a new `lanai ui-run`, which the QML runs as a `Process` withou
 deadline (never killed partway) and refreshes when it exits: `start`, `open`, `stop`,
 `force-stop`, `notice-seen`, `settings`, `setup-host`. Through `lanai ui-job`
 (detached, as above): every `lanai setup` call (including step 3's skip, the display
-choices and the answers), `snapshot` (including step 3's take) and `restore`. Groups:
+choices and the answers; superseded: no answers, see "Follow-on: setup checks (John,
+2026-10-17)"), `snapshot` (including step 3's take) and `restore`. Groups:
 `vm` (start, open, stop, force-stop, notice-seen), `setup` (setup, setup-host),
 `settings` (settings), `snapshots` (snapshot and restore). Each group has one record, `panel-result-<group>.json`, written by
 atomic rename: the token, the command and its arguments, the VM's `InvocationID`,
@@ -1363,7 +1381,9 @@ the user.
 - Settings stay: they apply at the next start.
 - `setup.attention` is true when the user must act (an action such as Continue
   setup, the snapshot offer, the display choices, running setup.cmd, the step 6
-  questions, or a failure) and false while Lanai works by itself, including every
+  questions, or a failure; superseded: no questions, and a step 6 time-out is a
+  failure, see "Follow-on: setup checks (John, 2026-10-17)") and false while Lanai
+  works by itself, including every
   shutdown wait regardless of the setup reason. QML changes the Setup section's
   accent border and light background while keeping its inset constant. It uses
   the shell's selected accent fill when available, else a light accent fill.
@@ -1375,7 +1395,8 @@ polls fast. It has a 10 s deadline, skips a tick while a call runs, and an
 action asks for exactly one fresh call after it ends. It renders the view's fields as
 plain text (`Text.PlainText`), shows and enables controls from `buttons`, and runs
 every command through `ui-run` or `ui-job`. Besides moment-to-moment input that
-decides nothing on its own (the selected answers, unsaved settings edits, an armed
+decides nothing on its own (the selected answers, gone since "Follow-on: setup
+checks (John, 2026-10-17)"; unsaved settings edits, an armed
 second-click confirmation for the forced stop or a restore, whose controls and labels
 come from the view), it keeps one value: the token and time of a long job it launched
 (`--pending <token> <epoch>`), passed to `lanai panel` until its record appears
@@ -1392,7 +1413,9 @@ deadline in the worst case.
 the group records and lock, `last-run`, settings and snapshots): every state
 `status_map` can return; every setup step, including step 5 during and after the
 setup boot, step 6 waiting, questions, a restart that retires them and a "no" answer
-that hides them, the display choices, and a back-to-step-5 failure; a finished
+that hides them (superseded by the time-out and wrong-answer cases in "Follow-on:
+setup checks (John, 2026-10-17)"), the display choices, and a back-to-step-5
+failure; a finished
 install with omarchy-windows-vm running or `~/Windows` missing (still finished); a
 job running, interrupted and never started; a pending restore (stopped,
 setup-needed, in-use); a restore success and failure; the forced-stop notice; Shut
@@ -1861,7 +1884,8 @@ The orchestrator runs the gate; delegates run no review stage.
   Setup offers Reopen the Windows window only while the usual window controls are
   hidden, a client-mode boot's unit is active (not activating or reloading), the
   client is not running, and shutdown is not in progress, including after a step 6
-  failure or no answer rolls back to step 5.
+  failure or no answer rolls back to step 5. (Superseded: only a wrong answer rolls
+  back; see "Follow-on: setup checks (John, 2026-10-17)".)
   Boot flags also cover activation before status reports the display.
   Reopen uses `ui-run open`. `snapshots.show` and its control descriptors hide
   the section only when the usual controls are hidden with an active unit;
@@ -1956,7 +1980,8 @@ The orchestrator runs the gate; delegates run no review stage.
   verified existing installs and new builds get the stamp, and pruning removes it
   with the build. Step 6 writes its question marker, RESET events retire it, and
   VM startup clears it. A negative answer hides the questions by returning to
-  step 5. Plan/resume agreement tests cover both present and consumed markers,
+  step 5. (Superseded: the markers are now step 6's limit stamps; see "Follow-on:
+  setup checks (John, 2026-10-17)".) Plan/resume agreement tests cover both present and consumed markers,
   early and active phases, and a panel-requested shutdown, comparing steps,
   actions and JSON reply reasons. Both agreement tests include runs that started
   then failed with `Result=exit-code`, with `step5` true and false. Resume passes
@@ -2025,8 +2050,8 @@ The orchestrator runs the gate; delegates run no review stage.
   deadline. It skips routine overlapping calls and requests one fresh read after
   an action, discarding an older in-flight read. Direct `ui-run` actions use a
   Process without a deadline; `ui-job` launches are detached so pending-token
-  checks remain possible even if launch stalls. QML retains transient answers,
-  unsaved settings, second-click confirmations and the pending token/time, with
+  checks remain possible even if launch stalls. QML retains transient answers
+  (gone since "Follow-on: setup checks (John, 2026-10-17)"), unsaved settings, second-click confirmations and the pending token/time, with
   transport state only for serializing reads/actions. It renders plain text and
   backend control descriptors; `SetupCalls.js` and its test are deleted. Settings
   fields freeze their transient input on the SpinBox's `valueModified`
@@ -2146,8 +2171,8 @@ spec, plan and review gates before it is built.
   to 8.5 s after the sign-in and switches the resolution 0.2 s later, but
   the scale script opens its port 3.6 to 4.0 s after that and applies the
   scale at +12.7 to +13.3 s. John sees the resolution change as the desktop
-  appears and the scale change seconds later. John's call (2026-10-17): do
-  this next, after phase G.
+  appears and the scale change seconds later. John's call (2026-10-17): on
+  hold, not a major issue.
 
 ## Follow-on: live scale (John, 2026-10-10)
 
@@ -2372,7 +2397,9 @@ reason, naming the task, the setup user and the task's log. `missing` keeps its
 two items. When setup finishes (`setup_patch '{"done": true, ...}'`) with
 the port open, it writes `"scale_task": 2`. A user who boots "Run setup again" and
 shuts down without running setup.cmd therefore never gets the marker. A record
-without it means the old task (req 12's last rule).
+without it means the old task (req 12's last rule). (Superseded: the scale task's
+port is awaited once the other checks pass, with no questions, for 120 s; see
+"Follow-on: setup checks (John, 2026-10-17)".)
 
 **Panel and words.** `cmd_settings` returns structured fields; `panel_words` turns
 them into words (below), and for a scale save the CLI's own message says the same (a memory-and-cores save prints a full sentence where the panel shows "Saved."). `LanaiPanel.qml` tracks `scaleTouched` (set by the dropdown's
@@ -2520,7 +2547,8 @@ phase B's last step; (1)-(5) run first.
   reports the missing task and writes no marker; with it open, the marker is
   written (fake QMP). As built: a slow sign-in past the boot grace still asks, a
   closed task after the answers is waited for and then named, and the task opening
-  after the answers finishes setup with its mark.
+  after the answers finishes setup with its mark. (Superseded: no answers; see
+  "Follow-on: setup checks (John, 2026-10-17)".)
 - Files: `guest/lanai-scale.ps1`, `guest/setup.cmd`, `lib/setup.sh`, `README.md`
   (live scale, picks, custom scaling, apps that redraw only after restart, "Run
   setup again" for existing installs).
@@ -3953,6 +3981,485 @@ panel and README words that need taste >= 7. Phase H: opus-5.5 in a
 worktree: Windows APIs in C# 5, a job object, the setup build, and README
 words. Phase G: John with Claude.
 
+## Follow-on: setup checks (John, 2026-10-17)
+
+This implements the spec amendment of 2026-10-17: requirement 7's last bullet,
+requirement 27's two additions (the refused guest-agent command and the IDD's
+reported build) and row 7's closing clauses. Setup asks no question at its end.
+It supersedes the earlier text about step 6's two questions where they differ:
+lines 132, 918, 944-946, 1029, 1076, 1115-1130, 1211-1212, 1236-1240, 1261-1268,
+1274-1298, 1316, 1364-1366, 1378, 1394, 1864, 1955-1958, 2028, 2361-2373 and
+2522-2523 (as of `main` 7f24300). Phase B points each of them here.
+
+### The design
+
+**In Windows: setup.cmd.** Two changes:
+
+- In step [4/8], `net stop VirtioFsSvc >nul 2>&1` is added before `pnputil`, so
+  the driver update never meets a running service (dockur's, on a first setup).
+  The stop before the copy in [5/8] stays, in case the service started again in
+  between. Both results stay ignored.
+- In step [5/8], after the service is set, setup.cmd prints "Checking that the
+  shared folder from Linux appears in Windows (up to 30 seconds)...", starts the
+  service (`net start VirtioFsSvc >nul 2>&1`, result ignored: the check covers
+  it), then runs a new script from the setup drive,
+  `guest/lanai-share-check.ps1`.
+
+The script waits up to 30 s, polling every second, for a ready drive
+(`IsReady` true; a drive that throws while being read counts as not matching)
+that matches the share's identity: its drive type and file system name, which
+phase 0 measures. It then lists the drive's root
+(`Get-ChildItem -LiteralPath <root> -Force`), and on a failed listing keeps
+trying each second until the deadline. Exit codes: 0 found and listed; 10 no
+such drive in 30 s; 11 a matching drive appeared but never listed. A share that
+hangs `IsReady` or the listing can hold the script past 30 s; Risks names it. PowerShell
+itself exits 1 for a parse error, an unhandled exception or a blocked script,
+so setup.cmd treats every code other than 0, 10 and 11 as "the check could not
+run". The script ignores every other drive. The share's drive is mounted by a
+LocalSystem service, so it lives in Windows' global namespace, which the user's
+non-elevated session sees; phase 0 confirms it from a normal PowerShell.
+
+A non-zero exit goes to a new stop, `:share_missing`, shaped like
+`:start_blocked` (`echo.`, the words, `pause`, `exit /b 1`). Its words for code
+10:
+
+```
+Lanai setup stopped: the shared folder from Linux did not appear in Windows
+as a drive.
+To fix this:
+- Restart Windows from the Start menu. The setup drive stays attached.
+- If setup stopped here before, shut Windows down from the Lanai panel
+  instead, and choose a display there. Lanai then checks the folder on Linux.
+Then run setup.cmd again.
+```
+
+(As built: the panel fallback moved into the steps, so the words end with
+running setup.cmd again, as requirement 7 and this section require. The step
+names the panel's buttons: "shut Windows down from the Lanai panel instead,
+then click Set up in a basic window or Set up in the Windows window. Lanai then
+checks the folder on Linux." setup.cmd calls `net` and `powershell` by their
+bare names, like the lines around them: a bare name resolves from System32,
+the elevated stage's working folder, while `%SystemRoot%` comes from the user's
+environment.)
+
+Code 11 says "appeared as a drive, but Windows could not read it". Any other code
+says "Lanai setup stopped: the check for the shared folder could not run (exit
+code N)" with the same steps. Phase A may tighten the words; they must say what
+to do and end with running setup.cmd again. (A panel shutdown during the setup
+boot leaves `step5` false, so the panel offers the two display buttons, and the
+next setup boot runs `share_check` on Linux first.)
+
+**Host: step 6 (`lib/setup.sh`, `setup_step6`).** It takes no answers. The checks
+and their order stay: the pinned client's verdict on the IDD, the SPICE agent's
+port, the guest agent (clock set, then the refused command), then the scale
+task's port.
+
+- **Time-outs stay at step 6.** A new `setup_stop6 <reason> <msg> [parts]`
+  replaces `setup_back5` for every time-out. It replies `ok:false`, step `6`, with details `{reason, stop: "timeout"}`, plus
+  `parts` (a list of names) for `agents`. Because the reply's step matches the
+  plan's step 6, the panel shows its words (panel.sh:188-192 drops a failed
+  reply whose step differs). The panel reads the stop from its setup job
+  record, as it reads every result: `reply.stop`. Every step 6 `ok:false`
+  reply, the time-outs and the other failures below alike, writes
+  `$RUN/step6-stopped`, so the next Continue gets fresh limits.
+- **Time-outs** keep `step5` true, so Continue setup checks
+  again, and with Windows stopped takes the existing `normal-boot` path, which
+  boots Windows first. Reasons, in the order step 6 reports them at the
+  deadline: `qmp` (QMP never answered), `guest-boot` (the guest agent's port
+  never opened), `window-closed` (the pinned client would not stay open; `client`
+  keeps its meaning, "could not open"), `idd-missing`, `agents` (with `parts`:
+  "the SPICE agent", "the QEMU guest agent"), then `scale-task` at its own limit.
+  `next` is "continue setup to check again (lanai setup), or shut Windows down
+  and run lanai setup --window or --no-window to repeat the Windows install".
+  The pinned client open but its verdict still `unknown` or `waiting` at the
+  deadline counts as `idd-missing`. A failed `query-chardev` past the deadline
+  stops as `qmp` only when the call before it also failed
+  (`$RUN/step6-qmp-failed`, touched on a failure and removed on a success),
+  since the panel's status shares QEMU's one client socket. Every time-out
+  message ends with "If Windows' setup window
+  stopped with a message, follow it first." The scale task's also says "If
+  Windows is at its sign-in screen, or another user is signed in, sign in as
+  the Windows user who ran setup first." (As built: at step 6 the setup drive
+  is not attached, so setup.cmd cannot run again from there. Every CLI
+  time-out message ends "If setup.cmd stopped with a message in Windows, shut
+  Windows down and repeat the Windows install." The scale task's adds, before
+  it: "It starts at sign-in: if Windows is at its sign-in screen, or another
+  user is signed in, sign in as the Windows user who ran setup. If it still
+  does not start, see lanai-signin.log and lanai-scale.log in C:\Program
+  Files\Lanai.")
+- **Wrong answers stop at once and repeat the install,** through the existing
+  `setup_back5`, unchanged: it clears `step5` and replies step 5, so the plan
+  moves to `5 problem no-media` while Windows runs and `5 setup-boot` once it is
+  off, and Continue setup then repeats the Windows install. Reasons: `mismatch`
+  (the IDD build differs from `LG_BUILD`; requirement 8's words, as today) and a
+  new `allowlist` (the guest agent answered the refused command with anything
+  but its `CommandNotFound ... has been disabled` reply). Its panel words: "The
+  QEMU guest agent in Windows is missing its allow-list. Shut down and set up
+  Windows again." (As built: `allowlist` and `mismatch` end "Shut Windows down,
+  then click Continue setup to set up Windows again.", as the README says.)
+  The existing old-driver words (panel.sh:365, lanai.sh:951)
+  stay true. To tell a wrong answer from no answer, `qga_reply` in `refusal` mode
+  returns 2 for a well-formed reply that is not the refusal and 1 for no reply,
+  as now. The command stays `{"execute":"guest-exec"}` with no arguments:
+  without a path it runs nothing, even when an agent accepts it (requirement
+  27).
+- **Other step 6 failures** keep their current replies and buttons: "XDG_RUNTIME_DIR
+  is not set" (setup.sh:336), "could not open the Windows window" (setup.sh:371,
+  no reason), "cannot record its setup state" (setup.sh:457) and normal-boot's
+  client failure (lanai.sh:1511, reason `client`).
+- **Time limits.** Two limits, each counted from a record in `$RUN`.
+  `LANAI_SETUP_LIMIT` (300 s) covers every check before the scale task, from
+  `step6-since`: the check boot's start, which `vm_exec` writes when the VM
+  starts, or a Continue after a stop. A step 6 check that finds no stamp, or
+  one that is not a number, writes one. Each write goes to a temporary file,
+  then `mv`, like the other stamps. `LANAI_SETUP_SCALE_LIMIT` (120 s) covers the
+  scale task's port, from `step6-checked`, which step 6 writes the first time
+  the other checks pass. Once `step6-checked` exists, step 6 skips the earlier
+  checks and the 300 s limit and waits only for the scale task's port. So a
+  short-lived fault while the user signs in cannot stop setup with the wrong
+  reason, and a Windows that restarts in a loop after the checks pass stops at
+  the scale limit. A Windows restart (QMP `RESET`) resets nothing. Port state
+  starts or resets no timer: the `qga-open-since` and `qga-closed-since`
+  stamps, `LANAI_SETUP_GRACE` and `LANAI_SETUP_BOOT_LIMIT` go. The old worst
+  case was about 360 s (300 s for the port, then 60 s of grace); phase G's
+  boots reached the sign-in within about 30 s of the client's start, so 300 s
+  from the boot leaves room, and phase C records each step 6 boot's time. Every
+  waiting path checks the limit, the failed `query-chardev` path included.
+  While it waits, the reply and the panel say: "Waiting for the display scale
+  task. It starts when the Windows user who ran setup signs in. If Windows asks
+  for a password, sign in within 2 minutes."
+
+  As built (diff gate, simplified on John's call of 2026-10-18): step 6 keeps
+  four records, owned by `lib/setup.sh`: `step6-since` and `step6-checked`
+  (one epoch each), and the `step6-stopped` and `step6-qmp-failed` markers.
+  `step6_start` writes `step6-since` and removes the other three; `vm_exec`
+  calls it at the VM's start, and step 6 for a Continue after a stop.
+  `step6_checked` reads `step6-checked` for `setup_plan`'s `scale_wait` and for
+  step 6 alike. `lib/vm.sh` names no step 6 file, and `event_record` ignores a
+  `RESET`. A record that cannot be written stops step 6 with reason `record`:
+  a stamp, Continue's reset, the `step6-qmp-failed` marker (so a QMP that never
+  answers cannot wait forever) and the `step6-stopped` marker (its failure
+  replies `record` instead of the original stop). `vm_exec` prints a `lanai:`
+  line when its write fails, and the VM does not start. The time-out order
+  stays: `qmp`, `guest-boot`, `window-closed`, `idd-missing`, `agents`, then
+  `scale-task`. Diff-gate rounds 1 to 3 had made a restart start the checks
+  again, with a boot token, an outer limit of 3 x `LANAI_SETUP_LIMIT` and a
+  restart wait; the simplification removed them. Risks names its costs.
+- **Continue setup gets fresh limits.** A step 6 `lanai setup` call without
+  `--follow` that finds `$RUN/step6-stopped` removes it, `step6-checked` and
+  `step6-qmp-failed` and rewrites `step6-since` before it checks, so each limit
+  counts again from the click. Without a stop, a call leaves the records alone,
+  so a command-line user who runs `lanai setup` again and again still meets the
+  limits. With Windows stopped, Continue boots it, and the VM start stamps the
+  new boot.
+- **Removed:** `step6-asked`, `step6-answered`, the questions reply, and
+  `--share-ok`/`--scale-ok` in `lib/lanai.sh` (the panel is the only caller, and it
+  ships with the CLI). `setup_plan` drops its `questions` decision; its
+  `scale_wait` comes from `step6-checked`. `event_record`'s RESET cleanup
+  (`lib/vm.sh`) goes: a RESET touches no step 6 record. `vm_exec`'s start
+  cleanup covers the new files and writes `step6-since`.
+
+**Panel (`lib/panel.sh`, `LanaiPanel.qml`, `lib/ui.sh`).**
+
+- Remove `share_question`, `scale_question`, `questions`, the `answer_yes`,
+  `answer_no` and `send_answers` controls, and `shareAnswer`/`scaleAnswer` with
+  their questions block.
+- A step 6 time-out needs attention and shows its words, built from the reason
+  (the reasons table) and, for `agents`, from `parts`, so the panel names what
+  did not answer. New or changed words: `qmp`, `guest-boot`, `window-closed`,
+  `idd-missing`, `agents`, `scale-task` (time-outs, at step 6) and `allowlist`
+  (at step 5, beside `mismatch`). Drafts (phase B may tighten them):
+  - `qmp`: "Lanai could not reach Windows' virtual machine to check it."
+  - `guest-boot`: "Windows did not finish starting, or its guest agent did not
+    start."
+  - `window-closed`: "The Windows window kept closing, so Lanai could not check
+    the display driver."
+  - `idd-missing`: "The display driver in Windows did not answer."
+  - `agents`: "In Windows, <parts joined with "and"> did not answer."
+  - `scale-task`: "The display scale task in Windows did not start. It starts
+    when the Windows user who ran setup signs in. If Windows is at its sign-in
+    screen, or another user is signed in, sign in as that user first."
+
+  Every time-out's words then add "If Windows' setup window stopped with a
+  message, follow it first." and end "Continue setup checks again. To install
+  Lanai's parts in Windows again, shut Windows down and choose a display
+  below." So the panel itself carries both of the spec's conditions. Delete the
+  `answers` words. (As built: every time-out's words end "Click Continue setup
+  to check again. If setup.cmd stopped with a message in Windows, or to install
+  Lanai's parts in Windows again, shut Windows down, then click Set up in a
+  basic window or Set up in the Windows window." The setup drive is not
+  attached at step 6, so a setup.cmd that stopped is run again through the
+  display buttons. The words show under the buttons, so they name them.
+  `window-closed` says "The Windows window did not stay open long enough to
+  check the display driver.", as the CLI does. The scale task's words: "The
+  display scale task in Windows did not start. It starts at sign-in: if Windows
+  is at its sign-in screen, or another user is signed in, sign in as the
+  Windows user who ran setup. If it still does not start, see lanai-signin.log
+  and lanai-scale.log in C:\Program Files\Lanai.")
+- `continue_setup` keeps its current rules and label.
+- At a step 6 time-out (the setup job record's `reply.stop` is `timeout`, its
+  step 6 matching the plan) with Windows off, the panel also shows the two
+  display buttons (`window`, `no_window`) directly, under a new view field,
+  `setup.repeat_line`, shown as a Note in LanaiPanel.qml: "Or install Lanai's
+  parts in Windows again: choose how Windows should show." They send `setup
+  --window` or `setup --no-window`, which makes `setup_plan` take `5
+  setup-boot` (setup.sh:530). No arming step: `setupAgainArmed` stays for a
+  finished setup only. (As built: no `repeat_line`; the time-out's words name
+  the buttons.)
+- The job worker (`lib/ui.sh`) follows step 6 while replies are `ok:true`; drop
+  its "no questions" condition.
+
+**README.** Replace "In File Explorer, select This PC ... Answer that question
+and whether text looks the right size." (README.md:115-117) with what the user
+now sees: setup checks itself; the scale task starts at sign-in; a stop names
+what failed. **Continue setup** checks again. To install Lanai's parts in
+Windows again, shut Windows down and click **Set up in a basic window** or **Set
+up in the Windows window**. When the panel says Windows' driver or guest agent
+is wrong, shut Windows down and click **Continue setup**, which sets Windows up
+again. After "Use Shut down only if setup.cmd stops responding."
+(README.md:112), add one sentence: if setup.cmd stops because the shared folder
+did not appear, restart Windows and run setup.cmd again. (As built: Shut down
+from the panel is also for when the share check says so; the README covers
+the check's three stops (the folder did not appear, Windows could not read it,
+the check could not run) and the panel buttons that follow. Its time-out words
+match the panel's, and an unfinished setup boot shows both display buttons.)
+
+### Phase 0: share identity and first install (John and Claude, test copy)
+
+The test copy must be running and set up. Claude sends no QMP command beyond
+`query-status` and `query-chardev` (experimental `x-` commands once aborted QEMU).
+
+1. In a normal PowerShell, then an admin one, John runs
+   `[IO.DriveInfo]::GetDrives() | Where-Object IsReady | Format-Table Name, DriveType, DriveFormat, VolumeLabel`
+   and, in the normal one, `Get-ChildItem Z:\ | Select-Object -First 3` (with
+   the share's letter). Record the share's line in both, and that the normal
+   session lists it. If the normal session does not see or list the share,
+   stop: the visibility design needs John.
+2. In the admin PowerShell:
+   `net stop VirtioFsSvc; $t = Get-Date; net start VirtioFsSvc; while (-not (Test-Path Z:\) -and ((Get-Date) - $t).TotalSeconds -lt 60) { Start-Sleep -Milliseconds 100 }; ((Get-Date) - $t).TotalSeconds`.
+   Record the seconds; the 30 s wait must be at least 5 times that.
+3. `net stop VirtioFsSvc`, run step 1's command again, and confirm the share's
+   line is gone; then `net start VirtioFsSvc`.
+4. First install: Claude confirms that Lanai's storage is the test copy, then
+   makes a fresh reflink copy of the test copy's pre-setup snapshot (`lanai
+   snapshots` names it). The image must never have run setup.cmd: no `C:\Program
+   Files\Lanai`, with dockur's own virtio-fs driver and service. If no such
+   image exists, stop for John. Claude boots it with `proof-vm run <copy>
+   --share <scratch dir> --setup <media>`, where `<media>` is a scratch copy of the folder Lanai builds its
+   setup drive from (`$XDG_STATE_HOME/lanai/setup-media`). In an admin prompt,
+   John runs the steps in the new order: [3/8]'s WinFsp install, `net stop
+   VirtioFsSvc`, [4/8]'s `pnputil`, [5/8]'s copy and service set, then `net
+   start VirtioFsSvc`, step 1's command and `Get-ChildItem` on the share. Record
+   whether the share appears and lists without a restart, and `pnputil`'s exit
+   code. If it needs a restart, stop: the in-setup check needs John's call
+   before phase A.
+
+Record the results in `proofs.md` ("Setup checks, phase 0"). The drive rule for
+phase A is the share's DriveType plus DriveFormat; if DriveFormat is empty or
+generic (such as "NTFS"), bring it to John before phase A.
+
+Done (2026-10-17): the share is `Fixed`, `VirtIO-FS`, label `lanai` (Lanai's
+virtio-fs tag), seen and listed by the normal session; it returns 0.18 s after
+a service start; and on a Windows that never ran setup.cmd, the new order
+mounted it 0.69 s after the start with no restart (`pnputil` 0). Phase A's rule:
+DriveFormat `VirtIO-FS` and VolumeLabel `lanai`.
+
+### Phase A: the check in Windows (TDD, PowerShell and cmd)
+
+- Files: new `guest/lanai-share-check.ps1`; `guest/setup.cmd` (the added `net stop`
+  in [4/8], the [5/8] check, the file list at line 67, a `:share_missing`
+  stop); `lib/setup.sh` (the media copy at line 182 and any media file list or
+  manifest that names the guest files); `test/guest.bats`; `CLAUDE.md` layout
+  (the new guest file).
+- The script: `param([int]$TimeoutSec = 30)`. Its polling is one function,
+  `Find-Share`, that takes four delegates (`$GetDrives`, `$Now`, `$Sleep`,
+  `$ListRoot`) and returns 0, 10 or 11; the script's body calls it with the real
+  ones. Tests load the function through the script's AST, as the
+  `lanai-scale.ps1` tests do (test/guest.bats:417). The script pins
+  `PSModulePath` and starts with `$ErrorActionPreference = 'Stop'`, as
+  `lanai-scale.ps1` does, writes one line saying what it found, and uses only
+  Windows PowerShell 5.1 APIs.
+- setup.cmd: the progress line, then `net start VirtioFsSvc >nul 2>&1`, then
+  `"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile
+  -NonInteractive -ExecutionPolicy Bypass -File "%~dp0lanai-share-check.ps1"`,
+  `set "RC=%errorlevel%"`, and on non-zero `goto :share_missing`, which jumps
+  by `RC` with one `goto` per code (10, 11, other), so no word sits inside an
+  `if ( )` block where a `)` would end it. The "could not run" words add: "If a
+  security tool blocks scripts, allow Windows PowerShell to run
+  lanai-share-check.ps1 from the setup drive." (As built: bare `net` and
+  `powershell`, like the lines around them; see the design's code 10 note.)
+- Tests first:
+  - pwsh unit cases for `Find-Share`: the drive is present at once (0); it
+    appears on the third poll (0); it never appears (10 after the limit, with the
+    fake clock); it appears but the listing throws (11); other drives,
+    including one of another format, are ignored; a drive that is not ready, or
+    whose `DriveFormat` throws, is skipped; an empty share lists fine (0); a
+    listing that fails once and then works gives 0; a
+    `$GetDrives` that throws makes `Find-Share` throw. The fake `$ListRoot`
+    returns items, and each case asserts the function's output is exactly one
+    integer (a stray item or log line would make it an array). One run of the
+    whole script under pwsh with `-TimeoutSec 0`, where no drive matches,
+    exits 10.
+  - Structural cases in `test/guest.bats`: `net stop VirtioFsSvc` comes before
+    `pnputil` in [4/8], and again before the copy in [5/8]; the progress line and `net start` follow the service set
+    and come before the check; the check's exit code goes to `:share_missing`,
+    whose words cover 10, 11 and any other code and end with running setup.cmd
+    again; the file list includes the script; update the step-order anchor
+    list and the `VFS_NEW` `net stop` order case (guest.bats:317-321); the "18
+    changes" case gets a `:share_missing` exemption like `:start_blocked`'s.
+- Verify: `bats test/guest.bats` locally with pwsh (CI skips the pwsh cases),
+  shellcheck, then the full suite.
+
+### Phase B: host and panel (TDD)
+
+- Files: `lib/setup.sh`, `lib/vm.sh` (`qga_reply` exit 2; the VM-start
+  stamp; as built, no RESET hook), `lib/lanai.sh` (flags and doc), `lib/panel.sh`, `LanaiPanel.qml`,
+  `lib/ui.sh`, `README.md`, `docs/plugin/plan.md` (the superseded lines above),
+  and tests in `test/setup.bats`, `test/vm.bats`, `test/panel.bats`,
+  `test/panel-jobs.bats`, `test/panel-qml.bats`, plus fakes in
+  `test/fixtures/fake-qga` (a reply to `guest-exec` that is not the refusal,
+  such as `GenericError` "Parameter 'path' is missing").
+- Tests to rewrite: the question tests (setup.bats 1109, 1227, 1239, 1248, 1277,
+  1295, 1456, 1475; panel.bats 85, 374, 753, 964, 1260; panel-jobs.bats 42,
+  189, 252, 260-284) and the tests that use the removed stamps, limits or step
+  6 rollback: setup.bats's `step6_running` helper (643-646) and its users, 1136,
+  1184, 1250, 1264, 1325, 1352-1427, 1560-1566 and 1605-1612; panel.bats
+  513-540, 676-695, 773, 1080-1092 and 1343-1380 (these call `setup_back5` for
+  a step 6 time-out and assert step 5; only `mismatch` and `allowlist` keep
+  that path); panel.bats 374 (`event_record`'s RESET case) and 773 (`vm_exec`'s
+  start case). The fake guest agent's existing `open` mode already answers
+  `guest-exec` with the "Parameter 'path' is missing" `GenericError`; reuse it.
+- New cases, tests first:
+  - A match with all agents and an open scale port finishes at step 7 with the
+    marks, and asks nothing.
+  - A closed scale port waits with the sign-in words, then stops at 120 s from
+    `step6-checked` with the scale-task words.
+  - Each time-out stops at step 6, kind timeout, `step5` still true, at the
+    deadline from `step6-since`, and in the stated order when several parts
+    are missing at once: `qmp`, `guest-boot`, `window-closed`, `idd-missing`,
+    `agents` (once with the SPICE agent, once with the guest agent, once with
+    both, each named in `parts`).
+  - `mismatch` and `allowlist` stop at once through `setup_back5` (step 5,
+    `step5` cleared), and the panel shows their words while Windows runs and
+    after it shuts down.
+  - The pinned client open with `unknown` or `waiting` at the deadline stops
+    as `idd-missing`; one failed `query-chardev` past the deadline waits, and a
+    second stops as `qmp`.
+  - `qga_reply refusal` returns 0 for the refusal, 2 for a `GenericError`
+    reply, and 1 for no reply.
+  - A guest agent port that opens and closes again does not move the deadline,
+    a QMP socket that never answers stops at it, and RESETs in a loop stop at
+    the outer limit as `guest-boot`. (As built: a RESET leaves step 6's records
+    as they were; a wait 10 s before each limit and a stop just after pin both
+    limits.)
+  - With `--follow`, a first check that comes late still stops at the deadline
+    from the VM start.
+  - Repeated plain `lanai setup` calls without a stop do not reset the stamps
+    and reach the deadline.
+  - Continue setup after a stop resets the stamps, so a check that passes on
+    the next try finishes; a time-out, then a `RESET`, then a Continue well
+    after it gets limits from the click. (As built: a RESET changes nothing, so
+    the Continue alone gives the fresh limits.)
+  - Continue setup with Windows stopped boots by `normal-boot` and checks.
+  - A "could not open the Windows window" failure (setup.sh:371), a wait past
+    the limit, then Continue: the check gets fresh limits and passes.
+  - During the scale wait, an earlier check that fails (a client back to
+    `waiting`, the guest agent busy, the SPICE port closed) does not stop
+    setup; after a `RESET` they are checked again. (As built: a restart loop
+    after the checks pass keeps waiting only for the scale task, and stops
+    120 s after `step6-checked`.)
+  - A `--follow` call that finds `step6-stopped` does not reset the stamps.
+  - The job worker keeps following through the scale wait and ends on the
+    stop.
+  - The panel: at a time-out with Windows on, Continue setup enabled and the
+    time-out words; with Windows off, Continue setup plus the two display
+    buttons; `agents` words name each part; `qmp` has its own words; every
+    time-out's words end with the setup.cmd condition and name both display
+    buttons, and the scale task's carry the sign-in condition; the display
+    buttons stay hidden for a step 6 failure that is not a time-out, and for an
+    old time-out record once setup is back at step 3; the step 6 wait line
+    comes from `scale_wait`.
+  - Records that cannot be written stop step 6 with reason `record`:
+    Continue's reset, the `step6-qmp-failed` marker and the `step6-stopped`
+    marker (in step 6 and in `normal-boot`); `vm_exec` prints a `lanai:` line.
+  - QML: no questions block; at a time-out stop with Windows off, the two
+    display buttons send `setup --window` and `setup --no-window` without an
+    arming step.
+- Verify: the focused bats files, `test/qml-lint`, shellcheck, then
+  `bats test spike/test` with a short `TMPDIR` (CLAUDE.md).
+
+### Phase C: hands-on (John and Claude, test copy)
+
+On phases A and B's build, installed on the test copy. Claude confirms that
+Lanai's storage is the test copy first. A finished setup does not reopen step 6
+on a restart, and setup.cmd repairs what it installs, so each fault case below
+starts with Run setup again, injects its fault in the setup boot before John
+runs setup.cmd, and uses a fault setup.cmd leaves alone (an Image File
+Execution Options `Debugger` value naming a missing file).
+
+1. Run setup again, no fault: setup.cmd shows its check line and passes [5/8],
+   and setup finishes with no question.
+2. Shared folder: Run setup again; in the setup boot, add the IFEO value for
+   `virtiofs.exe`, then run setup.cmd. It stops at [5/8] with the code 10 words.
+   Remove the value and run setup.cmd again in the same boot: it finishes, and
+   so does setup.
+3. Automatic sign-in off (`AutoAdminLogon` 0 and the restart sign-on setting
+   off, per phase G's note), then Run setup again; John signs in to run
+   setup.cmd. At the step 6 boot, John stays at the sign-in screen: the panel
+   shows the sign-in wait words, and step 6 stops at 120 s with the scale-task
+   words. John shuts down from the panel: the two display buttons appear beside
+   Continue setup. John clicks Continue setup: Windows starts, the limits count
+   from that boot, John signs in, and setup finishes. Turn automatic sign-in
+   back on (`netplwiz`).
+4. Guest agent: Run setup again; in the setup boot, add the IFEO value for
+   `qemu-ga.exe`, then run setup.cmd. If setup.cmd stops at its guest agent step
+   instead, record that and leave the case to phase B's tests. Otherwise the
+   agent never opens its port, and step 6 stops at its deadline as
+   `guest-boot`, with its words. Remove the value (`reg
+   delete` in an admin PowerShell), restart Windows, and click Continue setup:
+   setup finishes.
+5. Record each step in `proofs.md`.
+
+By test, not by hand: the IDD mismatch (bats fixture `other-build.log`, as no
+other IDD build is installed), a guest agent without its allow-list (setup.cmd
+always writes the `--allow-rpcs` argument back, so the fake guest agent's
+non-refusal reply covers it), the `idd-missing`, SPICE agent and `qmp`
+time-outs, a drive that appears but cannot be listed (phase A's pwsh case), and
+Run setup again after a scale-task stop.
+
+### Risks
+
+- A Continue click that comes after a panel job ended without a stop (a killed
+  worker, a failed systemctl call), more than 300 s into the check boot, can stop
+  at once with a time-out: only a stop marker gives the next Continue fresh
+  limits. The stop writes the marker, so a second click gets them.
+
+- First install: phase 0's step 4 settles whether the share mounts before a
+  restart on a fresh Windows. If it does not, the in-setup check would stop every
+  first setup, and the design goes back to John.
+- The drive rule depends on phase 0's DriveFormat. A generic value would let
+  another drive pass; phase 0 stops for John in that case.
+- A share that hangs `IsReady` or the listing holds the script, and setup.cmd's
+  window, past its 30 s. Accepted: the user can still close the window and
+  use Shut down in the panel, as the README says for a setup.cmd that stops
+  responding.
+- Host sleep counts against step 6's limits: they count wall-clock seconds, so a
+  laptop suspend during step 6 can cause a time-out. Accepted: Continue setup
+  recovers with fresh limits.
+- A Windows restart during step 6 resets nothing (John, 2026-10-18). A restart
+  in the middle of the checks gets only what is left of the 300 s; Continue
+  setup gives fresh limits. A restart after the checks pass does not prove the
+  IDD and the agents again; they were proven on the same disk minutes before.
+  Accepted for the simpler step 6: four records, two limits.
+
+### Routing
+
+Phase 0 and C: John with Claude. Phase A: the step-up (opus-5.5) in a worktree:
+Windows scripting where a wrong stop blocks every setup, and words a user acts
+on (taste >= 7). Phase B: opus-5.5 in a worktree: a state change across setup,
+the job worker and the panel, and user-facing words. Claude verifies, signs,
+and runs the diff gate.
+
 ## Phase 8: Acceptance
 
 - Memory: before the rehearsal, the first Lanai boot on John's machine, set memory to
@@ -4148,3 +4655,20 @@ words. Phase G: John with Claude.
 | diff (resize, phases A-C, E, F, H) | b panel (opus-5.5), 6 lenses | 2 (full) | 0 blockers, 7 should-fix (build failures after cmake and offset patches still left no reason in the build log, found by two lenses; the blocked-program message missed antivirus; a client build that fails during Run setup again got the setup words; test gaps: a stale patch id on the quick path, a failed update keeping the old client, `main.c` never compiled in the tarball case), about 20 nits, 2 refuted (the 60 s window and the give-up reset are tested: mutations to 59, 45 and 30 s and a dropped reset each fail `late-change`), 0 downgraded to nit. All should-fix and 15 nits integrated; skipped: the panel's redundant checks next to `.finished`, which the plan names |
 | diff (resize, phases A-C, E, F, H) | b panel (opus-5.5), 6 lenses | 3 (full, cap) | 0 blockers, 7 should-fix (an interrupted Run setup again named "Continue setup"; the run-time Add-Type working folder was not really pinned, found by two lenses; a zero-byte patch counted as applied; no pin-change reminder for where the IDD stores the ask; docs did not say CI skips the pwsh tests; test gaps: a one-side resize, and a setup round with stale patches), about 20 nits, 0 refuted, 0 downgraded to nit. All should-fix and 15 nits integrated; skipped: enums for the C# string tags, a parser check of setup.cmd's one-liners. Stage at the cap with round 3's fixes unreviewed by stage b |
 | diff (resize, phases A-C, E, F, H) | a (gpt-6.1-sol) | 2 (rerun on the final diff, 06c8416) | 0 findings, 0 refuted, 0 downgraded to nit: "The committed diff is sound; no actionable defects found across the requested scope". Gate closed |
+| plan (setup checks) | a (gpt-6.1-sol) | 1 (full) | 2 P2, 0 refuted; both integrated: one deadline (300 s) from the step 6 boot's first check or the Continue click, checked on every waiting path (QMP failure and a restarting guest agent included), replacing the port-based grace and boot limit; phase C injects each fault in a Run setup again boot before setup.cmd, with faults setup.cmd leaves alone, and the allow-list, mismatch and scale-task Run setup again cases go to tests |
+| plan (setup checks) | a (gpt-6.1-sol) | 2 (full) | 2 P2, 0 refuted; both integrated: the deadline counts from the boot's start (`vm_exec` at VM start, `event_record` at each RESET, Continue at the click), so a late first check and a Continue after a Windows restart both get the spec's limits; tests for each |
+| plan (setup checks) | a (gpt-6.1-sol) | 3 (full, cap) | 1 P2, 0 refuted; integrated, not reviewed again by stage a: every step 6 call without `--follow` resets the limits from the click, with no dependence on the stop marker, so a Continue after a Windows restart gets its full limits; test for a late click after a RESET |
+| plan (setup checks) | b single (opus-5.5) | 1 (full) | 0 blockers, 9 should-fix, 8 nits, 0 refuted; all integrated (section rewritten): Continue resets the limits only after a stop, which RESET keeps, so repeated command-line calls still meet them; a wrong answer clears step5 so Continue (labelled Run setup again) repeats the install and the old-driver words stay true; Continue hides only for a wrong answer, and other step 6 failures keep their buttons; at a time-out with Windows off the two display buttons show directly (no arming); agents words name each part from the reply's parts, and qmp has words; the check's codes are 0, 10 and 11, with any other code "could not run"; drives not ready are skipped; the first-install trial moves into phase 0, and net stop moves before pnputil; the share stop's words point to the panel's display buttons; an outer limit for restart loops; phase 0 lists the share from the normal session and its loop has a timeout; tests that seed the removed stamps named; the time-out order stated; window-closed instead of client; stamps written by temp file and mv; README anchors |
+| plan (setup checks) | b single (opus-5.5) | 2 (full) | 1 blocker, 4 should-fix, 7 nits, 0 refuted; all integrated: wrong answers keep `setup_back5` (step 5 reply, step5 cleared), since the panel drops a failed reply whose step differs from the plan's, and only time-outs use the new step 6 stop, read by the panel from its job record's reply.stop; a client open with unknown or waiting at the deadline is idd-missing, and qmp needs two failed calls; phase 0's first-install trial uses the new net stop order, lists the drive and names the media folder; Find-Share's tests assert one integer with items from the fake listing, a throw, and one whole-script run; the tests that use the removed stamps or the step 6 rollback named; references corrected; the CLI's next names the flags; the time-out words point to the display buttons, with a repeat_line field; :share_missing jumps by code and adds a hint when the check could not run; more superseded lines; the 300 s limit set against phase G's boot times |
+| plan (setup checks) | b single (opus-5.5) | 3 (full, cap) | 0 blockers, 6 should-fix, 6 nits, 0 refuted; all integrated, not reviewed again: every step 6 failure writes the stop marker, so Continue always gets fresh limits; once the other checks pass, step 6 waits only for the scale task, so a short fault while the user signs in cannot stop setup; the panel words carry both spec conditions, with drafts for each time-out; the README names the buttons the panel shows; the share check retries a failed listing until its deadline; the first-install trial needs an image that never ran setup.cmd; nits: guest-boot named for phase C case 4, the net stop before the copy kept, a hung share accepted as a risk, step6-qmp-failed reset, test anchors and four more panel and worker cases |
+| plan (setup checks) | John | 2026-10-17 | Accepted the plan gate at stage b's cap, with round 3's edits integrated and not reviewed again |
+| diff (setup checks, phases A-B) | a (gpt-6.1-sol) | 1 (full) | 2 P2, 0 refuted, 0 downgraded to nit; both confirmed and integrated by Claude, test first: step6-checked now holds the boot stamp it ran under and counts only while that stamp is current, so a check still running at a RESET cannot carry its results into the new boot (reproduced before the fix: setup finished on the old boot's results); a step 6 stamp that cannot be written stops with reason record instead of waiting without a limit |
+| diff (setup checks, phases A-B) | a (gpt-6.1-sol) | 2 (full) | 2 P2, 0 refuted, 0 downgraded to nit; both confirmed and integrated by Claude, test first: step 6 checks that the boot stamp is unchanged after its QMP call and again before it records its results, so a RESET during a QMP or guest-agent call cannot finish setup on the old boot (reproduced before the fix; the test fails with either check removed); step6_stamp writes through its own mktemp file, so Continue and a RESET writing the same stamp cannot collide |
+| diff (setup checks, phases A-B) | a (gpt-6.1-sol) | 3 (full, cap) | 3 P2, 1 refuted, 0 downgraded to nit; 2 confirmed and integrated by Claude, test first: a boot token (step6-boot, new at VM start and at each RESET) replaces the whole-second boot stamp for telling boots apart, so a RESET in the same second still counts; the outer limit also ends the scale wait, so a restart loop that passes the other checks each boot stops. Refuted: "a RESET after the final check, during the stamp write, finishes setup on pre-reset states": every result that call uses (the ports, the agents' replies) was read in one boot, before the restart, so the checks did pass in that boot. Full suite 886/886 |
+| diff (setup checks, phases A-B) | b panel (opus-5.5), 6 lenses | 1 (full) | 0 blockers, 7 should-fix, 25 nits, 0 refuted, 0 downgraded to nit (correctness and security: sound, nits only). Integrated (fixes by an opus-5.5 implementer, verified by Claude): the boot token merged into step6-since as one record written by one mv, with the step 6 file lifecycle and the one step6-checked reader in lib/setup.sh; the scale wait bounded at 3 x LANAI_SETUP_LIMIT + the scale limit, and restart waits past the outer limit stop as guest-boot; tests for the refusal's no-answer case, the deadline's closed-client and other-build reasons, the outer limit's guest-boot override and four more, each failing without its code; the time-out words name the two display buttons (repeat_line dropped), the scale words give the log files and "sign in within 2 minutes", README and setup.cmd words aligned; net.exe qualified; LANAI_SETUP_SCALE_LIMIT; deletion-guard tests removed; plan line 132 and as-built notes. Not taken: host sleep counting against the limits (a Risk; Continue recovers), an in-call QMP retry in place of the marker, agent ids in place of names. Full suite 894/894 |
+| plan (setup checks) | John | 2026-10-18 | Step 6 simplified: a Windows restart during step 6 resets nothing; one limit from the check boot or the Continue, then the scale limit from when the other checks passed |
+| diff (setup checks, phases A-B) | b panel (opus-5.5), 6 lenses | 2 (full) | 0 blockers, 6 should-fix, 17 nits, 0 refuted, 0 downgraded to nit (correctness, security and reliability: sound, nits only). John's call on the architecture should-fix (2026-10-18): simplify, a Windows restart during step 6 resets nothing; that removed the boot token, step6-run-since, the outer limit and the restart waits (net 154 lines fewer). Integrated with it (fixes by an opus-5.5 implementer, verified by Claude): the scale words name the Windows user who ran setup; one time-out ending that sends a setup.cmd stop to the display buttons; Shut Windows down, then Continue setup for wrong answers; window-closed words; README and setup.cmd name the buttons; bare net and powershell again in setup.cmd; every record write failure stops with record; tests that pin both limits from both sides, the panel's step guard, the share check's catch and its words, each failing without its code. Spec requirement 7 updated to match. Full suite 892/892 |
+| diff (setup checks, phases A-B) | b panel (opus-5.5), 6 lenses | 3 (full, cap) | 0 blockers, 3 should-fix, 22 nits, 0 refuted, 0 downgraded to nit (correctness, security, reliability, architecture: sound, nits only). Integrated by Claude, not reviewed again: the panel's step 5 line adds the README's shared-folder clause; the README's security summary names the guest agent's refused command; a test that the scale task still gets its wait when the other checks first pass after the boot's limit (fails on the mutation that passed the scale call the boot's lateness). Nits taken: the time-out ending split into two sentences, the scale words in the order the user acts, setup.cmd's comment on how powershell resolves, spec 27 on how the IDD build is used, a Risk on a Continue after a job ended without a stop. Full suite 893/893 |
+| diff (setup checks, phases A-B) | John | 2026-10-18 | Accepted stage b at its cap with round 3's fixes integrated and not reviewed again; approved one more stage a round (a 4th, past the cap) on the final diff |
+| diff (setup checks, phases A-B) | a (gpt-6.1-sol) | 4 (full, rerun on the final diff, approved by John past the cap) | 1 P2, 0 refuted, 0 downgraded to nit; confirmed and integrated by Claude, test first: step6-checked is stamped when the other checks pass, not with the time read before slow QMP and guest-agent calls, so the scale task keeps its full 2 minutes (the new test fails on the old code). Full suite 894/894 |
+| diff (setup checks, phases A-B) | John | 2026-10-18 | Closed the diff gate with the round 4 fix (one word, with its test) integrated and not reviewed again |

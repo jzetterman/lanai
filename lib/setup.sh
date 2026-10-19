@@ -179,7 +179,8 @@ setup_media_build() {
   if ! cp -- "$dl/spice-vdagent-x64-$VDAGENT_VERSION.msi" "$part/spice-vdagent.msi" ||
     ! cp -- "$dl/qemu-ga-x86_64-$QEMU_GA_VERSION.msi" "$part/qemu-ga.msi" ||
     ! cp -- "$dl/winfsp-$WINFSP_VERSION.msi" "$part/winfsp.msi" ||
-    ! cp -- "$guest/setup.cmd" "$guest/lanai-lock.cmd" "$guest/lanai-scale.ps1" "$guest/lanai-start.cs" "$part/"; then
+    ! cp -- "$guest/setup.cmd" "$guest/lanai-lock.cmd" "$guest/lanai-scale.ps1" "$guest/lanai-start.cs" \
+      "$guest/lanai-share-check.ps1" "$part/"; then
     echo "cannot assemble $media"
     rm -rf -- "$part"
     return 1
@@ -255,15 +256,16 @@ setup_guest() {
 
 # --- lanai setup: the resumable steps (plan phase 6, the step table) ---
 
-# Step 6's timing, in seconds. A guest part that has not answered counts as
-# missing only once the guest agent's port has been open this long (Windows
-# has booted); and a closed agent port is given up this long after step 6
-# first sees it closed, including after a Windows restart.
-LANAI_SETUP_GRACE=${LANAI_SETUP_GRACE:-60}
-# The display scale task starts at sign-in: once both answers are in (the
-# user is signed in), its port gets this long to open.
-LANAI_SETUP_SCALE_GRACE=${LANAI_SETUP_SCALE_GRACE:-$LANAI_SETUP_GRACE}
-LANAI_SETUP_BOOT_LIMIT=${LANAI_SETUP_BOOT_LIMIT:-300}
+# Step 6's time limits, in seconds (spec 7). LANAI_SETUP_LIMIT covers every
+# check before the scale task, from $RUN/step6-since: the check boot's
+# start, or a Continue after a stop. The scale task starts at sign-in, so
+# its port gets LANAI_SETUP_SCALE_LIMIT from $RUN/step6-checked, when the
+# other checks first passed. A Windows restart (QMP RESET) resets neither.
+LANAI_SETUP_LIMIT=${LANAI_SETUP_LIMIT:-300}
+LANAI_SETUP_SCALE_LIMIT=${LANAI_SETUP_SCALE_LIMIT:-120}
+
+# Step 6's reply that more than one path gives.
+LANAI_STEP6_IDD_MISSING="The Looking Glass display driver in Windows did not answer."
 
 # setup_reply <ok> <step> <message> <next> [details-json]: emit lanai setup's
 # answer, with the step it stands at ("1" to "7", or "3a").
@@ -278,9 +280,10 @@ pinned_client() {
   printf '%s\n' "$(client_builds)/$LG_BUILD/bin/looking-glass-client"
 }
 
-# setup_back5 <reason> <what failed>: a step 6 check failed, so setup goes back to
-# step 5: step5 is forgotten, so the next lanai setup, once Windows is shut
-# down, starts a setup boot with the display the record suggests.
+# setup_back5 <reason> <what is wrong>: a step 6 check got a wrong answer
+# (mismatch, allowlist), so setup goes back to step 5: step5 is forgotten,
+# so the next lanai setup, once Windows is shut down, starts a setup boot
+# with the display the record suggests, and repeats the Windows install.
 setup_back5() {
   local reason=$1
   shift
@@ -294,78 +297,199 @@ setup_wait() {
   setup_reply true 6 "$1" "wait, then run setup again"
 }
 
-# setup_step6 <share yes|no|""> <scale yes|no|"">: check the running step 6
-# boot part by part.
-# - QMP's query-chardev must answer, else it tries again. The first time it
-#   shows the guest agent's port open, $RUN/qga-open-since is stamped (it is
-#   removed whenever the port is closed, since a Windows restart keeps the
-#   same QEMU). Every grace below counts from that stamp: Windows has booted.
-#   The first closed-port poll stamps $RUN/qga-closed-since; an open port
-#   removes it. After LANAI_SETUP_BOOT_LIMIT with the port closed, setup goes
-#   back to step 5. lanai-vm-exec removes both stamps at each start.
-# - After the port timers, a client that is not running with unknown or
-#   waiting past the open-port grace is a host client failure at step 6,
-#   without reopening or going back to step 5. A running client still in its
-#   own 30 s (as after a reopen) is waited for.
-#   The pinned client must be the one logging: a client of another build is
-#   replaced; one that closed with unknown, waiting or idd-missing is reopened
-#   for a fresh 30 s, within those bounds (match and mismatch stand).
-# - The verdict: unknown or waiting before the grace means wait; mismatch
-#   sends setup back to step 5, keeping the guest version record. The client
-#   starts its 30 s count when QEMU starts, so firmware and boot time use it up;
-#   idd-missing counts only once the guest agent's port has been open for
-#   LANAI_SETUP_GRACE, and means wait before that. match records the pin
-#   from this log (guest_version_note).
-# - Then the SPICE agent's port must be open, and the guest agent must set
-#   the clock and refuse an argument-free guest-exec as disabled (the
-#   allow-list took effect); a part still not answering once the grace has
-#   passed sends setup back to step 5.
-# - Last, the user's two answers (~/Windows shows in Explorer, the text
-#   size is right): a no sends setup back to step 5, and otherwise it asks
-#   the questions. Two yeses finish it once the display scale task's port
-#   (scale0) is open: that task starts at sign-in, so it is judged only
-#   now. The time of both yeses is kept in $RUN/step6-answered for the
-#   panel's follow-ups, which carry no answers; a port still closed
-#   LANAI_SETUP_SCALE_GRACE after it sends setup back to step 5 (reason
-#   scale-task).
+# setup_stop6 <reason> <what did not answer> [<part>...]: a step 6 check
+# ran out of time. Setup stays at step 6 with step5 kept, so Continue setup
+# checks again, and either display choice repeats the Windows install. The
+# reply carries stop "timeout" (the panel's time-out words and display
+# buttons read it) and, for agents, the parts that did not answer. The
+# scale task's message adds the sign-in condition and the logs to read;
+# every message ends with the setup.cmd condition.
+setup_stop6() {
+  local reason=$1 msg=$2 more=""
+  shift 2
+  [[ $reason != scale-task ]] ||
+    more=" It starts at sign-in: if Windows is at its sign-in screen, or another user is signed in, sign in as the Windows user who ran setup. If it still does not start, see lanai-signin.log and lanai-scale.log in C:\\Program Files\\Lanai."
+  setup_reply false 6 "$msg$more If setup.cmd stopped with a message in Windows, shut Windows down and repeat the Windows install." \
+    "continue setup to check again (lanai setup), or shut Windows down and run lanai setup --window or --no-window to repeat the Windows install" \
+    "$(jq -nc --arg r "$reason" '{reason: $r, stop: "timeout"} +
+      (if $ARGS.positional == [] then {} else {parts: $ARGS.positional} end)' --args -- "$@")"
+}
+
+# --- step 6's records in $RUN ---
+#   step6-since       <epoch>: the check boot's start, or the Continue after
+#                     a stop (step6_start); LANAI_SETUP_LIMIT counts from it.
+#   step6-checked     <epoch>: when the other checks first passed;
+#                     LANAI_SETUP_SCALE_LIMIT counts from it.
+#   step6-stopped     present after a step 6 failure (step6_mark_stop).
+#   step6-qmp-failed  present while the last query-chardev failed.
+# A Windows restart (QMP RESET) changes none of them.
+
+# step6_stamp <file> [<value>]: write <value> (default the time now) to
+# <file>, one of step 6's records, through a temporary file of its own and
+# mv: the panel's job and a command-line lanai setup may write the same
+# record at once.
+step6_stamp() {
+  local tmp
+  tmp=$(mktemp -- "$1.XXXXXX") || return 1
+  if printf '%s\n' "${2:-$EPOCHSECONDS}" >"$tmp" && mv -f -- "$tmp" "$1"; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+# step6_start <run dir>: start step 6's limits from now. vm_exec calls it
+# at the VM's start, and step6_check for a Continue after a stop. It removes
+# the other records, then writes step6-since. Fails when a record cannot be
+# removed or written.
+step6_start() {
+  rm -f -- "$1/step6-stopped" "$1/step6-qmp-failed" "$1/step6-checked" || return 1
+  step6_stamp "$1/step6-since"
+}
+
+# step6_checked <run dir>: print the time in step6-checked; fails when it
+# is missing or not a number. setup_plan's scale_wait and step6_check both
+# read it here, so the panel's wait for the scale task agrees with step 6.
+step6_checked() {
+  local t=""
+  [[ ! -s $1/step6-checked ]] || t=$(<"$1/step6-checked")
+  [[ $t =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$t"
+}
+
+# step6_since <file>: print the time in <file> (step6-since), writing now
+# when it is missing or not a number. Fails when that write fails, since a
+# limit with no start would never run out.
+step6_since() {
+  local t=""
+  [[ ! -s $1 ]] || t=$(<"$1")
+  if [[ ! $t =~ ^[0-9]+$ ]]; then
+    t=$EPOCHSECONDS
+    step6_stamp "$1" "$t" || return 1
+  fi
+  printf '%s\n' "$t"
+}
+
+# Reply that a step 6 record could not be written in <run dir>.
+step6_record_failed() {
+  setup_reply false 6 "Lanai could not record setup's time limits in $1." \
+    "check the setup log, then continue setup" '{"reason":"record"}'
+}
+
+# Mark a step 6 failure in $RUN/step6-stopped, so the next Continue setup
+# gets fresh limits (step6_check). Fails when the marker cannot be written;
+# with no run directory there is nothing to mark.
+step6_mark_stop() {
+  local run
+  run=$(run_dir) || return 0
+  : >"$run/step6-stopped"
+}
+
+# setup_step6 [<follow step>]: check the running step 6 boot (step6_check)
+# and mark every failure with step6_mark_stop. A marker that cannot be
+# written replies the record failure instead of the check's own. <follow
+# step> is set for the panel job's follow-ups (lanai setup --follow), which
+# keep the limits.
 setup_step6() {
-  local share=$1 scale=$2 run log stamp closed_stamp verdict="" guest="" build chardevs out wrong="" since="" age=-1
-  local scale_open=false answered=""
+  local out rc=0
+  out=$(step6_check "${1:-}") || rc=$?
+  if ((rc != 0)) && ! step6_mark_stop; then
+    step6_record_failed "$(run_dir)"
+    return 1
+  fi
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
+# step6_check <follow step>: setup_step6's checks, part by part. It asks no
+# question: a wrong answer stops at once (setup_back5), and a part that has
+# not answered is waited for until its limit, then stops (setup_stop6).
+# - Limits: a call without <follow step> that finds step6-stopped starts
+#   them again from now (Continue setup, step6_start); other calls keep
+#   them, so repeated calls still meet them. A step6-since found missing or
+#   malformed is written now. Port state starts no timer, and a Windows
+#   restart resets nothing. A record that cannot be written stops step 6
+#   (record).
+# - Once the other checks passed (step6-checked), only the scale task's
+#   port is awaited, until its own limit. So a short fault while the user
+#   signs in cannot stop setup with the wrong reason, and a Windows that
+#   restarts in a loop after the checks passed still stops at that limit.
+# - QMP's query-chardev must answer, else it tries again. Past the limit a
+#   failure stops as qmp only when the call before it failed too
+#   (step6-qmp-failed), since the panel's status shares QEMU's one client
+#   socket.
+# - Past the limit, the first part missing names the stop, in this order:
+#   guest-boot (the guest agent's port is closed), window-closed,
+#   idd-missing, agents.
+# - The pinned client must be the one logging. Before the limit, a client
+#   of another build is replaced, and one that closed with unknown, waiting
+#   or idd-missing is reopened for a fresh 30 s (match and mismatch stand).
+#   The client starts its 30 s count when QEMU starts, so an early
+#   idd-missing means wait. At the limit, a client closed with no verdict,
+#   or replaced, is window-closed, and the pinned client whose IDD did not
+#   answer (idd-missing, or still open with unknown or waiting) is
+#   idd-missing.
+# - mismatch sends setup back to step 5, keeping the guest version record;
+#   match records the pin from this log (guest_version_note).
+# - Then the SPICE agent's port must be open, and the guest agent must set
+#   the clock and refuse an argument-free guest-exec as disabled. Any other
+#   reply to it means the allow-list is missing: back to step 5.
+# - Last, step6_scale.
+step6_check() {
+  local follow=$1 run log now since checked late=false qga_open=false verdict="" guest="" build pinned=true chardevs out rc
   local -a missing=()
   if ! run=$(run_dir); then
     setup_reply false 6 "XDG_RUNTIME_DIR is not set, so Lanai cannot reach Windows." ""
     return 1
   fi
   log=$run/client.log
-  stamp=$run/qga-open-since
-  closed_stamp=$run/qga-closed-since
-  read -r verdict guest < <(version_check "$log") || verdict=unknown
-  build=$(log_client_build "$log")
+  now=$EPOCHSECONDS
+  if [[ -z $follow && -e $run/step6-stopped ]] && ! step6_start "$run"; then
+    step6_record_failed "$run"
+    return 1
+  fi
+  if ! since=$(step6_since "$run/step6-since"); then
+    step6_record_failed "$run"
+    return 1
+  fi
+  if checked=$(step6_checked "$run"); then
+    ((now - checked < LANAI_SETUP_SCALE_LIMIT)) || late=true
+  elif ((now - since >= LANAI_SETUP_LIMIT)); then
+    late=true
+  fi
   if ! chardevs=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}'); then
+    if $late && [[ -e $run/step6-qmp-failed ]]; then
+      setup_stop6 qmp "QEMU did not answer when Lanai checked Windows' agents."
+      return 1
+    fi
+    if ! : >"$run/step6-qmp-failed"; then
+      step6_record_failed "$run"
+      return 1
+    fi
     setup_wait "QEMU did not answer Lanai's question about Windows' agents; it asks again next time."
     return 0
   fi
-  if chardev_open qga0 <<<"$chardevs"; then
-    rm -f -- "$closed_stamp"
-    [[ -s $stamp ]] || printf '%s\n' "$EPOCHSECONDS" >"$stamp" || true
-    [[ ! -s $stamp ]] || since=$(<"$stamp")
-    [[ $since =~ ^[0-9]+$ ]] && age=$((EPOCHSECONDS - since))
-  else
-    rm -f -- "$stamp"
-    [[ -s $closed_stamp ]] || printf '%s\n' "$EPOCHSECONDS" >"$closed_stamp" || true
-    [[ ! -s $closed_stamp ]] || since=$(<"$closed_stamp")
-    if [[ $since =~ ^[0-9]+$ ]] && ((EPOCHSECONDS - since >= LANAI_SETUP_BOOT_LIMIT)); then
-      setup_back5 guest-boot "Windows did not finish starting, or its guest agent is missing."
-      return 1
-    fi
+  rm -f -- "$run/step6-qmp-failed"
+  if [[ -n $checked ]]; then
+    step6_scale "$chardevs" "$late"
+    return
   fi
-  if [[ $verdict == unknown || $verdict == waiting ]] && ((age >= LANAI_SETUP_GRACE)) && ! client_active; then
-    setup_reply false 6 "The Windows window did not stay open long enough to check the display driver." \
-      "see the logs with journalctl --user -u ${LANAI_CLIENT_UNIT%.service}, then run setup again"
+  chardev_open qga0 <<<"$chardevs" && qga_open=true
+  if $late && ! $qga_open; then
+    setup_stop6 guest-boot "Windows did not finish starting, or its guest agent did not start."
     return 1
   fi
-  if [[ -n $build && $build != "$LG_BUILD" ]] ||
-    { [[ $verdict == unknown || $verdict == waiting || $verdict == idd-missing ]] && ! client_active; }; then
+  read -r verdict guest < <(version_check "$log") || verdict=unknown
+  build=$(log_client_build "$log")
+  [[ -z $build || $build == "$LG_BUILD" ]] || pinned=false
+  if ! $pinned || { [[ $verdict == unknown || $verdict == waiting || $verdict == idd-missing ]] && ! client_active; }; then
+    if $late && $pinned && [[ $verdict == idd-missing ]]; then
+      setup_stop6 idd-missing "$LANAI_STEP6_IDD_MISSING"
+      return 1
+    elif $late; then
+      setup_stop6 window-closed "The Windows window did not stay open long enough to check the display driver."
+      return 1
+    fi
     ! client_active || systemctl --user stop "$LANAI_CLIENT_UNIT" >&2 || true
     if ! client_start "$(pinned_client)" >&2; then
       setup_reply false 6 "Lanai could not open the Windows window to check the display driver." \
@@ -377,77 +501,65 @@ setup_step6() {
   fi
   case $verdict in
     match) guest_version_note "$log" ;;
-    idd-missing)
-      if ((age >= LANAI_SETUP_GRACE)); then
-        setup_back5 idd-missing "The Looking Glass display driver in Windows did not answer."
-        return 1
-      fi
-      setup_wait "Windows is starting. Lanai checks each part once it has booted."
-      return 0
-      ;;
     mismatch)
       setup_back5 mismatch "The display driver in Windows${guest:+ ($guest)} is not Lanai's build ($LG_BUILD)."
       return 1
       ;;
     *)
+      # The pinned client is open, and the IDD has not answered it yet.
+      if $late; then
+        setup_stop6 idd-missing "$LANAI_STEP6_IDD_MISSING"
+        return 1
+      fi
       setup_wait "Windows is starting. Lanai checks each part once it has booted."
       return 0
       ;;
   esac
   chardev_open vdagent <<<"$chardevs" || missing+=("the SPICE agent")
-  # Only an open port is asked: a sync on a closed one waits 5 s.
-  if ((age < 0)) ||
-    ! qga_reply "$run/qga.sock" command '{"execute":"guest-set-time","arguments":{"time":@NOW_NS@}}' ||
-    ! qga_reply "$run/qga.sock" refusal '{"execute":"guest-exec"}'; then
-    missing+=("the QEMU guest agent with its allow-list")
+  # Only an open port is asked: a sync on a closed one waits 5 s. The
+  # command the allow-list must refuse has no arguments, so it runs nothing
+  # even when an agent accepts it (spec 27).
+  if ! $qga_open ||
+    ! qga_reply "$run/qga.sock" command '{"execute":"guest-set-time","arguments":{"time":@NOW_NS@}}'; then
+    missing+=("the QEMU guest agent")
+  else
+    rc=0
+    qga_reply "$run/qga.sock" refusal '{"execute":"guest-exec"}' || rc=$?
+    if ((rc == 2)); then
+      setup_back5 allowlist "The QEMU guest agent in Windows is missing its allow-list: it did not refuse a command the allow-list leaves out."
+      return 1
+    fi
+    ((rc == 0)) || missing+=("the QEMU guest agent")
   fi
   if ((${#missing[@]})); then
     out="${missing[0]}${missing[1]:+ and ${missing[1]}}"
-    if ((age < LANAI_SETUP_GRACE)); then
-      setup_wait "Windows is still starting: $out did not answer yet."
-      return 0
+    if $late; then
+      setup_stop6 agents "In Windows, $out did not answer." "${missing[@]}"
+      return 1
     fi
-    setup_back5 agents "In Windows, $out did not answer."
-    return 1
-  fi
-  # Only the elevated scale task opens scale0, and it starts at sign-in,
-  # which may come long after boot: it is judged after the answers, which
-  # need a signed-in user. QEMU's port state, not data from the guest
-  # (spec 27).
-  chardev_open scale0 <<<"$chardevs" && scale_open=true
-  if [[ -z $share$scale && -s $run/step6-answered ]]; then
-    # The panel's follow-ups after both answers carry none.
-    share=yes scale=yes
-    answered=$(<"$run/step6-answered")
-  fi
-  [[ $share != no ]] || wrong="Explorer does not show ~/Windows."
-  [[ $scale != no ]] || wrong+="${wrong:+ }The text size is wrong (the display scale task)."
-  if [[ -n $wrong ]]; then
-    setup_back5 answers "$wrong"
-    return 1
-  fi
-  if [[ $share != yes || $scale != yes ]]; then
-    : >"$run/step6-asked" || return 1
-    out="Windows is set up. Two last checks, in Windows:"
-    $scale_open || out="Windows is set up. If Windows asks for your password, sign in first. Then two last checks, in Windows:"
-    out+=" does ~/Windows show in Explorer, and does text look the right size?"
-    setup_reply true 6 "$out" \
-      "answer with lanai setup --share-ok yes|no --scale-ok yes|no" '{"questions": ["share", "scale"]}'
+    setup_wait "Windows is still starting: $out did not answer yet."
     return 0
   fi
-  if ! $scale_open; then
-    if [[ ! $answered =~ ^[0-9]+$ ]]; then
-      answered=$EPOCHSECONDS
-      printf '%s\n' "$answered" >"$run/step6-answered" || return 1
-      rm -f -- "$run/step6-asked"
-    fi
-    if ((EPOCHSECONDS - answered < LANAI_SETUP_SCALE_GRACE)); then
-      setup_wait "Waiting up to a minute for the display scale task to start in Windows. It starts when you sign in."
-      return 0
-    fi
-    rm -f -- "$run/step6-answered"
-    setup_back5 scale-task "In Windows, the display scale task did not start."
+  if ! step6_stamp "$run/step6-checked" "$EPOCHSECONDS"; then
+    step6_record_failed "$run"
     return 1
+  fi
+  step6_scale "$chardevs" false
+}
+
+# step6_scale <query-chardev reply> <late true|false>: the last check, once
+# the others passed. Only the elevated scale task opens scale0, and it
+# starts when the Windows user who ran setup signs in, which may come long
+# after boot. QEMU's port state, not data from the guest (spec 27): open
+# finishes setup; closed waits, until <late>.
+step6_scale() {
+  if ! chardev_open scale0 <<<"$1"; then
+    if [[ $2 == true ]]; then
+      setup_stop6 scale-task "In Windows, the display scale task did not start."
+      return 1
+    fi
+    setup_wait "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in within 2 minutes."
+    return 0
   fi
   # The scale task's port is open, so Windows has the live task:
   # scale_task 2, with the start program's sign-in step: signin_step
@@ -464,7 +576,7 @@ setup_step6() {
 setup_decision() {
   local details=${4:-'{}'}
   jq -nc --arg step "$1" --arg action "$2" --arg reason "${3:-}" --argjson d "$details" \
-    '{step:$step, action:$action, reason:$reason, finished:($step == "7"), choices:[], questions:[]} + $d'
+    '{step:$step, action:$action, reason:$reason, finished:($step == "7"), choices:[]} + $d'
 }
 
 # Apply pending bookkeeping before reading setup.json. Shared facts are supplied
@@ -517,10 +629,8 @@ setup_plan() {
     fi
     if [[ $step5 == true ]]; then
       run=$(run_dir) || run=''
-      if [[ $st == active && -f $run/step6-asked ]]; then
-        setup_decision 6 checks '' '{"questions":["share","scale"]}'
-      elif [[ $st == active && -f $run/step6-answered ]]; then
-        # Both answers are in; the display scale task's port is awaited.
+      if [[ $st == active && -n $run ]] && step6_checked "$run" >/dev/null; then
+        # The other checks passed; the display scale task's port is awaited.
         setup_decision 6 checks '' '{"scale_wait":true}'
       elif [[ $st == active ]]; then setup_decision 6 checks
       else setup_decision 6 wait; fi
@@ -540,7 +650,7 @@ setup_plan() {
 # Lock, consume bookkeeping, follow storage, plan once, then act. Boot/build
 # actions are returned to setup_command so it can release this lock first.
 setup_resume() {
-  local window=$1 nosnap=$2 share=$3 scale=$4 follow_step=${5:-} follow_inv=${6:-} requested="" s facts plan st dir verdict="" action step reason want missing details next
+  local window=$1 nosnap=$2 follow_step=${3:-} follow_inv=${4:-} requested="" s facts plan st dir verdict="" action step reason want missing details next
   local -a list=()
   # Only this lock refusal is safe to retry with the same follow-up guard:
   # no bookkeeping has run yet. A later boot lock refusal must end following.
@@ -612,7 +722,7 @@ setup_resume() {
       setup_reply true 5 "The setup boot is running. Open Lanai's setup drive and run setup.cmd." \
         "wait for Windows to shut down" "$(jq -nc --argjson w "$(boot_window && echo true || echo false)" '{active:true,window:$w}')" ;;
     wait) setup_wait "Windows is starting or shutting down." ;;
-    checks) setup_step6 "$share" "$scale" ;;
+    checks) setup_step6 "$follow_step" ;;
     choices|problem)
       if [[ $reason == nostart && $step == 6 ]]; then systemctl --user reset-failed "$LANAI_UNIT" >/dev/null 2>&1 || true; fi
       # CLI and panel each have their own copy, keyed on the same reason.

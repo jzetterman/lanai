@@ -425,7 +425,7 @@ CHILD
   local command fd s
   s=$(state_dir); mkdir -p "$s"
   exec {fd}>"$s/lock"; flock "$fd"
-  for command in 'cmd_settings 8 4' cmd_notice_seen 'setup_resume auto false "" ""' 'setup_guest auto' cmd_snapshot 'cmd_restore sample' 'boot_vm false auto'; do
+  for command in 'cmd_settings 8 4' cmd_notice_seen 'setup_resume auto false' 'setup_guest auto' cmd_snapshot 'cmd_restore sample' 'boot_vm false auto'; do
     run bash -c 'source "$1/lib/lanai.sh"; storage_dir() { echo "$TMPDIR/storage"; }; setup_current() { return 0; }; setup_get() { echo declined; }; eval "$2"' _ "$REPO" "$command"
     assert_failure
     assert_equal "$(jq -r .reason <<<"$output")" busy

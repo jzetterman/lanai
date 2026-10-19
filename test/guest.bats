@@ -46,8 +46,8 @@ load helpers
 SETUP_CMD=$BATS_TEST_DIRNAME/../guest/setup.cmd
 
 # The command lines that change Windows (ERE on a line's text): with the
-# start program's rename, build and self-check.
-CHANGE_RE="^(msiexec |sc\\.exe (config|create) |icacls |copy |mkdir |rd |del |pnputil |call |\"%~dp0looking-glass-idd-setup\\.exe\"|powershell .*(Register-ScheduledTask|X509Store|\\[IO\\.File\\]::Move|/target:winexe|lanai-start\\.exe' -ArgumentList '/check'))"
+# start program's rename, build and self-check, and the share check.
+CHANGE_RE="^(msiexec |sc\\.exe (config|create) |icacls |copy |mkdir |rd |del |pnputil |call |\"%~dp0looking-glass-idd-setup\\.exe\"|powershell .*(lanai-share-check\\.ps1\"|Register-ScheduledTask|X509Store|\\[IO\\.File\\]::Move|/target:winexe|lanai-start\\.exe' -ArgumentList '/check'))"
 
 # The start program's lines in step 6 (plan, resize phase H).
 START_COPY='copy /y "%~dp0lanai-start.cs" "C:\Program Files\Lanai\lanai-start.cs" >nul'
@@ -56,6 +56,10 @@ START_MOVE="powershell -NoProfile -NonInteractive -Command \"\$ErrorActionPrefer
 PIN_MODULES="\$env:PSModulePath = [Environment]::SystemDirectory + '\\WindowsPowerShell\\v1.0\\Modules;C:\\Program Files\\WindowsPowerShell\\Modules';"
 START_BUILD="powershell -NoProfile -NonInteractive -Command \"\$ErrorActionPreference = 'Stop'; $PIN_MODULES \$csc = [Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory() + 'csc.exe'; Set-Location -LiteralPath 'C:\\Program Files\\Lanai'; \$env:TMP = 'C:\\Program Files\\Lanai\\tmp'; \$env:TEMP = 'C:\\Program Files\\Lanai\\tmp'; \$env:LIB = \$null; \$env:PATH = [Environment]::SystemDirectory; & \$csc /nologo /noconfig /target:winexe /optimize /r:System.dll /out:lanai-start.exe lanai-start.cs; exit \$LASTEXITCODE\""
 START_CHECK="powershell -NoProfile -NonInteractive -Command \"\$ErrorActionPreference = 'Stop'; $PIN_MODULES try { \$p = Start-Process -FilePath 'C:\\Program Files\\Lanai\\lanai-start.exe' -ArgumentList '/check' -Wait -PassThru; if (\$null -eq \$p.ExitCode) { exit 1 }; exit \$p.ExitCode } catch { exit 1 }\""
+# The share check in step 5 (plan, setup checks phase A): Windows
+# PowerShell by its bare name, as the lines around it, the script from the
+# setup drive.
+SHARE_CHECK='powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0lanai-share-check.ps1"'
 COMPILER_CHECK="powershell -NoProfile -NonInteractive -Command \"if ([IO.File]::Exists([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory() + 'csc.exe')) { exit 0 }; exit 1\""
 
 # Print setup.cmd's command lines (no rem or blank lines), CR removed, each
@@ -116,7 +120,7 @@ stage1_code() {
   line_is 'if not errorlevel 1 goto :writable_copy'
   run setup_code
   assert_line "$((drive + 1)):if not errorlevel 1 goto :writable_copy"
-  media=$(line_is 'for %%f in (spice-vdagent.msi qemu-ga.msi winfsp.msi looking-glass-idd-setup.exe lanai-lock.cmd lanai-scale.ps1 lanai-start.cs viofs\w11\amd64\viofs.inf viofs\w11\amd64\virtiofs.exe) do if not exist "%~dp0%%f" goto :media_broken')
+  media=$(line_is 'for %%f in (spice-vdagent.msi qemu-ga.msi winfsp.msi looking-glass-idd-setup.exe lanai-lock.cmd lanai-scale.ps1 lanai-start.cs lanai-share-check.ps1 viofs\w11\amd64\viofs.inf viofs\w11\amd64\virtiofs.exe) do if not exist "%~dp0%%f" goto :media_broken')
   compiler=$(line_is "$COMPILER_CHECK")
   first=$(first_change)
   [[ -n $none && -n $sid && -n $drive && -n $media && -n $compiler && -n $first ]] || fail "a check or the first change is missing"
@@ -151,7 +155,8 @@ stage1_code() {
   # Publisher trust is best effort: Windows can ask the user instead. Exempt
   # it from the fatal-change check; its warning and continuation are tested
   # below. So is the delete of old start programs: one may still run.
-  # The self-check's failure has its own message (:start_blocked).
+  # The self-check's failure has its own message (:start_blocked), and so
+  # has the share check's (:share_missing).
   run bash -c 'cut -d: -f2- | RE=$1 awk '"'"'
     { l[NR] = $0 }
     END {
@@ -162,12 +167,13 @@ stage1_code() {
         want = " goto :failed$"
         if (l[i] ~ /looking-glass-idd-setup/) want = " goto :idd_failed$"
         if (l[i] ~ /-ArgumentList .\/check./) want = " goto :start_blocked$"
+        if (l[i] ~ /lanai-share-check\.ps1/) want = " goto :share_missing$"
         if (l[i + 1] != "set \"RC=%errorlevel%\"" || l[i + 2] !~ ("^if .*" want)) print "unchecked: " l[i]
         if (l[i] ~ /^msiexec / && l[i + 2] != "if not \"%RC%\"==\"0\" if not \"%RC%\"==\"3010\" goto :failed") print "msiexec codes: " l[i]
       }
       print n " changes"
     }'"'"'' _ "$CHANGE_RE" < <(setup_changes)
-  assert_output "18 changes"
+  assert_output "19 changes"
 }
 
 @test "setup.cmd: stage 1 tells a declined prompt (1223) from the elevated stage's own failures" {
@@ -274,8 +280,8 @@ stage1_code() {
   done < <(sed -n '/^:elevated/,$p' "$SETUP_CMD"; cat "$REPO/guest/lanai-lock.cmd")
   # setup.cmd's compiler check, move, build, self-check, task and IDD
   # trust, and lanai-lock.cmd's domain check; the check and move use .NET
-  # calls only.
-  assert_equal "$n $pinned" "7 5"
+  # calls only. The share check runs a script, which pins its own path.
+  assert_equal "$n $pinned" "8 5"
 }
 
 @test "setup.cmd: a blocked start program stops setup with what to change" {
@@ -313,7 +319,14 @@ stage1_code() {
 }
 
 @test "setup.cmd: VirtioFsSvc is stopped, the exe copied, then the service set with a quoted path" {
-  local query stop copy create config dispatch
+  local four first pnp query stop copy create config dispatch
+  # Also stopped right before the driver update, so pnputil never meets a
+  # running service (dockur's, on a first setup). Its result is ignored.
+  four=$(line_is 'echo [4/8] Installing the virtio-fs driver')
+  # By its bare name, as the lines around it.
+  first=$(line_is 'net stop VirtioFsSvc >nul 2>&1')
+  pnp=$(line_is 'pnputil /add-driver "%~dp0viofs\w11\amd64\viofs.inf" /install')
+  ((four < first && first + 1 == pnp)) || fail "[4/8] $four, net stop $first, pnputil $pnp"
   query=$(line_is 'if "%errorlevel%"=="1060" set "VFS_NEW=1"')
   run setup_code
   assert_line "$((query - 1)):sc.exe query VirtioFsSvc >nul 2>&1"
@@ -324,8 +337,100 @@ stage1_code() {
   # CWE-428 for a LocalSystem service.
   config=$(line_of 'sc.exe config VirtioFsSvc binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"')
   create=$(line_of 'sc.exe create VirtioFsSvc binPath= "\"C:\Program Files\Lanai\virtiofs.exe\"" start= auto depend= "WinFsp.Launcher/VirtioFsDrv"')
-  ((query < stop && stop < copy && copy < dispatch && dispatch < config && config < create)) ||
-    fail "query $query, stop $stop, copy $copy, config $config, create $create"
+  ((pnp < query && query < stop && stop < copy && copy < dispatch && dispatch < config && config < create)) ||
+    fail "pnputil $pnp, query $query, stop $stop, copy $copy, config $config, create $create"
+  run grep -c 'net stop' < <(setup_code)
+  assert_output 2
+}
+
+@test "setup.cmd: once the service is set, [5/8] says so, starts it, then checks the share" {
+  local config create set words start check six
+  config=$(line_of 'sc.exe config VirtioFsSvc')
+  create=$(line_of 'sc.exe create VirtioFsSvc')
+  set=$(line_is ':vfs_done')
+  words=$(line_is 'echo Checking that the shared folder from Linux appears in Windows (up to 30 seconds)...')
+  start=$(line_is 'net start VirtioFsSvc >nul 2>&1')
+  check=$(line_is "$SHARE_CHECK")
+  six=$(line_is 'echo [6/8] Adding the display scale task')
+  ((config < create && create < set && set < words && words < start && start < check && check < six)) ||
+    fail "config $config, create $create, :vfs_done $set, words $words, start $start, check $check, [6/8] $six"
+  run setup_code
+  # net start's result is ignored: the check covers it.
+  assert_line "$((start + 1)):$SHARE_CHECK"
+  assert_line "$((check + 1)):set \"RC=%errorlevel%\""
+  assert_line "$((check + 2)):if not \"%RC%\"==\"0\" goto :share_missing"
+  run grep -c 'net start' < <(setup_code)
+  assert_output 1
+}
+
+# Print what setup.cmd shows when the share check exits <code>: follow the
+# stop from :share_missing through its gotos, print each echo's words (%RC%
+# as <code>, an empty line for echo.), then <pause> and the exit line. A line
+# it cannot follow prints "unknown: <line>".
+share_missing_words() {
+  setup_code | cut -d: -f2- | RC=$1 awk '
+    { l[NR] = $0; if ($0 ~ /^:/) at[$0] = NR }
+    END {
+      i = at[":share_missing"]
+      if (!i) { print "no :share_missing"; exit }
+      for (n = 0; n < 100; n++) {
+        s = l[i]
+        if (s ~ /^:/) { i++; continue }
+        if (s == "echo.") { print ""; i++; continue }
+        if (s ~ /^echo /) { w = substr(s, 6); gsub(/%RC%/, ENVIRON["RC"], w); print w; i++; continue }
+        if (s ~ /^if "%RC%"=="[0-9]+" goto :[a-z_]+$/) {
+          split(s, p, "\"")
+          if (p[4] == ENVIRON["RC"]) i = at[substr(p[5], 7)]; else i++
+          continue
+        }
+        if (s ~ /^goto :[a-z_]+$/) { i = at[substr(s, 6)]; continue }
+        if (s == "pause") { print "<pause>"; i++; continue }
+        if (s ~ /^exit \/b [0-9]+$/) { print "<" s ">"; exit }
+        print "unknown: " s
+        exit
+      }
+      print "too many lines"
+    }'
+}
+
+@test "setup.cmd: a missing share stops with words for 10, 11 and any other code, ending with setup.cmd again" {
+  local fix
+  fix=$(printf '%s\n' 'To fix this:' \
+    '- Restart Windows from the Start menu. The setup drive stays attached.' \
+    '- If setup stopped here before, shut Windows down from the Lanai panel' \
+    '  instead, then click Set up in a basic window or Set up in the Windows' \
+    '  window. Lanai then checks the folder on Linux.' \
+    'Then run setup.cmd again.' '<pause>' '<exit /b 1>')
+  # Each starts with an empty line (echo.), which bats leaves out of lines.
+  run share_missing_words 10
+  [[ $output == $'\nLanai setup stopped: '* ]] || fail "no empty line first: $output"
+  assert_line --index 0 'Lanai setup stopped: the shared folder from Linux did not appear in Windows'
+  assert_line --index 1 'as a drive.'
+  assert_equal "$(tail -n +4 <<<"$output")" "$fix"
+  run share_missing_words 11
+  [[ $output == $'\nLanai setup stopped: '* ]] || fail "no empty line first: $output"
+  assert_line --index 0 'Lanai setup stopped: the shared folder from Linux appeared as a drive, but'
+  assert_line --index 1 'Windows could not read it.'
+  assert_equal "$(tail -n +4 <<<"$output")" "$fix"
+  # PowerShell's own 1 (a parse error, an exception or a blocked script),
+  # and cmd's 9009 for a missing powershell.exe.
+  local rc section
+  for rc in 1 9009; do
+    run share_missing_words "$rc"
+    [[ $output == $'\nLanai setup stopped: '* ]] || fail "no empty line first: $output"
+    assert_line --index 0 'Lanai setup stopped: the check for the shared folder could not run'
+    assert_line --index 1 "(exit code $rc)."
+    # The security-tool step is the first fix, inside the list.
+    assert_line --index 2 'To fix this:'
+    assert_line --index 3 '- If a security tool blocks scripts, allow Windows PowerShell to run'
+    assert_line --index 4 '  lanai-share-check.ps1 from the setup drive.'
+    assert_equal "$(tail -n +7 <<<"$output")" "$(tail -n +2 <<<"$fix")"
+  done
+  # Every word sits outside an if ( ) block, where a ")" would end it.
+  section=$(setup_code | cut -d: -f2- | sed -n '/^:share_missing$/,/^exit/p')
+  [[ -n $section ]] || fail "no :share_missing"
+  run grep -cE '\($|^\)' <<<"$section"
+  assert_output 0
 }
 
 @test "setup.cmd: the steps run in the planned order, the IDD last, then a full shutdown" {
@@ -334,8 +439,12 @@ stage1_code() {
     'msiexec /i "%~dp0qemu-ga.msi" /qn /norestart'
     'sc.exe config QEMU-GA'
     'msiexec /i "%~dp0winfsp.msi" /qn /norestart'
+    'net stop VirtioFsSvc >nul 2>&1'
     'pnputil /add-driver'
     'sc.exe query VirtioFsSvc'
+    'sc.exe create VirtioFsSvc'
+    'net start VirtioFsSvc >nul 2>&1'
+    '-File "%~dp0lanai-share-check.ps1"'
     'copy /y "%~dp0lanai-scale.ps1"'
     'copy /y "%~dp0lanai-start.cs"'
     '/target:winexe'
@@ -403,12 +512,199 @@ stage1_code() {
   for f in $(setup_code | grep -F 'for %%f in (' | sed 's/.*for %%f in (\(.*\)) do .*/\1/'); do
     # Outside the up-front check of every file, each use is "%~dp0<file>",
     # or the installed copy in C:\Program Files\Lanai (the build's working
-    # folder, where it reads its source by name).
-    run bash -c 'grep -vF "for %%f in (" | grep -F -- "$1" | grep -vF -- "%~dp0$1" |
+    # folder, where it reads its source by name). Words may name a file.
+    run bash -c 'grep -vF "for %%f in (" | grep -vE "^[0-9]+:echo " | grep -F -- "$1" | grep -vF -- "%~dp0$1" |
       grep -vF -- "Program Files\\Lanai\\$1" |
       grep -vF -- "Set-Location -LiteralPath '"'"'C:\\Program Files\\Lanai'"'"';"' _ "$f" < <(setup_code)
     assert_output ""
   done
+}
+
+# --- guest/lanai-share-check.ps1: the share check in setup's step 5 ---
+
+SHARE_PS1=$BATS_TEST_DIRNAME/../guest/lanai-share-check.ps1
+
+# Run PowerShell <body> with the script's functions loaded through the AST
+# (its body needs Windows' drives). Drive builds a fake drive: the share
+# (VirtIO-FS, label lanai) unless told otherwise. Check runs Find-Share on
+# fake delegates and returns its result, after asserting it is exactly one
+# integer: $Drives is a scriptblock that gets the poll number (from 1) and
+# returns the drives; $List gets the root and returns items or throws. The
+# clock starts at 0 s and each sleep moves it 1 s. Polls, Sleeps and Listed
+# record the calls. Assert throws. Callers skip without pwsh.
+share_ps() {
+  PS1=$SHARE_PS1 BODY=$1 pwsh -NoProfile -NonInteractive -Command '
+    $ErrorActionPreference = "Stop"
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
+    $fns = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false))
+    if (-not ($fns | Where-Object Name -eq "Find-Share")) { throw "no Find-Share function" }
+    foreach ($f in $fns) { . ([scriptblock]::Create($f.Extent.Text)) }
+    function Assert($Ok, $Why) { if (-not $Ok) { throw "failed: $Why" } }
+    function Drive($Name = "Z:\", $Format = "VirtIO-FS", $Label = "lanai", $Ready = $true) {
+      [pscustomobject]@{ Name = $Name; IsReady = $Ready; DriveFormat = $Format; VolumeLabel = $Label }
+    }
+    function Check($Drives, $List = { param($Root) "a.txt"; "b.txt" }, $TimeoutSec = 30) {
+      $script:T = 0; $script:Polls = 0; $script:Sleeps = 0; $script:Listed = @()
+      $script:DrivesFn = $Drives; $script:ListFn = $List
+      $r = @(Find-Share -GetDrives { $script:Polls++; & $script:DrivesFn $script:Polls } -Now { $script:T } `
+        -Sleep { $script:Sleeps++; $script:T += 1; "slept" } `
+        -ListRoot { param($Root) $script:Listed += $Root; & $script:ListFn $Root } -TimeoutSec $TimeoutSec)
+      Assert ($r.Count -eq 1 -and $r[0] -is [int]) "not one integer: $($r -join ", ")"
+      $r[0]
+    }
+    Invoke-Expression $env:BODY
+    "ok"'
+}
+
+@test "guest share check: a share there at once, or on the third poll, lists and returns 0" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run share_ps '
+    Assert ((Check { @((Drive "C:\" "NTFS" "Windows"), (Drive)) }) -eq 0) "at once"
+    Assert ($Polls -eq 1 -and $Sleeps -eq 0 -and $Listed -join "," -eq "Z:\") "at once: $Polls polls, $Sleeps sleeps, listed $Listed"
+    Assert ($ShareRoot -eq "Z:\") "root $ShareRoot"
+    Assert ((Check { param($n) Drive "C:\" "NTFS" "Windows"; if ($n -ge 3) { Drive "Y:\" } }) -eq 0) "third poll"
+    Assert ($Polls -eq 3 -and $T -eq 2 -and $Listed -join "," -eq "Y:\") "third poll: $Polls polls at $T s, listed $Listed"
+    Assert ($ShareRoot -eq "Y:\") "root $ShareRoot"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest share check: no share in the limit returns 10, polling once a second" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run share_ps '
+    Assert ((Check { Drive "C:\" "NTFS" "Windows" }) -eq 10) "no share"
+    Assert ($Polls -eq 31 -and $Sleeps -eq 30 -and $T -eq 30 -and $Listed.Count -eq 0) "$Polls polls, $Sleeps sleeps at $T s, listed $Listed"
+    Assert ((Check { } -TimeoutSec 0) -eq 10) "no drives, no wait"
+    Assert ($Polls -eq 1 -and $Sleeps -eq 0) "no wait: $Polls polls, $Sleeps sleeps"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest share check: other drives are ignored, also with the share's format or label alone" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run share_ps '
+    $others = { (Drive "C:\" "NTFS" "Windows"), (Drive "D:\" "NTFS" "lanai"), (Drive "E:\" "VirtIO-FS" "other"), (Drive "F:\" "VirtIO-FS" "") }
+    Assert ((Check $others) -eq 10) "others only"
+    Assert ($Listed.Count -eq 0) "listed $Listed"
+    Assert ((Check { & $others; Drive "G:\" }) -eq 0) "with the share"
+    Assert ($Listed -join "," -eq "G:\") "listed $Listed"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest share check: a drive not ready, or whose format reads as nothing, is skipped" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  # PowerShell reads a property whose getter throws as $null, as for a
+  # DriveInfo that is not ready, so this case does not reach Find-Share's
+  # try/catch, which stays as a guard.
+  run share_ps '
+    $bad = Drive "X:\"
+    $bad | Add-Member -Force -MemberType ScriptProperty -Name DriveFormat -Value { throw "The device is not ready." }
+    $skipped = { (Drive "W:\" -Ready $false); $bad }
+    Assert ((Check $skipped) -eq 10) "skipped"
+    Assert ($Listed.Count -eq 0) "listed $Listed"
+    Assert ((Check { & $skipped; Drive "Z:\" }) -eq 0) "the share after them"
+    Assert ($Listed -join "," -eq "Z:\") "listed $Listed"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest share check: a share that never lists returns 11; an empty one, or one that lists on the second try, 0" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run share_ps '
+    Assert ((Check { Drive } { param($Root) throw "Access is denied." }) -eq 11) "never lists"
+    Assert ($Polls -eq 31 -and $T -eq 30 -and $Listed.Count -eq 31) "$Polls polls at $T s, $($Listed.Count) listings"
+    Assert ((Check { Drive } { param($Root) }) -eq 0) "empty"
+    Assert ((Check { Drive } { param($Root) if ($Listed.Count -lt 2) { throw "busy" }; "a.txt" }) -eq 0) "second try"
+    Assert ($Polls -eq 2 -and $T -eq 1) "second try: $Polls polls at $T s"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest share check: a drive list that throws makes Find-Share throw" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run share_ps '
+    $threw = $false
+    try { Check { throw "no drive list" } | Out-Null } catch { $threw = "$_" -match "no drive list" }
+    Assert $threw "did not throw"'
+  assert_success
+  assert_output ok
+}
+
+@test "lanai-share-check.ps1: the whole script with no share and -TimeoutSec 0 says so and exits 10" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run pwsh -NoProfile -NonInteractive -File "$SHARE_PS1" -TimeoutSec 0
+  assert_equal "$status" 10
+  assert_output 'The shared folder from Linux did not appear as a drive in 0 seconds.'
+}
+
+@test "lanai-share-check.ps1: parses, is ASCII, and uses no syntax newer than Windows PowerShell 5.1" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  # Windows PowerShell 5.1 reads a file with no BOM as the ANSI code page.
+  run grep -cP '[^\x00-\x7F]' "$SHARE_PS1"
+  assert_output 0
+  PS1=$SHARE_PS1 run pwsh -NoProfile -NonInteractive -Command '
+    $new ={ param($n) $n.GetType().Name -in "TernaryExpressionAst", "PipelineChainAst" -or
+      ($n -is [System.Management.Automation.Language.BinaryExpressionAst] -and "$($n.Operator)" -eq "QuestionQuestion") -or
+      ($n -is [System.Management.Automation.Language.AssignmentStatementAst] -and "$($n.Operator)" -eq "QuestionQuestionEquals") -or
+      ($n -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.NullConditional) }
+    $e = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$e)
+    "$($e.Count) errors, $(@($ast.FindAll($new, $true)).Count) newer"
+    # The check bites: each PowerShell 7 form is found.
+    $probe = [System.Management.Automation.Language.Parser]::ParseInput(
+      "`$a ?? 1; `$a ??= 1; `$a ? 1 : 2; a && b; `${a}?.b", [ref]$null, [ref]$null)
+    "$(@($probe.FindAll($new, $true)).Count) in the probe"'
+  assert_success
+  assert_output $'0 errors, 0 newer\n5 in the probe'
+}
+
+@test "lanai-share-check.ps1: sets Stop and pins its module path before anything else runs" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  # It runs in setup's elevated stage, which keeps the user's environment,
+  # and a cmdlet loads its module from PSModulePath.
+  PS1=$SHARE_PS1 run pwsh -NoProfile -NonInteractive -Command '
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
+    "$($ast.ParamBlock.Extent.Text)"
+    @($ast.EndBlock.Statements | Where-Object { $_ -isnot [System.Management.Automation.Language.FunctionDefinitionAst] } |
+      Select-Object -First 2 | ForEach-Object { $_.Extent.Text })'
+  assert_success
+  assert_output "$(printf '%s\n' 'param([int]$TimeoutSec = 30)' "\$ErrorActionPreference = 'Stop'" \
+    '$env:PSModulePath = "$([Environment]::SystemDirectory)\WindowsPowerShell\v1.0\Modules;C:\Program Files\WindowsPowerShell\Modules"')"
+}
+
+@test "lanai-share-check.ps1: the real delegates read the drives, wait a second and list the root by .NET or system cmdlets" {
+  run grep -F '[IO.DriveInfo]::GetDrives()' "$SHARE_PS1"
+  assert_success
+  run grep -F 'Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop' "$SHARE_PS1"
+  assert_success
+  # The body calls Find-Share once, with the script's own limit.
+  run grep -cE '^[^#]*Find-Share .*-TimeoutSec \$TimeoutSec' "$SHARE_PS1"
+  assert_output 1
+}
+
+@test "lanai-share-check.ps1: a check that throws exits 1, and each result says what it found" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  # The script's own try catches everything, says so and ends in exit 1,
+  # which setup.cmd reads as "could not run". The switch's words run with
+  # each code, as the body leaves $rc and the share's root.
+  PS1=$SHARE_PS1 run pwsh -NoProfile -NonInteractive -Command '
+    $L = [System.Management.Automation.Language.Parser]
+    $ast = $L::ParseFile($env:PS1, [ref]$null, [ref]$null)
+    $top = @($ast.EndBlock.Statements)
+    $try = @($top | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })
+    $c = $try[0].CatchClauses
+    "$($try.Count) try, $($c.Count) catch, all types: $($c[0].IsCatchAll)"
+    $last = $c[0].Body.Statements[-1]
+    "last: $($last.GetType().Name) $($last.Pipeline.Extent.Text)"
+    $sw = @($top | Where-Object { $_ -is [System.Management.Automation.Language.SwitchStatementAst] })[0]
+    $TimeoutSec = 30; $script:ShareRoot = "Z:\"
+    foreach ($rc in 0, 10, 11) { & ([scriptblock]::Create($sw.Extent.Text)) }'
+  assert_success
+  assert_output "$(printf '%s\n' '1 try, 1 catch, all types: True' 'last: ExitStatementAst 1' \
+    'The shared folder from Linux is drive Z:\.' \
+    'The shared folder from Linux did not appear as a drive in 30 seconds.' \
+    'The shared folder from Linux appeared as drive Z:\, but Windows could not list it.')"
 }
 
 # --- guest/lanai-scale.ps1 ---
@@ -1310,6 +1606,7 @@ guest_ps() {
   # user can set; it starts powershell.exe from the system folder Windows
   # reports.
   assert_output --partial "New-ScheduledTaskAction -Execute ([char]34 + 'C:\Program Files\Lanai\lanai-start.exe' + [char]34);"
+  run bash -c 'grep -F "Register-ScheduledTask"' < <(setup_code)
   refute_output --partial '%SystemRoot%'
   run grep -c 'Register-ScheduledTask' "$SETUP_CMD"
   assert_output 1

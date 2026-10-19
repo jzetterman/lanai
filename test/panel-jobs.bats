@@ -39,8 +39,14 @@ printf '%s\n' "$*" >>"$T/calls"
 printf '%s\n' "$(cat "$T/now")" >>"$T/times"
 n=$(cat "$T/count"); echo "$((n+1))" >"$T/count"
 case ${MODE:-} in
-  step5|panel) if ((n == 0)); then echo '{"ok":true,"step":"5"}'; else echo '{"ok":true,"step":"6","questions":["share","scale"]}'; fi ;;
+  step5|panel) if ((n == 0)); then echo '{"ok":true,"step":"5"}'; else echo '{"ok":true,"step":"7"}'; fi ;;
   step6|stop) if ((n < 2)); then echo '{"ok":true,"step":"6"}'; else echo '{"ok":true,"step":"7"}'; fi ;;
+  # The other checks pass, the scale task never starts: a wait, then the stop.
+  scale) case $n in
+      0) echo '{"ok":true,"step":"6"}' ;;
+      1) echo '{"ok":true,"step":"6","message":"Waiting for the display scale task."}' ;;
+      *) echo '{"ok":false,"step":"6","stop":"timeout","reason":"scale-task"}'; exit 1 ;;
+    esac ;;
   failure) echo '{"ok":false,"step":"6"}'; exit 1 ;;
   malformed) echo invalid ;;
   *) echo '{"ok":true}';;
@@ -156,6 +162,16 @@ SH
   done
 }
 
+@test "ui job: step 6 keeps following through the scale wait and ends on its stop" {
+  export MODE=scale
+  run cmd_ui_job_worker token setup
+  assert_success
+  assert_equal "$(cat "$T/calls")" $'setup\nsetup --follow 6 inv\nsetup --follow 6 inv'
+  assert_equal "$(cat "$T/times")" $'100\n110\n120'
+  assert_equal "$(jq -c '.reply | [.ok, .step, .stop, .reason]' "$S/panel-result-setup.json")" '[false,"6","timeout","scale-task"]'
+  assert_equal "$(jq -r .ended "$S/panel-result-setup.json")" 120
+}
+
 @test "ui job: final record precedes unlock and contention never overwrites it" {
   local fd
   panel_result_write setup '{"token":"owner"}'
@@ -198,10 +214,10 @@ SH
   assert_success
   run jq -se 'all(.[]; .reply.ok == true and .ended == null)' "$T/during-wait"
   assert_success
-  for mode in questions base "done"; do
+  for mode in timeout base "done"; do
     local reply
     case $mode in
-      questions) reply='{"ok":true,"step":"6","questions":["share","scale"]}' ;;
+      timeout) reply='{"ok":false,"step":"6","stop":"timeout","reason":"agents"}' ;;
       base) reply='{"ok":true,"step":"3a"}' ;;
       *) reply='{"ok":true,"step":"7"}' ;;
     esac
@@ -257,12 +273,12 @@ source "$LANAI_TEST_REPO/lib/lanai.sh"
 printf '%s\n' "$*" >>"$T/calls"
 printf '%s\n' "$(cat "$T/now")" >>"$T/times"
 if [[ $* == 'setup --follow 6 inv' ]] && ! lanai_flock; then
-  setup_resume auto false "" "" 6 inv
+  setup_resume auto false 6 inv
   exit 1
 fi
 n=$(cat "$T/count"); echo "$((n+1))" >"$T/count"
 if ((n == 0)); then echo '{"ok":true,"step":"6"}'
-else echo '{"ok":true,"step":"6","questions":["share","scale"]}'; fi
+else echo '{"ok":false,"step":"6","stop":"timeout","reason":"agents"}'; exit 1; fi
 SH
   export LANAI_TEST_REPO=$REPO
   eval "$(declare -f ui_sleep | sed '1s/ui_sleep/fixture_sleep/')"
@@ -281,7 +297,7 @@ SH
   assert_equal "$(cat "$T/times")" $'100\n110\n112'
   assert_equal "$(cat "$T/calls")" $'setup\nsetup --follow 6 inv\nsetup --follow 6 inv'
   assert_equal "$(jq -r .ok "$T/save-reply")" true
-  assert_equal "$(jq -c .reply.questions "$S/panel-result-setup.json")" '["share","scale"]'
+  assert_equal "$(jq -r .reply.stop "$S/panel-result-setup.json")" timeout
 }
 
 @test "ui job: boot lock refusal after step 5 bookkeeping ends following with the busy result" {
