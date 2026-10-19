@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import stat
 import struct
 import subprocess
@@ -93,6 +94,8 @@ def progress(phase, done=None, total=None):
         total = current.get("total", 0) if total is None else total
     doc = {"operation": os.environ["LANAI_IMAGE_OPERATION"], "phase": phase,
            "done": done, "total": total, "pid": int(os.environ["LANAI_IMAGE_OWNER"])}
+    if "LANAI_IMAGE_TARGET" in os.environ:
+        doc["target"] = os.environ["LANAI_IMAGE_TARGET"]
     tmp = f"{path}.tmp.{os.getpid()}"
     try:
         with open(tmp, "x", opener=lambda p, f: os.open(p, f, 0o600)) as out:
@@ -201,7 +204,13 @@ def activity(lock_path, progress_path):
         verb = "Taking a snapshot" if doc["operation"] == "snapshot" else "Restoring Windows"
         labels = {"cloning": "making an instant copy", "checking": "checking the shared storage",
                   "hashing": "reading the image", "replacing": "replacing the disk", "finishing": "finishing and saving"}
-        return {"label": f'{verb}: {labels[doc["phase"]]}', "percent": percent}
+        result = {"label": f'{verb}: {labels[doc["phase"]]}', "percent": percent,
+                  "operation": doc["operation"], "total": doc["total"]}
+        target = doc.get("target")
+        if (doc["operation"] == "restore" and isinstance(target, str) and
+                re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", target)):
+            result["target"] = target
+        return result
     except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.SubprocessError):
         return None
 

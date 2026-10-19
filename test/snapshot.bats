@@ -1058,6 +1058,79 @@ exec /usr/bin/python3 "$@"'
   assert_equal "$(head -n 1 "$T/checking-counts")" "[0,0]"
 }
 
+@test "redesign progress: CLI restore keeps its validated target once resolved" {
+  use_install "$T/storage"
+  local snap name=20261012T091200Z
+  snap=$(data_dir)/snapshots/$name
+  mkdir -p "$snap"
+  cp "$STORE/"* "$snap/"
+  echo "$STORE" >"$snap/SOURCE"
+  tree_manifest "$STORE" >"$snap/COMPLETE"
+  plain_cp
+  shim python3 'if [[ $1 == */image-proof.py ]]; then
+  case $2 in
+    progress) /usr/bin/python3 "$@"; jq -c "{phase,target}" "$LANAI_IMAGE_PROGRESS" >>"$T/targets"; exit ;;
+    gate|filesystem|final) exit 0 ;;
+    prove) /usr/bin/python3 "${1}" progress hashing
+      jq -c "{phase,target}" "$LANAI_IMAGE_PROGRESS" >>"$T/targets"
+      printf "f %s %s data.img\n" "$(stat -c %s "$3")" "$(sha256sum <"$3" | cut -d " " -f1)"; exit ;;
+  esac
+elif [[ $1 == */ficlone.py ]]; then
+  /usr/bin/cp -- "${@: -2:1}" "${@: -1}"; exit
+fi
+exec /usr/bin/python3 "$@"'
+  export LANAI_IMAGE_TARGET=untrusted-inherited-value
+  lanai_run restore "$name"
+  assert_success
+  assert_equal "$(head -n 1 "$T/targets")" '{"phase":"checking","target":null}'
+  assert_equal "$(jq -sc --arg n "$name" '.[1:] | all(.target == $n)' "$T/targets")" true
+  assert_equal "$(jq -sc 'map(.phase) | unique' "$T/targets")" '["checking","cloning","finishing","hashing","replacing"]'
+  assert [ ! -e "$S/image-progress.json" ]
+  # Resuming through the public command resolves the same identity from its marker.
+  mark_restore "$snap" "$STORE"
+  : >"$T/targets"
+  lanai_run restore
+  assert_success
+  assert_equal "$(jq -sc --arg n "$name" '.[1:] | all(.target == $n)' "$T/targets")" true
+}
+
+@test "redesign progress: stale owner and lock records expose no target or percentage" {
+  mkdir -p "$S"
+  local fd pid=$BASHPID target total
+  exec {fd}>"$S/lock"
+  flock -n "$fd"
+  jq -nc --argjson p "$pid" '{operation:"restore",phase:"hashing",done:25,total:100,pid:$p,target:"20261012T091200Z"}' >"$S/image-progress.json"
+  run python3 "$REPO/lib/image-proof.py" activity "$S/lock" "$S/image-progress.json"
+  assert_success
+  assert_equal "$(jq -c '[.operation,.total,.target,.percent]' <<<"$output")" '["restore",100,"20261012T091200Z",24]'
+  jq 'del(.target)' "$S/image-progress.json" >"$T/old-progress"
+  run python3 "$REPO/lib/image-proof.py" activity "$S/lock" "$T/old-progress"
+  assert_equal "$(jq -c '[.operation,.total,.target,.percent]' <<<"$output")" '["restore",100,null,24]'
+  for target in '"../20261012T091200Z"' 42 null '[]'; do
+    jq --argjson t "$target" '.target=$t' "$S/image-progress.json" >"$T/bad-target"
+    run python3 "$REPO/lib/image-proof.py" activity "$S/lock" "$T/bad-target"
+    assert_equal "$(jq -c '[.operation,.total,.target,.percent]' <<<"$output")" '["restore",100,null,24]'
+  done
+  for total in -1 1.5 true '"100"'; do
+    jq --argjson t "$total" '.total=$t' "$S/image-progress.json" >"$T/bad-total"
+    run python3 "$REPO/lib/image-proof.py" activity "$S/lock" "$T/bad-total"
+    assert_output null
+  done
+  jq '.pid=2147483647' "$S/image-progress.json" >"$T/dead"
+  run python3 "$REPO/lib/image-proof.py" activity "$S/lock" "$T/dead"
+  assert_output null
+  exec {fd}>&-
+  exec {fd}>"$S/lock"
+  run python3 "$REPO/lib/image-proof.py" activity "$S/lock" "$S/image-progress.json"
+  assert_output null
+  flock -n "$fd"
+  mv "$S/lock" "$S/old-lock"
+  : >"$S/lock"
+  run python3 "$REPO/lib/image-proof.py" activity "$S/lock" "$S/image-progress.json"
+  assert_output null
+  exec {fd}>&-
+}
+
 @test "restore: early failed checks with an older marker never claim nothing changed" {
   snapshot_failure_fixture
   local snap failure

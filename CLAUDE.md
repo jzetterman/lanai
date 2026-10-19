@@ -11,10 +11,13 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   `lanai-copy`, the VM unit's `lanai-vm-exec`, `lanai-vm-stop` and
   `lanai-vm-helper`, the client unit's `lanai-client-exec`, and `lanai-setup-host`,
   which installs the host packages in a terminal), `Widget.qml` (the bar glyph),
-  `LanaiPanel.qml` (setup, VM controls, settings and recovery), `LanaiModel.qml`
-  (panel polling and literal command transport), `lib/` (`panel.sh` holds the
+  `LanaiPanel.qml` (setup cards, VM controls, detail sections, drafts and
+  confirmations), `LanaiModel.qml` (panel polling, literal command transport and
+  clipboard exit feedback), `lib/` (`panel.sh` holds the
   read-only panel view and words, `client.sh` holds the
-  Looking Glass client code, `setup.sh` the setup flow and setup media, `pins.sh`
+  Looking Glass client code, `setup.sh` the setup flow, setup media and
+  `$RUN/step6-checks.json` check outcomes and `$RUN/step6-scale-limit` worker
+  timeout for each attempt, `pins.sh`
   the pinned downloads, `ui.sh` the settings command, per-group result records
   and session-unit panel jobs, `snapshot.sh` snapshot and restore, `copy.sh` the
   reflink copy helpers, `ficlone.py` the in-place clone, `image-proof.py` the
@@ -26,7 +29,9 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   (Lanai's Looking Glass client patches, `NNNN-<topic>.patch`, with the GPL-2.0 text
   in `COPYING`) and `test/` (bats; fake
   QMP and guest agent servers and trimmed client logs in `test/fixtures/`;
-  `test/client-patches.bats` builds and runs the patches' C tests).
+  `test/client-patches.bats` builds and runs the patches' C tests;
+  `test/panel-fixtures.bash` shares isolated backend fixtures between the panel
+  tests and the ten-board renderer integration in `test/panel-qml.bats`).
   `docs/plugin/proof-kit/` holds the phase 1, live-scale and resize proof scripts and
   `count-image-extents.py`, the read-only extent census.
 - QML lint: `test/qml-lint` (or `test/qml-lint <file>`). It makes a temporary

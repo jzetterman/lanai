@@ -72,7 +72,7 @@ panel_words() {
       elif .reason == "agents" then "In Windows, " + parts + " did not answer." + tail
       elif .reason and (reasons[.reason] != null) then reasons[.reason]
       elif $c == "setup" and .step == "4" then
-        (if $step == "7" then "Setup could not update the Windows window. Check the Windows window build log, then click Run setup again."
+        (if $step == "7" then "Setup could not update the Windows window. Check the Windows window build log, then click Run setup again in More actions."
         else "Setup could not prepare the Windows window. Check the Windows window build log, then click Continue setup." end)
       elif $c == "setup" and .step == "2" and .missing then ""
       elif $c == "setup" and .step == "3" and .reason == null then ""
@@ -120,12 +120,69 @@ panel_records() {
   jq -nc --argjson r "$records" --argjson h "$held" '{held:$h,records:$r}'
 }
 
+# Keep the UTC folder name as the identity, even when it is not a real date.
+panel_snapshot_item() {
+  local name=$1 formatted='' date='' time='' label=$1
+  if [[ $name =~ $LANAI_SNAP_RE ]]; then
+    formatted=$(LC_ALL=C date -u -d "${name:0:4}-${name:4:2}-${name:6:2} ${name:9:2}:${name:11:2}:${name:13:2} UTC" \
+      '+%Y%m%dT%H%M%SZ|%b %-d, %Y|%H:%M UTC' 2>/dev/null) || formatted=''
+    if [[ ${formatted%%|*} == "$name" ]]; then
+      formatted=${formatted#*|}
+      date=${formatted%%|*} time=${formatted#*|}
+      label="$date at $time"
+    fi
+  fi
+  jq -nc --arg n "$name" --arg d "$date" --arg t "$time" --arg l "$label" \
+    '{name:$n,date:(if $d == "" then null else $d end),time:(if $t == "" then null else $t end),
+      label:$l,restore_label:("Restore " + $l),confirm_label:("Restore " + $l + " and replace Windows"),
+      warning:"Replaces Windows. Changes since this snapshot are lost."}'
+}
+
+# Resolve display identity only against this read's validated snapshot list.
+# Progress wins over an active job; a marker also covers interrupted CLI work.
+panel_restore() {
+  local progress=$1 records=$2 paths=$3 items=$4 storage=$5 marker=$6
+  local job active=false pending=false name='' target='' snap='' source='' item=null use_marker=true
+  [[ ! -e $marker ]] || pending=true
+  job=$(jq -c 'if .held then [.records[] | select(. != null and has("started") and (has("ended")|not))] |
+    max_by(.started) // {} else {} end' <<<"$records")
+  if [[ $(jq -r '.operation' <<<"$progress") == restore || $(jq -r .command <<<"$job") == restore ]]; then
+    active=true
+    target=$(jq -r '.target // ""' <<<"$progress")
+    if [[ $target =~ $LANAI_SNAP_RE ]] && jq -e --arg n "$target" 'any(.[]; .name == $n)' <<<"$items" >/dev/null; then
+      name=$target
+    elif [[ $(jq -r .command <<<"$job") == restore ]]; then
+      target=$(jq -r '.args[0] // ""' <<<"$job")
+      if [[ -n $target ]]; then
+        use_marker=false
+        if [[ $target =~ $LANAI_SNAP_RE ]] && jq -e --arg n "$target" 'any(.[]; .name == $n)' <<<"$items" >/dev/null; then
+          name=$target
+        fi
+      fi
+    fi
+  fi
+  if [[ -z $name && $use_marker == true && -f $marker ]]; then
+    if { IFS= read -r snap && IFS= read -r source; } <"$marker" && [[ -n $storage && $source == "$storage" ]] &&
+      jq -e --arg p "$snap" 'index($p) != null' <<<"$paths" >/dev/null; then
+      name=${snap##*/}
+    fi
+  fi
+  [[ -z $name ]] || item=$(jq -c --arg n "$name" '.[] | select(.name == $n)' <<<"$items")
+  jq -nc --argjson a "$active" --argjson p "$pending" --argjson i "$item" \
+    '{pending:$p,name:($i.name // null),label:(if $a then
+        (if $i == null then "Restoring Windows" else "Restoring " + $i.label end)
+      elif $p then (if $i == null then "Unfinished restore" else "Unfinished restore of " + $i.label end)
+      else "" end),warning:(if $a or $p then "Keep Windows stopped until the restore finishes." else "" end)}'
+}
+
 # One view: gather once, status makes its one bounded QMP session, and setup plans
 # from the same host facts. Settings/list errors are data, never swallowed results.
 cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
   local client_old=false signin_missing=false update_shown=false task started=0 booted button
+  local snapshot_paths='[]' items='[]' name restore log_rows path display label
+  local check_since=null checks_stopped=false since vm_status
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
       emit false "" "Invalid panel input." ""; return 2
@@ -136,6 +193,8 @@ cmd_panel() {
   facts=$(shared_facts "$progress")
   status_details=$(status_facts "$facts")
   status=$(status_map <<<"$status_details")
+  # Reuse the gathered facts without setup masking the VM's runtime state.
+  vm_status=$(status_map <<<"$status_details"$'\nLanaiSetup=done')
   plan=$(setup_plan "$facts")
   records=$(panel_records)
   problem_line=''
@@ -143,6 +202,13 @@ cmd_panel() {
     problem_line=$(panel_words setup "$(jq -c '. + {ok:false}' <<<"$plan")")
   fi
   s=$(state_dir); run=$(run_dir 2>/dev/null) || run=''
+  if [[ -n $run ]]; then
+    [[ ! -e $run/step6-stopped ]] || checks_stopped=true
+    if [[ -s $run/step6-since ]]; then
+      since=$(<"$run/step6-since")
+      if step6_positive "$since" && ((since <= EPOCHSECONDS)); then check_since=$since; fi
+    fi
+  fi
   # Boot flags also cover activation, before status reports a window.
   if jq -e '.active' <<<"$status" >/dev/null; then
     jq -e '.setup == true' "$s/boot.json" >/dev/null 2>&1 && setup_boot=true
@@ -212,10 +278,10 @@ cmd_panel() {
       case $(jq -r .command <<<"$doc") in
         snapshot) words="The snapshot did not finish. Try again." ;;
         restore) words="The restore did not finish. Finish the unfinished restore or restore another snapshot before starting Windows." ;;
-        build-client) words="The update did not finish. Click Update the Windows window again." ;;
+        build-client) words="The update did not finish. Click Update the Windows window in More actions again." ;;
         # Run setup again's step 4 build runs while the plan is finished.
         *) if jq -e '.finished' <<<"$plan" >/dev/null; then
-          words="Setup was interrupted. Click Run setup again to try again."
+          words="Setup was interrupted. Click Run setup again in More actions to try again."
         else words="Setup was interrupted. Continue setup to try again."; fi ;;
       esac
     fi
@@ -239,32 +305,53 @@ cmd_panel() {
     # make scale saves apply while Windows runs, unless the resize warning
     # already says it (the panel names Run setup again once). An unfinished
     # plan (req 8's driver update) shows Continue setup instead.
-    note='' active=false button='Run setup again'
+    note='' active=false button='Run setup again in More actions'
     ! jq -e '.active' <<<"$status" >/dev/null || active=true
     jq -e '.finished' <<<"$plan" >/dev/null || button='Continue setup'
     case $task in
       new) ! $active || note='Saving a scale replaces one you picked in Windows.' ;;
       old) $signin_missing || note=$(old_task_note "$active" "$button") ;;
     esac
-    settings=$(jq -c --arg steps "$LANAI_SCALE_STEPS" --arg note "$note" '{memory_gib,cores,windows_scale,error:"",
+    settings=$(jq -c --arg steps "$LANAI_SCALE_STEPS" --arg note "$note" '{memory_gib,cores,windows_scale,baseline,error:"",
       line:"Memory and cores apply the next time Windows starts.",note:$note,
       scale_choices:([{value:"auto",label:"Match my monitor"}] +
         [$steps | splits(" ") | select(length > 0) | tonumber | {value:.,label:(tostring + "%")}])}' <<<"$settings")
   else settings='{"error":"Lanai could not read the VM settings. Check the settings file."}'; fi
   if snapshots=$(cmd_snapshots 2>/dev/null) && jq -e '.ok' <<<"$snapshots" >/dev/null; then
-    snapshots=$(jq -c '{names:(.snapshots | map(split("/")[-1])),error:"",line:(if (.snapshots|length) == 0 then "No snapshots yet." else "Restoring replaces Windows. Anything saved since the snapshot is lost. Stop Windows in both VMs before restoring." end)}' <<<"$snapshots")
-  else snapshots='{"names":[],"error":"Lanai could not read the snapshot list. Check the settings and logs."}'; fi
+    snapshot_paths=$(jq -c .snapshots <<<"$snapshots")
+    items=$(while IFS= read -r name; do panel_snapshot_item "$name"; done < <(
+      jq -r 'map(split("/")[-1]) | unique | reverse[]' <<<"$snapshot_paths") | jq -sc .)
+    snapshots=$(jq -c --argjson items "$items" '{names:(.snapshots | map(split("/")[-1])),items:$items,count:($items|length),error:"",line:(if (.snapshots|length) == 0 then "No snapshots yet." else "Restoring replaces Windows. Anything saved since the snapshot is lost. Stop Windows in both VMs before restoring." end)}' <<<"$snapshots")
+  else snapshots='{"names":[],"items":[],"count":0,"error":"Lanai could not read the snapshot list. Check the settings and logs."}'; fi
+  restore=$(panel_restore "$progress" "$records" "$snapshot_paths" "$items" "$(sed -n 's/^LanaiStorage=//p' <<<"$facts")" "$s/restore-in-progress")
   logs=$(jq -nc --arg client "${run:+$run/client.log}" --arg job "$s/panel-job.log" --arg command "$s/panel-run.log" \
     --arg build "$s/build-client.log" \
     '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Setup, snapshot, restore and update log: " + $job),command:("Button actions log: " + $command),
       build:("Windows window build log: " + $build)} +
      (if $client == "" then {} else {client:("Windows window log: " + $client)} end)')
-  jq -nc --argjson st "$status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
-    --argjson progress "$progress" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
+  log_rows=$(jq -nc --arg copy "$LANAI_LOGS" \
+    '[{id:"vm",label:"VM",display:"journal: lanai-vm",copy_text:$copy,copy_label:"Copy VM log command"}]')
+  for group in client build job command; do
+    case $group in
+      client) path=${run:+$run/client.log} label=Window ;;
+      build) path=$s/build-client.log label=Build ;;
+      job) path=$s/panel-job.log label=Jobs ;;
+      command) path=$s/panel-run.log label=Actions ;;
+    esac
+    [[ -n $path && -f $path ]] || continue
+    display=${path##*/}
+    log_rows=$(jq -c --arg id "$group" --arg label "$label" --arg display "$display" --arg path "$path" \
+      '. + [{id:$id,label:$label,display:$display,copy_text:$path,copy_label:("Copy " + $label + " log path")}]' <<<"$log_rows")
+  done
+  logs=$(jq -c --argjson rows "$log_rows" \
+    '. + {rows:$rows,copied:"Copied",copy_error:"Could not copy. Try again.",copy_busy:"Another log is being copied. Try again in a moment."}' <<<"$logs")
+  jq -nc --argjson st "$status" --argjson vm "$vm_status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
+    --argjson progress "$progress" --argjson restore "$restore" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
     --argjson clientOld "$client_old" --argjson signinMissing "$signin_missing" --argjson updateShown "$update_shown" --arg task "$task" \
-    --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" '
+    --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" \
+    --arg invocation "$inv" --argjson checkSince "$check_since" --argjson checksStopped "$checks_stopped" '
     def button($show;$enable;$label): {show:$show,enable:($show and $enable),label:$label};
     ({"not-installed":["Not installed","Windows is not installed","No supported Windows install was found.","Install Windows with Omarchy, then continue setup."],
       "setup-needed":["Setup needed","Windows needs setup","Lanai setup has not finished for this Windows install.","Follow the Setup section below."],
@@ -274,7 +361,8 @@ cmd_panel() {
       stopping:["Shutting down","Windows is shutting down","The shutdown request is still in progress.","Wait for Windows to finish shutting down."],
       "in-use":["In use","Windows is in use elsewhere","Another VM is running or preparing Windows.","Stop the other VM before using Windows here."],
       "version-mismatch":["Display driver needs an update","The Windows display needs an update","The client and Windows display driver have different versions.","Shut down and continue setup, or use Omarchy\u0027s Windows connection."],
-      failed:["Failed","Windows is unavailable","Windows stopped with an error, or Lanai could not reach it.","Check the logs below. You can also use Omarchy\u0027s Windows connection after shutting Lanai down."]}[$st.state]) as $w |
+      failed:["Failed","Windows is unavailable","Windows stopped with an error, or Lanai could not reach it.","Check the logs below. You can also use Omarchy\u0027s Windows connection after shutting Lanai down."]}) as $states |
+    $states[$st.state] as $w |
     ([$rec.records[] | select(. != null and has("started") and (has("ended")|not))] | max_by(.started) // {}) as $job |
     ([$rec.records[] | select(.token == $token)] | length > 0) as $seen |
     ($token != "" and ($seen|not) and $now - $at < 10) as $pending |
@@ -304,7 +392,7 @@ cmd_panel() {
      right_click:$rightClick,
      right_click_tooltip:({start:"Right-click: Start Windows.",open:"Right-click: Open the Windows window.",panel:"Right-click: Open the panel."}[$rightClick]),
      pending_ack:(if $seen then $token else "" end),
-     progress:$progress,notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
+     progress:$progress,restore:$restore,notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
      busy:{active:$busy,line:(if $progress != null then (if ($progress.label | startswith("Restoring Windows:")) then "Keep Windows stopped until it finishes." else "You can close this panel." end) elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
        elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes.",
          "build-client":("Updating the Windows window. This may take several minutes. " +
@@ -329,7 +417,7 @@ cmd_panel() {
            elif $st.active then "Shut Windows down before continuing setup."
            else "Continue setup to install the drivers in Windows." end),
          "6":(if $st.state == "stopping" then "Wait for Windows to shut down, then click Continue setup."
-           elif $setupJob and $p.scale_wait == true then "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in within 2 minutes."
+           elif $setupJob and $p.scale_wait == true then "Waiting for the display scale task. If Windows is at its sign-in screen, or another user is signed in, sign in as the Windows user who ran setup."
            elif $setupJob then "Windows is starting or being checked."
            else "Click Continue setup so Lanai can check Windows." end),
          "7":"Setup is finished."}[$p.step] end])},
@@ -346,7 +434,7 @@ cmd_panel() {
        continue_setup:button($interruptedSetup or (($p.choices|length)==0 and $p.step != "3");
          ($busy|not) and $available and ($st.restore_pending|not) and (($p.finished|not) or $off) and
          $p.reason != "no-media" and $p.reason != "active" and ($p.step != "6" or $st.state != "stopping");(if $p.finished then "Run setup again" else "Continue setup" end)) +
-         {hint:(if $p.finished and ($off|not) then "Shut Windows down to run setup again." else "" end)},
+         {hint:(if $p.finished and ($off|not) then "Shut Windows down, then choose Run setup again in More actions." else "" end)},
        install:button($p.step == "2";($busy|not);"Install in a terminal"),
        setup_snapshot:button($p.step == "3";$idle and ($busy|not);"Take a snapshot"),
        skip_snapshot:button($p.step == "3";$idle and ($busy|not);"Continue without a snapshot"),
@@ -369,7 +457,7 @@ cmd_panel() {
     else . end |
     if $st.restore_pending then .cause="A restore did not finish, so Windows cannot start." |
       .next=(if $available then "When Windows is stopped, finish the unfinished restore or restore another snapshot." else "Stop the other VM, then finish the unfinished restore or restore another snapshot." end) else . end |
-    if $st.force_stop then .next="Wait, or use Force stop below if you accept losing unsaved work." else . end |
+    if $st.force_stop then .next="Wait, or use Force stop in More actions if you accept losing unsaved work." else . end |
     .warning = ([
       if $facts | contains("LanaiHelpersMissing=") then "Some background services stopped. Shut Windows down and start it again." else empty end,
       if $facts | contains("LanaiClient=timeout") then "The Windows window did not open in time. " +
@@ -386,12 +474,98 @@ cmd_panel() {
           else "After Windows starts, it may stay at its old size until you resize the window." end,
           if $task == "old" then "Scale saves apply only the next time Windows starts." else empty end]) as $fixes |
         ($fixes + ["To fix " + ({"1":"this","2":"both"}[$fixes | length | tostring]) + ", " +
-          (if $off then "click Run setup again." else "shut Windows down and click Run setup again." end),
+          (if $off then "click Run setup again in More actions." else "shut Windows down and click Run setup again in More actions." end),
           "Running setup again also turns the Windows lock off again."] | join(" "))
       elif $updateShown then
-        "Windows may start at, or change to, the wrong size until you click Update the Windows window. Updating changes nothing in Windows."
+        "Windows may start at, or change to, the wrong size until you click Update the Windows window in More actions. Updating changes nothing in Windows."
       else empty end
-    ] | join(" "))'
+    ] | join(" ")) |
+    # Presentation follows the existing decisions and never widens an offer.
+    def currentSetup:
+      $rec.records.setup as $d |
+      ($d.invocation == null or $d.invocation == $invocation) and
+      # Run setup again can fail at the client build while the plan stays finished.
+      ($d.reply.step == null or $d.reply.step == $p.step or
+        ($d.reply.step == "4" and $p.finished and $clientOld and ($updateShown|not) and
+          any($d.args[]?; . == "--window" or . == "--no-window"))) and
+      ($p.step != "6" or $checkSince == null or ($d.ended // $now) >= $checkSince);
+    ($p.finished == false and $p.step == "6" and currentSetup and
+      $rec.records.setup.reply.ok == false and $rec.records.setup.reply.stop == "timeout") as $timeout |
+    # Settings refusals stay beside the drafts; prompts and timeouts keep their setup view.
+    (["vm","setup","snapshots","client"] | any(.[];
+      . as $g | $rec.records[$g] as $d |
+      ($r[$g] != "" and $d != null and ($d.invocation == null or $d.invocation == $invocation) and
+        ($d.reply.ok == false or (($rec.held|not) and ($d|has("started")) and ($d|has("ended")|not))) and
+      (if $g == "setup" then currentSetup and ($timeout|not) and
+        (($d.reply.step == "2" and $d.reply.missing != null) or
+          ($d.reply.step == "3" and $d.reply.reason == null) | not)
+       else true end)))) as $resultFailed |
+    ($progress.operation == "restore" or ($rec.held and $job.command == "restore")) as $restoring |
+    ($st.state == "failed" or (.restore.pending and ($restoring|not)) or $resultFailed or $launchFailed or
+      ($facts | contains("LanaiHelpersMissing=") or contains("LanaiClient=timeout"))) as $failed |
+    .layout = (if .restore.pending or $restoring then "restoring"
+      elif $timeout then "setup_timeout"
+      elif .setup.show then (if $p.step == "6" then "setup_verify" else "setup" end)
+      elif $failed then "failed" else "daily" end) |
+    .settings += {baseline:(.settings.baseline // null),
+      labels:{memory:"Memory (GiB)",cores:"CPU cores",scale:"Windows scale",save:"Save",saved:"Saved",reset:"Reset",unsaved:"Unsaved"}} |
+    (if $p.finished then null elif $p.step == "3a" then 4 else ($p.step | tonumber) end) as $number |
+    ["Check","Packages","Snapshot","Prepare","Drivers","Verify"] as $names |
+    .setup += {number:$number,name:(if $number == null then "" else $names[$number - 1] end),
+      step_line:(if $number == null then "" else "Step \($number) of 6" end),
+      steps:[$names | to_entries[] | {number:(.key + 1),name:.value,
+        state:(if $number == null or .key + 1 < $number then "complete"
+          elif .key + 1 == $number then "current" else "pending" end)}],
+      title:({"1":"Check the Windows install","2":"Install host packages","3":"Snapshot before first boot",
+        "3a":"Prepare the Windows install","4":"Prepare the Windows window","5":"Finish in Windows",
+        "6":(if $timeout then "Windows checks timed out" elif $p.scale_wait then "Sign in to Windows to finish" else "Checking Windows" end),
+        "7":"Setup is finished"}[$p.step])} |
+    (.layout == "setup" or .layout == "setup_verify" or .layout == "setup_timeout") as $setupLayout |
+    .header = {title:"Windows",meta:(if $setupLayout then
+        .setup.step_line + " · " + .setup.name + (if $timeout then " · " + $states[$vm.state][0] else "" end)
+      elif .settings.baseline != null then
+        "\(.settings.memory_gib) GiB · \(.settings.cores) cores · " +
+        (if .settings.windows_scale == "auto" then "Auto" else "\(.settings.windows_scale)%" end)
+      else "" end),badge:(if $setupLayout then "Setup" elif .layout == "failed" then "Failed" else .label end)} |
+    .sections = {settings:"Settings",snapshots:"Snapshots",logs:"Logs",more:"More actions",dismiss_click_notice:"Dismiss busy notice",default:(if .layout == "failed" then "logs" elif .restore.pending and ($restoring|not) then "snapshots" else "" end)} |
+    def checkrow($id;$label;$probes):
+      ($probes | map(.state // "not_checked")) as $states |
+      (if $states | index("failed") then "failed" elif all($states[]; . == "done") then "done"
+        elif $states | index("waiting") then "waiting" else "not_checked" end) as $state |
+      {id:$id,label:$label,state:$state,status:({not_checked:"Not checked",waiting:"Waiting",done:"Done",failed:"Failed"}[$state]),
+        detail:([$probes[] | select(.state == "waiting" or .state == "failed") |
+          ({qmp:"Windows virtual machine", "guest-boot":"QEMU guest agent", "window-closed":"Windows window",
+            "idd-missing":"display driver",mismatch:"pinned display driver build",spice:"SPICE agent",
+            clock:"QEMU guest agent clock",allowlist:"QEMU guest agent allow-list","scale-task":"display scale task"}[.reason] // "Windows check") as $part |
+          if .state == "waiting" then "Waiting for the " + $part + "." else "The " + $part + " failed." end] | join(" "))};
+    .setup.checks = [checkrow("idd";"Display driver";[$p.checks.idd]),
+      checkrow("agents";"Windows agents";[$p.checks.spice,$p.checks.clock,$p.checks.allowlist]),
+      checkrow("scale";"Scale task";[$p.checks.scale])] |
+    .setup.countdown = (if $setupJob and $job.invocation == $invocation and $invocation != "" and
+        $job.reply.ok == true and $job.reply.step == "6" and $p.step == "6" and $p.scale_wait == true and
+        $st.active and $st.state != "stopping" and ($stopRequested|not) and ($checksStopped|not) and ($timeout|not) and
+        $p.checks.scale.state == "waiting" and
+        ($p.scale_started_at | type == "number" and . > 0 and . <= $now and floor == .) and
+        ($p.scale_limit_seconds | type == "number" and . > 0 and floor == .) then
+      {started_at:$p.scale_started_at,limit_seconds:$p.scale_limit_seconds,
+        remaining_seconds:([0,($p.scale_limit_seconds - ($now - $p.scale_started_at))] | max),label:"Time remaining to sign in"}
+      else null end) |
+    .primary_action = (.buttons as $buttons |
+      (if .layout == "restoring" then ["finish_restore","restore_snapshot"]
+       elif .setup.show then (if $dailyControls then ["start","open"] else [] end) +
+         (if $p.step == "2" then ["install","continue_setup"] elif $p.step == "3" then ["setup_snapshot","skip_snapshot"]
+          else ["reopen_window","continue_setup","window","no_window"] end)
+       else ["start","open","continue_setup"] end) |
+      map(select($buttons[.].show and $buttons[.].enable)) | .[0] // null) |
+    ($timeout or (.setup.attention and ($restoring|not)) or
+      ($p.step == "6" and $setupJob and $p.checks.scale.state == "waiting") or
+      (currentSetup and $rec.records.setup.reply.ok == false and ($p.action == "packages" or $p.action == "snapshot")) or
+      (["not-installed","in-use","version-mismatch"] | index($st.state) != null)) as $attention |
+    .bar = {mode:(if $failed then "failed"
+      elif $p.action == "setup-wait" and $st.active then "active"
+      elif $attention then "attention" elif $busy then "busy" elif $st.active then "active" else "stopped" end),
+      percent:(if $progress.total > 0 then $progress.percent else null end)} |
+    .bar.label = ({stopped:"Stopped",active:"Active",busy:"Busy",attention:"Your turn",failed:"Failed"}[.bar.mode])'
   # shellcheck disable=SC2034
   LANAI_EMITTED=1
 }
