@@ -712,6 +712,45 @@ Then run the shared checks. In fixtures, recreate both panel and model during a
 scale wait, deliver the same backend deadline and check the remaining duration.
 Use backend tests for shell restart, RESET and fresh Continue semantics.
 
+Phase 6 implementation is complete. The panel renders the backend's six-step
+strip, setup card title and guidance. Prepare covers both 3a and 4. The strip
+wraps on narrow screens and its names are not navigation controls. Settings and
+permitted Snapshots remain reachable. The shared card keeps the existing setup
+actions, literal display choices, shutdown confirmation and Cancel.
+
+Verify and Timeout show the backend's actual check rows, statuses and component
+detail. Drivers retains recovery results without claiming any later check ran.
+The sign-in guidance comes from the backend. The countdown shows a duration in
+m:ss, interpolates once a second and re-anchors on each valid poll. Reopening
+preserves its anchor. Recreating both panel and model uses the backend's original
+deadline. Invalid timing hides the countdown, and zero never declares timeout
+or completion.
+
+All seven named QtTest functions failed before production changes. The red
+focused run had 262 passes and the expected renderer failure. The green focused
+command passed all 263 Bats cases without skips. The renderer passed all 48 test
+functions after refactoring. Fixtures cover default and overridden durations,
+partial checks, both Drivers recovery causes, snapshot backup advice, narrow
+step-strip fitting and stopped timeout retries. Focused results remain at
+`/run/user/1000/lzi/lr.avODYq/focused.log`. The final renderer rerun is at
+`/run/user/1000/lzi/lr.EyrqUi/final-qml.log`.
+
+The shared block exited successfully with 835 Bats passes, 84 skips and no
+failures out of 919 cases. QML lint passed with the existing hoisting and
+model-id warnings. Full shellcheck and `git diff --check` passed. Guest tests
+ran with pwsh. Shared logs remain at `/run/user/1000/lzi/p6-shared.XyZ9U3`.
+
+Validation redirected the lint helper's and spike harness's explicit temporary
+templates into the runtime TMPDIR without changing either script. Five spike
+btrfs cases skipped on tmpfs, including the real flock case. The other skips
+were 76 cases without LANAI_TEST_BTRFS_DIR, the pinned-source build without
+LANAI_TEST_LG_TARBALL, the unavailable strace measurement and the missing
+comma-decimal locale. The first lint invocation used the helper's worktree-local
+import directory, which it removed. Later validation used runtime paths. Btrfs
+validation remains for the orchestrator outside this sandbox. Theme comparison
+and VM acceptance remain pending under phase 8. No spec behaviour changed. No
+VM, root command, review stage or commit ran.
+
 ## Phase 7: Render bar states and preserve shortcuts
 
 Read `Widget.qml`, `LanaiModel.qml:tooltip`, phase 3's `bar` fields and the

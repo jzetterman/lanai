@@ -53,6 +53,7 @@ module TestCommons
 singleton Style 1.0 Style.qml
 singleton Color 1.0 Color.qml
 singleton Util 1.0 Util.qml
+singleton Border 1.0 Border.qml
 QML
   cat >"$T/qml/imports/TestCommons/Style.qml" <<'QML'
 pragma Singleton
@@ -60,11 +61,20 @@ import QtQuick
 QtObject {
   property var selectedAccentFill
   property var bar: ({iconFont:16,statusSlot:24})
-  property var font: ({family:"sans",bodySmall:12})
+  property real cornerRadius: 0
+  property var font: ({family:"sans",bodySmall:12,caption:10})
   function space(n) { return n }
 }
 QML
-  echo 'pragma Singleton; import QtQuick; QtObject { property color foreground: "white"; property color accent: "#4080c0"; property color background: "black"; property QtObject popups: QtObject { property color background: "#80000000" } }' >"$T/qml/imports/TestCommons/Color.qml"
+  echo 'pragma Singleton; import QtQuick; QtObject { property color foreground: "white"; property color urgent: "red"; property color accent: "#4080c0"; property color background: "black"; property QtObject popups: QtObject { property color background: "#80000000" } }' >"$T/qml/imports/TestCommons/Color.qml"
+  cat >"$T/qml/imports/TestCommons/Border.qml" <<'QML'
+pragma Singleton
+import QtQuick
+QtObject {
+  function none() { return {width:0,color:"transparent"} }
+  function controlSpec(state, foreground, accent) { return {width:1,color:foreground} }
+}
+QML
   echo 'pragma Singleton; import QtQuick; QtObject { function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) } }' >"$T/qml/imports/TestCommons/Util.qml"
   cat >"$T/qml/imports/TestUi/qmldir" <<'QML'
 module TestUi
@@ -79,6 +89,15 @@ PanelSectionHeader 1.0 PanelSectionHeader.qml
 PanelSeparator 1.0 PanelSeparator.qml
 PanelHero 1.0 PanelHero.qml
 PanelActionButton 1.0 PanelActionButton.qml
+BorderSurface 1.0 BorderSurface.qml
+QML
+  cat >"$T/qml/imports/TestUi/BorderSurface.qml" <<'QML'
+import QtQuick
+Rectangle {
+  property var borderSpec: ({width:0,color:"transparent"})
+  border.width: borderSpec.width
+  border.color: borderSpec.color
+}
 QML
   cat >"$T/qml/imports/TestUi/BarWidget.qml" <<'QML'
 import QtQuick
@@ -294,6 +313,209 @@ TestCase {
     var panel = createTemporaryObject(panelComponent, tests, {model:model,opened:true})
     wait(1)
     return {model:model,panel:panel}
+  }
+  function setupView(step, layout) {
+    var v = redesignView(), number = step === '3a' ? 4 : Number(step)
+    var names = ['Check','Packages','Snapshot','Prepare','Drivers','Verify']
+    v.layout = layout || (step === '6' ? 'setup_verify' : 'setup')
+    v.active = true
+    v.header = {title:'Windows',meta:'Step ' + number + ' of 6 · ' + names[number - 1],badge:'Setup'}
+    v.buttons = {cancel:{show:true,enable:true,label:'Cancel'},continue_setup:{show:true,enable:true,label:'Continue setup'}}
+    v.setup = {show:true,finished:false,step:step,number:number,name:names[number - 1],
+      step_line:'Step ' + number + ' of 6',title:'Backend title for ' + step,lines:['Backend guidance for ' + step],
+      steps:names.map(function(name, i) { return {number:i + 1,name:name,state:i + 1 < number ? 'complete' : i + 1 === number ? 'current' : 'pending'} }),
+      checks:[{id:'idd',label:'Display driver',state:'not_checked',status:'Not checked',detail:''},
+        {id:'agents',label:'Windows agents',state:'not_checked',status:'Not checked',detail:''},
+        {id:'scale',label:'Scale task',state:'not_checked',status:'Not checked',detail:''}],countdown:null}
+    return v
+  }
+  function textVisible(panel, text) {
+    return objects(panel, function(o) { return o.text === text && o.visible }).length > 0
+  }
+  function test_redesign_all_six_setup_steps_and_prepare_substep_render() {
+    var p = redesignPanel()
+    ;['1','2','3','3a','4','5','6'].forEach(function(step) {
+      var v = setupView(step)
+      p.model.view = v
+      wait(1)
+      var strip = named(p.panel, 'setupSteps')
+      verify(strip !== undefined)
+      verify(strip.visible)
+      var entries = objects(strip, function(o) { return o.objectName.indexOf('setupStep-') === 0 })
+      compare(entries.length, 6)
+      entries.forEach(function(entry, i) {
+        compare(entry.stepState, v.setup.steps[i].state)
+        verify(textVisible(entry, v.setup.steps[i].name))
+        verify(!entry.activeFocusOnTab)
+      })
+      compare(named(p.panel, 'setupTitle').text, v.setup.title)
+      verify(textVisible(p.panel, v.setup.lines[0]))
+      verify(named(p.panel, 'settingsToggle').visible)
+      verify(named(p.panel, 'snapshotsToggle').visible)
+      // Narrow fitting wraps the strip, with no horizontal overflow.
+      named(p.panel, 'panelPopup').contentWidth = 260
+      wait(1)
+      entries.forEach(function(entry) { verify(entry.x + entry.width <= strip.width + 1) })
+    })
+  }
+  function test_redesign_setup_headers_override_running_settings_and_finish_returns_daily() {
+    var p = redesignPanel(), v = setupView('5')
+    p.model.view = v
+    var hero = named(p.panel, 'windowsHeader')
+    compare(hero.title, 'Windows')
+    compare(hero.meta, 'Step 5 of 6 · Drivers')
+    compare(hero.detail, 'Setup')
+    verify(named(p.panel, 'setupSteps').visible)
+    p.model.view = redesignView()
+    compare(hero.meta, '12 GiB · 6 cores · 175%')
+    compare(hero.detail, 'Stopped')
+    verify(!named(p.panel, 'setupSteps').visible)
+    verify(!textVisible(p.panel, 'Step 7 of 6'))
+  }
+  function test_redesign_snapshot_skip_keeps_backup_and_filesystem_advice() {
+    var p = redesignPanel(), v = setupView('3')
+    v.setup.title = 'Snapshot before first boot'
+    v.setup.lines = ['Before the first boot, take a snapshot so you can undo changes, or make a backup and continue without one.']
+    v.buttons.setup_snapshot = {show:true,enable:true,label:'Take a snapshot'}
+    v.buttons.skip_snapshot = {show:true,enable:true,label:'Continue without a snapshot'}
+    v.result.snapshots = 'This filesystem cannot make an instant snapshot. Make a backup before continuing without a snapshot.'
+    p.model.view = v
+    compare(named(p.panel, 'setupTitle').text, v.setup.title)
+    verify(textVisible(p.panel, v.setup.lines[0]))
+    verify(textVisible(p.panel, v.result.snapshots))
+    var skip = objects(named(p.panel, 'setupSection'), function(o) { return o.control === 'skip_snapshot' })[0]
+    verify(skip.visible && skip.enabled)
+    skip.clicked()
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'setup --no-snapshot')
+  }
+  function test_redesign_drivers_guidance_follows_worker_and_keeps_shutdown() {
+    var p = redesignPanel(), v = setupView('5')
+    v.setup.title = 'Finish in Windows'
+    v.setup.lines = ["In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Use Shut down only if setup.cmd stops responding, or when its shared-folder check tells you to."]
+    v.buttons.reopen_window = {show:true,enable:true,label:'Reopen the Windows window'}
+    v.buttons.stop = {show:true,enable:true,label:'Shut down',confirm:true}
+    v.buttons.stop_confirm = {show:true,enable:true,label:'Shut down and stop setup',hint:"Shutting down now stops setup. You'll choose how to continue."}
+    p.model.view = v
+    compare(named(p.panel, 'setupTitle').text, 'Finish in Windows')
+    verify(textVisible(p.panel, v.setup.lines[0]))
+    verify(objects(p.panel, function(o) { return o.control === 'reopen_window' && o.visible }).length > 0)
+    var stop = named(p.panel, 'shutdownAction')
+    verify(stop.visible)
+    stop.clicked()
+    verify(p.panel.stopArmed)
+    objects(p.panel, function(o) { return o.control === 'cancel' && o.visible })[0].clicked()
+    verify(!p.panel.stopArmed)
+    v = setupView('5')
+    v.setup.lines = ["In Windows, open Lanai's setup drive and run setup.cmd. Then click Continue setup so Lanai can restart Windows and check it when setup.cmd finishes."]
+    p.model.view = v
+    verify(textVisible(p.panel, v.setup.lines[0]))
+    verify(objects(p.panel, function(o) { return o.control === 'continue_setup' && o.visible }).length > 0)
+    verify(!named(p.panel, 'setupChecks').visible)
+  }
+  function test_redesign_verify_renders_actual_partial_checks_and_conditional_signin() {
+    var p = redesignPanel(), v = setupView('6')
+    p.model.view = v
+    verify(named(p.panel, 'setupChecks') !== undefined)
+    v.setup.checks.forEach(function(check) {
+      var row = named(p.panel, 'setupCheck-' + check.id)
+      compare(row.checkState, 'not_checked')
+      verify(textVisible(row, check.label))
+      verify(textVisible(row, 'Not checked'))
+    })
+    v.setup.checks[0] = {id:'idd',label:'Display driver',state:'done',status:'Done',detail:''}
+    v.setup.checks[1] = {id:'agents',label:'Windows agents',state:'waiting',status:'Waiting',detail:'Waiting for the SPICE agent.'}
+    v.setup.lines = ['Windows is starting or being checked.']
+    p.model.view = JSON.parse(JSON.stringify(v))
+    compare(named(p.panel, 'setupCheck-idd').checkState, 'done')
+    compare(named(p.panel, 'setupCheck-agents').checkState, 'waiting')
+    compare(named(p.panel, 'setupCheck-scale').checkState, 'not_checked')
+    verify(textVisible(named(p.panel, 'setupCheck-agents'), 'Waiting for the SPICE agent.'))
+    verify(textVisible(named(p.panel, 'setupCheck-scale'), 'Not checked'))
+    verify(!named(p.panel, 'setupCountdown').visible)
+    v.setup.lines = ['Waiting for the display scale task. If Windows is at its sign-in screen, or another user is signed in, sign in as the Windows user who ran setup.']
+    v.setup.checks[1] = {id:'agents',label:'Windows agents',state:'done',status:'Done',detail:''}
+    v.setup.checks[2] = {id:'scale',label:'Scale task',state:'waiting',status:'Waiting',detail:'Waiting for the display scale task.'}
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(textVisible(p.panel, v.setup.lines[0]))
+    compare(named(p.panel, 'setupCheck-agents').checkState, 'done')
+    ;['The pinned display driver build failed.', 'The QEMU guest agent allow-list failed.'].forEach(function(cause) {
+      v = setupView('5')
+      v.result.setup = cause + ' Install the Windows parts again.'
+      p.model.view = v
+      verify(!named(p.panel, 'setupChecks').visible)
+      verify(!named(p.panel, 'setupCountdown').visible)
+      verify(textVisible(p.panel, v.result.setup))
+      compare(p.model.view.layout, 'setup')
+    })
+  }
+  function test_redesign_countdown_reopen_preserves_deadline_and_hides_invalid_timing() {
+    var p = redesignPanel(), v = setupView('6'), now = Math.floor(Date.now() / 1000)
+    v.setup.countdown = {started_at:now - 36,limit_seconds:120,remaining_seconds:84,label:'Time remaining to sign in'}
+    p.model.view = v
+    verify(named(p.panel, 'setupCountdown') !== undefined)
+    verify(named(p.panel, 'setupCountdown').visible)
+    verify(textVisible(p.panel, 'Time remaining to sign in'))
+    compare(named(p.panel, 'setupCountdownDuration').text, '1:24')
+    tryCompare(named(p.panel, 'setupCountdownDuration'), 'text', '1:23', 1500)
+    p.panel.close(); p.panel.open()
+    compare(named(p.panel, 'setupCountdownDuration').text, '1:23')
+    p.panel.destroy(); p.model.destroy(); wait(1)
+    // Both shell objects restart; a fresh backend poll supplies the same deadline.
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    v.setup.countdown.remaining_seconds = 82
+    model.view = v
+    var panel = createTemporaryObject(panelComponent, tests, {model:model,opened:true})
+    compare(named(panel, 'setupCountdownDuration').text, '1:22')
+    v.setup.countdown = {started_at:now - 36,limit_seconds:900,remaining_seconds:864,label:'Time remaining to sign in'}
+    model.view = JSON.parse(JSON.stringify(v))
+    compare(named(panel, 'setupCountdownDuration').text, '14:24')
+    ;[null,{}, {started_at:now + 30,limit_seconds:120,remaining_seconds:120},
+      {started_at:now,limit_seconds:0,remaining_seconds:0},
+      {started_at:now,limit_seconds:120,remaining_seconds:-1},
+      {started_at:now,limit_seconds:120,remaining_seconds:'84'},
+      {started_at:now,limit_seconds:120,remaining_seconds:121}].forEach(function(timing) {
+      v.setup.countdown = timing; model.view = JSON.parse(JSON.stringify(v))
+      verify(!named(panel, 'setupCountdown').visible)
+    })
+    v.setup.countdown = {started_at:now - 120,limit_seconds:120,remaining_seconds:0,label:'Time remaining to sign in'}
+    model.view = JSON.parse(JSON.stringify(v))
+    verify(named(panel, 'setupCountdown').visible)
+    compare(named(panel, 'setupCountdownDuration').text, '0:00')
+    wait(1100)
+    compare(named(panel, 'setupCountdownDuration').text, '0:00')
+    compare(model.view.layout, 'setup_verify')
+    v.layout = 'setup_timeout'; model.view = JSON.parse(JSON.stringify(v))
+    verify(!named(panel, 'setupCountdown').visible)
+  }
+  function test_redesign_timeout_keeps_continue_and_both_stopped_display_choices() {
+    var p = redesignPanel(), v = setupView('6', 'setup_timeout')
+    v.header.meta += ' · Stopped'
+    v.setup.title = 'Windows checks timed out'
+    v.setup.lines = ['Click Continue setup so Lanai can check Windows.']
+    v.result.setup = 'In Windows, the SPICE agent did not answer. Click Continue setup to check again. If setup.cmd stopped with a message, shut down and repeat the Windows install.'
+    v.setup.checks[1] = {id:'agents',label:'Windows agents',state:'failed',status:'Failed',detail:'The SPICE agent failed.'}
+    v.buttons.window = {show:true,enable:true,label:'Set up in a basic window'}
+    v.buttons.no_window = {show:true,enable:true,label:'Set up in the Windows window'}
+    p.model.view = v
+    compare(named(p.panel, 'setupTitle').text, v.setup.title)
+    compare(named(p.panel, 'windowsHeader').meta, v.header.meta)
+    verify(textVisible(p.panel, v.result.setup))
+    verify(textVisible(named(p.panel, 'setupCheck-agents'), 'Failed'))
+    ;['continue_setup','window','no_window'].forEach(function(key) {
+      var action = objects(p.panel, function(o) { return o.control === key && o.visible })[0]
+      verify(action !== undefined && action.enabled)
+      action.clicked()
+      compare(p.panel.setupAgainArmed, false)
+      compare(Quickshell.lastCommand.slice(3).join(' '), key === 'continue_setup' ? 'setup' : key === 'window' ? 'setup --window' : 'setup --no-window')
+      var reply = JSON.parse(JSON.stringify(v)); reply.pending_ack = p.model.pendingToken
+      process(p.model, 'timeout').complete(JSON.stringify(reply), 0)
+    })
+    v.setup.lines = ['Wait for Windows to shut down, then click Continue setup.']
+    v.buttons.window.show = false; v.buttons.no_window.show = false; v.buttons.continue_setup.enable = false
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(textVisible(p.panel, v.setup.lines[0]))
+    verify(!objects(p.panel, function(o) { return o.control === 'window' && o.visible }).length)
   }
   function settingsView(memory, cores, scale) {
     var v = redesignView()
@@ -1147,11 +1369,11 @@ TestCase {
     var notes = objects(panel, function(o) { return o.text === advice && o.visible })
     var siblings = Array.from(control.parent.parent.children)
     verify(notes.some(function(o) { return siblings.indexOf(o) === siblings.indexOf(control.parent) + 1 }))
-    model.view = {buttons:{continue_setup:{show:true,enable:true,label:'Run setup again'}},setup:{show:false,finished:true},settings:{},snapshots:{names:[]},result:{snapshots:advice},logs:{}}
+    model.view = {buttons:{continue_setup:{show:true,enable:true,label:'Run setup again'}},setup:{show:false,finished:true,title:'Setup is finished'},settings:{},snapshots:{names:[]},result:{snapshots:advice},logs:{}}
     wait(1)
     compare(objects(panel, function(o) { return o.text === advice && o.visible }).length, 1)
     named(panel, 'moreActionsToggle').clicked()
-    verify(objects(panel, function(o) { return o.text === 'Setup' && o.visible }).length > 0)
+    verify(textVisible(panel, 'Setup is finished'))
     panel.destroy(); wait(1)
   }
   function test_both_monitors_acknowledge_launches_before_record_replacement() {

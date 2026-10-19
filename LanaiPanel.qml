@@ -22,6 +22,10 @@ Panel {
   property string expandedSection: ""
   property bool moreActionsOpen: false
   property string previousLayout: ""
+  property double countdownSeconds: -1
+  property double countdownAt: 0
+  property double countdownNow: Date.now()
+  readonly property double countdownRemaining: Math.max(0, countdownSeconds - Math.max(0, Math.floor((countdownNow - countdownAt) / 1000)))
   readonly property var snapshotItems: root.model.view.snapshots.items || []
   readonly property bool hasMoreActions: root.model.control("force_stop").show === true
     || root.model.control("dismiss_notice").show === true || root.model.control("update_client").show === true
@@ -49,7 +53,31 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   // qmllint enable missing-property
 
+  // Only interpolate the backend duration. Polls re-anchor it; opening does not.
+  Component.onCompleted: anchorCountdown()
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.opened && root.countdownSeconds >= 0
+    onTriggered: root.countdownNow = Date.now()
+  }
+  function anchorCountdown() {
+    var setup = root.model.view.setup || {}, timing = setup.countdown, now = Date.now()
+    countdownNow = now
+    countdownAt = now
+    countdownSeconds = root.model.view.layout === "setup_verify" && setup.show === true
+      && setup.step === "6" && timing
+      && typeof timing.started_at === "number" && isFinite(timing.started_at)
+      && timing.started_at > 0 && timing.started_at % 1 === 0 && timing.started_at <= Math.floor(now / 1000)
+      && typeof timing.limit_seconds === "number" && isFinite(timing.limit_seconds)
+      && timing.limit_seconds > 0 && timing.limit_seconds % 1 === 0
+      && typeof timing.remaining_seconds === "number" && isFinite(timing.remaining_seconds)
+      && timing.remaining_seconds >= 0 && timing.remaining_seconds % 1 === 0
+      && timing.remaining_seconds <= timing.limit_seconds ? timing.remaining_seconds : -1
+  }
+
   onOpenedChanged: {
+    countdownNow = Date.now()
     if (opened) {
       expandedSection = (root.model.view.sections || {}).default || ""
       previousLayout = root.model.view.layout || ""
@@ -66,6 +94,7 @@ Panel {
   Connections {
     target: root.model
     function onViewChanged() {
+      root.anchorCountdown()
       root.savedBaseline = root.baselineFromView()
       if (!root.model.control("stop").show || !root.model.control("stop_confirm").show || !root.model.control("stop").confirm || !root.model.control("stop").enable || !root.model.control("stop_confirm").enable) root.stopArmed = false
       if (!root.model.control("force_confirm").show || !root.model.control("force_stop").show || !root.model.control("force_stop").enable || !root.model.control("force_confirm").enable) root.forceArmed = false
@@ -192,6 +221,40 @@ Panel {
                   x: Style.space(13); y: Style.space(34)
                   width: Style.space(14); height: 1
                   color: root.foreground
+                }
+              }
+            }
+          }
+          Flow {
+            id: setupSteps
+            objectName: "setupSteps"
+            width: parent.width
+            spacing: Style.space(4)
+            visible: root.model.view.setup.show === true && root.model.view.setup.finished !== true
+            Repeater {
+              model: root.model.view.setup.steps || []
+              delegate: Column {
+                id: setupStep
+                required property var modelData
+                readonly property string stepState: modelData.state
+                objectName: "setupStep-" + modelData.number
+                width: (setupSteps.width - setupSteps.spacing * (setupSteps.width < Style.space(360) ? 2 : 5))
+                  / (setupSteps.width < Style.space(360) ? 3 : 6)
+                spacing: Style.space(4)
+                Rectangle {
+                  width: parent.width
+                  height: Style.space(3)
+                  color: setupStep.stepState === "current" ? Commons.Color.accent
+                    : Util.alpha(root.foreground, setupStep.stepState === "complete" ? 0.6 : 0.15)
+                }
+                Note {
+                  text: setupStep.modelData.name
+                  horizontalAlignment: Text.AlignHCenter
+                  color: setupStep.stepState === "current" ? Commons.Color.accent : root.foreground
+                  opacity: setupStep.stepState === "pending" ? 0.6 : 1
+                  // qmllint disable missing-property
+                  font.pixelSize: Style.font.caption
+                  // qmllint enable missing-property
                 }
               }
             }
@@ -323,67 +386,7 @@ Panel {
           Note { text: root.model.view.result.vm || "" }
 
           PanelSeparator { visible: setupSection.visible; foreground: root.foreground }
-          Rectangle {
-            id: setupSection
-            objectName: "setupSection"
-            readonly property bool hasContent: root.model.view.setup.show === true || root.setupAgainArmed
-              || root.model.control("continue_setup").show || root.model.control("reopen_window").show
-              || root.model.control("install").show || root.model.control("setup_snapshot").show
-              || root.model.control("skip_snapshot").show
-              || (!root.model.view.setup.finished && (root.model.control("window").show || root.model.control("no_window").show))
-              || (root.model.control("continue_setup").hint || "") !== ""
-              || (root.model.view.result.setup || "") !== ""
-            visible: hasContent && (root.model.view.setup.finished !== true || root.moreActionsOpen)
-            width: parent.width
-            implicitHeight: setupColumn.implicitHeight + 2 * setupColumn.y
-            color: root.model.view.setup.attention === true
-              ? (typeof Style.selectedAccentFill !== "undefined" ? Style.selectedAccentFill : Util.alpha(Commons.Color.accent, 0.10))
-              : "transparent"
-            border.color: Commons.Color.accent
-            border.width: root.model.view.setup.attention === true ? 1 : 0
-            Column {
-              id: setupColumn
-              x: Style.space(8)
-              y: x
-              width: parent.width - 2 * x
-              spacing: Style.space(10)
-              PanelSectionHeader { visible: root.model.view.setup.show === true || root.setupAgainArmed || root.model.control("continue_setup").show; text: "Setup"; foreground: root.foreground; fontFamily: root.fontFamily }
-              Repeater {
-                model: root.model.view.setup.lines || []
-                delegate: Note { required property string modelData; text: modelData; visible: root.model.view.setup.show === true }
-              }
-              Flow {
-                width: parent.width
-                spacing: Style.space(6)
-                Action { control: "continue_setup"; visible: descriptor.show && !root.setupAgainArmed; onClicked: {
-                    if (root.model.view.setup.finished) root.setupAgainArmed = true
-                    else root.model.run(["setup"], true)
-                  }
-                }
-                Action { control: "reopen_window"; onClicked: root.model.run(["open"], false) }
-                Action { control: "install"; onClicked: root.model.run(["setup-host"], false) }
-                Action { control: "setup_snapshot"; onClicked: root.model.run(["snapshot"], true) }
-                Action { control: "skip_snapshot"; onClicked: root.model.run(["setup", "--no-snapshot"], true) }
-              }
-              Note { text: root.model.control("setup_snapshot").show ? root.model.view.result.snapshots || "" : "" }
-              Note { text: root.model.control("continue_setup").hint || "" }
-              Note { text: root.model.view.setup.again_line || ""; visible: root.setupAgainArmed }
-              // After a step 6 time-out with Windows off, the display buttons
-              // show directly: they repeat the Windows install, no arming. The
-              // time-out's words below name them.
-              Column {
-                width: parent.width
-                spacing: Style.space(6)
-                visible: !root.model.view.setup.finished || root.setupAgainArmed
-                Action { control: "no_window"; onClicked: root.model.run(["setup", "--no-window"], true) }
-                Note { text: root.model.control("no_window").show ? root.model.control("no_window").hint || "" : "" }
-                Action { control: "window"; onClicked: root.model.run(["setup", "--window"], true) }
-                Note { text: root.model.control("window").show ? root.model.control("window").hint || "" : "" }
-              }
-              Action { control: "cancel"; visible: root.setupAgainArmed && descriptor.show; onClicked: root.setupAgainArmed = false }
-              Note { text: root.model.view.setup.show === true ? root.model.view.result.setup || "" : "" }
-            }
-          }
+          SetupCard { id: setupSection }
 
           PanelSeparator { foreground: root.foreground }
           DetailRow { section: "settings" }
@@ -599,6 +602,116 @@ Panel {
           onClicked: root.model.clickNotice = ""
         }
       }
+    }
+  }
+
+  component SetupCard: BorderSurface {
+    objectName: "setupSection"
+    readonly property bool hasContent: root.model.view.setup.show === true || root.setupAgainArmed
+      || root.model.control("continue_setup").show || root.model.control("reopen_window").show
+      || root.model.control("install").show || root.model.control("setup_snapshot").show
+      || root.model.control("skip_snapshot").show
+      || (!root.model.view.setup.finished && (root.model.control("window").show || root.model.control("no_window").show))
+      || (root.model.control("continue_setup").hint || "") !== ""
+      || (root.model.view.result.setup || "") !== ""
+    visible: hasContent && (root.model.view.setup.finished !== true || root.moreActionsOpen)
+    width: parent.width
+    implicitHeight: setupColumn.implicitHeight + 2 * setupColumn.y
+    color: root.model.view.setup.attention === true
+      ? (typeof Style.selectedAccentFill !== "undefined" ? Style.selectedAccentFill : Util.alpha(Commons.Color.accent, 0.10))
+      : "transparent"
+    borderSpec: root.model.view.setup.attention === true
+      ? Border.controlSpec("normal", Commons.Color.accent, Commons.Color.accent) : Border.none()
+    radius: Style.cornerRadius
+    Column {
+      id: setupColumn
+      x: Style.space(8)
+      y: x
+      width: parent.width - 2 * x
+      spacing: Style.space(10)
+      PanelSectionHeader {
+        objectName: "setupTitle"
+        width: parent.width
+        wrapMode: Text.Wrap
+        visible: root.model.view.setup.show === true || root.setupAgainArmed || root.model.control("continue_setup").show
+        text: root.model.view.setup.title || ""
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+      }
+      Repeater {
+        model: root.model.view.setup.lines || []
+        delegate: Note { required property string modelData; text: modelData; visible: root.model.view.setup.show === true }
+      }
+      Column {
+        objectName: "setupChecks"
+        width: parent.width
+        spacing: Style.space(8)
+        visible: root.model.view.setup.show === true && root.model.view.setup.step === "6"
+        Repeater {
+          model: root.model.view.setup.checks || []
+          delegate: Column {
+            id: checkRow
+            required property var modelData
+            readonly property string checkState: modelData.state
+            objectName: "setupCheck-" + modelData.id
+            width: parent.width
+            spacing: Style.space(4)
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+              Note { width: (parent.width - parent.spacing) * 0.6; text: checkRow.modelData.label }
+              Note {
+                width: (parent.width - parent.spacing) * 0.4
+                text: checkRow.modelData.status
+                horizontalAlignment: Text.AlignRight
+                color: checkRow.checkState === "failed" ? Commons.Color.urgent : root.foreground
+              }
+            }
+            Note { text: checkRow.modelData.detail || "" }
+          }
+        }
+      }
+      Column {
+        objectName: "setupCountdown"
+        width: parent.width
+        spacing: Style.space(4)
+        visible: root.countdownSeconds >= 0
+        Note { text: (root.model.view.setup.countdown || {}).label || "" }
+        Note {
+          objectName: "setupCountdownDuration"
+          text: Math.floor(root.countdownRemaining / 60) + ":" + String(root.countdownRemaining % 60).padStart(2, "0")
+        }
+      }
+      Flow {
+        width: parent.width
+        spacing: Style.space(6)
+        Action { control: "continue_setup"; visible: descriptor.show && !root.setupAgainArmed; onClicked: {
+            if (root.model.view.setup.finished) root.setupAgainArmed = true
+            else root.model.run(["setup"], true)
+          }
+        }
+        Action { control: "reopen_window"; onClicked: root.model.run(["open"], false) }
+        Action { control: "install"; onClicked: root.model.run(["setup-host"], false) }
+        Action { control: "setup_snapshot"; onClicked: root.model.run(["snapshot"], true) }
+        Action { control: "skip_snapshot"; onClicked: root.model.run(["setup", "--no-snapshot"], true) }
+      }
+      Note { text: root.model.control("setup_snapshot").show ? root.model.view.result.snapshots || "" : "" }
+      Note { text: root.model.control("continue_setup").hint || "" }
+      Note { text: root.model.view.setup.again_line || ""; visible: root.setupAgainArmed }
+      // After a step 6 time-out with Windows off, the display buttons
+      // show directly: they repeat the Windows install, no arming. The
+      // time-out's words below name them.
+      Column {
+        width: parent.width
+        spacing: Style.space(6)
+        visible: !root.model.view.setup.finished || root.setupAgainArmed
+        Action { control: "no_window"; onClicked: root.model.run(["setup", "--no-window"], true) }
+        Note { text: root.model.control("no_window").show ? root.model.control("no_window").hint || "" : "" }
+        Action { control: "window"; onClicked: root.model.run(["setup", "--window"], true) }
+        Note { text: root.model.control("window").show ? root.model.control("window").hint || "" : "" }
+      }
+      Action { control: "cancel"; visible: root.setupAgainArmed && descriptor.show; onClicked: root.setupAgainArmed = false }
+      Note { text: root.model.view.setup.show === true ? root.model.view.result.setup || "" : "" }
     }
   }
 
