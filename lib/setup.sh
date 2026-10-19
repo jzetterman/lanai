@@ -319,7 +319,8 @@ setup_stop6() {
 #   step6-since       <epoch>: the check boot's start, or the Continue after
 #                     a stop (step6_start); LANAI_SETUP_LIMIT counts from it.
 #   step6-checked     <epoch>: when the other checks first passed;
-#                     LANAI_SETUP_SCALE_LIMIT counts from it.
+#                     step6-scale-limit counts from it.
+#   step6-scale-limit effective worker scale timeout for this attempt.
 #   step6-checks.json observed check outcomes, bound to this attempt and VM.
 #   step6-stopped     present after a step 6 failure (step6_mark_stop).
 #   step6-qmp-failed  present while the last query-chardev failed.
@@ -345,7 +346,7 @@ step6_stamp() {
 # removed or written.
 step6_start() {
   rm -f -- "$1/step6-stopped" "$1/step6-qmp-failed" "$1/step6-checked" \
-    "$1/step6-checks.json" || return 1
+    "$1/step6-scale-limit" "$1/step6-checks.json" || return 1
   step6_stamp "$1/step6-since"
 }
 
@@ -353,6 +354,15 @@ step6_start() {
 step6_positive() {
   [[ $1 =~ ^[1-9][0-9]{0,15}$ ]] &&
     ((10#$1 <= 9007199254740991))
+}
+
+# Read the worker's scale limit, never the polling process's environment.
+# Older attempts without this record retain their checks but expose no timer.
+step6_scale_limit() {
+  local limit=""
+  [[ ! -s $1/step6-scale-limit ]] || limit=$(<"$1/step6-scale-limit")
+  step6_positive "$limit" || return 1
+  printf '%s\n' "$limit"
 }
 
 # step6_checked <run dir>: print the scale wait's existing start record.
@@ -528,7 +538,7 @@ setup_step6() {
 #   reply to it means the allow-list is missing: back to step 5.
 # - Last, step6_scale.
 step6_check() {
-  local follow=$1 run log now since checked late=false qga_open=false verdict="" guest="" build pinned=true chardevs out rc
+  local follow=$1 run log now since checked scale_limit late=false qga_open=false verdict="" guest="" build pinned=true chardevs out rc
   local -a missing=()
   if ! run=$(run_dir); then
     setup_reply false 6 "XDG_RUNTIME_DIR is not set, so Lanai cannot reach Windows." ""
@@ -545,7 +555,8 @@ step6_check() {
     return 1
   fi
   if checked=$(step6_checked "$run"); then
-    ((now - checked < LANAI_SETUP_SCALE_LIMIT)) || late=true
+    scale_limit=$(step6_scale_limit "$run") || scale_limit=$LANAI_SETUP_SCALE_LIMIT
+    ((now - checked < scale_limit)) || late=true
   elif ((now - since >= LANAI_SETUP_LIMIT)); then
     late=true
   fi
@@ -663,7 +674,8 @@ step6_check() {
     setup_wait "Windows is still starting: $out did not answer yet."
     return 0
   fi
-  if ! step6_stamp "$run/step6-checked" "$EPOCHSECONDS"; then
+  if ! step6_stamp "$run/step6-scale-limit" "$LANAI_SETUP_SCALE_LIMIT" ||
+    ! step6_stamp "$run/step6-checked" "$EPOCHSECONDS"; then
     step6_record_failed "$run"
     return 1
   fi
@@ -718,8 +730,8 @@ setup_plan() {
   if run=$(run_dir); then
     checks=$(step6_checks_read "$run" "$location" "$invocation")
     started=$(step6_checks_checked "$run") || started=null
+    if [[ $started != null ]]; then limit=$(step6_scale_limit "$run") || limit=null; fi
   fi
-  if step6_positive "$LANAI_SETUP_SCALE_LIMIT"; then limit=$LANAI_SETUP_SCALE_LIMIT; fi
   jq -c --argjson checks "$checks" --argjson started "$started" --argjson limit "$limit" \
     '. + {checks:$checks,scale_started_at:$started,scale_limit_seconds:$limit}' <<<"$plan"
 }

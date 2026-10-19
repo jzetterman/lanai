@@ -677,6 +677,48 @@ TestCase {
     verify(!named(p.panel, 'resetSettings').enabled)
     p.panel.destroy()
   }
+  function test_redesign_typed_numbers_enable_save_and_commit_without_enter() {
+    ;['Memory (GiB)', 'CPU cores'].forEach(function(label) {
+      var p = settingsPanel(), save = named(p.panel, 'action-save_settings')
+      var field = objects(p.panel, function(o) { return o.field !== undefined && o.label === label })[0].field
+      field.contentItem.forceActiveFocus(); field.contentItem.selectAll()
+      keyClick(Qt.Key_2); keyClick(Qt.Key_0)
+      compare(field.contentItem.text, '20')
+      compare(field.value, label === 'Memory (GiB)' ? 12 : 6)
+      verify(save.enabled)
+      compare(save.text, 'Save')
+      verify(named(p.panel, 'resetSettings').visible)
+      verify(named(p.panel, 'settingsToggle').text.indexOf('Unsaved') !== -1)
+      // A poll must not overwrite the still uncommitted text or other drafts.
+      p.model.view = settingsView(32, 16, 'auto')
+      compare(field.contentItem.text, '20')
+      save.clicked()
+      var action = process(p.model, p.model.cli)
+      compare(action.command.slice(3).join(' '), label === 'Memory (GiB)' ? 'settings 20 6' : 'settings 12 20')
+      action.complete('{"ok":false}', 1)
+      compare(field.value, 20)
+      p.panel.destroy()
+    })
+  }
+  function test_redesign_pending_number_reset_revert_and_reopen() {
+    var p = settingsPanel(), save = named(p.panel, 'action-save_settings')
+    var field = objects(p.panel, function(o) { return o.field !== undefined && o.label === 'Memory (GiB)' })[0].field
+    field.contentItem.forceActiveFocus(); field.contentItem.selectAll()
+    keyClick(Qt.Key_2); keyClick(Qt.Key_0)
+    verify(save.enabled)
+    named(p.panel, 'resetSettings').clicked()
+    compare(field.contentItem.text, '12')
+    verify(!save.enabled)
+    field.contentItem.forceActiveFocus(); field.contentItem.selectAll()
+    keyClick(Qt.Key_2); keyClick(Qt.Key_0)
+    field.contentItem.selectAll(); keyClick(Qt.Key_1); keyClick(Qt.Key_2)
+    verify(!save.enabled)
+    field.contentItem.selectAll(); keyClick(Qt.Key_2); keyClick(Qt.Key_0)
+    p.panel.close(); p.panel.open()
+    compare(field.contentItem.text, '12')
+    verify(!save.enabled)
+    p.panel.destroy()
+  }
   function test_redesign_reset_is_local_and_restores_latest_saved_baseline() {
     var p = settingsPanel(), scale = named(p.panel, 'windowsScale')
     p.panel.memoryInput = 20; p.panel.coresInput = 10; scale.select('auto')
@@ -1754,6 +1796,26 @@ qml_renderer_run() {
   qml_renderer_run
 }
 
+@test "QML settings: typed drafts commit with the installed NumberField" {
+  local field=/usr/share/omarchy/shell/Ui/NumberField.qml
+  [[ -r $field ]] || skip "installed NumberField is unavailable"
+  qml_renderer_fixture
+  sed 's/import qs.Commons/import TestCommons/' "$field" >"$T/qml/imports/TestUi/NumberField.qml"
+  # Supply the installed field's theme tokens without loading the desktop shell.
+  sed -i '/property real cornerRadius/a\
+  property var spacing: ({md:4,numberFieldWidth:120,controlHeight:30,controlPaddingY:4,controlPaddingX:4})\
+  function controlFill(focus, hot, foreground, accent) { return "transparent" }\
+  function selectionFillFor(foreground, accent) { return accent }' "$T/qml/imports/TestCommons/Style.qml"
+  sed -i '/function controlSpec/a\
+  function left(spec) { return spec.width }\
+  function right(spec) { return spec.width }\
+  function top(spec) { return spec.width }\
+  function bottom(spec) { return spec.width }' "$T/qml/imports/TestCommons/Border.qml"
+  sed -i 's/family:"sans",bodySmall:12/family:"sans",body:14,bodySmall:12/' "$T/qml/imports/TestCommons/Style.qml"
+  qml_renderer_run PanelRenderer::test_redesign_typed_numbers_enable_save_and_commit_without_enter \
+    PanelRenderer::test_redesign_pending_number_reset_revert_and_reopen
+}
+
 panel_board_view() {
   cmd_panel | jq -c --arg name "$1" '{key:$name,value:.}' >>"$T/boards.jsonl"
 }
@@ -1837,19 +1899,18 @@ panel_board_view() {
   panel_board_view VerifyPartial
   echo "$started" >"$RUN/step6-checked"
   redesign_check_detail '{"idd":{"state":"done"},"spice":{"state":"done"},"clock":{"state":"done"},"allowlist":{"state":"done"},"scale":{"state":"waiting","reason":"scale-task"}}'
-  export LANAI_SETUP_SCALE_LIMIT=180
+  echo 180 >"$RUN/step6-scale-limit"
   panel_board_view SetupVerify
-  export LANAI_SETUP_SCALE_LIMIT=120
+  echo 120 >"$RUN/step6-scale-limit"
   panel_board_view VerifyDefaultLimit
-  export LANAI_SETUP_SCALE_LIMIT=invalid
+  echo invalid >"$RUN/step6-scale-limit"
   panel_board_view InvalidTiming
-  unset LANAI_SETUP_SCALE_LIMIT
   exec {job_fd}>&-
   ST=inactive
   timeout_record scale-task
   panel_result_write setup "$(jq --argjson t "$EPOCHSECONDS" '.started=$t | .ended=$t' "$S/panel-result-setup.json")"
   panel_board_view SetupTimeout
-  rm "$S/panel-result-setup.json" "$RUN/step6-since" "$RUN/step6-checked" "$RUN/step6-checks.json"
+  rm "$S/panel-result-setup.json" "$RUN/step6-since" "$RUN/step6-checked" "$RUN/step6-scale-limit" "$RUN/step6-checks.json"
   state '{}'
   host_packages_missing() { echo package; }
   panel_board_view SetupPackages

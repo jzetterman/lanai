@@ -2249,6 +2249,7 @@ check_states() {
   assert_success
   local before
   before=$(step6_records)
+  assert_equal "$(<"$RUN/step6-scale-limit")" "$LANAI_SETUP_SCALE_LIMIT"
   event_record '{"event":"RESET","data":{"guest":true}}'
   assert_equal "$(step6_records)" "$before"
   : >"$RUN/step6-stopped"
@@ -2257,6 +2258,7 @@ check_states() {
   assert_success
   assert_equal "$(check_states)" '["waiting","not_checked","not_checked","not_checked","not_checked"]'
   assert [ ! -e "$RUN/step6-checked" ]
+  assert [ ! -e "$RUN/step6-scale-limit" ]
   step6_start "$RUN"
   assert [ ! -e "$RUN/step6-checks.json" ]
 }
@@ -2324,15 +2326,52 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(jq -r .scale.state "$RUN/step6-checks.json")" waiting
 }
 
+@test "redesign countdown: polling uses the worker limit despite a different environment" {
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  LANAI_SETUP_SCALE_LIMIT=37 setup_run
+  assert_success
+  local start
+  start=$(<"$RUN/step6-checked")
+  LANAI_SETUP_SCALE_LIMIT=120
+  # shellcheck disable=SC2119
+  run setup_plan "$(shared_facts)"
+  assert_success
+  assert_equal "$(jq -r .scale_started_at <<<"$output")" "$start"
+  assert_equal "$(jq -r .scale_limit_seconds <<<"$output")" 37
+  event_record '{"event":"RESET"}'
+  setup_run
+  assert_success
+  assert_equal "$(<"$RUN/step6-scale-limit")" 37
+  # A replacement worker must enforce the recorded deadline too.
+  echo "$((EPOCHSECONDS - 37))" >"$RUN/step6-checked"
+  echo "$((EPOCHSECONDS - 100))" >"$RUN/step6-since"
+  setup_run
+  assert_failure
+  assert_timeout scale-task
+}
+
+@test "redesign countdown: a limit record write failure stops before publishing a start" {
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  shim mv '[[ ${*: -1} != */step6-scale-limit ]] || exit 1
+exec /usr/bin/mv "$@"'
+  setup_run
+  assert_failure
+  assert_equal "$(field reason)" record
+  assert [ ! -e "$RUN/step6-checked" ]
+}
+
 @test "redesign countdown: default and overridden limits keep the actual scale start" {
   step6_running "$FIX/client-logs/match.log"
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
-  setup_run
-  assert_success
   local start limit
-  start=$(<"$RUN/step6-checked")
   for limit in 120 37; do
     LANAI_SETUP_SCALE_LIMIT=$limit
+    step6_start "$RUN"
+    setup_run
+    assert_success
+    start=$(<"$RUN/step6-checked")
     # shellcheck disable=SC2119
     run setup_plan "$(shared_facts)"
     assert_success
@@ -2354,12 +2393,18 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(jq -c '[.scale.state,.scale.reason]' "$RUN/step6-checks.json")" '["failed","scale-task"]'
   echo "$start" >"$RUN/step6-checked"
   for limit in 0 -1 2.5 nan 1e999; do
-    LANAI_SETUP_SCALE_LIMIT=$limit
+    echo "$limit" >"$RUN/step6-scale-limit"
     # shellcheck disable=SC2119
     run setup_plan "$(shared_facts)"
     assert_equal "$(jq -r .scale_limit_seconds <<<"$output")" null
   done
-  LANAI_SETUP_SCALE_LIMIT=120
+  rm "$RUN/step6-scale-limit"
+  # Older attempts have check proof but no invented scale deadline.
+  # shellcheck disable=SC2119
+  run setup_plan "$(shared_facts)"
+  assert_equal "$(jq -r .scale_limit_seconds <<<"$output")" null
+  assert [ ! -e "$RUN/step6-scale-limit" ]
+  echo 120 >"$RUN/step6-scale-limit"
   rm "$RUN/step6-since"
   # shellcheck disable=SC2119
   run setup_plan "$(shared_facts)"

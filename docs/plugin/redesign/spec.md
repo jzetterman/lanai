@@ -139,8 +139,10 @@ Users need a clear status, a next action and details they can open when needed.
     An open scale port proves task startup, not applied scale or a visible desktop.
 12. Add the sign-in countdown on SetupVerify. Expose when setup started waiting
     for the scale task and its effective `LANAI_SETUP_SCALE_LIMIT`, which defaults
-    to 120 seconds. Show remaining duration as minutes and seconds, never below
-    zero, only while the backend actively waits. Reopening the panel or shell
+    to 120 seconds. Use the worker's recorded limit even when the polling
+    process has a different environment. Show remaining duration as minutes
+    and seconds, never below zero, only while the backend actively waits.
+    Reopening the panel or shell
     must not restart it. A Windows restart resets no limit. Continue setup
     after a stop starts fresh checks and a fresh scale wait when they pass.
     Missing or invalid timing shows no invented countdown. The backend decides

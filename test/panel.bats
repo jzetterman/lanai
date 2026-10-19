@@ -2589,6 +2589,7 @@ assert_rerun_warning() {
   started=$((EPOCHSECONDS - 30))
   echo "$((started - 5))" >"$RUN/step6-since"
   echo "$started" >"$RUN/step6-checked"
+  echo "$limit" >"$RUN/step6-scale-limit"
   redesign_check_detail '{"idd":{"state":"done"},"spice":{"state":"done"},"clock":{"state":"done"},"allowlist":{"state":"done"},"scale":{"state":"waiting","reason":"scale-task"}}'
   panel_result_write setup "$(jq -nc --argjson t "$started" '{command:"setup",invocation:"inv",started:$t,reply:{ok:true,step:"6"}}')"
   exec {fd}>"$S/panel-job.lock"; flock "$fd"
@@ -2613,10 +2614,14 @@ assert_rerun_warning() {
   INV=inv
   export LANAI_SETUP_SCALE_LIMIT=120
   run cmd_panel
-  assert_equal "$(jq .setup.countdown.limit_seconds <<<"$output")" 120
+  assert_equal "$(jq .setup.countdown.limit_seconds <<<"$output")" "$limit"
   export LANAI_SETUP_SCALE_LIMIT=invalid
   run cmd_panel
+  assert_equal "$(jq .setup.countdown.limit_seconds <<<"$output")" "$limit"
+  echo invalid >"$RUN/step6-scale-limit"
+  run cmd_panel
   assert_equal "$(jq .setup.countdown <<<"$output")" null
+  echo "$limit" >"$RUN/step6-scale-limit"
   export LANAI_SETUP_SCALE_LIMIT=$limit
   rm "$RUN/step6-checked"
   run cmd_panel

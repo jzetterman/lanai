@@ -38,12 +38,16 @@ Panel {
   // save (three arguments); otherwise it saves memory and cores only.
   property bool scaleTouched: false
   property bool scaleDirty: false
+  property bool memoryTextEdited: false
+  property bool coresTextEdited: false
+  readonly property bool numberTextDirty: (memoryTextEdited && numberTextChanged(memoryField.field))
+    || (coresTextEdited && numberTextChanged(coresField.field))
   property var savedBaseline: baselineFromView()
   readonly property var settingsLabels: root.model.view.settings.labels || {}
   readonly property bool settingsReadable: !root.model.view.settings.error
     && root.model.view.settings.memory_gib >= 1 && root.model.view.settings.memory_gib <= 512
     && root.model.view.settings.cores >= 1 && root.model.view.settings.cores <= 64
-  readonly property bool settingsDirty: scaleDirty || (savedBaseline !== null
+  readonly property bool settingsDirty: scaleDirty || numberTextDirty || (savedBaseline !== null
     && (memoryInput !== savedBaseline.memory_gib || coresInput !== savedBaseline.cores
       || windowsScaleInput !== savedBaseline.windows_scale))
   readonly property bool settingsSaveable: settingsDirty || scaleTouched || savedBaseline === null
@@ -87,6 +91,7 @@ Panel {
       windowsScaleInput = Qt.binding(function() { return root.model.view.settings.windows_scale === undefined ? "auto" : root.model.view.settings.windows_scale })
       scaleTouched = false
       scaleDirty = false
+      root.resetNumberText()
       savedBaseline = baselineFromView()
       root.model.clearCopies()
     } else { stopArmed = false; forceArmed = false; restoreArmed = ""; setupAgainArmed = false; root.model.clickNotice = "" }
@@ -113,6 +118,7 @@ Panel {
       root.windowsScaleInput = windowsScale
       root.savedBaseline = {memory_gib: memoryGib, cores: cores, windows_scale: windowsScale}
       root.scaleDirty = false
+      root.resetNumberText()
     }
   }
   // SpinBox edits keep its value binding. Freeze the input that feeds it instead.
@@ -125,6 +131,29 @@ Panel {
     target: coresField.field
     function onActiveFocusChanged() { if (coresField.field.activeFocus) root.reveal(coresField) }
     function onValueModified() { root.detachDrafts(); root.coresInput = coresField.field.value }
+  }
+  // The installed SpinBox commits typed text only on Enter or focus loss.
+  // Detach drafts immediately so a poll cannot replace pending input.
+  Connections {
+    target: memoryField.field.contentItem
+    function onTextEdited() { root.detachDrafts(); root.memoryTextEdited = true }
+  }
+  Connections {
+    target: coresField.field.contentItem
+    function onTextEdited() { root.detachDrafts(); root.coresTextEdited = true }
+  }
+
+  function numberTextChanged(field) {
+    return field.contentItem.text !== field.textFromValue(field.value, field.locale)
+  }
+  function resetNumberText() {
+    memoryTextEdited = false
+    coresTextEdited = false
+    // The installed NumberField uses TextInput; Qt exposes contentItem as Item.
+    // qmllint disable missing-property
+    memoryField.field.contentItem.text = Qt.binding(function() { return memoryField.field.textFromValue(memoryField.field.value, memoryField.field.locale) })
+    coresField.field.contentItem.text = Qt.binding(function() { return coresField.field.textFromValue(coresField.field.value, coresField.field.locale) })
+    // qmllint enable missing-property
   }
 
   function baselineFromView() {
@@ -149,6 +178,7 @@ Panel {
     windowsScaleInput = savedBaseline.windows_scale
     scaleTouched = false
     scaleDirty = false
+    root.resetNumberText()
   }
 
   // Keep the keyboard-focused control visible on small screens.
@@ -455,8 +485,12 @@ Panel {
                 text: (root.settingsSaveable ? root.settingsLabels.save : root.settingsLabels.saved) || ""
                 selected: root.settingsSaveable
                 enabled: descriptor.enable && root.settingsReadable && root.settingsSaveable
-                onClicked: if (enabled) root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value)]
-                  .concat(root.scaleTouched ? [String(root.windowsScaleInput)] : []), false)
+                onClicked: if (enabled) {
+                  // Commit pending SpinBox text before reading its value.
+                  forceActiveFocus()
+                  root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value)]
+                    .concat(root.scaleTouched ? [String(root.windowsScaleInput)] : []), false)
+                }
               }
             }
             Note { text: root.model.view.result.settings || "" }

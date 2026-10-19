@@ -129,7 +129,7 @@ knobs. Check intermediate publication during a blocked fake call, not just its
 final reply. Keep tests for guest-boot, window-closed, idd-missing, agents, QMP,
 wrong-build replacement, missing records and record-write failures.
 
-Add one runtime file, `$RUN/step6-checks.json`. Use a small writer in
+Add `$RUN/step6-checks.json`. Use a small writer in
 `lib/setup.sh`, `step6_checks_write()`, with a private mktemp file and atomic
 rename, following `step6_stamp()`. Store:
 
@@ -171,8 +171,12 @@ checked. An inconsistent detail record never overrides the combined proof.
 Expose from `setup_plan()` the accepted check facts and raw scale-wait timing:
 `checks`, `scale_started_at`, `scale_limit_seconds`. Read timing without calling
 `step6_since()`, which can write. Validate finite positive integer timing before
-exposing it. Invalid timing is null. Use the effective `LANAI_SETUP_SCALE_LIMIT`,
-not a hard-coded 120. These fields do not decide completion.
+exposing it. Invalid timing is null. Persist the worker's effective
+`LANAI_SETUP_SCALE_LIMIT` in `$RUN/step6-scale-limit` before publishing
+`step6-checked`, and read that record for both the countdown and subsequent
+worker calls. Clear it in `step6_start()` with the other attempt records. Older
+attempts without a limit record retain check evidence but expose no countdown.
+These fields do not decide completion.
 
 Focused checks: `bats test/setup.bats test/lifecycle.bats test/panel-jobs.bats`.
 Then run the shared checks. Confirm that all existing timeout boundaries and
@@ -983,3 +987,4 @@ after the separate-copy rehearsal passes.
 | Plan | opt Grok (grok-4.6) | 1 | 2 | 2 confirmed, 0 refuted, 0 nit, 0 could not verify; Clarified attention preserved durable boards |
 | Plan | opt Grok (grok-4.6) | 2 | 1 | 1 confirmed, 0 refuted, 0 nit, 0 could not verify; Exposed totals distinguish measurable progress |
 | Plan | opt Grok (grok-4.6) | 3 | 1 | 1 confirmed, 0 refuted, 0 nit, 0 could not verify; Mapped storage substep to Prepare |
+| Diff | a (gpt-6.1-sol), 2 parts | 1 | 2 | 2 confirmed, 0 refuted, 0 downgraded to nit, 0 could not verify; track pending typed numeric drafts and commit on Save; persist and reuse the worker's scale timeout across polling environments |

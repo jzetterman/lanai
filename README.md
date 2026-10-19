@@ -140,7 +140,8 @@ The scale task starts when the Windows user who ran setup signs in. Lanai cannot
 see the sign-in screen or identify the signed-in user. If Windows asks for a
 password, sign in as the user who ran setup. While setup waits for the scale task,
 the panel shows the remaining sign-in duration from the backend deadline. The
-limit defaults to 2 minutes and follows `LANAI_SETUP_SCALE_LIMIT` when overridden.
+limit defaults to 2 minutes and follows the setup worker's recorded
+`LANAI_SETUP_SCALE_LIMIT` when overridden, even if the panel's environment differs.
 Reopening the panel, restarting the shell or restarting Windows does not reset
 it. Missing or invalid timing shows no countdown. Continue setup after a stop
 starts fresh checks and a fresh scale wait when they pass. If a part does not
@@ -212,6 +213,8 @@ since the last successful save. Polls, section changes and failed saves preserve
 the drafts. **Reset** restores the current saved values locally and clears scale
 selection intent. It saves nothing and does not restore defaults. A clean panel
 shows disabled **Saved** and hides Reset and Unsaved.
+Typing a changed memory or CPU value makes Save available immediately; clicking
+Save commits that text without requiring Enter first.
 After a successful scale save, Save and Reset stay available without Unsaved.
 Another save still saves scale, even if its value is unchanged. Reset or reopening
 the panel clears that intent. Reopening also discards unsaved settings edits.
