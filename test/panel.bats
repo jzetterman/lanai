@@ -2730,7 +2730,7 @@ redesign_check_detail() {
   assert_success
   assert_equal "$(jq -c .settings.baseline <<<"$output")" '{"memory_gib":8,"cores":4,"windows_scale":"auto"}'
   assert_equal "$(jq -c .settings.labels <<<"$output")" '{"memory":"Memory (GiB)","cores":"CPU cores","scale":"Windows scale","save":"Save","saved":"Saved","reset":"Reset","unsaved":"Unsaved"}'
-  assert_equal "$(jq -c .sections <<<"$output")" '{"settings":"Settings","snapshots":"Snapshots","logs":"Logs","default":""}'
+  assert_equal "$(jq -c .sections <<<"$output")" '{"settings":"Settings","snapshots":"Snapshots","logs":"Logs","more":"More actions","dismiss_click_notice":"Dismiss busy notice","default":""}'
   printf invalid >"$(settings_file)"
   run cmd_panel
   assert_success

@@ -66,6 +66,8 @@ NumberField 1.0 NumberField.qml
 Dropdown 1.0 Dropdown.qml
 PanelSectionHeader 1.0 PanelSectionHeader.qml
 PanelSeparator 1.0 PanelSeparator.qml
+PanelHero 1.0 PanelHero.qml
+PanelActionButton 1.0 PanelActionButton.qml
 QML
   cat >"$T/qml/imports/TestUi/BarWidget.qml" <<'QML'
 import QtQuick
@@ -129,12 +131,51 @@ Item {
   property string text
   property bool focusable
   property bool bordered
+  property bool leftAlign
   property bool selected
   property color foreground
   property string fontFamily
+  property string tooltipText
+  activeFocusOnTab: focusable
+  Keys.onReturnPressed: clicked()
+  Keys.onEnterPressed: clicked()
+  Keys.onSpacePressed: clicked()
   signal clicked()
   implicitWidth: 100
   implicitHeight: 30
+  MouseArea { anchors.fill: parent; onClicked: parent.clicked() }
+}
+QML
+  cat >"$T/qml/imports/TestUi/PanelHero.qml" <<'QML'
+import QtQuick
+Item {
+  property string title
+  property string meta
+  property string detail
+  property color foreground
+  property string fontFamily
+  property Component iconComponent
+  implicitHeight: 50
+  Loader { sourceComponent: parent.iconComponent }
+}
+QML
+  cat >"$T/qml/imports/TestUi/PanelActionButton.qml" <<'QML'
+import QtQuick
+Item {
+  id: root
+  property string iconText
+  property string tooltipText
+  property color foreground
+  property string fontFamily
+  property bool focusable
+  signal clicked()
+  activeFocusOnTab: focusable
+  Keys.onReturnPressed: root.clicked()
+  Keys.onEnterPressed: root.clicked()
+  Keys.onSpacePressed: root.clicked()
+  implicitWidth: 30
+  implicitHeight: 30
+  MouseArea { anchors.fill: parent; onClicked: root.clicked() }
 }
 QML
   cat >"$T/qml/imports/TestUi/NumberField.qml" <<'QML'
@@ -166,6 +207,7 @@ Item {
   property string label
   property string value
   property var options: []
+  activeFocusOnTab: true
   property color foreground
   property string fontFamily
   signal changed(string value)
@@ -215,9 +257,196 @@ TestCase {
     verify(widget !== null)
     wait(1)
     var model = objects(widget, function(o) { return o.cli !== undefined })[0]
-    var button = objects(widget, function(o) { return o.tooltipText !== undefined })[0]
+    var button = objects(widget, function(o) { return typeof o.pressed === "function" && o.tooltipText !== undefined })[0]
     ready(model)
     return {widget:widget, model:model, button:button}
+  }
+  function named(panel, name) { return objects(panel, function(o) { return o.objectName === name })[0] }
+  function redesignView() {
+    return {ok:true,layout:'daily',header:{title:'Windows',meta:'12 GiB · 6 cores · 175%',badge:'Stopped'},
+      sections:{settings:'Settings',snapshots:'Snapshots',logs:'Logs',default:''},primary_action:'start',
+      buttons:{start:{show:true,enable:true,label:'Start Windows'},cancel:{show:true,enable:true,label:'Cancel'},
+        restore_snapshot:{show:true,enable:true,label:'Restore'},restore_confirm:{show:true,enable:true,label:'Confirm'},
+        save_settings:{show:true,enable:true,label:'Save settings'}},setup:{finished:true},
+      settings:{memory_gib:12,cores:6,windows_scale:175},result:{},logs:{vm:'journal command'},
+      snapshots:{show:true,count:1,names:['20261012T091200Z'],items:[{name:'20261012T091200Z',date:'Oct 12, 2026',time:'09:12 UTC',
+        label:'Oct 12, 2026 at 09:12 UTC',restore_label:'Restore Oct 12, 2026 at 09:12 UTC',
+        confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',warning:'Later changes are lost.'}]},
+      restore:{label:'',warning:''},progress:null}
+  }
+  function redesignPanel() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    model.view = redesignView()
+    var panel = createTemporaryObject(panelComponent, tests, {model:model,opened:true})
+    wait(1)
+    return {model:model,panel:panel}
+  }
+  function test_redesign_header_uses_saved_view_and_theme_roles() {
+    var p = redesignPanel(), hero = named(p.panel, 'windowsHeader')
+    verify(hero !== undefined)
+    compare(hero.title, p.model.view.header.title)
+    compare(hero.meta, p.model.view.header.meta)
+    compare(hero.detail, p.model.view.header.badge)
+    p.panel.memoryInput = 24; p.panel.windowsScaleInput = 250
+    compare(hero.meta, '12 GiB · 6 cores · 175%')
+    compare(hero.foreground, Commons.Color.foreground)
+    verify(hero.iconComponent !== null)
+    p.panel.destroy()
+  }
+  function test_redesign_only_one_detail_section_opens_and_failed_defaults_to_logs() {
+    var p = redesignPanel()
+    compare(p.panel.expandedSection, '')
+    verify(!objects(p.panel,function(o) { return o.control === 'force_stop' && o.visible }).length)
+    named(p.panel, 'settingsToggle').clicked()
+    compare(p.panel.expandedSection, 'settings')
+    verify(named(p.panel, 'settingsToggle').Accessible.expanded)
+    p.panel.memoryInput = 24
+    named(p.panel, 'snapshotsToggle').clicked()
+    compare(p.panel.expandedSection, 'snapshots')
+    verify(!named(p.panel, 'settingsDetails').visible)
+    compare(p.panel.memoryInput, 24)
+    named(p.panel, 'snapshotsToggle').clicked()
+    compare(p.panel.expandedSection, '')
+    var v = redesignView(); v.layout = 'failed'; v.sections.default = 'logs'
+    v.result.setup = 'Setup could not update the window.'
+    v.buttons.continue_setup = {show:true,enable:false,label:'Run setup again',hint:'Shut down first.'}
+    p.model.view = v
+    verify(objects(p.panel,function(o) { return o.text === v.result.setup && o.visible }).length > 0)
+    verify(objects(p.panel,function(o) { return o.text === v.buttons.continue_setup.hint && o.visible }).length > 0)
+    compare(p.panel.expandedSection, 'logs')
+    named(p.panel, 'settingsToggle').clicked()
+    p.model.view = JSON.parse(JSON.stringify(v))
+    compare(p.panel.expandedSection, 'settings')
+    p.panel.close(); p.panel.open()
+    compare(p.panel.expandedSection, 'logs')
+    p.panel.destroy()
+  }
+  function test_redesign_all_offered_controls_remain_reachable() {
+    var p = redesignPanel(), v = redesignView()
+    var keys = ['stop','force_stop','force_confirm','dismiss_notice','update_client','continue_setup','reopen_window','install','setup_snapshot','skip_snapshot','window','no_window','take_snapshot','finish_restore']
+    keys.forEach(function(k) { v.buttons[k] = {show:true,enable:true,label:k} })
+    v.setup = {show:true,finished:false}; p.model.view = v
+    verify(named(p.panel, 'primaryAction').visible)
+    verify(named(p.panel, 'moreActionsToggle').visible)
+    named(p.panel, 'moreActionsToggle').clicked()
+    named(p.panel, 'snapshotsToggle').clicked()
+    keys.filter(function(k) { return k !== 'force_confirm' }).forEach(function(k) {
+      verify(objects(p.panel, function(o) { return o.control === k && o.visible }).length > 0, k)
+    })
+    p.panel.destroy()
+  }
+  function test_redesign_restore_dates_identity_cancel_and_invalidated_target() {
+    var p = redesignPanel()
+    named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+    var restore = named(p.panel, 'restore-20261012T091200Z')
+    verify(restore !== undefined)
+    compare(restore.text, p.model.view.snapshots.items[0].restore_label)
+    restore.clicked()
+    compare(p.panel.restoreArmed, '20261012T091200Z')
+    verify(objects(p.panel, function(o) { return o.text === 'Later changes are lost.' && o.visible }).length > 0)
+    named(p.panel, 'restoreCancel').clicked()
+    compare(p.panel.restoreArmed, '')
+    restore.clicked()
+    named(p.panel, 'logsToggle').clicked()
+    compare(p.panel.restoreArmed, '20261012T091200Z')
+    named(p.panel, 'snapshotsToggle').clicked()
+    restore.clicked()
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'restore 20261012T091200Z')
+    p.model.pendingToken = ''; ready(p.model)
+    restore.clicked()
+    var v = redesignView(); v.snapshots.items = []; v.snapshots.names = []; p.model.view = v
+    compare(p.panel.restoreArmed, '')
+    p.model.view = redesignView(); wait(1)
+    named(p.panel, 'restore-20261012T091200Z').clicked()
+    v = redesignView(); v.buttons.restore_snapshot.enable = false; p.model.view = v
+    compare(p.panel.restoreArmed, '')
+    p.panel.destroy()
+  }
+  function test_redesign_progress_stays_above_actions_for_snapshot_and_restore() {
+    var p = redesignPanel()
+    for (var i = 0; i < 2; i++) {
+      var v = redesignView()
+      v.progress = {operation:i ? 'restore':'snapshot',label:'Reading image',percent:37,total:100}
+      v.restore = {label:i ? 'Restoring Oct 12, 2026 at 09:12 UTC':'',warning:i ? 'Keep Windows stopped.':''}
+      p.model.view = v; wait(1)
+      var progress = named(p.panel, 'operationProgress'), actions = named(p.panel, 'dailyActions')
+      verify(progress !== undefined)
+      verify(progress.visible)
+      verify(progress.mapToItem(p.panel,0,0).y + progress.height <= actions.mapToItem(p.panel,0,0).y)
+      compare(named(p.panel, 'imageProgress').value,37)
+      compare(named(p.panel, 'restoreTarget').text,v.restore.label)
+    }
+    v.progress.total = 0; p.model.view = JSON.parse(JSON.stringify(v))
+    compare(named(p.panel, 'imageProgress').indeterminate,true)
+    wait(80)
+    compare(named(p.panel, 'imageProgressText').text,'Reading image')
+    v.progress.total = 100; v.progress.percent = 0; p.model.view = JSON.parse(JSON.stringify(v))
+    compare(named(p.panel, 'imageProgress').indeterminate,false)
+    var fill = objects(named(p.panel, 'imageProgress').contentItem, function(o) { return o.color !== undefined })[0]
+    compare(fill.x,0)
+    compare(named(p.panel, 'imageProgressText').text,'Reading image, 0%')
+    p.panel.destroy()
+  }
+  function test_redesign_focus_reveals_expanded_rows_and_notice_covered_controls() {
+    var p = redesignPanel(), popup = named(p.panel,'panelPopup'), flick = named(p.panel,'panelScroll')
+    verify(popup !== undefined)
+    popup.contentHeight = 180
+    p.model.clickNotice = 'Previous action is running.'
+    named(p.panel,'settingsToggle').clicked(); wait(50)
+    var field = objects(p.panel,function(o) { return o.label === 'Memory (GiB)' })[0]
+    field.field.forceActiveFocus(); wait(1)
+    verify(field.mapToItem(flick,0,0).y >= 0)
+    verify(field.mapToItem(flick,0,0).y + field.height <= flick.height - flick.bottomMargin + 1)
+    var save = objects(p.panel,function(o) { return o.control === 'save_settings' })[0]
+    save.forceActiveFocus(); wait(1)
+    verify(save.mapToItem(flick,0,0).y + save.height <= flick.height - flick.bottomMargin + 1)
+    verify(flick.contentY > 0)
+    var count = Quickshell.launchCount
+    named(p.panel,'clickNoticeDismiss').forceActiveFocus()
+    keyClick(Qt.Key_Space)
+    compare(p.model.clickNotice,'')
+    compare(Quickshell.launchCount,count)
+    verify(!process(p.model,p.model.cli))
+    var sections = ['settings','snapshots','logs']
+    for (var i = 0; i < sections.length; i++) {
+      var toggle = named(p.panel,sections[i] + 'Toggle')
+      if (p.panel.expandedSection !== sections[i]) toggle.clicked()
+      p.model.clickNotice = 'Previous action is running.'
+      toggle.forceActiveFocus(); wait(50)
+      keyClick(Qt.Key_Tab); wait(50)
+      verify(!toggle.activeFocus)
+      keyClick(Qt.Key_Backtab); wait(50)
+      verify(toggle.activeFocus)
+      verify(toggle.mapToItem(flick,0,0).y >= 0)
+      verify(toggle.mapToItem(flick,0,0).y + toggle.height <= flick.height - flick.bottomMargin + 1)
+    }
+    p.panel.expandedSection = 'settings'; wait(50)
+    save.forceActiveFocus(); wait(50)
+    flick.contentY -= flick.height - flick.bottomMargin - save.mapToItem(flick,0,0).y + 8
+    var notice = named(p.panel,'clickNotice').parent
+    verify(save.mapToItem(flick,0,0).y >= flick.height - flick.bottomMargin)
+    mouseClick(notice, 10, 10)
+    compare(p.model.clickNotice,'')
+    verify(!process(p.model,p.model.cli))
+    p.panel.destroy()
+  }
+  function test_redesign_failed_polls_have_safe_presentation_and_recover() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    for (var i = 0; i < 2; i++) {
+      model.refresh()
+      process(model,'timeout').complete(i ? JSON.stringify(redesignView()) : 'invalid', i ? 1 : 0)
+      compare(model.view.layout,'failed')
+      compare(model.view.bar.mode,'failed')
+      compare(model.view.sections.default,'logs')
+      compare(model.view.snapshots.items.length,0)
+      compare(model.view.logs.rows.length,0)
+      compare(model.control('start').show,false)
+      verify(model.view.cause.length > 0)
+      model.refresh(); process(model,'timeout').complete(JSON.stringify(redesignView()),0)
+      compare(model.view.header.meta,redesignView().header.meta)
+    }
   }
   function test_widget_panel_toggles_from_left_and_all_keyboard_keys_in_every_state() {
     var p = widgetParts()
@@ -323,7 +552,7 @@ TestCase {
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     panel.open()
     var v = {buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{},
-             progress:{label:"Restoring Windows: reading image",percent:37}}
+             progress:{label:"Restoring Windows: reading image",percent:37,total:100}}
     model.view = v
     var bar = objects(panel, function(o) { return o.objectName === "imageProgress" })[0]
     var words = objects(panel, function(o) { return o.objectName === "imageProgressText" })[0]
@@ -351,6 +580,7 @@ TestCase {
     model.view = view(8, 4)
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     panel.open()
+    named(panel, 'settingsToggle').clicked()
     var memory = objects(panel, function(o) { return o.label === "Memory (GiB)" })[0]
     var cores = objects(panel, function(o) { return o.label === "CPU cores" })[0]
     compare(memory.field.value, 8)
@@ -401,6 +631,7 @@ TestCase {
     model.view = view('auto')
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     panel.open()
+    named(panel, 'settingsToggle').clicked()
     var scale = objects(panel, function(o) { return o.objectName === 'windowsScale' })[0]
     verify(scale !== undefined)
     compare(scale.currentLabel(), 'Match my monitor')
@@ -447,6 +678,7 @@ TestCase {
     model.view = v
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     panel.open()
+    named(panel, 'settingsToggle').clicked()
     var scale = objects(panel, function(o) { return o.objectName === 'windowsScale' })[0]
     var save = objects(panel, function(o) { return o.control === 'save_settings' })[0]
     verify(objects(panel, function(o) { return o.text === v.settings.note && o.visible }).length > 0)
@@ -545,7 +777,8 @@ TestCase {
     for (var i = 0; i < 2; i++) {
       var panel = createTemporaryObject(panelComponent, tests, {model:model})
       panel.open()
-      var again = objects(panel, function(o) { return o.control === 'continue_setup' })[0]
+      if (model.view.setup.finished) named(panel, 'moreActionsToggle').clicked()
+    var again = objects(panel, function(o) { return o.control === 'continue_setup' })[0]
       var client = objects(panel, function(o) { return o.control === 'no_window' })[0]
       var screen = objects(panel, function(o) { return o.control === 'window' })[0]
       verify(again.visible)
@@ -568,6 +801,7 @@ TestCase {
       verify(objects(panel, function(o) { return o.text === model.control('no_window').hint && o.visible }).length > 0)
       verify(objects(panel, function(o) { return o.text === model.control('window').hint && o.visible }).length > 0)
       panel.close(); panel.open()
+      named(panel, 'moreActionsToggle').clicked()
       verify(!client.visible)
       verify(!screen.visible)
       again.clicked()
@@ -590,6 +824,7 @@ TestCase {
       setup:{finished:true,show:false},settings:{},snapshots:{names:[]},result:{},logs:{}}
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     panel.open()
+    if (model.view.setup.finished) named(panel, 'moreActionsToggle').clicked()
     var again = objects(panel, function(o) { return o.control === 'continue_setup' })[0]
     verify(again.visible)
     verify(!again.enabled)
@@ -614,6 +849,7 @@ TestCase {
     }
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     panel.open()
+    if (model.view.setup.finished) named(panel, 'moreActionsToggle').clicked()
     var again = objects(panel, function(o) { return o.control === 'continue_setup' })[0]
     var client = objects(panel, function(o) { return o.control === 'no_window' })[0]
     var screen = objects(panel, function(o) { return o.control === 'window' })[0]
@@ -692,6 +928,7 @@ TestCase {
     model.view = {buttons:{continue_setup:{show:true,enable:true,label:'Run setup again'}},setup:{show:false,finished:true},settings:{},snapshots:{names:[]},result:{snapshots:advice},logs:{}}
     wait(1)
     compare(objects(panel, function(o) { return o.text === advice && o.visible }).length, 1)
+    named(panel, 'moreActionsToggle').clicked()
     verify(objects(panel, function(o) { return o.text === 'Setup' && o.visible }).length > 0)
     panel.destroy(); wait(1)
   }
@@ -773,6 +1010,7 @@ TestCase {
       cancel:{show:true,enable:true,label:'Cancel'}},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
     var panel = createTemporaryObject(panelComponent, tests, {model:model,opened:true})
     var stop = objects(panel, function(o) { return o.control === 'stop' })[0]
+    named(panel, 'moreActionsToggle').clicked()
     var force = objects(panel, function(o) { return o.control === 'force_stop' })[0]
     stop.clicked(); force.clicked()
     compare(panel.stopArmed, false)
@@ -812,7 +1050,7 @@ TestCase {
     Commons.Color.accent = '#c06030'
     compare(section.border.color, Commons.Color.accent)
     compare(section.color, Util.alpha(Commons.Color.accent, 0.10))
-    compare(objects(panel, function(o) { return o.text === 'Snapshots' && o.visible }).length, 0)
+    compare(objects(panel, function(o) { return o.objectName === 'snapshotsToggle' && o.visible }).length, 0)
     var reopen = objects(section, function(o) { return o.control === 'reopen_window' })[0]
     verify(reopen.visible)
     reopen.clicked()
@@ -826,7 +1064,7 @@ TestCase {
     compare(section.implicitHeight, sectionHeight)
     compare(section.border.width, 0)
     compare(section.color, Qt.rgba(0, 0, 0, 0))
-    verify(objects(panel, function(o) { return o.text === 'Snapshots' && o.visible }).length > 0)
+    verify(objects(panel, function(o) { return o.objectName === 'snapshotsToggle' && o.visible }).length > 0)
     panel.destroy(); wait(1)
   }
   function test_empty_setup_section_hides_and_returns_with_content() {
@@ -843,6 +1081,7 @@ TestCase {
     compare(section.visible, false)
     model.view = view({continue_setup:{show:true,enable:true,label:'Run setup again'}}, {})
     wait(1)
+    named(panel, 'moreActionsToggle').clicked()
     compare(section.visible, true)
     verify(objects(section, function(o) { return o.text === 'Run setup again' && o.visible }).length > 0)
     model.view = view({}, {})
@@ -851,7 +1090,7 @@ TestCase {
     model.view = view({}, {setup:'Setup was interrupted. Continue setup to try again.'})
     wait(1)
     compare(section.visible, true)
-    verify(objects(section, function(o) { return o.text === model.view.result.setup && o.visible }).length > 0)
+    verify(objects(panel, function(o) { return o.text === model.view.result.setup && o.visible }).length > 0)
     panel.destroy(); wait(1)
   }
   function test_update_button_runs_build_client_as_a_long_job_with_its_result_and_log() {
@@ -868,6 +1107,8 @@ TestCase {
     var panel = createTemporaryObject(panelComponent, tests, {model:model, opened:true})
     wait(1)
     verify(model.tooltip.indexOf(warning) !== -1)
+    named(panel, 'moreActionsToggle').clicked()
+    named(panel, 'logsToggle').clicked()
     var update = objects(panel, function(o) { return o.control === 'update_client' })[0]
     verify(update !== undefined)
     verify(update.visible)
@@ -893,6 +1134,7 @@ TestCase {
     model.view = {buttons:{force_stop:{show:true,enable:true,label:'Force stop'},force_confirm:{show:true,enable:true,label:'Confirm'}},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     verify(panel !== null)
+    named(panel, 'moreActionsToggle').clicked()
     var force = objects(panel, function(o) { return o.control === 'force_stop' })[0]
     verify(force !== undefined)
     force.clicked()
@@ -908,9 +1150,10 @@ TestCase {
   function test_restore_and_controls() {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)
-    model.view = {buttons:{restore_snapshot:{show:true,enable:true,label:'Restore',labels:{snapshot:'Restore snapshot snapshot'}},restore_confirm:{show:true,enable:true,label:'Confirm',labels:{snapshot:'Restore snapshot and replace Windows'}}},setup:{},settings:{},snapshots:{names:['snapshot']},result:{},logs:{}}
+    model.view = {buttons:{restore_snapshot:{show:true,enable:true,label:'Restore',labels:{snapshot:'Restore snapshot snapshot'}},restore_confirm:{show:true,enable:true,label:'Confirm',labels:{snapshot:'Restore snapshot and replace Windows'}}},setup:{},settings:{},snapshots:{names:['snapshot'],items:[{name:'snapshot',label:'snapshot',restore_label:'Restore snapshot snapshot',confirm_label:'Restore snapshot and replace Windows'}]},result:{},logs:{}}
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     wait(1)
+    named(panel, 'snapshotsToggle').clicked()
     var restore = objects(panel, function(o) { return o.control === 'restore_snapshot' })[0]
     compare(restore.text, 'Restore snapshot snapshot')
     restore.clicked()

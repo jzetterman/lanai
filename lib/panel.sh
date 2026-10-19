@@ -521,7 +521,7 @@ cmd_panel() {
         "\(.settings.memory_gib) GiB · \(.settings.cores) cores · " +
         (if .settings.windows_scale == "auto" then "Auto" else "\(.settings.windows_scale)%" end)
       else "" end),badge:(if $setupLayout then "Setup" elif .layout == "failed" then "Failed" else .label end)} |
-    .sections = {settings:"Settings",snapshots:"Snapshots",logs:"Logs",default:(if .layout == "failed" then "logs" else "" end)} |
+    .sections = {settings:"Settings",snapshots:"Snapshots",logs:"Logs",more:"More actions",dismiss_click_notice:"Dismiss busy notice",default:(if .layout == "failed" then "logs" else "" end)} |
     def checkrow($id;$label;$probes):
       ($probes | map(.state // "not_checked")) as $states |
       (if $states | index("failed") then "failed" elif all($states[]; . == "done") then "done"

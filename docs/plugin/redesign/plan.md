@@ -502,6 +502,48 @@ Then run the shared checks. On inert fixtures, tab forward and backward through
 all expanded sections at a small height with the notice visible. Confirm no
 covered action fires on notice dismissal.
 
+Phase 4 implementation is complete. The daily panel now uses PanelHero with
+saved header values, a primary action and compact shutdown and more-actions
+controls. One detail row opens at a time. Failed defaults to Logs on entry and
+panel reopen. Daily setup recovery remains under More actions. Setup keeps its
+existing controls until phase 6. Backend descriptors still guard every action.
+Two added backend section labels name More actions and the busy-notice dismiss
+button.
+
+Snapshots use the backend items, UTC display dates and unchanged restore names.
+Cancel, close, removed targets and lost permissions clear confirmations. Restore
+targets, phase, measurable progress and stopped-Windows warnings stay above the
+actions with Snapshots collapsed. Snapshot progress stays there too. Operation
+results remain readable with their action sections collapsed. Unmeasured work
+uses an animated segment without a percentage.
+
+The six named QtTest functions and the failed-poll recovery function failed
+against the old renderer before production changes. A further failing assertion
+caught an animated meter remaining offset when measured progress arrived. The
+fixed meter anchors measured progress at zero. All 34 QtTest functions now pass.
+The focused command passed all 138 Bats cases without skips. The final renderer
+rerun also passed after the meter fix. Small-height fixtures exercised Tab and
+Shift+Tab across all detail rows, focused-field and action scrolling, keyboard
+notice dismissal and a click over a covered action without launching it.
+
+The shared block exited successfully: 835 Bats passes, 84 skips and no failures
+out of 919 cases. QML lint passed with its existing hoisting and model-id
+warnings. Final QML lint, full shellcheck and git diff --check passed. Guest
+tests ran with pwsh. Shared logs remain at
+`/run/user/1000/lzi/lr4.shared.gvfD9E`.
+
+The validation environment redirected the lint helper's and spike harness's
+hard-coded temporary paths into the runtime TMPDIR without changing either
+script. That directory is tmpfs, so five spike cases requiring btrfs skipped,
+including the real flock case. The other skips were 76 cases without
+LANAI_TEST_BTRFS_DIR, the pinned-source build without LANAI_TEST_LG_TARBALL,
+the unavailable strace measurement and the missing comma-decimal locale.
+Btrfs validation remains for the orchestrator outside this sandbox. Initial
+lint runs used the helper's repository-local temporary import directory before
+that redirection; the helper removed those directories. Subsequent lint runs
+used runtime paths. No VM, root command, review stage or commit ran. No spec
+behaviour changed. Theme comparison remains pending for phase 7.
+
 ## Phase 5: Implement Settings drafts and reliable log copying
 
 Read `LanaiPanel.qml`'s draft inputs, `scaleTouched`, dropdown binding and

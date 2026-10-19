@@ -7,7 +7,12 @@ Item {
   id: root
   property bool panelOpen: false
   readonly property string cli: decodeURIComponent(Qt.resolvedUrl("bin/lanai").toString().replace(/^file:\/\//, ""))
-  property var view: ({label: "Checking", headline: "Checking Windows", progress: null, buttons: {}, setup: {}, result: {}, settings: {}, snapshots: {names: []}, logs: {}})
+  property var view: ({label: "Checking", headline: "Checking Windows", layout: "daily",
+    header: {title: "Windows", meta: "", badge: "Checking"},
+    sections: {settings: "Settings", snapshots: "Snapshots", logs: "Logs", more: "More actions", dismiss_click_notice: "Dismiss busy notice", default: ""},
+    primary_action: null, bar: {mode: "stopped", percent: null}, restore: {label: "", warning: ""},
+    progress: null, buttons: {}, setup: {steps: [], checks: [], countdown: null}, result: {},
+    settings: {baseline: null, labels: {}, scale_choices: []}, snapshots: {names: [], items: [], count: 0}, logs: {rows: []}})
   property string pendingToken: ""
   property double pendingAt: 0
   property bool refreshAgain: false
@@ -92,7 +97,14 @@ Item {
         if (reply.pending_ack === root.pendingToken) root.pendingToken = ""
         root.view = reply
       } catch (_) {
-        root.view = {label: "Unavailable", headline: "Lanai could not check Windows", cause: "The status check did not finish or its reply could not be read.", next: "Try again in a few seconds, then check the logs if it continues.", progress: null, buttons: {}, setup: {}, result: {}, settings: {}, snapshots: {names: []}, logs: {}}
+        root.view = {layout: "failed", header: {title: "Windows", meta: "", badge: "Failed"},
+          sections: {settings: "Settings", snapshots: "Snapshots", logs: "Logs", more: "More actions", dismiss_click_notice: "Dismiss busy notice", default: "logs"},
+          primary_action: null, bar: {mode: "failed", percent: null}, restore: {label: "", warning: ""},
+          label: "Unavailable", headline: "Lanai could not check Windows",
+          cause: "The status check did not finish or its reply could not be read.",
+          next: "Try again in a few seconds, then check the logs if it continues.",
+          progress: null, buttons: {}, setup: {steps: [], checks: [], countdown: null}, result: {},
+          settings: {baseline: null, labels: {}, scale_choices: []}, snapshots: {names: [], items: [], count: 0}, logs: {rows: []}}
       }
     }
   }
