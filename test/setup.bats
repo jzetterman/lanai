@@ -1580,7 +1580,7 @@ exec /usr/bin/mv "$@"'
   local t
   t=$(<"$RUN/step6-since")
   ((EPOCHSECONDS - t <= 5)) || fail "step6-since is not now: $t"
-  run find "$RUN" -maxdepth 1 -name 'step6-*.*'
+  run find "$RUN" -maxdepth 1 -name 'step6-*.*' ! -name 'step6-checks.json'
   assert_output ''
 }
 
@@ -1748,6 +1748,7 @@ exec /usr/bin/mv "$@"'
   assert_failure
   assert_equal "$(field step)" 6
   assert_equal "$(field message)" "Lanai could not open the Windows window to check the display driver."
+  assert_equal "$(jq -c '[.idd.state,.idd.reason,.spice.state]' "$RUN/step6-checks.json")" '["failed","window-closed","not_checked"]'
   assert_equal "$(field stop)" null
   assert [ -e "$RUN/step6-stopped" ]
   past_limit
@@ -2122,4 +2123,258 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(field reason)" build-busy
   assert [ ! -e "$T/build.calls" ]
   exec {fd}>&-
+}
+
+
+# Raw check facts stay independent until each probe has answered.
+check_states() {
+  jq -c '[.idd.state,.spice.state,.clock.state,.allowlist.state,.scale.state]' "$RUN/step6-checks.json"
+}
+
+@test "redesign checks: each probe records only outcomes it actually observed" {
+  step6_running "$FIX/client-logs/waiting.log"
+  setup_run
+  assert_success
+  assert_equal "$(check_states)" '["waiting","not_checked","not_checked","not_checked","not_checked"]'
+  started_log "$FIX/client-logs/match.log" >"$RUN/client.log"
+  conf FAKE_QGA_CMD=allowlist FAKE_QGA_HOLD=guest-set-time FAKE_QGA_READY="$T/probe-ready" FAKE_QGA_RELEASE="$T/probe-release" FAKE_QMP_SCALE=false
+  setup_step6 >"$T/check-reply" &
+  local pid=$!
+  BG_PIDS+=("$pid")
+  wait_for_file "$T/probe-ready"
+  assert_equal "$(check_states)" '["done","done","waiting","not_checked","not_checked"]'
+  : >"$T/probe-release"
+  wait "$pid"
+  assert_equal "$(check_states)" '["done","done","done","done","waiting"]'
+  assert_equal "$(jq -c '[.since,.location,.invocation]' "$RUN/step6-checks.json")" \
+    "$(jq -nc --argjson t "$(<"$RUN/step6-since")" --arg l "$STORE" '[$t,$l,"0123456789abcdef0123456789abcdef"]')"
+  assert_equal "$(stat -c %a "$RUN/step6-checks.json")" 600
+  # The scale wait queries no earlier agent again.
+  local before
+  before=$(<"$T/qga.log")
+  conf FAKE_QGA_CMD=open FAKE_QMP_SCALE=false
+  setup_run
+  assert_success
+  assert_equal "$(<"$T/qga.log")" "$before"
+  conf FAKE_QGA_CMD=open
+  setup_run
+  assert_success
+  assert_equal "$(field step)" 7
+  assert_equal "$(check_states)" '["done","done","done","done","done"]'
+}
+
+@test "redesign checks: agents require SPICE, clock and allow-list success" {
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_VDAGENT=false FAKE_QMP_SCALE=false
+  setup_run
+  assert_success
+  assert_equal "$(check_states)" '["done","waiting","done","done","not_checked"]'
+  assert [ ! -e "$RUN/step6-checked" ]
+  conf FAKE_QGA_CMD=notime FAKE_QMP_SCALE=false
+  setup_run
+  assert_success
+  # The earlier refusal still passed during this attempt; the clock has not.
+  assert_equal "$(check_states)" '["done","done","waiting","done","not_checked"]'
+  conf FAKE_QGA_CMD=allowlist FAKE_QGA_HOLD=guest-exec FAKE_QGA_READY="$T/probe-ready" FAKE_QGA_RELEASE="$T/probe-release" FAKE_QMP_SCALE=false
+  setup_step6 >"$T/check-reply" &
+  local pid=$!
+  BG_PIDS+=("$pid")
+  wait_for_file "$T/probe-ready"
+  assert_equal "$(check_states)" '["done","done","done","waiting","not_checked"]'
+  : >"$T/probe-release"
+  wait "$pid"
+  assert [ -e "$RUN/step6-checked" ]
+}
+
+@test "redesign checks: wrong IDD and allow-list answers record failure before Drivers" {
+  step6_running "$FIX/client-logs/other-build.log"
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  assert_equal "$(check_states)" '["failed","not_checked","not_checked","not_checked","not_checked"]'
+  assert_equal "$(jq -r .idd.reason "$RUN/step6-checks.json")" mismatch
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=open
+  setup_run
+  assert_failure
+  assert_equal "$(field step)" 5
+  assert_equal "$(check_states)" '["done","done","done","failed","not_checked"]'
+  assert_equal "$(jq -r .allowlist.reason "$RUN/step6-checks.json")" allowlist
+}
+
+@test "redesign checks: waiting and timeout name the missing component" {
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=time-silent FAKE_QMP_VDAGENT=false
+  setup_run
+  assert_success
+  assert_equal "$(jq -c '[.spice.reason,.allowlist.reason]' "$RUN/step6-checks.json")" '["spice","allowlist"]'
+  past_limit
+  setup_run
+  assert_failure
+  assert_timeout agents
+  assert_equal "$(check_states)" '["done","failed","done","failed","not_checked"]'
+  step6_running "$FIX/client-logs/match.log" 5 301
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_QGA=false
+  setup_run
+  assert_failure
+  assert_timeout guest-boot
+  assert_equal "$(jq -c '[.idd.state,.idd.reason,.clock.state]' "$RUN/step6-checks.json")" '["failed","guest-boot","not_checked"]'
+  step6_running "$FIX/client-logs/waiting.log" 301 301
+  setup_run
+  assert_failure
+  assert_timeout idd-missing
+  assert_equal "$(jq -r .idd.reason "$RUN/step6-checks.json")" idd-missing
+  step6_running "$FIX/client-logs/match.log" 301 301
+  unit_is lanai-client.service inactive
+  : >"$RUN/client.log"
+  setup_run
+  assert_failure
+  assert_timeout window-closed
+  assert_equal "$(jq -r .idd.reason "$RUN/step6-checks.json")" window-closed
+  qmp_call() { return 1; }
+  rm -f "$RUN/step6-stopped"
+  setup_run
+  assert_success
+  assert_equal "$(jq -c '[.idd.state,.idd.reason]' "$RUN/step6-checks.json")" '["waiting","qmp"]'
+  setup_run
+  assert_failure
+  assert_timeout qmp
+  assert_equal "$(jq -c '[.idd.state,.idd.reason]' "$RUN/step6-checks.json")" '["failed","qmp"]'
+}
+
+@test "redesign checks: Continue clears check detail but RESET preserves the attempt" {
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run
+  assert_success
+  local before
+  before=$(step6_records)
+  event_record '{"event":"RESET","data":{"guest":true}}'
+  assert_equal "$(step6_records)" "$before"
+  : >"$RUN/step6-stopped"
+  started_log "$FIX/client-logs/waiting.log" >"$RUN/client.log"
+  setup_run
+  assert_success
+  assert_equal "$(check_states)" '["waiting","not_checked","not_checked","not_checked","not_checked"]'
+  assert [ ! -e "$RUN/step6-checked" ]
+  step6_start "$RUN"
+  assert [ ! -e "$RUN/step6-checks.json" ]
+}
+
+@test "redesign checks: malformed or unwritable detail never creates a false Done" {
+  step6_running "$FIX/client-logs/match.log"
+  run step6_checks_read "$RUN" "$STORE" "$(unit_invocation)"
+  assert_success
+  assert_equal "$(jq -c '[.[].state] | unique' <<<"$output")" '["not_checked"]'
+  assert [ ! -e "$RUN/step6-checks.json" ]
+  echo broken >"$RUN/step6-checks.json"
+  setup_run
+  assert_failure
+  assert_equal "$(field reason)" record
+  assert [ ! -e "$RUN/step6-checked" ]
+  assert_equal "$(jq -r '.done // false' "$S/setup.json")" false
+  rm "$RUN/step6-checks.json" "$RUN/step6-stopped"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run
+  assert_success
+  local good key
+  good=$(<"$RUN/step6-checks.json")
+  for key in location invocation since state reason extra multiple; do
+    case $key in
+      location|invocation) jq --arg k "$key" '.[$k]="foreign"' <<<"$good" ;;
+      since) jq '.since -= 1' <<<"$good" ;;
+      state) jq '.idd.state="invented"' <<<"$good" ;;
+      reason) jq '.idd.reason="guest text"' <<<"$good" ;;
+      extra) jq '.guest="untrusted"' <<<"$good" ;;
+      multiple) printf '%s\n%s\n' "$good" "$good" ;;
+    esac >"$RUN/step6-checks.json"
+    run step6_checks_read "$RUN" "$STORE" "$(unit_invocation)"
+    assert_success
+    # The combined proof survives missing or inconsistent detail.
+    assert_equal "$(jq -c '[.idd.state,.spice.state,.clock.state,.allowlist.state,.scale.state]' <<<"$output")" '["done","done","done","done","not_checked"]'
+    rm "$RUN/step6-checked"
+    run step6_checks_read "$RUN" "$STORE" "$(unit_invocation)"
+    assert_equal "$(jq -c '[.[].state] | unique' <<<"$output")" '["not_checked"]'
+    echo "$EPOCHSECONDS" >"$RUN/step6-checked"
+  done
+  jq '.idd={state:"failed",reason:"mismatch"}' <<<"$good" >"$RUN/step6-checks.json"
+  run step6_checks_read "$RUN" "$STORE" "$(unit_invocation)"
+  assert_equal "$(jq -r .idd.state <<<"$output")" 'done'
+  rm "$RUN/step6-checks.json"
+  run step6_checks_read "$RUN" "$STORE" "$(unit_invocation)"
+  assert_equal "$(jq -r .idd.state <<<"$output")" 'done'
+  rm "$RUN/step6-checked"
+  shim mv '[[ ${*: -1} != */step6-checks.json ]] || exit 1
+exec /usr/bin/mv "$@"'
+  setup_run
+  assert_failure
+  assert_equal "$(field reason)" record
+  assert_equal "$(jq -r '.done // false' "$S/setup.json")" false
+  run find "$RUN" -name 'step6-checks.json.*'
+  assert_output ''
+  rm "$RUN/step6-stopped"
+  shim mv 'if [[ ${*: -1} == */step6-checks.json ]] &&
+  jq -e '\''.scale.state == "done"'\'' "${*: -2:1}" >/dev/null; then exit 1; fi
+exec /usr/bin/mv "$@"'
+  conf FAKE_QGA_CMD=allowlist
+  setup_run
+  assert_failure
+  assert_equal "$(field reason)" record
+  assert_equal "$(jq -r '.done // false' "$S/setup.json")" false
+  assert_equal "$(jq -r .scale.state "$RUN/step6-checks.json")" waiting
+}
+
+@test "redesign countdown: default and overridden limits keep the actual scale start" {
+  step6_running "$FIX/client-logs/match.log"
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
+  setup_run
+  assert_success
+  local start limit
+  start=$(<"$RUN/step6-checked")
+  for limit in 120 37; do
+    LANAI_SETUP_SCALE_LIMIT=$limit
+    # shellcheck disable=SC2119
+    run setup_plan "$(shared_facts)"
+    assert_success
+    assert_equal "$(jq -r .scale_started_at <<<"$output")" "$start"
+    assert_equal "$(jq -r .scale_limit_seconds <<<"$output")" "$limit"
+    assert_equal "$(jq -r .checks.scale.state <<<"$output")" waiting
+    event_record '{"event":"RESET"}'
+    setup_run
+    assert_success
+    assert_equal "$(<"$RUN/step6-checked")" "$start"
+  done
+  # The overridden deadline also controls the actual timeout, at the boundary.
+  LANAI_SETUP_SCALE_LIMIT=37
+  echo "$((EPOCHSECONDS - 37))" >"$RUN/step6-checked"
+  echo "$((EPOCHSECONDS - 100))" >"$RUN/step6-since"
+  setup_run
+  assert_failure
+  assert_timeout scale-task
+  assert_equal "$(jq -c '[.scale.state,.scale.reason]' "$RUN/step6-checks.json")" '["failed","scale-task"]'
+  echo "$start" >"$RUN/step6-checked"
+  for limit in 0 -1 2.5 nan 1e999; do
+    LANAI_SETUP_SCALE_LIMIT=$limit
+    # shellcheck disable=SC2119
+    run setup_plan "$(shared_facts)"
+    assert_equal "$(jq -r .scale_limit_seconds <<<"$output")" null
+  done
+  LANAI_SETUP_SCALE_LIMIT=120
+  rm "$RUN/step6-since"
+  # shellcheck disable=SC2119
+  run setup_plan "$(shared_facts)"
+  assert [ ! -e "$RUN/step6-since" ]
+  assert_equal "$(jq -r .checks.idd.state <<<"$output")" 'done'
+  local bad
+  for bad in broken 0 -1 2.5 "$((EPOCHSECONDS + 60))" 999999999999999999999999999999999999; do
+    echo "$bad" >"$RUN/step6-checked"
+    # shellcheck disable=SC2119
+    run setup_plan "$(shared_facts)"
+    assert_equal "$(jq -r .scale_started_at <<<"$output")" null
+  done
+  rm "$RUN/step6-checked"
+  # shellcheck disable=SC2119
+  run setup_plan "$(shared_facts)"
+  assert_equal "$(jq -r .scale_started_at <<<"$output")" null
+  assert [ ! -e "$RUN/step6-checked" ]
 }

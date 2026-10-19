@@ -320,6 +320,7 @@ setup_stop6() {
 #                     a stop (step6_start); LANAI_SETUP_LIMIT counts from it.
 #   step6-checked     <epoch>: when the other checks first passed;
 #                     LANAI_SETUP_SCALE_LIMIT counts from it.
+#   step6-checks.json observed check outcomes, bound to this attempt and VM.
 #   step6-stopped     present after a step 6 failure (step6_mark_stop).
 #   step6-qmp-failed  present while the last query-chardev failed.
 # A Windows restart (QMP RESET) changes none of them.
@@ -343,18 +344,109 @@ step6_stamp() {
 # the other records, then writes step6-since. Fails when a record cannot be
 # removed or written.
 step6_start() {
-  rm -f -- "$1/step6-stopped" "$1/step6-qmp-failed" "$1/step6-checked" || return 1
+  rm -f -- "$1/step6-stopped" "$1/step6-qmp-failed" "$1/step6-checked" \
+    "$1/step6-checks.json" || return 1
   step6_stamp "$1/step6-since"
 }
 
-# step6_checked <run dir>: print the time in step6-checked; fails when it
-# is missing or not a number. setup_plan's scale_wait and step6_check both
-# read it here, so the panel's wait for the scale task agrees with step 6.
+# Positive integer times and limits must fit JSON's exact integer range.
+step6_positive() {
+  [[ $1 =~ ^[1-9][0-9]{0,15}$ ]] &&
+    ((10#$1 <= 9007199254740991))
+}
+
+# step6_checked <run dir>: print the scale wait's existing start record.
 step6_checked() {
   local t=""
   [[ ! -s $1/step6-checked ]] || t=$(<"$1/step6-checked")
   [[ $t =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$t"
+}
+
+# Read the combined proof without repairing records. Older code may have
+# left no detail; a valid proof still means the earlier checks passed.
+step6_checks_checked() {
+  local t="" since=""
+  [[ ! -s $1/step6-checked ]] || t=$(<"$1/step6-checked")
+  step6_positive "$t" && ((t <= EPOCHSECONDS)) || return 1
+  [[ ! -s $1/step6-since ]] || since=$(<"$1/step6-since")
+  if step6_positive "$since"; then ((t >= since)) || return 1; fi
+  printf '%s\n' "$t"
+}
+
+step6_checks_empty() {
+  printf '%s\n' '{"idd":{"state":"not_checked"},"spice":{"state":"not_checked"},"clock":{"state":"not_checked"},"allowlist":{"state":"not_checked"},"scale":{"state":"not_checked"}}'
+}
+
+# Validate both the record shape and the fixed vocabulary. No guest text
+# belongs in this file, even if it happens to be valid JSON.
+step6_checks_valid() {
+  jq -e -s '
+    def check($reasons):
+      type == "object" and
+      (if .state == "not_checked" or .state == "done" then keys == ["state"]
+       elif .state == "waiting" or .state == "failed" then
+         keys == ["reason","state"] and (.reason as $r | $reasons | index($r) != null)
+       else false end);
+    length == 1 and (.[0] | type == "object" and
+    keys == ["allowlist","clock","idd","invocation","location","scale","since","spice"] and
+    (.since | type == "number" and . > 0 and . <= 9007199254740991 and floor == .) and
+    (.location | type == "string" and length > 0) and (.invocation | type == "string") and
+    (.idd | check(["qmp","guest-boot","window-closed","idd-missing","mismatch"])) and
+    (.spice | check(["spice"])) and (.clock | check(["guest-boot","clock"])) and
+    (.allowlist | check(["allowlist"])) and (.scale | check(["qmp","scale-task"])))
+  ' >/dev/null 2>&1
+}
+
+# step6_checks_read <run dir> <location> <invocation>: read current facts,
+# never create a record or start a timer. The combined proof takes priority
+# over inconsistent detail for the four earlier probes.
+step6_checks_read() {
+  local run=$1 location=$2 invocation=$3 doc since="" checks
+  checks=$(step6_checks_empty)
+  [[ ! -s $run/step6-since ]] || since=$(<"$run/step6-since")
+  if step6_positive "$since" && ((since <= EPOCHSECONDS)) &&
+    doc=$(cat -- "$run/step6-checks.json" 2>/dev/null) && step6_checks_valid <<<"$doc" &&
+    jq -e --argjson t "$since" --arg l "$location" --arg i "$invocation" \
+      '.since == $t and .location == $l and .invocation == $i' <<<"$doc" >/dev/null; then
+    checks=$(jq -c '{idd,spice,clock,allowlist,scale}' <<<"$doc")
+  fi
+  if step6_checks_checked "$run" >/dev/null; then
+    checks=$(jq -c '. + {idd:{state:"done"},spice:{state:"done"},clock:{state:"done"},allowlist:{state:"done"}}' <<<"$checks")
+  else
+    # Detailed successes alone never replace the combined proof.
+    checks=$(jq -c '.scale = {state:"not_checked"}' <<<"$checks")
+  fi
+  printf '%s\n' "$checks"
+}
+
+# step6_checks_write <run dir> <patch>: publish through a private temporary
+# file. Invalid existing detail stops the attempt rather than losing evidence.
+step6_checks_write() {
+  local run=$1 patch=$2 since location invocation doc checks tmp
+  since=$(<"$run/step6-since")
+  step6_positive "$since" || return 1
+  location=$(storage_dir) || return 1
+  invocation=$(unit_invocation)
+  if [[ -e $run/step6-checks.json ]]; then
+    doc=$(cat -- "$run/step6-checks.json") && step6_checks_valid <<<"$doc" || return 1
+  fi
+  checks=$(step6_checks_read "$run" "$location" "$invocation") || return 1
+  doc=$(jq -nc --argjson c "$checks" --argjson p "$patch" --argjson t "$since" \
+    --arg l "$location" --arg i "$invocation" \
+    '$c + $p + {since:$t,location:$l,invocation:$i}') || return 1
+  step6_checks_valid <<<"$doc" || return 1
+  tmp=$(mktemp -- "$run/step6-checks.json.XXXXXX") || return 1
+  if printf '%s\n' "$doc" >"$tmp" && mv -f -- "$tmp" "$run/step6-checks.json"; then return 0; fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+# Report a detail write failure through the existing record failure path.
+step6_checks_note() {
+  step6_checks_write "$1" "$2" && return 0
+  step6_record_failed "$1"
+  return 1
 }
 
 # step6_since <file>: print the time in <file> (step6-since), writing now
@@ -457,8 +549,12 @@ step6_check() {
   elif ((now - since >= LANAI_SETUP_LIMIT)); then
     late=true
   fi
+  local probe=idd pending=waiting
+  [[ -z $checked ]] || probe=scale
+  step6_checks_note "$run" "$(jq -nc --arg k "$probe" '{($k):{state:"waiting",reason:"qmp"}}')" || return 1
   if ! chardevs=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}'); then
     if $late && [[ -e $run/step6-qmp-failed ]]; then
+      step6_checks_note "$run" "$(jq -nc --arg k "$probe" '{($k):{state:"failed",reason:"qmp"}}')" || return 1
       setup_stop6 qmp "QEMU did not answer when Lanai checked Windows' agents."
       return 1
     fi
@@ -476,22 +572,28 @@ step6_check() {
   fi
   chardev_open qga0 <<<"$chardevs" && qga_open=true
   if $late && ! $qga_open; then
+    step6_checks_note "$run" '{"idd":{"state":"failed","reason":"guest-boot"}}' || return 1
     setup_stop6 guest-boot "Windows did not finish starting, or its guest agent did not start."
     return 1
   fi
+  step6_checks_note "$run" '{"idd":{"state":"waiting","reason":"idd-missing"}}' || return 1
   read -r verdict guest < <(version_check "$log") || verdict=unknown
   build=$(log_client_build "$log")
   [[ -z $build || $build == "$LG_BUILD" ]] || pinned=false
   if ! $pinned || { [[ $verdict == unknown || $verdict == waiting || $verdict == idd-missing ]] && ! client_active; }; then
     if $late && $pinned && [[ $verdict == idd-missing ]]; then
+      step6_checks_note "$run" '{"idd":{"state":"failed","reason":"idd-missing"}}' || return 1
       setup_stop6 idd-missing "$LANAI_STEP6_IDD_MISSING"
       return 1
     elif $late; then
+      step6_checks_note "$run" '{"idd":{"state":"failed","reason":"window-closed"}}' || return 1
       setup_stop6 window-closed "The Windows window did not stay open long enough to check the display driver."
       return 1
     fi
     ! client_active || systemctl --user stop "$LANAI_CLIENT_UNIT" >&2 || true
+    step6_checks_note "$run" '{"idd":{"state":"waiting","reason":"window-closed"}}' || return 1
     if ! client_start "$(pinned_client)" >&2; then
+      step6_checks_note "$run" '{"idd":{"state":"failed","reason":"window-closed"}}' || return 1
       setup_reply false 6 "Lanai could not open the Windows window to check the display driver." \
         "see the logs with journalctl --user -u $LANAI_CLIENT_UNIT"
       return 1
@@ -500,14 +602,18 @@ step6_check() {
     return 0
   fi
   case $verdict in
-    match) guest_version_note "$log" ;;
+    match)
+      step6_checks_note "$run" '{"idd":{"state":"done"}}' || return 1
+      guest_version_note "$log" ;;
     mismatch)
+      step6_checks_note "$run" '{"idd":{"state":"failed","reason":"mismatch"}}' || return 1
       setup_back5 mismatch "The display driver in Windows${guest:+ ($guest)} is not Lanai's build ($LG_BUILD)."
       return 1
       ;;
     *)
       # The pinned client is open, and the IDD has not answered it yet.
       if $late; then
+        step6_checks_note "$run" '{"idd":{"state":"failed","reason":"idd-missing"}}' || return 1
         setup_stop6 idd-missing "$LANAI_STEP6_IDD_MISSING"
         return 1
       fi
@@ -515,21 +621,38 @@ step6_check() {
       return 0
       ;;
   esac
-  chardev_open vdagent <<<"$chardevs" || missing+=("the SPICE agent")
+  $late && pending=failed
+  if chardev_open vdagent <<<"$chardevs"; then
+    step6_checks_note "$run" '{"spice":{"state":"done"}}' || return 1
+  else
+    step6_checks_note "$run" "$(jq -nc --arg s "$pending" '{spice:{state:$s,reason:"spice"}}')" || return 1
+    missing+=("the SPICE agent")
+  fi
   # Only an open port is asked: a sync on a closed one waits 5 s. The
   # command the allow-list must refuse has no arguments, so it runs nothing
   # even when an agent accepts it (spec 27).
+  step6_checks_note "$run" '{"clock":{"state":"waiting","reason":"clock"}}' || return 1
   if ! $qga_open ||
     ! qga_reply "$run/qga.sock" command '{"execute":"guest-set-time","arguments":{"time":@NOW_NS@}}'; then
+    local clock_reason=clock
+    $qga_open || clock_reason="guest-boot"
+    step6_checks_note "$run" "$(jq -nc --arg s "$pending" --arg r "$clock_reason" '{clock:{state:$s,reason:$r}}')" || return 1
     missing+=("the QEMU guest agent")
   else
+    step6_checks_note "$run" '{"clock":{"state":"done"},"allowlist":{"state":"waiting","reason":"allowlist"}}' || return 1
     rc=0
     qga_reply "$run/qga.sock" refusal '{"execute":"guest-exec"}' || rc=$?
     if ((rc == 2)); then
+      step6_checks_note "$run" '{"allowlist":{"state":"failed","reason":"allowlist"}}' || return 1
       setup_back5 allowlist "The QEMU guest agent in Windows is missing its allow-list: it did not refuse a command the allow-list leaves out."
       return 1
     fi
-    ((rc == 0)) || missing+=("the QEMU guest agent")
+    if ((rc == 0)); then
+      step6_checks_note "$run" '{"allowlist":{"state":"done"}}' || return 1
+    else
+      step6_checks_note "$run" "$(jq -nc --arg s "$pending" '{allowlist:{state:$s,reason:"allowlist"}}')" || return 1
+      missing+=("the QEMU guest agent")
+    fi
   fi
   if ((${#missing[@]})); then
     out="${missing[0]}${missing[1]:+ and ${missing[1]}}"
@@ -553,14 +676,19 @@ step6_check() {
 # after boot. QEMU's port state, not data from the guest (spec 27): open
 # finishes setup; closed waits, until <late>.
 step6_scale() {
+  local run
+  run=$(run_dir) || return 1
+  step6_checks_note "$run" '{"scale":{"state":"waiting","reason":"scale-task"}}' || return 1
   if ! chardev_open scale0 <<<"$1"; then
     if [[ $2 == true ]]; then
+      step6_checks_note "$run" '{"scale":{"state":"failed","reason":"scale-task"}}' || return 1
       setup_stop6 scale-task "In Windows, the display scale task did not start."
       return 1
     fi
     setup_wait "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in within 2 minutes."
     return 0
   fi
+  step6_checks_note "$run" '{"scale":{"state":"done"}}' || return 1
   # The scale task's port is open, so Windows has the live task:
   # scale_task 2, with the start program's sign-in step: signin_step
   # LANAI_SIGNIN_STEP. A record without them means the old task, or a task
@@ -582,7 +710,22 @@ setup_decision() {
 # Apply pending bookkeeping before reading setup.json. Shared facts are supplied
 # by panel/resume so the container and layout are read only once per call.
 setup_plan() {
-  local facts=${1:-$(shared_facts)} window=${2:-auto} nosnap=${3:-false} prior=${4:-}
+  local facts=${1:-$(shared_facts)} plan run location invocation checks started=null limit=null
+  plan=$(setup_plan_decide "$facts" "${2:-auto}" "${3:-false}" "${4:-}") || return 1
+  location=$(sed -n 's/^LanaiStorage=//p' <<<"$facts")
+  invocation=$(sed -n 's/^InvocationID=//p' <<<"$facts")
+  checks=$(step6_checks_empty)
+  if run=$(run_dir); then
+    checks=$(step6_checks_read "$run" "$location" "$invocation")
+    started=$(step6_checks_checked "$run") || started=null
+  fi
+  if step6_positive "$LANAI_SETUP_SCALE_LIMIT"; then limit=$LANAI_SETUP_SCALE_LIMIT; fi
+  jq -c --argjson checks "$checks" --argjson started "$started" --argjson limit "$limit" \
+    '. + {checks:$checks,scale_started_at:$started,scale_limit_seconds:$limit}' <<<"$plan"
+}
+
+setup_plan_decide() {
+  local facts=$1 window=${2:-auto} nosnap=${3:-false} prior=${4:-}
   local line doc run stopped=false verdict v st dir problem missing snapshot step5
   local -A f=()
   while IFS= read -r line; do [[ $line != *=* ]] || f[${line%%=*}]=${line#*=}; done <<<"$facts"

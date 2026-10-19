@@ -178,6 +178,31 @@ Focused checks: `bats test/setup.bats test/lifecycle.bats test/panel-jobs.bats`.
 Then run the shared checks. Confirm that all existing timeout boundaries and
 ten-second worker spacing still pass.
 
+Phase 1 implementation is complete. Shared validation remains blocked by an
+existing spike test in this sandbox. The seven new cases failed before the
+implementation and passed after it. The focused command passed all 175 cases,
+including the timeout boundaries and worker spacing. Two additional window
+failure and client replacement checks passed.
+
+The shared run passed QML lint with its existing warnings. Bats reported 821
+passes and 79 skips, but stalled after omitting one expected result. The run
+was interrupted and exited 1 with `Executed 900 instead of expected 901 tests`.
+It omitted `disk_locked: live flock on btrfs shows in the real
+/proc/locks`. Running that unchanged spike case alone without the Bats watchdog
+reported one failure at `spike/test/lgtest.bats:190`: the acquired flock was not
+visible to `disk_locked()` through this sandbox's `/proc/locks`. With the
+watchdog enabled, that failure omits its result and stalls the run. The 79 skips were 76 cases
+without `LANAI_TEST_BTRFS_DIR`, the pinned-source build without
+`LANAI_TEST_LG_TARBALL`, one unavailable `strace` measurement and one missing
+comma-decimal locale. Guest tests ran with `pwsh`.
+
+The shared block stopped at Bats as required. Its full shellcheck command was
+then run separately, along with shellcheck for the changed fake QGA fixture;
+both passed. `git diff --check` passed. Runtime test files and diagnostic logs
+remain under `/run/user/1000/lzi`; the failed shared run's temporary directory
+was retained. No spec behaviour changed beyond this phase. The spike failure
+needs an environment with working lock visibility before full acceptance.
+
 ## Phase 2: Add snapshot display data and restore identity
 
 Read `lib/snapshot.sh:snapshot_valid()`, `snapshot_list()`, `image_operation()`,

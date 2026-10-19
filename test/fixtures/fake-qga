@@ -24,7 +24,9 @@
 #   refuses guest-set-time too, as an allow-list without it would;
 #   time-silent, time-junk and time-array set the time, then answer any
 #   other command with nothing, a line that is not JSON, or a JSON array
-set -uo pipefail
+# FAKE_QGA_HOLD names a command to pause until FAKE_QGA_RELEASE exists;
+# FAKE_QGA_READY marks when that command arrives.
+set -euo pipefail
 # Knobs come from the environment, or from FAKE_CONF, which a test may
 # rewrite between connections.
 # shellcheck source=/dev/null
@@ -58,6 +60,14 @@ esac
 
 IFS= read -r cmd || exit 0
 printf 'cmd %s\n' "$cmd" >>"$log"
+# Hold one command so tests can inspect the published in-flight check.
+if [[ -n ${FAKE_QGA_HOLD:-} && $cmd == *"\"$FAKE_QGA_HOLD\""* ]]; then
+  : >"$FAKE_QGA_READY"
+  for ((i = 0; i < 100; i++)); do
+    [[ ! -e $FAKE_QGA_RELEASE ]] || break
+    sleep 0.05
+  done
+fi
 case ${FAKE_QGA_CMD:-empty} in
   empty) printf '{"return": {}}\n' ;;
   other) printf '{"return": {"x": 1}}\n' ;;

@@ -14,7 +14,8 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   `LanaiPanel.qml` (setup, VM controls, settings and recovery), `LanaiModel.qml`
   (panel polling and literal command transport), `lib/` (`panel.sh` holds the
   read-only panel view and words, `client.sh` holds the
-  Looking Glass client code, `setup.sh` the setup flow and setup media, `pins.sh`
+  Looking Glass client code, `setup.sh` the setup flow, setup media and
+  `$RUN/step6-checks.json` check outcomes for each attempt, `pins.sh`
   the pinned downloads, `ui.sh` the settings command, per-group result records
   and session-unit panel jobs, `snapshot.sh` snapshot and restore, `copy.sh` the
   reflink copy helpers, `ficlone.py` the in-place clone, `image-proof.py` the
