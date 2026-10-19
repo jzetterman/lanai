@@ -525,6 +525,7 @@ Panel {
                   Note { text: snapshotRow.modelData.date ? snapshotRow.modelData.date + " · " + snapshotRow.modelData.time : snapshotRow.modelData.label }
                   Action {
                     objectName: "restore-" + snapshotRow.modelData.name
+                    width: Math.min(implicitWidth, parent.width)
                     control: root.restoreArmed === snapshotRow.modelData.name ? "restore_confirm" : "restore_snapshot"
                     text: root.restoreArmed === snapshotRow.modelData.name ? snapshotRow.modelData.confirm_label : snapshotRow.modelData.restore_label
                     onClicked: {

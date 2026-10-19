@@ -463,10 +463,11 @@ TestCase {
     var p = redesignPanel()
     ;['1','2','3','3a','4','5','6'].forEach(function(step) {
       var v = setupView(step)
+      named(p.panel, 'panelPopup').contentWidth = 420
       p.model.view = v
-      wait(1)
       var strip = named(p.panel, 'setupSteps')
       verify(strip !== undefined)
+      verify(waitForPolish(strip.Window.window))
       verify(strip.visible)
       var entries = objects(strip, function(o) { return o.objectName.indexOf('setupStep-') === 0 })
       compare(entries.length, 6)
@@ -481,8 +482,12 @@ TestCase {
       verify(named(p.panel, 'snapshotsToggle').visible)
       // Narrow fitting wraps the strip, with no horizontal overflow.
       named(p.panel, 'panelPopup').contentWidth = 260
-      wait(1)
-      entries.forEach(function(entry) { verify(entry.x + entry.width <= strip.width + 1) })
+      verify(waitForPolish(strip.Window.window))
+      entries.forEach(function(entry, i) {
+        fuzzyCompare(entry.x, (i % 3) * (entry.width + strip.spacing), 1)
+        fuzzyCompare(entry.y, i < 3 ? 0 : entries[0].height + strip.spacing, 1)
+        verify(entry.x + entry.width <= strip.width + 1)
+      })
     })
   }
   function test_redesign_setup_headers_override_running_settings_and_finish_returns_daily() {
@@ -971,6 +976,28 @@ TestCase {
     named(p.panel, 'restore-20261012T091200Z').clicked()
     v = redesignView(); v.buttons.restore_snapshot.enable = false; p.model.view = v
     compare(p.panel.restoreArmed, '')
+    p.panel.destroy()
+  }
+  function test_redesign_snapshot_actions_fit_narrow_panel() {
+    var p = redesignPanel()
+    named(p.panel, 'snapshotsToggle').clicked()
+    var popup = named(p.panel, 'panelPopup'), flick = named(p.panel, 'panelScroll')
+    var restore = named(p.panel, 'restore-20261012T091200Z')
+    ;[420,360,260].forEach(function(width) {
+      popup.contentWidth = width
+      verify(waitForPolish(flick.Window.window))
+      ;[false,true].forEach(function(armed) {
+        p.panel.restoreArmed = armed ? '20261012T091200Z' : ''
+        compare(restore.text, armed ? p.model.view.snapshots.items[0].confirm_label : p.model.view.snapshots.items[0].restore_label)
+        restore.forceActiveFocus()
+        verify(waitForPolish(flick.Window.window))
+        verify(restore.activeFocus)
+        var point = restore.mapToItem(flick, 0, 0)
+        verify(point.x >= 0)
+        verify(point.x + restore.width <= flick.width, 'Snapshot action overflows ' + width + 'px panel: ' + restore.width)
+        verify(point.y >= 0 && point.y + restore.height <= flick.height)
+      })
+    })
     p.panel.destroy()
   }
   function test_redesign_progress_stays_above_actions_for_snapshot_and_restore() {
@@ -1845,6 +1872,38 @@ qml_renderer_run() {
   sed -i 's/family:"sans",bodySmall:12/family:"sans",body:14,bodySmall:12/' "$T/qml/imports/TestCommons/Style.qml"
   qml_renderer_run PanelRenderer::test_redesign_typed_numbers_enable_save_and_commit_without_enter \
     PanelRenderer::test_redesign_pending_number_reset_revert_and_reopen
+}
+
+@test "QML snapshots: narrow actions fit with the installed Button" {
+  local button=/usr/share/omarchy/shell/Ui/Button.qml
+  [[ -r $button ]] || skip "installed Button is unavailable"
+  qml_renderer_fixture
+  sed 's/import qs.Commons/import TestCommons/' "$button" >"$T/qml/imports/TestUi/Button.qml"
+  # Keep the installed button's sizing and text fitting with inert theme tokens.
+  sed -i '/property real cornerRadius/a\
+  property var spacing: ({controlGap:8,controlPaddingX:10,controlPaddingY:6})\
+  property real normalBorderWidth: 1\
+  function selectedStateColor(foreground, accent) { return foreground }\
+  function pressedFillFor(foreground, accent) { return "transparent" }\
+  function focusFillFor(foreground, accent) { return "transparent" }\
+  function hoverFillFor(foreground, accent) { return "transparent" }\
+  function selectedFillFor(foreground, accent) { return "transparent" }' "$T/qml/imports/TestCommons/Style.qml"
+  sed -i 's/family:"sans",bodySmall:12,caption:10/family:"monospace",body:12,bodySmall:11,caption:10,icon:16/' "$T/qml/imports/TestCommons/Style.qml"
+  sed -i '/function controlSpec/a\
+  function localOrSurfaceSpec() { return {width:1,color:"white"} }\
+  function controlHasWidth() { return true }\
+  function left(spec) { return spec.width }\
+  function right(spec) { return spec.width }\
+  function top(spec) { return spec.width }\
+  function bottom(spec) { return spec.width }' "$T/qml/imports/TestCommons/Border.qml"
+  sed -i '/property var borderSpec/a\
+  property real leftPadding: 0\
+  property real rightPadding: 0\
+  property real topPadding: 0\
+  property real bottomPadding: 0' "$T/qml/imports/TestUi/BorderSurface.qml"
+  sed -i 's/property color background: "black"/property color background: "black"; property var tooltip: ({background:"black",text:"white",border:"white"})/' "$T/qml/imports/TestCommons/Color.qml"
+  qml_renderer_run PanelRenderer::test_redesign_snapshot_actions_fit_narrow_panel \
+    PanelRenderer::test_redesign_restore_dates_identity_cancel_and_invalidated_target
 }
 
 panel_board_view() {
