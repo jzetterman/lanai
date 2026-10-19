@@ -28,7 +28,7 @@ Item {
   property int copyingGeneration: 0
   signal panelRequested()
   signal settingsSaved(int memoryGib, int cores, var windowsScale)
-  readonly property string tooltip: ["Lanai", view.label, view.headline, view.cause, view.next, view.notice, view.warning, view.right_click_tooltip].filter(function(s) { return !!s }).join("\n")
+  readonly property string tooltip: ["Lanai", view.bar && view.bar.label, view.label, view.headline, view.cause, view.next, view.notice, view.warning, view.right_click_tooltip].filter(function(s, i, words) { return !!s && words.indexOf(s) === i }).join("\n")
 
   function control(name) { return view.buttons[name] || {show: false, enable: false, label: ""} }
   function token() { return "panel-" + Date.now() + "-" + Math.floor(Math.random() * 1000000) }
@@ -168,7 +168,7 @@ Item {
       } catch (_) {
         root.view = {layout: "failed", header: {title: "Windows", meta: "", badge: "Failed"},
           sections: {settings: "Settings", snapshots: "Snapshots", logs: "Logs", more: "More actions", dismiss_click_notice: "Dismiss busy notice", default: "logs"},
-          primary_action: null, bar: {mode: "failed", percent: null}, restore: {label: "", warning: ""},
+          primary_action: null, bar: {mode: "failed", percent: null, label: "Failed"}, restore: {label: "", warning: ""},
           label: "Unavailable", headline: "Lanai could not check Windows",
           cause: "The status check did not finish or its reply could not be read.",
           next: "Try again in a few seconds, then check the logs if it continues.",

@@ -788,6 +788,50 @@ and stopped, package and snapshot prompts, missing install, another VM,
 version mismatch, failed reads and unfinished restore. Check that independent
 failures still override setup attention.
 
+Phase 7 renders the backend bar mode in the existing monitor icon slot. Active
+uses the theme accent and a full underline. Busy uses the accepted percentage,
+or moves a fixed-width segment when progress is unmeasured. Attention has a
+round accent badge; failure has a square urgent badge. Other glyphs use the
+theme foreground, even when Windows remains active. A fixed optical canvas
+keeps the mark still as indicators change. Unmeasured motion stops when its mode
+ends and respects the shell's reduced-motion setting.
+
+The backend adds `bar.label` for tooltip and accessibility wording. The model
+keeps causes, warnings, notices and the actual right-click action in that
+tooltip and removes duplicate lines. The button has an accessible name and a
+visible keyboard focus outline. Its backend active flag, keyboard toggles,
+literal right-click shortcuts and panel requests remain intact. No priority
+decision moved into QML.
+
+All three named QtTest functions and the new backend assertion failed before
+implementation. The renderer then passed all 51 test functions. The final
+focused command passed 164 Bats cases and skipped one unavailable comma-decimal
+locale, with no failures out of 165 cases. The bar matrix covers Drivers with
+and without a worker, recovery and independent failures. The renderer covers
+theme-role changes, zero and full progress, unmeasured motion, reduced motion,
+focus, all toggle keys, literal shortcuts and failed or forced-stop panel
+requests. Logs are under `/run/user/1000/lzi/phase7`.
+
+Phase 7 implementation is complete. The shared block exited successfully with
+836 passes, 84 skips and no failures out of 920 Bats cases. QML lint passed
+with the existing hoisting and model-id warnings. Full shellcheck and
+`git diff --check` passed. Guest tests ran with pwsh.
+
+Validation redirected the lint helper's and spike harness's explicit temporary
+paths into the runtime TMPDIR without editing either script. Five spike btrfs
+cases skipped on tmpfs, including the real `/proc/locks` case. The remaining
+skips were 76 cases without LANAI_TEST_BTRFS_DIR, the pinned-source build without
+LANAI_TEST_LG_TARBALL, the unavailable strace measurement and the missing
+comma-decimal locale. The shared temporary directory was removed after success.
+The first failing red run with the Bats watchdog did not exit after reporting
+its results and was interrupted. Separate red runs confirmed the named missing
+behaviours, and the final focused run exited successfully without the watchdog.
+
+There is no spec behaviour deviation. The added backend label keeps new bar
+wording in the existing wording layer. Btrfs and theme comparison remain for
+the orchestrator outside this sandbox and phase 8 acceptance. No VM, live
+install, root command, review stage or commit was used.
+
 ## Phase 8: Acceptance fixtures and documentation
 
 Read `README.md`, `CLAUDE.md`'s Layout section, the redesign spec and this plan.

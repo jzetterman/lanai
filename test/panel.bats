@@ -2744,7 +2744,7 @@ redesign_check_detail() {
   state "$CURRENT"
   run cmd_panel
   assert_success
-  assert_equal "$(jq -c .bar <<<"$output")" '{"mode":"stopped","percent":null}'
+  assert_equal "$(jq -c .bar <<<"$output")" '{"mode":"stopped","percent":null,"label":"Stopped"}'
   ST=activating
   run cmd_panel
   assert_equal "$(jq -r .bar.mode <<<"$output")" active
@@ -2819,6 +2819,47 @@ redesign_check_detail() {
   panel_result_write vm '{"command":"start","invocation":"old","started":1,"ended":2,"reply":{"ok":false}}'
   run cmd_panel
   assert_equal "$(jq -r .bar.mode <<<"$output")" active
+}
+
+@test "redesign bar: Drivers active exception never hides failure or recovery" {
+  local fd worker reason
+  state '{"snapshot":"declined"}'
+  ST=active
+  echo '{"setup":true}' >"$S/boot.json"
+  for worker in false true; do
+    panel_result_write setup '{"command":"setup","started":1,"reply":{"ok":true,"step":"5"}}'
+    if $worker; then
+      exec {fd}>"$S/panel-job.lock"; flock "$fd"
+    else
+      panel_result_write setup '{"command":"setup","started":1,"ended":2,"reply":{"ok":true,"step":"5"}}'
+    fi
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .bar.mode <<<"$output")" active
+    assert_equal "$(jq -r .bar.label <<<"$output")" Active
+    assert_equal "$(jq .bar.percent <<<"$output")" null
+    for reason in mismatch allowlist; do
+      panel_result_write setup "$(jq -nc --arg r "$reason" '{command:"setup",started:1,ended:2,reply:{ok:false,step:"5",reason:$r}}')"
+      run cmd_panel
+      assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+      assert_equal "$(jq -r .bar.label <<<"$output")" Failed
+    done
+    panel_result_write setup '{"command":"setup","started":1,"ended":2,"reply":{"ok":true,"step":"5"}}'
+    panel_result_write vm '{"command":"stop","invocation":"inv","started":2,"ended":3,"reply":{"ok":false}}'
+    run cmd_panel
+    assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+    rm "$S/panel-result-vm.json"
+    : >"$S/restore-in-progress"
+    run cmd_panel
+    assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+    assert_equal "$(jq -r .layout <<<"$output")" restoring
+    rm "$S/restore-in-progress"
+    ST=failed RESULT=exit-code
+    run cmd_panel
+    assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+    ST=active RESULT=success
+    if $worker; then exec {fd}>&-; fi
+  done
 }
 
 @test "redesign actions: every existing guard survives the presentation choice" {

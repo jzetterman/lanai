@@ -558,7 +558,8 @@ cmd_panel() {
     .bar = {mode:(if $failed then "failed"
       elif $p.action == "setup-wait" and $st.active then "active"
       elif $attention then "attention" elif $busy then "busy" elif $st.active then "active" else "stopped" end),
-      percent:(if $progress.total > 0 then $progress.percent else null end)}'
+      percent:(if $progress.total > 0 then $progress.percent else null end)} |
+    .bar.label = ({stopped:"Stopped",active:"Active",busy:"Busy",attention:"Your turn",failed:"Failed"}[.bar.mode])'
   # shellcheck disable=SC2034
   LANAI_EMITTED=1
 }

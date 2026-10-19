@@ -62,8 +62,10 @@ QtObject {
   property var selectedAccentFill
   property var bar: ({iconFont:16,statusSlot:24})
   property real cornerRadius: 0
+  property bool reduceMotion: false
   property var font: ({family:"sans",bodySmall:12,caption:10})
   function space(n) { return n }
+  function duration(ms) { return reduceMotion ? 0 : ms }
 }
 QML
   echo 'pragma Singleton; import QtQuick; QtObject { property color foreground: "white"; property color urgent: "red"; property color accent: "#4080c0"; property color background: "black"; property QtObject popups: QtObject { property color background: "#80000000" } }' >"$T/qml/imports/TestCommons/Color.qml"
@@ -122,6 +124,12 @@ Item {
   signal pressed(int button)
   implicitWidth: 24
   implicitHeight: 24
+  Loader { anchors.fill: parent; sourceComponent: parent.iconComponent }
+  MouseArea {
+    anchors.fill: parent
+    acceptedButtons: Qt.LeftButton | Qt.RightButton
+    onClicked: function(mouse) { parent.pressed(mouse.button) }
+  }
 }
 QML
   cat >"$T/qml/imports/TestUi/Panel.qml" <<'QML'
@@ -290,6 +298,123 @@ TestCase {
     var button = objects(widget, function(o) { return typeof o.pressed === "function" && o.tooltipText !== undefined })[0]
     ready(model)
     return {widget:widget, model:model, button:button}
+  }
+  function barView(mode, percent, active) {
+    var v = redesignView()
+    v.active = active
+    v.bar = {mode:mode,percent:percent,label:({stopped:'Stopped',active:'Active',busy:'Busy',attention:'Your turn',failed:'Failed'})[mode]}
+    v.right_click = 'panel'
+    v.right_click_tooltip = 'Right-click: Open the panel.'
+    return v
+  }
+  function test_redesign_bar_modes_render_theme_badges_and_underlines() {
+    var p = widgetParts()
+    var original = [Commons.Color.foreground, Commons.Color.accent, Commons.Color.urgent]
+    ;[['#dddddd','#4488cc','#cc4444'],['#222222','#886622','#992288']].forEach(function(colors) {
+      Commons.Color.foreground = colors[0]; Commons.Color.accent = colors[1]; Commons.Color.urgent = colors[2]
+      ;['stopped','active','busy','attention','failed'].forEach(function(mode) {
+        // The supplied mode wins even if Windows is active in the background.
+        p.model.view = barView(mode, 42, mode !== 'stopped')
+        wait(1)
+        var monitor = named(p.widget, 'barMonitor'), foot = named(p.widget, 'barFoot')
+        var underline = named(p.widget, 'barUnderline'), badge = named(p.widget, 'barBadge')
+        verify(monitor !== undefined && foot !== undefined && underline !== undefined && badge !== undefined)
+        compare(monitor.border.color, mode === 'active' ? Commons.Color.accent : Commons.Color.foreground)
+        compare(foot.color, monitor.border.color)
+        compare(p.button.active, p.model.view.active)
+        compare(underline.visible, mode === 'active' || mode === 'busy')
+        if (underline.visible) {
+          compare(underline.color, Commons.Color.accent)
+          fuzzyCompare(underline.width / underline.parent.width, mode === 'active' ? 1 : 0.42, 0.001)
+        }
+        compare(badge.visible, mode === 'attention' || mode === 'failed')
+        if (badge.visible) {
+          compare(badge.color, mode === 'failed' ? Commons.Color.urgent : Commons.Color.accent)
+          compare(badge.radius > 0, mode === 'attention')
+        }
+        verify(p.button.tooltipText.indexOf(p.model.view.bar.label) !== -1)
+        compare(p.button.Accessible.name, p.button.tooltipText)
+        compare(p.button.Accessible.role, Accessible.Button)
+      })
+    })
+    Commons.Color.foreground = original[0]; Commons.Color.accent = original[1]; Commons.Color.urgent = original[2]
+    ;[0,100].forEach(function(percent) {
+      p.model.view = barView('busy', percent, false)
+      var underline = named(p.widget, 'barUnderline')
+      fuzzyCompare(underline.width / underline.parent.width, percent / 100, 0.001)
+    })
+  }
+  function test_redesign_busy_without_progress_animates_a_fixed_segment() {
+    var p = widgetParts()
+    p.model.view = barView('busy', null, true)
+    wait(1)
+    var underline = named(p.widget, 'barUnderline'), animation = named(p.widget, 'barBusyAnimation')
+    verify(underline !== undefined && animation !== undefined)
+    verify(underline.visible && animation.running)
+    var width = underline.width, x = underline.x
+    verify(width > 0 && width < underline.parent.width)
+    wait(100)
+    compare(underline.width, width)
+    verify(underline.x !== x)
+    verify(underline.x >= 0 && underline.x + width <= underline.parent.width)
+    p.model.view = barView('busy', 25, true)
+    verify(!animation.running)
+    compare(underline.x, 0)
+    fuzzyCompare(underline.width / underline.parent.width, 0.25, 0.001)
+    p.model.view = barView('busy', null, true)
+    verify(animation.running)
+    ;['attention','failed','active','stopped'].forEach(function(mode) {
+      p.model.view = barView(mode, null, true)
+      verify(!animation.running)
+      compare(underline.x, 0)
+    })
+    verify(!/\d+%/.test(p.button.tooltipText))
+    p.model.view = barView('busy', null, true)
+    Style.reduceMotion = true
+    verify(!animation.running)
+    compare(underline.width, width)
+    compare(underline.x, 0)
+    Style.reduceMotion = false
+  }
+  function test_redesign_bar_shortcuts_and_failure_panel_requests_survive() {
+    var p = widgetParts(), keys = [Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Menu]
+    ;['stopped','active','busy','attention','failed'].forEach(function(mode) {
+      var v = barView(mode, null, true)
+      v.warning = 'Backend warning'; v.notice = 'Backend notice'
+      p.model.view = v
+      verify(p.button.tooltipText.indexOf(v.warning) !== -1)
+      verify(p.button.tooltipText.indexOf(v.notice) !== -1)
+      verify(p.button.tooltipText.indexOf(v.right_click_tooltip) !== -1)
+      p.widget.close()
+      mouseClick(p.button, 12, 12, Qt.LeftButton)
+      verify(p.widget.opened)
+      mouseClick(p.button, 12, 12, Qt.LeftButton)
+      verify(!p.widget.opened)
+      p.button.forceActiveFocus()
+      verify(named(p.widget, 'barFocus').visible)
+      keys.forEach(function(key) {
+        keyClick(key); verify(p.widget.opened)
+        keyClick(key); verify(!p.widget.opened)
+      })
+      ;['start','open'].forEach(function(action) {
+        v = barView(mode, null, true); v.right_click = action
+        p.model.view = v
+        p.button.pressed(Qt.RightButton)
+        var command = process(p.model, p.model.cli)
+        compare(command.command.slice(3).join(' '), action)
+        command.complete('{"ok":false,"panel_requested":true}', 1)
+        verify(p.widget.opened)
+        ready(p.model); p.widget.close()
+      })
+      p.model.view = barView(mode, null, true)
+      p.button.pressed(Qt.RightButton)
+      verify(p.widget.opened)
+      p.widget.close()
+      p.model.run(['force-stop','--confirm'], false)
+      process(p.model, p.model.cli).complete('{"ok":true,"panel_requested":true,"forced":true}', 0)
+      verify(p.widget.opened)
+      ready(p.model); p.widget.close()
+    })
   }
   function named(panel, name) { return objects(panel, function(o) { return o.objectName === name })[0] }
   function redesignView() {
