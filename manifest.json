@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.jzetterman.lanai",
   "name": "Lanai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "John Zetterman",
   "license": "MIT AND GPL-2.0-or-later",
   "description": "Run your omarchy-windows-vm Windows install in plain QEMU and see it in a Looking Glass window.",
