@@ -213,6 +213,7 @@ image_clone() { image_helper ficlone "$@"; }
 # subshell keeps traps and exported helper context out of sourced callers.
 image_operation() (
   export LANAI_IMAGE_OPERATION=$1 LANAI_IMAGE_OWNER=$BASHPID
+  unset LANAI_IMAGE_TARGET
   LANAI_IMAGE_PROGRESS="$(state_dir)/image-progress.json"
   LANAI_IMAGE_MAP="$(state_dir)/image-map.$BASHPID.json"
   export LANAI_IMAGE_PROGRESS LANAI_IMAGE_MAP
@@ -401,6 +402,7 @@ snapshot_restore() {
       return 1
     fi
   fi
+  export LANAI_IMAGE_TARGET=${snap##*/}
   if reason=$(snapshot_blocked) || reason=$(storage_problem "$dir" restore); then
     echo "$reason"
     return 1

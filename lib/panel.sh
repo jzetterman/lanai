@@ -120,12 +120,68 @@ panel_records() {
   jq -nc --argjson r "$records" --argjson h "$held" '{held:$h,records:$r}'
 }
 
+# Keep the UTC folder name as the identity, even when it is not a real date.
+panel_snapshot_item() {
+  local name=$1 formatted='' date='' time='' label=$1
+  if [[ $name =~ $LANAI_SNAP_RE ]]; then
+    formatted=$(LC_ALL=C date -u -d "${name:0:4}-${name:4:2}-${name:6:2} ${name:9:2}:${name:11:2}:${name:13:2} UTC" \
+      '+%Y%m%dT%H%M%SZ|%b %-d, %Y|%H:%M UTC' 2>/dev/null) || formatted=''
+    if [[ ${formatted%%|*} == "$name" ]]; then
+      formatted=${formatted#*|}
+      date=${formatted%%|*} time=${formatted#*|}
+      label="$date at $time"
+    fi
+  fi
+  jq -nc --arg n "$name" --arg d "$date" --arg t "$time" --arg l "$label" \
+    '{name:$n,date:(if $d == "" then null else $d end),time:(if $t == "" then null else $t end),
+      label:$l,restore_label:("Restore " + $l),confirm_label:("Restore " + $l + " and replace Windows"),
+      warning:"Replaces Windows. Changes since this snapshot are lost."}'
+}
+
+# Resolve display identity only against this read's validated snapshot list.
+# Progress wins over an active job; a marker also covers interrupted CLI work.
+panel_restore() {
+  local progress=$1 records=$2 paths=$3 items=$4 storage=$5 marker=$6
+  local job active=false pending=false name='' target='' snap='' source='' item=null use_marker=true
+  [[ ! -e $marker ]] || pending=true
+  job=$(jq -c 'if .held then [.records[] | select(. != null and has("started") and (has("ended")|not))] |
+    max_by(.started) // {} else {} end' <<<"$records")
+  if [[ $(jq -r '.operation' <<<"$progress") == restore || $(jq -r .command <<<"$job") == restore ]]; then
+    active=true
+    target=$(jq -r '.target // ""' <<<"$progress")
+    if [[ $target =~ $LANAI_SNAP_RE ]] && jq -e --arg n "$target" 'any(.[]; .name == $n)' <<<"$items" >/dev/null; then
+      name=$target
+    elif [[ $(jq -r .command <<<"$job") == restore ]]; then
+      target=$(jq -r '.args[0] // ""' <<<"$job")
+      if [[ -n $target ]]; then
+        use_marker=false
+        if [[ $target =~ $LANAI_SNAP_RE ]] && jq -e --arg n "$target" 'any(.[]; .name == $n)' <<<"$items" >/dev/null; then
+          name=$target
+        fi
+      fi
+    fi
+  fi
+  if [[ -z $name && $use_marker == true && -f $marker ]]; then
+    if { IFS= read -r snap && IFS= read -r source; } <"$marker" && [[ -n $storage && $source == "$storage" ]] &&
+      jq -e --arg p "$snap" 'index($p) != null' <<<"$paths" >/dev/null; then
+      name=${snap##*/}
+    fi
+  fi
+  [[ -z $name ]] || item=$(jq -c --arg n "$name" '.[] | select(.name == $n)' <<<"$items")
+  jq -nc --argjson a "$active" --argjson p "$pending" --argjson i "$item" \
+    '{pending:$p,name:($i.name // null),label:(if $a then
+        (if $i == null then "Restoring Windows" else "Restoring " + $i.label end)
+      elif $p then (if $i == null then "Unfinished restore" else "Unfinished restore of " + $i.label end)
+      else "" end),warning:(if $a or $p then "Keep Windows stopped until the restore finishes." else "" end)}'
+}
+
 # One view: gather once, status makes its one bounded QMP session, and setup plans
 # from the same host facts. Settings/list errors are data, never swallowed results.
 cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
   local client_old=false signin_missing=false update_shown=false task started=0 booted button
+  local snapshot_paths='[]' items='[]' name restore
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
       emit false "" "Invalid panel input." ""; return 2
@@ -252,15 +308,19 @@ cmd_panel() {
         [$steps | splits(" ") | select(length > 0) | tonumber | {value:.,label:(tostring + "%")}])}' <<<"$settings")
   else settings='{"error":"Lanai could not read the VM settings. Check the settings file."}'; fi
   if snapshots=$(cmd_snapshots 2>/dev/null) && jq -e '.ok' <<<"$snapshots" >/dev/null; then
-    snapshots=$(jq -c '{names:(.snapshots | map(split("/")[-1])),error:"",line:(if (.snapshots|length) == 0 then "No snapshots yet." else "Restoring replaces Windows. Anything saved since the snapshot is lost. Stop Windows in both VMs before restoring." end)}' <<<"$snapshots")
-  else snapshots='{"names":[],"error":"Lanai could not read the snapshot list. Check the settings and logs."}'; fi
+    snapshot_paths=$(jq -c .snapshots <<<"$snapshots")
+    items=$(while IFS= read -r name; do panel_snapshot_item "$name"; done < <(
+      jq -r 'map(split("/")[-1]) | unique | reverse[]' <<<"$snapshot_paths") | jq -sc .)
+    snapshots=$(jq -c --argjson items "$items" '{names:(.snapshots | map(split("/")[-1])),items:$items,count:($items|length),error:"",line:(if (.snapshots|length) == 0 then "No snapshots yet." else "Restoring replaces Windows. Anything saved since the snapshot is lost. Stop Windows in both VMs before restoring." end)}' <<<"$snapshots")
+  else snapshots='{"names":[],"items":[],"count":0,"error":"Lanai could not read the snapshot list. Check the settings and logs."}'; fi
+  restore=$(panel_restore "$progress" "$records" "$snapshot_paths" "$items" "$(sed -n 's/^LanaiStorage=//p' <<<"$facts")" "$s/restore-in-progress")
   logs=$(jq -nc --arg client "${run:+$run/client.log}" --arg job "$s/panel-job.log" --arg command "$s/panel-run.log" \
     --arg build "$s/build-client.log" \
     '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Setup, snapshot, restore and update log: " + $job),command:("Button actions log: " + $command),
       build:("Windows window build log: " + $build)} +
      (if $client == "" then {} else {client:("Windows window log: " + $client)} end)')
   jq -nc --argjson st "$status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
-    --argjson progress "$progress" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
+    --argjson progress "$progress" --argjson restore "$restore" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
     --argjson clientOld "$client_old" --argjson signinMissing "$signin_missing" --argjson updateShown "$update_shown" --arg task "$task" \
@@ -304,7 +364,7 @@ cmd_panel() {
      right_click:$rightClick,
      right_click_tooltip:({start:"Right-click: Start Windows.",open:"Right-click: Open the Windows window.",panel:"Right-click: Open the panel."}[$rightClick]),
      pending_ack:(if $seen then $token else "" end),
-     progress:$progress,notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
+     progress:$progress,restore:$restore,notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
      busy:{active:$busy,line:(if $progress != null then (if ($progress.label | startswith("Restoring Windows:")) then "Keep Windows stopped until it finishes." else "You can close this panel." end) elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
        elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes.",
          "build-client":("Updating the Windows window. This may take several minutes. " +

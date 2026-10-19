@@ -314,6 +314,143 @@ timeout_record() {
 }
 state() { jq -nc --arg l "$STORE" --argjson d "$1" '$d + {location:$l}' >"$S/setup.json"; }
 
+# Use real validation and listing for the redesign's snapshot presentation.
+display_snapshot() {
+  local snap=$1
+  mkdir -p "${snap%/*}"
+  mkdir -m 700 "$snap"
+  printf image >"$snap/data.img"
+  printf '%s\n' "$STORE" >"$snap/SOURCE"
+  tree_manifest "$snap" | sed '/ SOURCE$/d' >"$T/manifest"
+  cp "$T/manifest" "$snap/COMPLETE"
+}
+
+@test "redesign snapshots: UTC rows are newest first and keep restore names" {
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  local root name
+  root=$(data_dir)/snapshots
+  for name in 20260902T070500Z 20261012T091200Z 20260930T184700Z 20260230T091200Z 20260228T240000Z; do
+    display_snapshot "$root/$name"
+  done
+  export TZ=Pacific/Honolulu LC_TIME=C.utf8
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c '.snapshots.items | map(.name)' <<<"$output")" '["20261012T091200Z","20260930T184700Z","20260902T070500Z","20260230T091200Z","20260228T240000Z"]'
+  assert_equal "$(jq -r '.snapshots.items[0].date' <<<"$output")" 'Oct 12, 2026'
+  assert_equal "$(jq -r '.snapshots.items[0].time' <<<"$output")" '09:12 UTC'
+  assert_equal "$(jq -r '.snapshots.items[0].label' <<<"$output")" 'Oct 12, 2026 at 09:12 UTC'
+  assert_equal "$(jq -r '.snapshots.items[0].restore_label' <<<"$output")" 'Restore Oct 12, 2026 at 09:12 UTC'
+  assert_equal "$(jq -r '.snapshots.items[0].confirm_label' <<<"$output")" 'Restore Oct 12, 2026 at 09:12 UTC and replace Windows'
+  assert_equal "$(jq -r '.snapshots.items[0].warning' <<<"$output")" 'Replaces Windows. Changes since this snapshot are lost.'
+  assert_equal "$(jq -c '.snapshots.items[-2] | [.date,.time,.label]' <<<"$output")" '[null,null,"20260230T091200Z"]'
+  assert_equal "$(jq -c '.snapshots.items[-1] | [.date,.time,.label]' <<<"$output")" '[null,null,"20260228T240000Z"]'
+  assert_equal "$(jq -r '.buttons.restore_snapshot.labels["20261012T091200Z"]' <<<"$output")" 'Restore snapshot 20261012T091200Z'
+  run cmd_snapshots
+  assert_success
+  assert_equal "$(jq -r '.snapshots[0] | split("/")[-1]' <<<"$output")" 20260228T240000Z
+}
+
+@test "redesign snapshots: counts exclude partial, foreign and invalid snapshots" {
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  local root
+  root=$(data_dir)/snapshots
+  display_snapshot "$root/20261012T091200Z"
+  display_snapshot "$STORE.lanai-snapshots/20261012T091200Z"
+  display_snapshot "$root/20261013T091200Z.partial"
+  display_snapshot "$root/20261014T091200Z"
+  echo "$T/foreign" >"$root/20261014T091200Z/SOURCE"
+  display_snapshot "$root/20261015T091200Z"
+  rm "$root/20261015T091200Z/COMPLETE"
+  display_snapshot "$root/20261016T091200Z"
+  echo extra >"$root/20261016T091200Z/extra"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .snapshots.count <<<"$output")" 1
+  assert_equal "$(jq -c '.snapshots.items | map(.name)' <<<"$output")" '["20261012T091200Z"]'
+  assert_equal "$(snapshot_find "$STORE" 20261012T091200Z)" "$(snapshot_list "$STORE" | head -n 1)"
+}
+
+@test "redesign restore: marker supplies the target without a panel job" {
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  local snap fd job_fd pid=$BASHPID
+  snap=$(data_dir)/snapshots/20261012T091200Z
+  display_snapshot "$snap"
+  printf '%s\n%s\n' "$snap" "$STORE" >"$S/restore-in-progress"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c '.restore | [.pending,.name,.label,.warning]' <<<"$output")" '[true,"20261012T091200Z","Unfinished restore of Oct 12, 2026 at 09:12 UTC","Keep Windows stopped until the restore finishes."]'
+  exec {fd}>"$S/lock"
+  flock -n "$fd"
+  jq -nc --argjson p "$pid" '{operation:"restore",phase:"checking",done:0,total:0,pid:$p}' >"$S/image-progress.json"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .restore.label <<<"$output")" 'Restoring Oct 12, 2026 at 09:12 UTC'
+  display_snapshot "$(data_dir)/snapshots/20261013T101500Z"
+  exec {job_fd}>"$S/panel-job.lock"
+  flock -n "$job_fd"
+  panel_result_write snapshots '{"command":"restore","args":["20261013T101500Z"],"started":1}'
+  run cmd_panel
+  assert_equal "$(jq -r .restore.name <<<"$output")" 20261013T101500Z
+  jq '.target="20261012T091200Z"' "$S/image-progress.json" >"$T/progress"
+  mv "$T/progress" "$S/image-progress.json"
+  run cmd_panel
+  assert_equal "$(jq -r .restore.name <<<"$output")" 20261012T091200Z
+  rm "$S/image-progress.json"
+  panel_result_write snapshots '{"command":"restore","args":[],"started":1}'
+  run cmd_panel
+  assert_equal "$(jq -r .restore.name <<<"$output")" 20261012T091200Z
+  panel_result_write snapshots '{"command":"restore","args":["missing"],"started":1}'
+  run cmd_panel
+  assert_equal "$(jq -r .restore.name <<<"$output")" null
+  panel_result_write snapshots '{"command":"restore","args":["20261013T101500Z"],"started":1,"ended":2}'
+  rm "$S/restore-in-progress"
+  run cmd_panel
+  assert_equal "$(jq -c '.restore | [.pending,.name,.label,.warning]' <<<"$output")" '[false,null,"",""]'
+  exec {job_fd}>&-
+  exec {fd}>&-
+}
+
+@test "redesign restore: invalid or foreign targets use generic wording" {
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  local snap fd pid=$BASHPID
+  snap=$(data_dir)/snapshots/20261012T091200Z
+  display_snapshot "$snap"
+  printf '%s\n%s\n' "$snap" "$T/foreign" >"$S/restore-in-progress"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c '.restore | [.name,.label]' <<<"$output")" '[null,"Unfinished restore"]'
+  printf '%s\n%s\n' "$snap" "$STORE" >"$S/restore-in-progress"
+  rm "$snap/COMPLETE"
+  run cmd_panel
+  assert_equal "$(jq -c '.restore | [.name,.label]' <<<"$output")" '[null,"Unfinished restore"]'
+  rm "$S/restore-in-progress"
+  exec {fd}>"$S/lock"
+  flock -n "$fd"
+  jq -nc --argjson p "$pid" '{operation:"restore",phase:"hashing",done:0,total:100,pid:$p,target:"20261012T091200Z"}' >"$S/image-progress.json"
+  run cmd_panel
+  assert_equal "$(jq -c '.restore | [.name,.label]' <<<"$output")" '[null,"Restoring Windows"]'
+  exec {fd}>&-
+}
+
+@test "redesign progress: accepted totals distinguish unmeasured work from zero percent hashing" {
+  local fd pid=$BASHPID total
+  exec {fd}>"$S/lock"
+  flock -n "$fd"
+  for total in 0 100; do
+    jq -nc --argjson p "$pid" --argjson t "$total" '{operation:"snapshot",phase:(if $t == 0 then "checking" else "hashing" end),done:0,total:$t,pid:$p}' >"$S/image-progress.json"
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .progress.operation <<<"$output")" snapshot
+    assert_equal "$(jq -r .progress.total <<<"$output")" "$total"
+    assert_equal "$(jq -r .progress.percent <<<"$output")" 0
+  done
+  exec {fd}>&-
+}
+
 # Mark step 6's other checks passed, as step 6 writes them: step6-since
 # and step6-checked.
 checks_passed() {

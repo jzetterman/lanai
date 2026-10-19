@@ -259,6 +259,46 @@ Focused checks: `bats test/snapshot.bats test/panel.bats test/lanai-copy.bats`.
 Then run the shared checks. Run the btrfs cases with the configured test directory
 before closing implementation of this phase.
 
+Phase 2 adds validated, unique snapshot rows in newest-first order, UTC display
+labels and restore identity from accepted progress, an active job or a matching
+unfinished-restore marker. The public snapshot list and old panel fields remain
+available. Progress retains its existing labels and percentages and adds the
+operation, accepted total and optional validated target. Each image operation
+clears inherited target metadata before its first checking record.
+
+All seven named cases failed before implementation and passed afterward. The
+additional assertions cover invalid calendar dates and normalized hours, target
+precedence, ended jobs, old progress records, malformed targets and totals, and
+stale ownership. The focused command exited successfully across 250 cases:
+174 passes and 76 skips (75 without a usable btrfs fixture and one unavailable
+`strace` measurement). QML lint passed with its existing warnings.
+
+The shared run reported 828 passes and 79 skips, then stalled after the final
+case with one of 908 results missing. The omitted case was the unchanged spike
+test `disk_locked: live flock on btrfs shows in the real /proc/locks`. Running
+it alone without the watchdog failed at `spike/test/lgtest.bats:190`: the held
+flock was invisible through this sandbox's `/proc/locks`. The shared run was
+interrupted with exit 130. This is not a successful full-suite result. Its
+skips were 76 cases without `LANAI_TEST_BTRFS_DIR`, the pinned-source build
+without `LANAI_TEST_LG_TARBALL`, the unavailable `strace` measurement and the
+missing comma-decimal locale. Guest tests ran with `pwsh`.
+
+The shared block stopped at Bats and retained its temporary directory. The
+full shellcheck command passed separately, and `git diff --check` passed.
+Diagnostic logs and runtime files
+remain under `/run/user/1000/lzi/lr2.IacdQ0`; the shared test directory is
+`/run/user/1000/lzi/lr.XqgMZO`. No review stage or commit ran in this delegated
+phase. The orchestrator must rerun the full checks outside this sandbox.
+
+The session requires every temporary directory to use a path under
+`/run/user/1000/lzi`, which is tmpfs. A btrfs attempt used a runtime symlink to
+the worktree's `.btrfs-test` fixture directory. Existing cases compare their
+unresolved fixture paths with canonical storage identities, so that alias
+caused path and SOURCE mismatches. The attempt was interrupted after 67 reported
+cases: 51 passes and 16 failures. It does not provide btrfs acceptance.
+Rerun the focused command with the real btrfs fixture path outside this
+session's temporary-path restriction before closing Phase 2.
+
 ## Phase 3: Finish the backend presentation contract
 
 Read all of `lib/panel.sh`, plus `lib/lanai.sh:status_map()`, `shared_facts()` and
