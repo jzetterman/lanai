@@ -32,6 +32,13 @@ setup_finished() {
   assert_success
   assert_equal "$(jq -r .scale_save "$(settings_file)")" 2
   assert_equal "$(jq -r .windows_scale "$(settings_file)")" 150
+  # The panel's Reset drops scale intent; the next memory-only save keeps
+  # the scale and the two deliberately repeated scale saves' number.
+  lanai_run settings 16 4
+  assert_success
+  assert_equal "$(jq -r .scale_saved <<<"$JSON")" false
+  assert_equal "$(jq -r .scale_save "$(settings_file)")" 2
+  assert_equal "$(jq -r .windows_scale "$(settings_file)")" 150
   lanai_run settings 8 4 auto
   assert_equal "$(jq -r .scale_save "$(settings_file)")" 3
 }

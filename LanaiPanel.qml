@@ -30,9 +30,19 @@ Panel {
   property int coresInput: root.model.view.settings.cores || 1
   property var windowsScaleInput: root.model.view.settings.windows_scale === undefined ? "auto" : root.model.view.settings.windows_scale
   // Set by any choice in the scale list, even the entry already shown, and
-  // cleared only when the panel opens: while set, Save settings is a scale
+  // cleared by Reset or panel open: while set, Save settings is a scale
   // save (three arguments); otherwise it saves memory and cores only.
   property bool scaleTouched: false
+  property bool scaleDirty: false
+  property var savedBaseline: baselineFromView()
+  readonly property var settingsLabels: root.model.view.settings.labels || {}
+  readonly property bool settingsReadable: !root.model.view.settings.error
+    && root.model.view.settings.memory_gib >= 1 && root.model.view.settings.memory_gib <= 512
+    && root.model.view.settings.cores >= 1 && root.model.view.settings.cores <= 64
+  readonly property bool settingsDirty: scaleDirty || (savedBaseline !== null
+    && (memoryInput !== savedBaseline.memory_gib || coresInput !== savedBaseline.cores
+      || windowsScaleInput !== savedBaseline.windows_scale))
+  readonly property bool settingsSaveable: settingsDirty || scaleTouched || savedBaseline === null
   // The shell supplies bar/theme fields dynamically on QObject groups.
   // qmllint disable missing-property
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
@@ -48,11 +58,15 @@ Panel {
       coresInput = Qt.binding(function() { return root.model.view.settings.cores || 1 })
       windowsScaleInput = Qt.binding(function() { return root.model.view.settings.windows_scale === undefined ? "auto" : root.model.view.settings.windows_scale })
       scaleTouched = false
+      scaleDirty = false
+      savedBaseline = baselineFromView()
+      root.model.clearCopies()
     } else { stopArmed = false; forceArmed = false; restoreArmed = ""; setupAgainArmed = false; root.model.clickNotice = "" }
   }
   Connections {
     target: root.model
     function onViewChanged() {
+      root.savedBaseline = root.baselineFromView()
       if (!root.model.control("stop").show || !root.model.control("stop_confirm").show || !root.model.control("stop").confirm || !root.model.control("stop").enable || !root.model.control("stop_confirm").enable) root.stopArmed = false
       if (!root.model.control("force_confirm").show || !root.model.control("force_stop").show || !root.model.control("force_stop").enable || !root.model.control("force_confirm").enable) root.forceArmed = false
       if (!root.model.control("restore_snapshot").show || !root.model.control("restore_snapshot").enable
@@ -68,18 +82,44 @@ Panel {
       root.memoryInput = memoryGib
       root.coresInput = cores
       root.windowsScaleInput = windowsScale
+      root.savedBaseline = {memory_gib: memoryGib, cores: cores, windows_scale: windowsScale}
+      root.scaleDirty = false
     }
   }
   // SpinBox edits keep its value binding. Freeze the input that feeds it instead.
   Connections {
     target: memoryField.field
     function onActiveFocusChanged() { if (memoryField.field.activeFocus) root.reveal(memoryField) }
-    function onValueModified() { root.memoryInput = memoryField.field.value }
+    function onValueModified() { root.detachDrafts(); root.memoryInput = memoryField.field.value }
   }
   Connections {
     target: coresField.field
     function onActiveFocusChanged() { if (coresField.field.activeFocus) root.reveal(coresField) }
-    function onValueModified() { root.coresInput = coresField.field.value }
+    function onValueModified() { root.detachDrafts(); root.coresInput = coresField.field.value }
+  }
+
+  function baselineFromView() {
+    var baseline = root.model.view.settings.baseline
+    if (!baseline || root.model.view.settings.error
+        || typeof baseline.memory_gib !== "number" || baseline.memory_gib % 1 !== 0
+        || baseline.memory_gib < 1 || baseline.memory_gib > 512
+        || typeof baseline.cores !== "number" || baseline.cores % 1 !== 0 || baseline.cores < 1 || baseline.cores > 64
+        || !(baseline.windows_scale === "auto" || (typeof baseline.windows_scale === "number"
+          && baseline.windows_scale % 1 === 0 && baseline.windows_scale >= 100 && baseline.windows_scale <= 500))) return null
+    return baseline
+  }
+  function detachDrafts() {
+    memoryInput = memoryInput
+    coresInput = coresInput
+    windowsScaleInput = windowsScaleInput
+  }
+  function resetSettings() {
+    if (!root.model.control("save_settings").enable || !settingsReadable || !savedBaseline) return
+    memoryInput = savedBaseline.memory_gib
+    coresInput = savedBaseline.cores
+    windowsScaleInput = savedBaseline.windows_scale
+    scaleTouched = false
+    scaleDirty = false
   }
 
   // Keep the keyboard-focused control visible on small screens.
@@ -357,8 +397,8 @@ Panel {
             Flow {
               width: parent.width
               spacing: Style.space(12)
-              NumberField { id: memoryField; label: "Memory (GiB)"; from: 1; to: 512; value: root.memoryInput; onActiveFocusChanged: if (activeFocus) root.reveal(this); enabled: root.model.control("save_settings").enable; foreground: root.foreground; fontFamily: root.fontFamily }
-              NumberField { id: coresField; label: "CPU cores"; from: 1; to: 64; value: root.coresInput; onActiveFocusChanged: if (activeFocus) root.reveal(this); enabled: root.model.control("save_settings").enable; foreground: root.foreground; fontFamily: root.fontFamily }
+              NumberField { id: memoryField; label: root.settingsLabels.memory || ""; from: 1; to: 512; value: root.memoryInput; onActiveFocusChanged: if (activeFocus) root.reveal(this); enabled: root.model.control("save_settings").enable && root.settingsReadable; foreground: root.foreground; fontFamily: root.fontFamily }
+              NumberField { id: coresField; label: root.settingsLabels.cores || ""; from: 1; to: 64; value: root.coresInput; onActiveFocusChanged: if (activeFocus) root.reveal(this); enabled: root.model.control("save_settings").enable && root.settingsReadable; foreground: root.foreground; fontFamily: root.fontFamily }
               // The shell's themed dropdown, so it matches the number fields.
               // It works in strings; the setting is "auto" or a whole number.
               // The FocusScope sees focus on the dropdown's inner trigger, so
@@ -372,16 +412,18 @@ Panel {
                   objectName: "windowsScale"
                   anchors.fill: parent
                   focus: true
-                  label: "Windows scale"
+                  label: root.settingsLabels.scale || ""
                   options: root.model.view.settings.scale_choices || []
                   value: String(root.windowsScaleInput)
-                  enabled: root.model.control("save_settings").enable
+                  enabled: root.model.control("save_settings").enable && root.settingsReadable
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   // Picking an option assigns value inside Dropdown, which
                   // breaks the binding; restore it so saves and reopens show.
                   onChanged: function(value) {
+                    root.detachDrafts()
                     root.scaleTouched = true
+                    root.scaleDirty = true
                     root.windowsScaleInput = value === "auto" ? "auto" : Number(value)
                     scaleDropdown.value = Qt.binding(function() { return String(root.windowsScaleInput) })
                   }
@@ -391,8 +433,29 @@ Panel {
             Note { text: root.model.view.settings.note || "" }
             // On its own line: a Flow aligns tops, so beside the labelled fields
             // the button lined up with their labels, not their inputs.
-            Action { control: "save_settings"; onClicked: root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value)]
-                .concat(root.scaleTouched ? [String(root.windowsScaleInput)] : []), false) }
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+              Button {
+                objectName: "resetSettings"
+                text: root.settingsLabels.reset || ""
+                visible: root.settingsSaveable
+                enabled: root.model.control("save_settings").enable && root.settingsReadable && root.savedBaseline !== null
+                focusable: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onActiveFocusChanged: if (activeFocus) root.reveal(this)
+                onClicked: root.resetSettings()
+              }
+              Action {
+                control: "save_settings"
+                text: (root.settingsSaveable ? root.settingsLabels.save : root.settingsLabels.saved) || ""
+                selected: root.settingsSaveable
+                enabled: descriptor.enable && root.settingsReadable && root.settingsSaveable
+                onClicked: if (enabled) root.model.run(["settings", String(memoryField.field.value), String(coresField.field.value)]
+                  .concat(root.scaleTouched ? [String(root.windowsScaleInput)] : []), false)
+              }
+            }
             Note { text: root.model.view.result.settings || "" }
           }
 
@@ -446,9 +509,47 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
             visible: root.expandedSection === "logs"
+            Note { objectName: "copyBusy"; text: root.model.copyingId ? root.model.view.logs.copy_busy || "" : "" }
             Repeater {
-              model: [root.model.view.logs.vm, root.model.view.logs.client, root.model.view.logs.build, root.model.view.logs.job, root.model.view.logs.command]
-              delegate: Note { required property var modelData; text: modelData || "" }
+              model: root.model.view.logs.rows || []
+              delegate: Column {
+                id: logRow
+                required property var modelData
+                width: parent.width
+                spacing: Style.space(4)
+                Row {
+                  width: parent.width
+                  spacing: Style.space(8)
+                  Note {
+                    width: Style.space(64)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: logRow.modelData.label
+                    wrapMode: Text.NoWrap
+                    elide: Text.ElideRight
+                  }
+                  Note {
+                    width: Math.max(0, parent.width - Style.space(64) - copyButton.width - parent.spacing * 2)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: logRow.modelData.display
+                    wrapMode: Text.NoWrap
+                    elide: Text.ElideMiddle
+                  }
+                  PanelActionButton {
+                    id: copyButton
+                    objectName: "copyLog-" + logRow.modelData.id
+                    iconText: "󰆏"
+                    tooltipText: root.model.copyingId ? root.model.view.logs.copy_busy || "" : logRow.modelData.copy_label
+                    Accessible.name: logRow.modelData.copy_label
+                    enabled: root.model.copyingId === ""
+                    focusable: true
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    onActiveFocusChanged: if (activeFocus) root.reveal(this)
+                    onClicked: root.model.copyLog(logRow.modelData.id)
+                  }
+                }
+                Note { objectName: "copyFeedback-" + logRow.modelData.id; text: root.model.copyFeedback(logRow.modelData.id) }
+              }
             }
           }
         }
@@ -509,6 +610,7 @@ Panel {
     leftAlign: true
     text: ((root.model.view.sections || {})[section] || "")
       + (section === "snapshots" ? " · " + (root.model.view.snapshots.count || 0) : "")
+      + (section === "settings" && root.settingsDirty ? " · " + (root.settingsLabels.unsaved || "") : "")
       + (root.expandedSection === section ? "  ⌄" : "  ›")
     foreground: root.foreground
     fontFamily: root.fontFamily

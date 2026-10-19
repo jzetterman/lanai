@@ -2716,6 +2716,7 @@ redesign_check_detail() {
   done
   assert_equal "$(jq -r .logs.copied <<<"$output")" Copied
   assert_equal "$(jq -r .logs.copy_error <<<"$output")" 'Could not copy. Try again.'
+  assert_equal "$(jq -r .logs.copy_busy <<<"$output")" 'Another log is being copied. Try again in a moment.'
   assert_equal "$(jq -r .logs.rows[0].copy_label <<<"$output")" 'Copy VM log command'
   rm "$S/panel-job.log"
   run cmd_panel

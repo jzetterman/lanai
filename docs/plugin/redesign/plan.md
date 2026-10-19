@@ -617,6 +617,49 @@ Focused checks: `bats test/panel-qml.bats test/ui.bats test/panel.bats`.
 Then run the shared checks. Verify two successive unchanged-scale saves and a
 Reset followed by a memory-only save through the real settings fixture.
 
+Phase 5 implementation is complete. Settings use the backend baseline and
+labels. Reset restores the latest saved values locally. Unsaved tracks changed
+drafts and selections since the last successful save. A scale selection keeps
+later saves as scale saves until Reset or reopen, including unchanged choices.
+Successful replies reconcile accepted values before the next poll. Polls,
+section changes and failed saves preserve edited drafts. Read failures disable
+Save and Reset without inventing a baseline.
+
+Logs use the backend rows and exact copy targets. A separate Process sends
+literal stdin to wl-copy, closes input without adding a newline and reports
+success only after a normal zero exit. Each row keeps its own feedback across
+polls. Failed starts, nonzero exits and crashes show the backend error and allow
+retry. Reopen and changed targets clear feedback. A visible backend note explains
+why copy controls are temporarily disabled. Copying creates no VM action,
+detached command or panel result file.
+
+All seven named QtTest functions failed before production changes. The final
+renderer passes all 41 test functions. The focused command exited successfully
+with 163 passes and one skip for the missing comma-decimal locale. Its log is
+`/run/user/1000/lzi/p5-final-focused.KGsKKo/results.log`. The inert Process covers
+literal stdin, all five rows, reordering during a copy, changed targets, retry,
+crash and failed start without started or exited signals. The real settings
+fixture confirms two unchanged-scale saves increment the save number and the
+following memory-only save preserves that scale and number. QtTest covers Reset
+before that memory-only command. A final renderer rerun after reusing Note for
+the log labels and display names also passed.
+
+The shared block exited successfully with 835 Bats passes, 84 skips and no
+failures out of 919 cases. QML lint passed with the existing hoisting and
+model-id warnings. Full shellcheck and git diff --check passed. Guest tests ran
+with pwsh. Shared logs remain at `/run/user/1000/lzi/p5-shared.bomSQa`.
+
+Validation redirected the lint helper's and spike harness's explicit temporary
+templates into the runtime TMPDIR without changing either script. Five spike
+btrfs cases, including the real flock case, skipped on tmpfs. The other skips
+were 76 cases without LANAI_TEST_BTRFS_DIR, the pinned-source build without
+LANAI_TEST_LG_TARBALL, the unavailable strace measurement and the missing
+comma-decimal locale. The first lint invocation used the helper's worktree-local
+import directory, which it removed; subsequent lint and shared checks used
+runtime paths. Btrfs validation remains for the orchestrator outside this
+sandbox. No spec behaviour changed beyond Phase 5. No VM, root command, review
+stage or commit ran.
+
 ## Phase 6: Render setup cards, checks and countdown
 
 Read phases 1 and 3's setup fields, `LanaiPanel.qml`'s existing setup controls and

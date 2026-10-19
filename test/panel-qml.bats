@@ -32,8 +32,19 @@ Item {
   property var command: []
   property bool running: false
   property QtObject stdout
-  signal exited(int code)
-  function complete(text, code) { stdout.text = text; running = false; exited(code) }
+  property bool stdinEnabled: false
+  property string input: ""
+  property bool wroteWithStdin: false
+  signal started()
+  signal exited(int code, int exitStatus)
+  function begin() { input = ""; started() }
+  function write(text) { wroteWithStdin = stdinEnabled; input += text }
+  function failToStart() { running = false }
+  function complete(text, code, status) {
+    if (stdout) stdout.text = text
+    running = false
+    exited(code, status === undefined ? 0 : status)
+  }
 }
 QML
   echo 'import QtQuick; QtObject { property bool waitForEnd: true; property string text: "" }' >"$T/qml/imports/TestIo/StdioCollector.qml"
@@ -268,7 +279,9 @@ TestCase {
       buttons:{start:{show:true,enable:true,label:'Start Windows'},cancel:{show:true,enable:true,label:'Cancel'},
         restore_snapshot:{show:true,enable:true,label:'Restore'},restore_confirm:{show:true,enable:true,label:'Confirm'},
         save_settings:{show:true,enable:true,label:'Save settings'}},setup:{finished:true},
-      settings:{memory_gib:12,cores:6,windows_scale:175},result:{},logs:{vm:'journal command'},
+      settings:{memory_gib:12,cores:6,windows_scale:175,baseline:{memory_gib:12,cores:6,windows_scale:175},
+        labels:{memory:'Memory (GiB)',cores:'CPU cores',scale:'Windows scale',save:'Save',saved:'Saved',reset:'Reset',unsaved:'Unsaved'}},
+      result:{},logs:{rows:[{id:'vm',label:'VM',display:'journal: lanai-vm',copy_text:'journalctl --user -u lanai-vm',copy_label:'Copy VM log command'}]},
       snapshots:{show:true,count:1,names:['20261012T091200Z'],items:[{name:'20261012T091200Z',date:'Oct 12, 2026',time:'09:12 UTC',
         label:'Oct 12, 2026 at 09:12 UTC',restore_label:'Restore Oct 12, 2026 at 09:12 UTC',
         confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',warning:'Later changes are lost.'}]},
@@ -281,6 +294,212 @@ TestCase {
     var panel = createTemporaryObject(panelComponent, tests, {model:model,opened:true})
     wait(1)
     return {model:model,panel:panel}
+  }
+  function settingsView(memory, cores, scale) {
+    var v = redesignView()
+    v.settings = {memory_gib:memory,cores:cores,windows_scale:scale,error:'',
+      baseline:{memory_gib:memory,cores:cores,windows_scale:scale},
+      labels:{memory:'Memory (GiB)',cores:'CPU cores',scale:'Windows scale',save:'Save',saved:'Saved',reset:'Reset',unsaved:'Unsaved'},
+      scale_choices:[{value:'auto',label:'Match my monitor'},{value:175,label:'175%'},{value:500,label:'500%'}]}
+    return v
+  }
+  function settingsPanel() {
+    var p = redesignPanel()
+    p.model.view = settingsView(12, 6, 175)
+    p.panel.close(); p.panel.open()
+    named(p.panel, 'settingsToggle').clicked()
+    return p
+  }
+  function test_redesign_clean_settings_show_disabled_saved_only() {
+    var p = settingsPanel(), save = named(p.panel, 'action-save_settings')
+    compare(save.text, 'Saved')
+    verify(!save.enabled)
+    verify(!named(p.panel, 'resetSettings').visible)
+    verify(named(p.panel, 'settingsToggle').text.indexOf('Unsaved') === -1)
+    var scale = named(p.panel, 'windowsScale')
+    compare(scale.options[scale.options.length - 1].value, 500)
+    var fields = objects(p.panel, function(o) { return o.field !== undefined })
+    compare(fields[0].from, 1); compare(fields[0].to, 512)
+    compare(fields[1].from, 1); compare(fields[1].to, 64)
+    // Suggested values without a saved baseline must still be saveable.
+    var v = settingsView(12, 6, 175); v.settings.baseline = null
+    p.model.view = v
+    compare(save.text, 'Save'); verify(save.enabled)
+    verify(!named(p.panel, 'resetSettings').enabled)
+    p.panel.destroy()
+  }
+  function test_redesign_reset_is_local_and_restores_latest_saved_baseline() {
+    var p = settingsPanel(), scale = named(p.panel, 'windowsScale')
+    p.panel.memoryInput = 20; p.panel.coresInput = 10; scale.select('auto')
+    p.model.view = settingsView(24, 8, 500)
+    var count = Quickshell.launchCount
+    named(p.panel, 'resetSettings').clicked()
+    compare(p.panel.memoryInput, 24); compare(p.panel.coresInput, 8)
+    compare(p.panel.windowsScaleInput, 500); compare(scale.currentLabel(), '500%')
+    compare(p.panel.scaleTouched, false); compare(p.panel.scaleDirty, false)
+    compare(Quickshell.launchCount, count)
+    verify(!process(p.model, p.model.cli))
+    compare(named(p.panel, 'action-save_settings').text, 'Saved')
+    p.panel.memoryInput = 25
+    named(p.panel, 'action-save_settings').clicked()
+    compare(process(p.model, p.model.cli).command.slice(3).join(' '), 'settings 25 8')
+    process(p.model, p.model.cli).complete('{"ok":false}', 1)
+    var v = settingsView(24, 8, 500); v.settings.error = 'Unreadable settings'; v.settings.baseline = null
+    p.model.view = v
+    verify(!named(p.panel, 'action-save_settings').enabled)
+    verify(!named(p.panel, 'resetSettings').enabled)
+    named(p.panel, 'resetSettings').clicked()
+    compare(p.panel.memoryInput, 25)
+    p.panel.close(); p.model.view = settingsView(32, 16, 'auto'); p.panel.open()
+    compare(p.panel.memoryInput, 32); compare(p.panel.coresInput, 16)
+    compare(p.panel.windowsScaleInput, 'auto')
+    verify(!p.panel.scaleTouched); verify(!p.panel.scaleDirty)
+    p.panel.destroy()
+  }
+  function test_redesign_drafts_survive_polls_sections_and_failed_saves() {
+    var p = settingsPanel()
+    var memory = objects(p.panel, function(o) { return o.field !== undefined && o.label === 'Memory (GiB)' })[0]
+    memory.field.forceActiveFocus(); keyClick(Qt.Key_Up)
+    named(p.panel, 'windowsScale').select('500')
+    named(p.panel, 'logsToggle').clicked(); named(p.panel, 'settingsToggle').clicked()
+    p.model.view = settingsView(32, 16, 'auto')
+    compare(p.panel.memoryInput, 13); compare(p.panel.coresInput, 6)
+    compare(p.panel.windowsScaleInput, 500)
+    named(p.panel, 'action-save_settings').clicked()
+    var action = process(p.model, p.model.cli)
+    compare(action.command.slice(3).join(' '), 'settings 13 6 500')
+    action.complete('{"ok":false}', 1)
+    p.model.view = settingsView(32, 16, 'auto')
+    compare(p.panel.memoryInput, 13); compare(p.panel.coresInput, 6)
+    compare(p.panel.windowsScaleInput, 500)
+    verify(named(p.panel, 'settingsToggle').text.indexOf('Unsaved') !== -1)
+    verify(named(p.panel, 'resetSettings').visible)
+    var v = settingsView(32, 16, 'auto'); v.buttons.save_settings.enable = false
+    p.model.view = v
+    verify(!named(p.panel, 'action-save_settings').enabled)
+    verify(!named(p.panel, 'resetSettings').enabled)
+    p.panel.destroy()
+  }
+  function test_redesign_scale_selection_is_dirty_even_when_unchanged() {
+    var p = settingsPanel(), scale = named(p.panel, 'windowsScale')
+    scale.select('175')
+    compare(p.panel.windowsScaleInput, 175)
+    verify(p.panel.scaleTouched); verify(p.panel.scaleDirty)
+    verify(named(p.panel, 'settingsToggle').text.indexOf('Unsaved') !== -1)
+    verify(named(p.panel, 'action-save_settings').enabled)
+    verify(named(p.panel, 'resetSettings').visible)
+    named(p.panel, 'resetSettings').clicked()
+    verify(!p.panel.scaleTouched); verify(!p.panel.scaleDirty)
+    compare(named(p.panel, 'action-save_settings').text, 'Saved')
+    p.panel.destroy()
+  }
+  function test_redesign_success_clears_dirty_but_keeps_scale_save_intent() {
+    var p = settingsPanel(), save = named(p.panel, 'action-save_settings')
+    named(p.panel, 'windowsScale').select('500')
+    save.clicked()
+    var action = process(p.model, p.model.cli)
+    compare(action.command.slice(3).join(' '), 'settings 12 6 500')
+    // Use accepted values immediately, before the following poll can arrive.
+    action.complete('{"ok":true,"memory_gib":14,"cores":7,"windows_scale":500}', 0)
+    compare(p.panel.memoryInput, 14); compare(p.panel.coresInput, 7)
+    compare(p.panel.windowsScaleInput, 500)
+    verify(!p.panel.scaleDirty); verify(p.panel.scaleTouched)
+    verify(named(p.panel, 'settingsToggle').text.indexOf('Unsaved') === -1)
+    compare(save.text, 'Save'); verify(save.enabled)
+    verify(named(p.panel, 'resetSettings').visible)
+    process(p.model, 'timeout').complete(JSON.stringify(settingsView(14, 7, 500)), 0)
+    save.clicked()
+    compare(action.command.slice(3).join(' '), 'settings 14 7 500')
+    action.complete('{"ok":true,"memory_gib":14,"cores":7,"windows_scale":500}', 0)
+    verify(!p.panel.scaleDirty); verify(p.panel.scaleTouched)
+    process(p.model, 'timeout').complete(JSON.stringify(settingsView(14, 7, 500)), 0)
+    named(p.panel, 'resetSettings').clicked()
+    p.panel.memoryInput = 15; save.clicked()
+    compare(action.command.slice(3).join(' '), 'settings 15 7')
+    action.complete('{"ok":true,"memory_gib":15,"cores":7,"windows_scale":500}', 0)
+    compare(save.text, 'Saved'); verify(!save.enabled)
+    verify(!named(p.panel, 'resetSettings').visible)
+    p.panel.destroy()
+  }
+  function logView() {
+    var v = redesignView()
+    v.logs = {copied:'Copied',copy_error:'Could not copy. Try again.',copy_busy:'Another log is being copied. Try again in a moment.',rows:[
+      {id:'vm',label:'VM',display:'journal: lanai-vm',copy_text:'journalctl --user -u lanai-vm; $(touch NEVER)\n"literal"',copy_label:'Copy VM log command'},
+      {id:'client',label:'Window',display:'client.log',copy_text:'/state with spaces/client.log',copy_label:'Copy Window log path'},
+      {id:'build',label:'Build',display:'build-client.log',copy_text:'/state/build-client.log',copy_label:'Copy Build log path'},
+      {id:'job',label:'Jobs',display:'panel-job.log',copy_text:'/state/panel-job.log',copy_label:'Copy Jobs log path'},
+      {id:'command',label:'Actions',display:'panel-run.log',copy_text:'/state/panel-run.log',copy_label:'Copy Actions log path'}]}
+    return v
+  }
+  function logsPanel() {
+    var p = redesignPanel(); p.model.view = logView()
+    named(p.panel, 'logsToggle').clicked()
+    return p
+  }
+  function test_redesign_copy_uses_literal_stdin_and_reports_each_rows_exit() {
+    var p = logsPanel(), count = Quickshell.launchCount
+    for (var i = 0; i < p.model.view.logs.rows.length; i++) {
+      var row = p.model.view.logs.rows[i], button = named(p.panel, 'copyLog-' + row.id)
+      verify(button !== undefined)
+      compare(button.Accessible.name, row.copy_label); verify(button.focusable)
+      button.forceActiveFocus(); keyClick(Qt.Key_Return)
+      var copy = process(p.model, 'wl-copy')
+      verify(copy !== undefined); verify(copy.running)
+      compare(copy.command.length, 1); verify(copy.stdinEnabled)
+      p.model.copyLog('client')
+      compare(p.model.copyingId, row.id)
+      copy.begin()
+      compare(copy.input, row.copy_text); verify(copy.wroteWithStdin)
+      compare(copy.stdinEnabled, false)
+      compare(named(p.panel, 'copyFeedback-' + row.id).text, '')
+      // Polls can reorder rows without moving the completion to another row.
+      var v = logView(); v.logs.rows.reverse(); p.model.view = v
+      compare(named(p.panel, 'copyBusy').text, v.logs.copy_busy)
+      verify(named(p.panel, 'copyBusy').visible)
+      for (var j = 0; j < v.logs.rows.length; j++) {
+        var other = named(p.panel, 'copyLog-' + v.logs.rows[j].id)
+        verify(!other.enabled); compare(other.tooltipText, v.logs.copy_busy)
+      }
+      copy.complete('', 0); wait(1)
+      compare(named(p.panel, 'copyFeedback-' + row.id).text, 'Copied')
+      verify(named(p.panel, 'copyLog-' + row.id).enabled)
+      p.model.view = logView()
+    }
+    compare(Quickshell.launchCount, count)
+    verify(!process(p.model, p.model.cli)); compare(p.model.pendingToken, '')
+    p.panel.close(); p.panel.open()
+    compare(named(p.panel, 'copyFeedback-vm').text, '')
+    p.panel.destroy()
+  }
+  function test_redesign_copy_failure_can_retry_and_cannot_run_the_vm_command() {
+    var p = logsPanel(), count = Quickshell.launchCount
+    for (var status = 0; status < 3; status++) {
+      var button = named(p.panel, 'copyLog-vm'); button.clicked()
+      var copy = process(p.model, 'wl-copy')
+      if (status === 0) copy.failToStart()
+      else { copy.begin(); copy.complete('', status === 1 ? 1 : 0, status === 2 ? 1 : 0) }
+      wait(1)
+      compare(named(p.panel, 'copyFeedback-vm').text, p.model.view.logs.copy_error)
+      verify(named(p.panel, 'copyLog-vm').enabled)
+    }
+    named(p.panel, 'copyLog-vm').clicked(); copy.begin()
+    compare(copy.input, p.model.view.logs.rows[0].copy_text)
+    var v = logView(); v.logs.rows[0].copy_text = 'different target'; p.model.view = v
+    copy.complete('', 0); wait(1)
+    compare(named(p.panel, 'copyFeedback-vm').text, '')
+    named(p.panel, 'copyLog-vm').clicked(); copy.begin(); copy.complete('', 0)
+    compare(named(p.panel, 'copyFeedback-vm').text, 'Copied')
+    v.logs.rows[0].copy_text = 'another target'; p.model.view = JSON.parse(JSON.stringify(v))
+    compare(named(p.panel, 'copyFeedback-vm').text, '')
+    // Reopening during a copy must not resurrect feedback from the old panel.
+    named(p.panel, 'copyLog-vm').clicked(); copy.begin()
+    p.panel.close(); p.panel.open(); copy.complete('', 0); wait(1)
+    compare(named(p.panel, 'copyFeedback-vm').text, '')
+    compare(Quickshell.launchCount, count)
+    verify(!process(p.model, p.model.cli)); compare(p.model.pendingToken, '')
+    p.model.copyLog('missing')
+    verify(!copy.running)
+    p.panel.destroy()
   }
   function test_redesign_header_uses_saved_view_and_theme_roles() {
     var p = redesignPanel(), hero = named(p.panel, 'windowsHeader')
@@ -399,6 +618,7 @@ TestCase {
     verify(field.mapToItem(flick,0,0).y >= 0)
     verify(field.mapToItem(flick,0,0).y + field.height <= flick.height - flick.bottomMargin + 1)
     var save = objects(p.panel,function(o) { return o.control === 'save_settings' })[0]
+    p.panel.memoryInput = 13
     save.forceActiveFocus(); wait(1)
     verify(save.mapToItem(flick,0,0).y + save.height <= flick.height - flick.bottomMargin + 1)
     verify(flick.contentY > 0)
@@ -575,7 +795,7 @@ TestCase {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)
     function view(memory, cores) {
-      return {buttons:{save_settings:{show:true,enable:true,label:'Save settings'}},setup:{},settings:{memory_gib:memory,cores:cores},snapshots:{names:[]},result:{},logs:{}}
+      return settingsView(memory, cores, 'auto')
     }
     model.view = view(8, 4)
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
@@ -623,10 +843,9 @@ TestCase {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)
     function view(scale) {
-      return {buttons:{save_settings:{show:true,enable:true,label:'Save settings'}},setup:{},
-        settings:{memory_gib:8,cores:4,windows_scale:scale,scale_choices:[
-          {value:'auto',label:'Match my monitor'},{value:125,label:'125%'},{value:250,label:'250%'}]},
-        snapshots:{names:[]},result:{},logs:{}}
+      var v = settingsView(8, 4, scale)
+      v.settings.scale_choices = [{value:'auto',label:'Match my monitor'},{value:125,label:'125%'},{value:250,label:'250%'}]
+      return v
     }
     model.view = view('auto')
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
@@ -666,7 +885,8 @@ TestCase {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)
     var v = {ok:true,buttons:{save_settings:{show:true,enable:true,label:'Save settings'}},setup:{},
-      settings:{memory_gib:8,cores:4,windows_scale:'auto',note:'Saving a scale replaces one you picked in Windows.',
+      settings:{memory_gib:8,cores:4,windows_scale:'auto',baseline:{memory_gib:8,cores:4,windows_scale:'auto'},
+        labels:{memory:'Memory (GiB)',cores:'CPU cores',scale:'Windows scale',save:'Save',saved:'Saved',reset:'Reset',unsaved:'Unsaved'},note:'Saving a scale replaces one you picked in Windows.',
         scale_choices:[{value:'auto',label:'Match my monitor'},{value:125,label:'125%'}]},
       snapshots:{names:[]},result:{},logs:{}}
     // Finish the action, then answer the refresh it asks for with the same view.
@@ -682,23 +902,25 @@ TestCase {
     var scale = objects(panel, function(o) { return o.objectName === 'windowsScale' })[0]
     var save = objects(panel, function(o) { return o.control === 'save_settings' })[0]
     verify(objects(panel, function(o) { return o.text === v.settings.note && o.visible }).length > 0)
-    // An untouched list saves memory and cores only.
+    // An untouched list saves changed memory and cores only.
+    panel.memoryInput = 9
     save.clicked()
     var action = process(model, model.cli)
-    compare(action.command.slice(3).join(' '), 'settings 8 4')
+    compare(action.command.slice(3).join(' '), 'settings 9 4')
     finish(action)
     // Choosing the entry already shown is a scale save, and so is each save after it.
     scale.select('auto')
     save.clicked()
-    compare(action.command.slice(3).join(' '), 'settings 8 4 auto')
+    compare(action.command.slice(3).join(' '), 'settings 9 4 auto')
     finish(action)
     save.clicked()
-    compare(action.command.slice(3).join(' '), 'settings 8 4 auto')
+    compare(action.command.slice(3).join(' '), 'settings 9 4 auto')
     finish(action)
     // Reopening the panel clears the touch.
     panel.close(); panel.open()
+    panel.memoryInput = 9
     save.clicked()
-    compare(action.command.slice(3).join(' '), 'settings 8 4')
+    compare(action.command.slice(3).join(' '), 'settings 9 4')
     finish(action)
     panel.destroy(); wait(1)
   }
@@ -1101,7 +1323,8 @@ TestCase {
     function view(enable) {
       return {warning:warning,buttons:{update_client:{show:true,enable:enable,label:'Update the Windows window'}},
         setup:{},settings:{},snapshots:{names:[]},result:{client:done},
-        logs:{vm:'Windows VM log: in your user journal, under lanai-vm',build:'Windows window build log: /state/build-client.log'}}
+        logs:{rows:[{id:'vm',label:'VM',display:'journal: lanai-vm',copy_text:'journalctl --user -u lanai-vm',copy_label:'Copy VM log command'},
+          {id:'build',label:'Build',display:'build-client.log',copy_text:'/state/build-client.log',copy_label:'Copy Build log path'}]}}
     }
     model.view = view(true)
     var panel = createTemporaryObject(panelComponent, tests, {model:model, opened:true})
@@ -1115,7 +1338,7 @@ TestCase {
     verify(update.enabled)
     compare(update.text, 'Update the Windows window')
     verify(objects(panel, function(o) { return o.text === done && o.visible }).length > 0)
-    verify(objects(panel, function(o) { return o.text === model.view.logs.build && o.visible }).length > 0)
+    verify(objects(panel, function(o) { return o.text === model.view.logs.rows[1].display && o.visible }).length > 0)
     var count = Quickshell.launchCount
     update.clicked()
     compare(Quickshell.launchCount, count + 1)

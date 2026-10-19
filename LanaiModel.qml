@@ -20,12 +20,68 @@ Item {
   // for at least 2 s (clickNoticeAt, ms) and at most 5 s.
   property string clickNotice: ""
   property double clickNoticeAt: 0
+  property var copyResults: ({})
+  property string copyingId: ""
+  property string copyingText: ""
+  property bool copyStarted: false
+  property int copyGeneration: 0
+  property int copyingGeneration: 0
   signal panelRequested()
   signal settingsSaved(int memoryGib, int cores, var windowsScale)
   readonly property string tooltip: ["Lanai", view.label, view.headline, view.cause, view.next, view.notice, view.warning, view.right_click_tooltip].filter(function(s) { return !!s }).join("\n")
 
   function control(name) { return view.buttons[name] || {show: false, enable: false, label: ""} }
   function token() { return "panel-" + Date.now() + "-" + Math.floor(Math.random() * 1000000) }
+
+  function logRow(id) {
+    return (view.logs.rows || []).find(function(row) { return row.id === id })
+  }
+  function clearCopies() { copyResults = ({}); copyGeneration++ }
+  function copyFeedback(id) {
+    var result = copyResults[id], row = logRow(id)
+    return result && row && result.target === row.copy_text ? result.text : ""
+  }
+  onViewChanged: {
+    var kept = ({})
+    Object.keys(copyResults).forEach(function(id) {
+      var row = root.logRow(id)
+      if (row && row.copy_text === root.copyResults[id].target) kept[id] = root.copyResults[id]
+    })
+    copyResults = kept
+  }
+  function copyFinished(success) {
+    if (!copyingId) return
+    var row = logRow(copyingId), results
+    if (copyingGeneration === copyGeneration && row && row.copy_text === copyingText) {
+      results = Object.assign({}, copyResults)
+      results[copyingId] = {target: copyingText, text: success ? view.logs.copied : view.logs.copy_error}
+      copyResults = results
+    }
+    copyingId = ""
+    copyingText = ""
+  }
+  function copyStopped() {
+    var generation = copyingGeneration
+    // Failed starts have no exited signal. Let normal exit handling run first.
+    Qt.callLater(function() {
+      if (root.copyingId && root.copyingGeneration === generation && !copyProcess.running && !root.copyStarted)
+        root.copyFinished(false)
+    })
+  }
+  function copyLog(id) {
+    var row = logRow(id)
+    if (copyingId || !row || typeof row.copy_text !== "string" || !row.copy_text) return
+    copyingId = id
+    copyingText = row.copy_text
+    copyingGeneration = ++copyGeneration
+    copyStarted = false
+    var results = Object.assign({}, copyResults)
+    delete results[id]
+    copyResults = results
+    copyProcess.stdinEnabled = true
+    copyProcess.running = true
+    copyStopped()
+  }
 
   // Skip routine ticks in flight; an action requests exactly one fresh read.
   function refresh(afterAction) {
@@ -83,6 +139,19 @@ Item {
   // Quickshell omits the C++ exit-status enum from its lint metadata.
   // qmllint disable signal-handler-parameters
   Process {
+    id: copyProcess
+    command: ["wl-copy"]
+    stdinEnabled: true
+    onStarted: {
+      root.copyStarted = true
+      write(root.copyingText)
+      stdinEnabled = false
+    }
+    onExited: function(code, status) { root.copyFinished(code === 0 && status === 0) }
+    onRunningChanged: if (!running) root.copyStopped()
+  }
+
+  Process {
     id: panelProcess
     stdout: StdioCollector { id: panelOutput; waitForEnd: true }
     onExited: function(code) {
@@ -124,7 +193,8 @@ Item {
         var reply = JSON.parse(actionOutput.text)
         if (reply.panel_requested === true) root.panelRequested()
         if (code === 0 && reply.ok === true && actionProcess.command[3] === "settings")
-          root.settingsSaved(Number(actionProcess.command[4]), Number(actionProcess.command[5]),
+          root.settingsSaved(Number(reply.memory_gib === undefined ? actionProcess.command[4] : reply.memory_gib),
+            Number(reply.cores === undefined ? actionProcess.command[5] : reply.cores),
             reply.windows_scale === undefined ? (actionProcess.command[6] === undefined || actionProcess.command[6] === "auto" ? "auto" : Number(actionProcess.command[6])) : reply.windows_scale)
       } catch (_) { root.panelRequested() }
       root.refresh(true)

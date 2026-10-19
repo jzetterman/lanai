@@ -342,7 +342,7 @@ cmd_panel() {
       '. + [{id:$id,label:$label,display:$display,copy_text:$path,copy_label:("Copy " + $label + " log path")}]' <<<"$log_rows")
   done
   logs=$(jq -c --argjson rows "$log_rows" \
-    '. + {rows:$rows,copied:"Copied",copy_error:"Could not copy. Try again."}' <<<"$logs")
+    '. + {rows:$rows,copied:"Copied",copy_error:"Could not copy. Try again.",copy_busy:"Another log is being copied. Try again in a moment."}' <<<"$logs")
   jq -nc --argjson st "$status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
     --argjson progress "$progress" --argjson restore "$restore" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
