@@ -2471,6 +2471,8 @@ assert_rerun_warning() {
     run cmd_panel
     assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" true
     assert_equal "$(jq -r .result.setup <<<"$output")" ''
+    assert_equal "$(jq -r .layout <<<"$output")" daily
+    assert_equal "$(jq -r .bar.mode <<<"$output")" stopped
   done
   # A step 4 failure from a first setup (no display argument) is over once
   # the plan is finished, even with an old client.
@@ -2478,11 +2480,15 @@ assert_rerun_warning() {
   panel_result_write setup '{"token":"t","command":"setup","args":[],"started":1,"ended":2,"reply":{"ok":false,"step":"4","message":"UNTRUSTED"}}'
   run cmd_panel
   assert_equal "$(jq -r .result.setup <<<"$output")" ''
+  assert_equal "$(jq -r .layout <<<"$output")" daily
+  assert_equal "$(jq -r .bar.mode <<<"$output")" stopped
   # Once the client is current, the failure is over.
   panel_result_write setup '{"token":"t","command":"setup","args":["--window"],"started":1,"ended":2,"reply":{"ok":false,"step":"4","message":"UNTRUSTED"}}'
   build_patches_current() { return 0; }
   run cmd_panel
   assert_equal "$(jq -r .result.setup <<<"$output")" ''
+  assert_equal "$(jq -r .layout <<<"$output")" daily
+  assert_equal "$(jq -r .bar.mode <<<"$output")" stopped
   # A first setup stays at step 4 with Continue setup.
   build_patches_current() { return 1; }
   build_stamp_current() { return 1; }
@@ -2493,6 +2499,31 @@ assert_rerun_warning() {
   assert_equal "$(jq -r .buttons.continue_setup.label <<<"$output")" 'Continue setup'
 }
 
+
+@test "redesign failure: a failed rerun client build opens Logs and marks the bar Failed" {
+  local args
+  build_patches_current() { return 1; }
+  state '{"done":true,"scale_task":2}'
+  for args in '["--window"]' '["--no-window"]'; do
+    panel_result_write setup "$(jq -nc --argjson a "$args" '{command:"setup",args:$a,invocation:"inv",started:1,ended:2,reply:{ok:false,step:"4"}}')"
+    for ST in inactive active; do
+      run cmd_panel
+      assert_success
+      assert_equal "$(jq -r .setup.step <<<"$output")" 7
+      assert_equal "$(jq -r .layout <<<"$output")" failed
+      assert_equal "$(jq -r .header.badge <<<"$output")" Failed
+      assert_equal "$(jq -r .sections.default <<<"$output")" logs
+      assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+      assert_equal "$(jq -r .result.setup <<<"$output")" 'Setup could not update the Windows window. Check the Windows window build log, then click Run setup again.'
+    done
+  done
+  # A failure from a previous VM invocation cannot mark this one Failed.
+  INV=other
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .layout <<<"$output")" daily
+  assert_equal "$(jq -r .bar.mode <<<"$output")" active
+}
 
 @test "redesign header: daily saved values include scale in Failed" {
   state "$CURRENT"

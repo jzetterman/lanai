@@ -481,7 +481,10 @@ cmd_panel() {
     def currentSetup:
       $rec.records.setup as $d |
       ($d.invocation == null or $d.invocation == $invocation) and
-      ($d.reply.step == null or $d.reply.step == $p.step) and
+      # Run setup again can fail at the client build while the plan stays finished.
+      ($d.reply.step == null or $d.reply.step == $p.step or
+        ($d.reply.step == "4" and $p.finished and $clientOld and ($updateShown|not) and
+          any($d.args[]?; . == "--window" or . == "--no-window"))) and
       ($p.step != "6" or $checkSince == null or ($d.ended // $now) >= $checkSince);
     ($p.finished == false and $p.step == "6" and currentSetup and
       $rec.records.setup.reply.ok == false and $rec.records.setup.reply.stop == "timeout") as $timeout |
