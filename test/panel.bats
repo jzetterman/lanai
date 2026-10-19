@@ -2767,7 +2767,7 @@ assert_rerun_warning() {
   assert_success
   assert_equal "$(jq -r .bar.mode <<<"$output")" attention
   assert_equal "$(jq -r .layout <<<"$output")" setup_timeout
-  assert_equal "$(jq -r .header.meta <<<"$output")" 'Step 6 of 6 · Verify · Setup needed'
+  assert_equal "$(jq -r .header.meta <<<"$output")" 'Step 6 of 6 · Verify · Starting'
   # A newer attempt supersedes the old timeout even under the same invocation.
   echo "$EPOCHSECONDS" >"$RUN/step6-since"
   run cmd_panel
@@ -2791,6 +2791,33 @@ assert_rerun_warning() {
   panel_result_write vm '{"command":"start","invocation":"old","started":1,"ended":2,"reply":{"ok":false}}'
   run cmd_panel
   assert_equal "$(jq -r .bar.mode <<<"$output")" active
+}
+
+@test "redesign header: first setup timeout reports the actual VM state" {
+  local vm expected
+  state '{"snapshot":"declined","step5":true}'
+  timeout_record scale-task
+  qmp_call() { printf '%s\n' '{"return":{"status":"running"}}' '{"return":[{"label":"qga0","frontend-open":true}]}'; }
+  for vm in inactive active activating deactivating failed; do
+    ST=$vm
+    case $vm in
+      active) expected=Running ;;
+      inactive) expected=Stopped ;;
+      activating) expected=Starting ;;
+      deactivating) expected='Shutting down' ;;
+      failed) expected=Failed ;;
+    esac
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .layout <<<"$output")" setup_timeout
+    assert_equal "$(jq -r .header.meta <<<"$output")" "Step 6 of 6 · Verify · $expected"
+    assert_equal "$(jq -r .header.badge <<<"$output")" Setup
+  done
+  ST=active
+  qmp_call() { printf '{"return":{"status":"running"}}\n'; }
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .header.meta <<<"$output")" 'Step 6 of 6 · Verify · Starting'
 }
 
 @test "redesign bar: Drivers active exception never hides failure or recovery" {

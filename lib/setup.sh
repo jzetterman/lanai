@@ -562,8 +562,8 @@ step6_check() {
   fi
   local probe=idd pending=waiting
   [[ -z $checked ]] || probe=scale
-  step6_checks_note "$run" "$(jq -nc --arg k "$probe" '{($k):{state:"waiting",reason:"qmp"}}')" || return 1
   if ! chardevs=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}'); then
+    step6_checks_note "$run" "$(jq -nc --arg k "$probe" '{($k):{state:"waiting",reason:"qmp"}}')" || return 1
     if $late && [[ -e $run/step6-qmp-failed ]]; then
       step6_checks_note "$run" "$(jq -nc --arg k "$probe" '{($k):{state:"failed",reason:"qmp"}}')" || return 1
       setup_stop6 qmp "QEMU did not answer when Lanai checked Windows' agents."
@@ -583,7 +583,8 @@ step6_check() {
   fi
   chardev_open qga0 <<<"$chardevs" && qga_open=true
   if $late && ! $qga_open; then
-    step6_checks_note "$run" '{"idd":{"state":"failed","reason":"guest-boot"}}' || return 1
+    # This startup failure says nothing new about the display driver.
+    step6_checks_note "$run" '{"clock":{"state":"failed","reason":"guest-boot"}}' || return 1
     setup_stop6 guest-boot "Windows did not finish starting, or its guest agent did not start."
     return 1
   fi

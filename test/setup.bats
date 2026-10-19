@@ -2218,7 +2218,7 @@ check_states() {
   setup_run
   assert_failure
   assert_timeout guest-boot
-  assert_equal "$(jq -c '[.idd.state,.idd.reason,.clock.state]' "$RUN/step6-checks.json")" '["failed","guest-boot","not_checked"]'
+  assert_equal "$(jq -c '[.idd.state,.clock.state,.clock.reason]' "$RUN/step6-checks.json")" '["not_checked","failed","guest-boot"]'
   step6_running "$FIX/client-logs/waiting.log" 301 301
   setup_run
   assert_failure
@@ -2240,6 +2240,30 @@ check_states() {
   assert_failure
   assert_timeout qmp
   assert_equal "$(jq -c '[.idd.state,.idd.reason]' "$RUN/step6-checks.json")" '["failed","qmp"]'
+}
+
+@test "redesign checks: guest startup timeout preserves observed IDD and names the guest agent" {
+  step6_running "$FIX/client-logs/match.log" 5 301
+  LANAI_SETUP_LIMIT=600
+  conf FAKE_QGA_CMD=allowlist FAKE_QMP_VDAGENT=false
+  setup_run
+  assert_success
+  assert_equal "$(check_states)" '["done","waiting","done","done","not_checked"]'
+  assert [ ! -e "$RUN/step6-checked" ]
+  # The guest agent can disappear after answering on an earlier poll.
+  # A new log verdict must not replace the IDD result on this early return.
+  started_log "$FIX/client-logs/waiting.log" >"$RUN/client.log"
+  conf FAKE_QMP_QGA=false
+  LANAI_SETUP_LIMIT=300
+  setup_run
+  assert_failure
+  assert_timeout guest-boot
+  assert_equal "$(check_states)" '["done","waiting","failed","done","not_checked"]'
+  assert_equal "$(jq -r .clock.reason "$RUN/step6-checks.json")" guest-boot
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c '[.setup.checks[0].state,.setup.checks[1].state]' <<<"$output")" '["done","failed"]'
+  assert_equal "$(jq -r .setup.checks[1].detail <<<"$output")" 'Waiting for the SPICE agent. The QEMU guest agent failed.'
 }
 
 @test "redesign checks: Continue clears check detail but RESET preserves the attempt" {

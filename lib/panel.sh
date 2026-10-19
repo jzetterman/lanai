@@ -182,7 +182,7 @@ cmd_panel() {
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
   local client_old=false signin_missing=false update_shown=false task started=0 booted button
   local snapshot_paths='[]' items='[]' name restore log_rows path display label
-  local check_since=null checks_stopped=false since
+  local check_since=null checks_stopped=false since vm_status
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
       emit false "" "Invalid panel input." ""; return 2
@@ -193,6 +193,8 @@ cmd_panel() {
   facts=$(shared_facts "$progress")
   status_details=$(status_facts "$facts")
   status=$(status_map <<<"$status_details")
+  # Reuse the gathered facts without setup masking the VM's runtime state.
+  vm_status=$(status_map <<<"$status_details"$'\nLanaiSetup=done')
   plan=$(setup_plan "$facts")
   records=$(panel_records)
   problem_line=''
@@ -343,7 +345,7 @@ cmd_panel() {
   done
   logs=$(jq -c --argjson rows "$log_rows" \
     '. + {rows:$rows,copied:"Copied",copy_error:"Could not copy. Try again.",copy_busy:"Another log is being copied. Try again in a moment."}' <<<"$logs")
-  jq -nc --argjson st "$status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
+  jq -nc --argjson st "$status" --argjson vm "$vm_status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
     --argjson progress "$progress" --argjson restore "$restore" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
@@ -359,7 +361,8 @@ cmd_panel() {
       stopping:["Shutting down","Windows is shutting down","The shutdown request is still in progress.","Wait for Windows to finish shutting down."],
       "in-use":["In use","Windows is in use elsewhere","Another VM is running or preparing Windows.","Stop the other VM before using Windows here."],
       "version-mismatch":["Display driver needs an update","The Windows display needs an update","The client and Windows display driver have different versions.","Shut down and continue setup, or use Omarchy\u0027s Windows connection."],
-      failed:["Failed","Windows is unavailable","Windows stopped with an error, or Lanai could not reach it.","Check the logs below. You can also use Omarchy\u0027s Windows connection after shutting Lanai down."]}[$st.state]) as $w |
+      failed:["Failed","Windows is unavailable","Windows stopped with an error, or Lanai could not reach it.","Check the logs below. You can also use Omarchy\u0027s Windows connection after shutting Lanai down."]}) as $states |
+    $states[$st.state] as $w |
     ([$rec.records[] | select(. != null and has("started") and (has("ended")|not))] | max_by(.started) // {}) as $job |
     ([$rec.records[] | select(.token == $token)] | length > 0) as $seen |
     ($token != "" and ($seen|not) and $now - $at < 10) as $pending |
@@ -519,7 +522,7 @@ cmd_panel() {
         "7":"Setup is finished"}[$p.step])} |
     (.layout == "setup" or .layout == "setup_verify" or .layout == "setup_timeout") as $setupLayout |
     .header = {title:"Windows",meta:(if $setupLayout then
-        .setup.step_line + " · " + .setup.name + (if $timeout then " · " + .label else "" end)
+        .setup.step_line + " · " + .setup.name + (if $timeout then " · " + $states[$vm.state][0] else "" end)
       elif .settings.baseline != null then
         "\(.settings.memory_gib) GiB · \(.settings.cores) cores · " +
         (if .settings.windows_scale == "auto" then "Auto" else "\(.settings.windows_scale)%" end)
