@@ -21,7 +21,7 @@ Panel {
   property bool setupAgainArmed: false
   property string expandedSection: ""
   property bool moreActionsOpen: false
-  property string previousLayout: ""
+  property string previousDefaultSection: ""
   property double countdownSeconds: -1
   property double countdownAt: 0
   property double countdownNow: Date.now()
@@ -84,7 +84,7 @@ Panel {
     countdownNow = Date.now()
     if (opened) {
       expandedSection = (root.model.view.sections || {}).default || ""
-      previousLayout = root.model.view.layout || ""
+      previousDefaultSection = expandedSection
       moreActionsOpen = false
       memoryInput = Qt.binding(function() { return root.model.view.settings.memory_gib || 1 })
       coresInput = Qt.binding(function() { return root.model.view.settings.cores || 1 })
@@ -106,10 +106,10 @@ Panel {
       if (!root.model.control("restore_snapshot").show || !root.model.control("restore_snapshot").enable
           || !root.model.control("restore_confirm").show || !root.model.control("restore_confirm").enable
           || !root.snapshotItems.some(function(item) { return item.name === root.restoreArmed })) root.restoreArmed = ""
-      var layout = root.model.view.layout || ""
-      if (root.opened && layout === "failed" && root.previousLayout !== layout)
-        root.expandedSection = (root.model.view.sections || {}).default || "logs"
-      root.previousLayout = layout
+      var section = (root.model.view.sections || {}).default || (root.model.view.layout === "failed" ? "logs" : "")
+      if (root.opened && section !== "" && root.previousDefaultSection !== section)
+        root.expandedSection = section
+      root.previousDefaultSection = section
       if (!root.model.view.setup.finished) root.setupAgainArmed = false
     }
     function onSettingsSaved(memoryGib: int, cores: int, windowsScale: var) {
@@ -322,11 +322,11 @@ Panel {
               indeterminate: root.model.view.progress != null && !(root.model.view.progress.total > 0)
               property real busyPosition: 0
               NumberAnimation on busyPosition {
-                running: imageProgress.visible && imageProgress.indeterminate
+                running: imageProgress.visible && imageProgress.indeterminate && duration > 0
                 loops: Animation.Infinite
                 from: 0
                 to: 1
-                duration: 1200
+                duration: Style.duration(1200)
               }
               background: Rectangle { implicitHeight: Style.space(3); color: Util.alpha(root.foreground, 0.15) }
               contentItem: Item {

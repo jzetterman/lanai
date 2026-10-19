@@ -6,6 +6,47 @@ load panel-fixtures
 
 setup() { isolate_home; panel_fixture_setup; }
 
+@test "redesign settings: a refused save stays inline without failing the panel or bar" {
+  state "$CURRENT"
+  for reply in '{"ok":false,"reason":"busy"}' '{"ok":false}'; do
+    panel_result_write settings "$(jq -nc --argjson r "$reply" '{command:"settings",ended:1,reply:$r}')"
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .layout <<<"$output")" daily
+    assert_equal "$(jq -r .bar.mode <<<"$output")" stopped
+    assert_equal "$(jq -r .header.badge <<<"$output")" Stopped
+    assert_equal "$(jq -r .sections.default <<<"$output")" ''
+    assert_equal "$(jq -r .result.settings <<<"$output")" "$(panel_words settings "$reply")"
+  done
+  # A real VM failure still opens Logs even with a refused settings save.
+  ST=failed RESULT=exit-code
+  run cmd_panel
+  assert_equal "$(jq -r .layout <<<"$output")" failed
+  assert_equal "$(jq -r .sections.default <<<"$output")" logs
+}
+
+@test "redesign restore: unfinished idle recovery opens its primary action" {
+  state "$CURRENT"
+  : >"$S/restore-in-progress"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .layout <<<"$output")" restoring
+  assert_equal "$(jq -r .primary_action <<<"$output")" finish_restore
+  assert_equal "$(jq -r .sections.default <<<"$output")" snapshots
+}
+
+@test "redesign words: hidden recovery controls name More actions" {
+  state "$CURRENT"
+  ST=active
+  echo "inv $((EPOCHSECONDS - 121))" >"$S/stop-requested"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .next <<<"$output")" 'Wait, or use Force stop in More actions if you accept losing unsaved work.'
+  rm "$S/stop-requested"
+  run cmd_panel
+  assert_equal "$(jq -r .buttons.continue_setup.hint <<<"$output")" 'Shut Windows down, then choose Run setup again in More actions.'
+}
+
 @test "panel scale: supplies current value and every labeled scale choice" {
   state "$CURRENT"
   run cmd_panel
@@ -1281,7 +1322,7 @@ assert_plan_agreement() {
   run cmd_panel
   assert_success
   assert_equal "$(jq -r .buttons.continue_setup.enable <<<"$output")" false
-  assert_equal "$(jq -r .buttons.continue_setup.hint <<<"$output")" 'Shut Windows down to run setup again.'
+  assert_equal "$(jq -r .buttons.continue_setup.hint <<<"$output")" 'Shut Windows down, then choose Run setup again in More actions.'
   ST=inactive
   run cmd_panel
   assert_equal "$(jq -r .buttons.continue_setup.enable <<<"$output")" true
@@ -1320,7 +1361,7 @@ assert_plan_agreement() {
   state "$CURRENT"
   panel_result_write setup '{"command":"setup","args":["--window"],"started":1}'
   run cmd_panel
-  assert_equal "$(jq -r .result.setup <<<"$output")" 'Setup was interrupted. Click Run setup again to try again.'
+  assert_equal "$(jq -r .result.setup <<<"$output")" 'Setup was interrupted. Click Run setup again in More actions to try again.'
   assert_equal "$(jq -r .buttons.continue_setup.label <<<"$output")" 'Run setup again'
 }
 
@@ -2182,13 +2223,13 @@ exec /usr/bin/python3 "$@"'
 # --- the resize upgrade: a client built without the current patches, or a
 # scale task without the sign-in step (req 12) ---
 
-RESIZE_NEW='Windows may start at, or change to, the wrong size until you click Update the Windows window. Updating changes nothing in Windows.'
+RESIZE_NEW='Windows may start at, or change to, the wrong size until you click Update the Windows window in More actions. Updating changes nothing in Windows.'
 BOTH='Windows may start at the wrong size and stay there until you resize the window, and it may change to the wrong size while it runs.'
 SIGNIN='After Windows starts, it may stay at its old size until you resize the window.'
 SCALE='Scale saves apply only the next time Windows starts.'
 LOCK='Running setup again also turns the Windows lock off again.'
 CLIENT_DONE='The Windows window is updated. If the Windows window is open, close it and open it again.'
-CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window again.'
+CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window in More actions again.'
 
 # Assert the panel's warning is <stopped words> while Windows is stopped and
 # <running words> while it runs, with no Update button and no note under
@@ -2230,27 +2271,27 @@ assert_rerun_warning() {
 
 @test "panel resize: a current client without the sign-in step names Run setup again and the lock" {
   state '{"done":true,"scale_task":2}'
-  assert_rerun_warning "$SIGNIN To fix this, click Run setup again. $LOCK" \
-    "$SIGNIN To fix this, shut Windows down and click Run setup again. $LOCK"
+  assert_rerun_warning "$SIGNIN To fix this, click Run setup again in More actions. $LOCK" \
+    "$SIGNIN To fix this, shut Windows down and click Run setup again in More actions. $LOCK"
   # A mark other than the current one counts as missing: 1 is phase F's
   # step in PowerShell, before the start program.
   state '{"done":true,"scale_task":2,"signin_step":1}'
-  assert_rerun_warning "$SIGNIN To fix this, click Run setup again. $LOCK" \
-    "$SIGNIN To fix this, shut Windows down and click Run setup again. $LOCK"
+  assert_rerun_warning "$SIGNIN To fix this, click Run setup again in More actions. $LOCK" \
+    "$SIGNIN To fix this, shut Windows down and click Run setup again in More actions. $LOCK"
 }
 
 @test "panel resize: an old client without the sign-in step names only Run setup again, in one sentence for both" {
   state '{"done":true,"scale_task":2}'
   build_patches_current() { return 1; }
-  assert_rerun_warning "$BOTH To fix this, click Run setup again. $LOCK" \
-    "$BOTH To fix this, shut Windows down and click Run setup again. $LOCK"
+  assert_rerun_warning "$BOTH To fix this, click Run setup again in More actions. $LOCK" \
+    "$BOTH To fix this, shut Windows down and click Run setup again in More actions. $LOCK"
 }
 
 @test "panel resize: the old scale task names Run setup again once, with the scale fix, and keeps the save words" {
   local oldtask='Until you run setup again, the old scale task undoes scales you pick in Windows, and “Match my monitor” does not follow the window. Running setup again also turns the Windows lock off again.'
   state '{"done":true}'
-  assert_rerun_warning "$SIGNIN $SCALE To fix both, click Run setup again. $LOCK" \
-    "$SIGNIN $SCALE To fix both, shut Windows down and click Run setup again. $LOCK"
+  assert_rerun_warning "$SIGNIN $SCALE To fix both, click Run setup again in More actions. $LOCK" \
+    "$SIGNIN $SCALE To fix both, shut Windows down and click Run setup again in More actions. $LOCK"
   # A scale save's reply keeps its words: it answers the save.
   panel_result_write settings '{"command":"settings","invocation":"inv","ended":1,"reply":{"ok":true,"scale_saved":true,"running":true,"scale_task_kind":"old"}}'
   ST=active INV=inv
@@ -2258,8 +2299,8 @@ assert_rerun_warning() {
   assert_equal "$(jq -r .result.settings <<<"$output")" "Saved. Windows uses the saved scale the next time it starts. $oldtask"
   # With an old client too: one message.
   build_patches_current() { return 1; }
-  assert_rerun_warning "$BOTH $SCALE To fix both, click Run setup again. $LOCK" \
-    "$BOTH $SCALE To fix both, shut Windows down and click Run setup again. $LOCK"
+  assert_rerun_warning "$BOTH $SCALE To fix both, click Run setup again in More actions. $LOCK" \
+    "$BOTH $SCALE To fix both, shut Windows down and click Run setup again in More actions. $LOCK"
 }
 
 @test "panel resize: the live task's save words are the same with and without the sign-in step" {
@@ -2448,7 +2489,7 @@ assert_rerun_warning() {
 }
 
 @test "panel resize: a client build that fails in setup names the build log and the button it shows" {
-  local again='Setup could not update the Windows window. Check the Windows window build log, then click Run setup again.'
+  local again='Setup could not update the Windows window. Check the Windows window build log, then click Run setup again in More actions.'
   local cont='Setup could not prepare the Windows window. Check the Windows window build log, then click Continue setup.'
   local args
   run panel_words setup '{"ok":false,"step":"4","message":"UNTRUSTED"}' 7
@@ -2514,7 +2555,7 @@ assert_rerun_warning() {
       assert_equal "$(jq -r .header.badge <<<"$output")" Failed
       assert_equal "$(jq -r .sections.default <<<"$output")" logs
       assert_equal "$(jq -r .bar.mode <<<"$output")" failed
-      assert_equal "$(jq -r .result.setup <<<"$output")" 'Setup could not update the Windows window. Check the Windows window build log, then click Run setup again.'
+      assert_equal "$(jq -r .result.setup <<<"$output")" 'Setup could not update the Windows window. Check the Windows window build log, then click Run setup again in More actions.'
     done
   done
   # A failure from a previous VM invocation cannot mark this one Failed.

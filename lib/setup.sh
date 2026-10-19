@@ -403,8 +403,8 @@ step6_checks_valid() {
     (.since | type == "number" and . > 0 and . <= 9007199254740991 and floor == .) and
     (.location | type == "string" and length > 0) and (.invocation | type == "string") and
     (.idd | check(["qmp","guest-boot","window-closed","idd-missing","mismatch"])) and
-    (.spice | check(["spice"])) and (.clock | check(["guest-boot","clock"])) and
-    (.allowlist | check(["allowlist"])) and (.scale | check(["qmp","scale-task"])))
+    (.spice | check(["qmp","spice"])) and (.clock | check(["qmp","guest-boot","clock"])) and
+    (.allowlist | check(["qmp","allowlist"])) and (.scale | check(["qmp","scale-task"])))
   ' >/dev/null 2>&1
 }
 
@@ -561,11 +561,20 @@ step6_check() {
     late=true
   fi
   local probe=idd pending=waiting
-  [[ -z $checked ]] || probe=scale
   if ! chardevs=$(qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}'); then
-    step6_checks_note "$run" "$(jq -nc --arg k "$probe" '{($k):{state:"waiting",reason:"qmp"}}')" || return 1
+    if [[ -n $checked ]]; then probe=scale
+    else
+      # A transport failure cannot undo a check that passed this attempt.
+      probe=$(step6_checks_read "$run" "$(storage_dir)" "$(unit_invocation)" |
+        jq -r '. as $c | ["idd","spice","clock","allowlist"] | map(select($c[.].state != "done")) | .[0] // ""')
+    fi
+    if [[ -n $probe ]]; then
+      step6_checks_note "$run" "$(jq -nc --arg k "$probe" '{($k):{state:"waiting",reason:"qmp"}}')" || return 1
+    fi
     if $late && [[ -e $run/step6-qmp-failed ]]; then
-      step6_checks_note "$run" "$(jq -nc --arg k "$probe" '{($k):{state:"failed",reason:"qmp"}}')" || return 1
+      if [[ -n $probe ]]; then
+        step6_checks_note "$run" "$(jq -nc --arg k "$probe" '{($k):{state:"failed",reason:"qmp"}}')" || return 1
+      fi
       setup_stop6 qmp "QEMU did not answer when Lanai checked Windows' agents."
       return 1
     fi
@@ -698,7 +707,7 @@ step6_scale() {
       setup_stop6 scale-task "In Windows, the display scale task did not start."
       return 1
     fi
-    setup_wait "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in within 2 minutes."
+    setup_wait "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in to finish setup."
     return 0
   fi
   step6_checks_note "$run" '{"scale":{"state":"done"}}' || return 1

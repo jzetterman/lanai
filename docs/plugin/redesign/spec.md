@@ -221,6 +221,11 @@ acceptance. Two-theme screenshots, real shell focus and a rehearsal on a separat
 Windows copy remain pending for John. See the plan's
 [acceptance notes](plan.md#acceptance-notes) for checks, counts and limitations.
 
+Review regressions cover inline settings refusals, completed check evidence
+through QMP failures, automatic Snapshots expansion for unfinished recovery,
+More actions guidance, reduced-motion progress and CLI sign-in guidance with an
+overridden limit. Countdown and baseline renderer guards remain covered.
+
 ## Review log
 
 | Gate | Stage | Round | Findings | Notes |

@@ -991,11 +991,42 @@ TestCase {
     compare(named(p.panel, 'imageProgress').indeterminate,true)
     wait(80)
     compare(named(p.panel, 'imageProgressText').text,'Reading image')
+    var meter = named(p.panel, 'imageProgress')
+    var position = meter.busyPosition
+    wait(80)
+    verify(meter.busyPosition !== position)
+    Style.reduceMotion = true
+    position = meter.busyPosition
+    wait(80)
+    compare(meter.busyPosition, position)
+    Style.reduceMotion = false
+    wait(80)
+    verify(meter.busyPosition !== position)
     v.progress.total = 100; v.progress.percent = 0; p.model.view = JSON.parse(JSON.stringify(v))
     compare(named(p.panel, 'imageProgress').indeterminate,false)
     var fill = objects(named(p.panel, 'imageProgress').contentItem, function(o) { return o.color !== undefined })[0]
     compare(fill.x,0)
     compare(named(p.panel, 'imageProgressText').text,'Reading image, 0%')
+    p.panel.destroy()
+  }
+  function test_redesign_restore_recovery_opens_primary_when_work_stops() {
+    var p = redesignPanel(), v = redesignView()
+    v.layout = 'restoring'
+    v.buttons.finish_restore = {show:true,enable:false,label:'Finish the unfinished restore'}
+    p.model.view = v
+    named(p.panel, 'settingsToggle').clicked()
+    compare(p.panel.expandedSection, 'settings')
+    v.buttons.finish_restore.enable = true
+    v.primary_action = 'finish_restore'
+    v.sections.default = 'snapshots'
+    p.model.view = JSON.parse(JSON.stringify(v))
+    compare(p.panel.expandedSection, 'snapshots')
+    verify(named(p.panel, 'snapshotsDetails').visible)
+    verify(objects(p.panel, function(o) { return o.control === 'finish_restore' && o.visible && o.enabled })[0] !== undefined)
+    // Polls preserve the user's subsequent section choice.
+    named(p.panel, 'settingsToggle').clicked()
+    p.model.view = JSON.parse(JSON.stringify(v))
+    compare(p.panel.expandedSection, 'settings')
     p.panel.destroy()
   }
   function test_redesign_focus_reveals_expanded_rows_and_notice_covered_controls() {
@@ -2031,7 +2062,9 @@ panel_board_view() {
     ;['RestoreRecovery','RestoreGeneric'].forEach(function(name) {
       p = backendPanel(name); v = p.model.view
       compare(v.layout, 'restoring'); compare(v.progress, null)
-      backendControl(p, 'start', false); named(p.panel, 'snapshotsToggle').clicked()
+      backendControl(p, 'start', false)
+      compare(p.panel.expandedSection, 'snapshots')
+      verify(named(p.panel, 'snapshotsDetails').visible)
       backendControl(p, 'finish_restore', true); backendControl(p, 'restore_snapshot', true)
       compare(named(p.panel, 'restoreTarget').text, name === 'RestoreGeneric' ? 'Unfinished restore' : 'Unfinished restore of Oct 12, 2026 at 09:12 UTC')
       finishBackendPanel(p)

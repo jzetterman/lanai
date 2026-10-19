@@ -72,7 +72,7 @@ panel_words() {
       elif .reason == "agents" then "In Windows, " + parts + " did not answer." + tail
       elif .reason and (reasons[.reason] != null) then reasons[.reason]
       elif $c == "setup" and .step == "4" then
-        (if $step == "7" then "Setup could not update the Windows window. Check the Windows window build log, then click Run setup again."
+        (if $step == "7" then "Setup could not update the Windows window. Check the Windows window build log, then click Run setup again in More actions."
         else "Setup could not prepare the Windows window. Check the Windows window build log, then click Continue setup." end)
       elif $c == "setup" and .step == "2" and .missing then ""
       elif $c == "setup" and .step == "3" and .reason == null then ""
@@ -278,10 +278,10 @@ cmd_panel() {
       case $(jq -r .command <<<"$doc") in
         snapshot) words="The snapshot did not finish. Try again." ;;
         restore) words="The restore did not finish. Finish the unfinished restore or restore another snapshot before starting Windows." ;;
-        build-client) words="The update did not finish. Click Update the Windows window again." ;;
+        build-client) words="The update did not finish. Click Update the Windows window in More actions again." ;;
         # Run setup again's step 4 build runs while the plan is finished.
         *) if jq -e '.finished' <<<"$plan" >/dev/null; then
-          words="Setup was interrupted. Click Run setup again to try again."
+          words="Setup was interrupted. Click Run setup again in More actions to try again."
         else words="Setup was interrupted. Continue setup to try again."; fi ;;
       esac
     fi
@@ -305,7 +305,7 @@ cmd_panel() {
     # make scale saves apply while Windows runs, unless the resize warning
     # already says it (the panel names Run setup again once). An unfinished
     # plan (req 8's driver update) shows Continue setup instead.
-    note='' active=false button='Run setup again'
+    note='' active=false button='Run setup again in More actions'
     ! jq -e '.active' <<<"$status" >/dev/null || active=true
     jq -e '.finished' <<<"$plan" >/dev/null || button='Continue setup'
     case $task in
@@ -434,7 +434,7 @@ cmd_panel() {
        continue_setup:button($interruptedSetup or (($p.choices|length)==0 and $p.step != "3");
          ($busy|not) and $available and ($st.restore_pending|not) and (($p.finished|not) or $off) and
          $p.reason != "no-media" and $p.reason != "active" and ($p.step != "6" or $st.state != "stopping");(if $p.finished then "Run setup again" else "Continue setup" end)) +
-         {hint:(if $p.finished and ($off|not) then "Shut Windows down to run setup again." else "" end)},
+         {hint:(if $p.finished and ($off|not) then "Shut Windows down, then choose Run setup again in More actions." else "" end)},
        install:button($p.step == "2";($busy|not);"Install in a terminal"),
        setup_snapshot:button($p.step == "3";$idle and ($busy|not);"Take a snapshot"),
        skip_snapshot:button($p.step == "3";$idle and ($busy|not);"Continue without a snapshot"),
@@ -457,7 +457,7 @@ cmd_panel() {
     else . end |
     if $st.restore_pending then .cause="A restore did not finish, so Windows cannot start." |
       .next=(if $available then "When Windows is stopped, finish the unfinished restore or restore another snapshot." else "Stop the other VM, then finish the unfinished restore or restore another snapshot." end) else . end |
-    if $st.force_stop then .next="Wait, or use Force stop below if you accept losing unsaved work." else . end |
+    if $st.force_stop then .next="Wait, or use Force stop in More actions if you accept losing unsaved work." else . end |
     .warning = ([
       if $facts | contains("LanaiHelpersMissing=") then "Some background services stopped. Shut Windows down and start it again." else empty end,
       if $facts | contains("LanaiClient=timeout") then "The Windows window did not open in time. " +
@@ -474,10 +474,10 @@ cmd_panel() {
           else "After Windows starts, it may stay at its old size until you resize the window." end,
           if $task == "old" then "Scale saves apply only the next time Windows starts." else empty end]) as $fixes |
         ($fixes + ["To fix " + ({"1":"this","2":"both"}[$fixes | length | tostring]) + ", " +
-          (if $off then "click Run setup again." else "shut Windows down and click Run setup again." end),
+          (if $off then "click Run setup again in More actions." else "shut Windows down and click Run setup again in More actions." end),
           "Running setup again also turns the Windows lock off again."] | join(" "))
       elif $updateShown then
-        "Windows may start at, or change to, the wrong size until you click Update the Windows window. Updating changes nothing in Windows."
+        "Windows may start at, or change to, the wrong size until you click Update the Windows window in More actions. Updating changes nothing in Windows."
       else empty end
     ] | join(" ")) |
     # Presentation follows the existing decisions and never widens an offer.
@@ -491,8 +491,8 @@ cmd_panel() {
       ($p.step != "6" or $checkSince == null or ($d.ended // $now) >= $checkSince);
     ($p.finished == false and $p.step == "6" and currentSetup and
       $rec.records.setup.reply.ok == false and $rec.records.setup.reply.stop == "timeout") as $timeout |
-    # A prompt or timeout is a durable setup view, not an operation failure.
-    (["vm","setup","settings","snapshots","client"] | any(.[];
+    # Settings refusals stay beside the drafts; prompts and timeouts keep their setup view.
+    (["vm","setup","snapshots","client"] | any(.[];
       . as $g | $rec.records[$g] as $d |
       ($r[$g] != "" and $d != null and ($d.invocation == null or $d.invocation == $invocation) and
         ($d.reply.ok == false or (($rec.held|not) and ($d|has("started")) and ($d|has("ended")|not))) and
@@ -527,7 +527,7 @@ cmd_panel() {
         "\(.settings.memory_gib) GiB · \(.settings.cores) cores · " +
         (if .settings.windows_scale == "auto" then "Auto" else "\(.settings.windows_scale)%" end)
       else "" end),badge:(if $setupLayout then "Setup" elif .layout == "failed" then "Failed" else .label end)} |
-    .sections = {settings:"Settings",snapshots:"Snapshots",logs:"Logs",more:"More actions",dismiss_click_notice:"Dismiss busy notice",default:(if .layout == "failed" then "logs" else "" end)} |
+    .sections = {settings:"Settings",snapshots:"Snapshots",logs:"Logs",more:"More actions",dismiss_click_notice:"Dismiss busy notice",default:(if .layout == "failed" then "logs" elif .restore.pending and ($restoring|not) then "snapshots" else "" end)} |
     def checkrow($id;$label;$probes):
       ($probes | map(.state // "not_checked")) as $states |
       (if $states | index("failed") then "failed" elif all($states[]; . == "done") then "done"

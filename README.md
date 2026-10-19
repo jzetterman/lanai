@@ -92,6 +92,7 @@ a generic restore label. You can close the panel during a snapshot. Keep Windows
 stopped until a restore finishes.
 Lanai blocks Start while a restore is unfinished. Use **Finish the unfinished
 restore** to resume it, or restore another saved snapshot to start over.
+When restore work stops unfinished, the panel opens Snapshots to show these actions.
 It tries the Lanai data directory's `snapshots/`, then
 `<storage>.lanai-snapshots/` on the storage filesystem. Both VMs must be stopped for
 snapshot or restore. Before a new snapshot, Lanai removes interrupted snapshot
@@ -210,8 +211,9 @@ saves the scale only when you chose an entry in the scale list since you opened
 the panel or last used Reset, even the entry already shown; otherwise it saves
 memory and cores only. **Unsaved** marks changed drafts or a scale selection
 since the last successful save. Polls, section changes and failed saves preserve
-the drafts. **Reset** restores the current saved values locally and clears scale
-selection intent. It saves nothing and does not restore defaults. A clean panel
+the drafts. A refused save keeps its result in Settings. **Reset** restores the
+current saved values locally and clears scale selection intent. It saves nothing
+and does not restore defaults. A clean panel
 shows disabled **Saved** and hides Reset and Unsaved.
 Typing a changed memory or CPU value makes Save available immediately; clicking
 Save commits that text without requiring Enter first.

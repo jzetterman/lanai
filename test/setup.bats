@@ -1278,7 +1278,7 @@ exec /usr/bin/mv "$@"'
   setup_run
   assert_success
   assert_equal "$(field step)" 6
-  assert_equal "$(field message)" "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in within 2 minutes."
+  assert_equal "$(field message)" "Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in to finish setup."
   local checked
   checked=$(<"$RUN/step6-checked")
   ((EPOCHSECONDS - checked <= 5)) || fail "step6-checked $checked is not now"
@@ -2242,6 +2242,39 @@ check_states() {
   assert_equal "$(jq -c '[.idd.state,.idd.reason]' "$RUN/step6-checks.json")" '["failed","qmp"]'
 }
 
+@test "redesign checks: QMP failures preserve done probes before the combined proof" {
+  local probe mode before
+  eval "$(declare -f qmp_call | sed '1s/qmp_call/real_qmp_call/')"
+  for probe in spice clock allowlist; do
+    qmp_call() { real_qmp_call "$@"; }
+    step6_running "$FIX/client-logs/match.log" 5 301
+    LANAI_SETUP_LIMIT=600
+    case $probe in
+      spice) conf FAKE_QGA_CMD=allowlist FAKE_QMP_VDAGENT=false ;;
+      clock) conf FAKE_QGA_CMD=notime ;;
+      allowlist) conf FAKE_QGA_CMD=time-silent ;;
+    esac
+    setup_run
+    assert_success
+    assert_equal "$(jq -r .idd.state "$RUN/step6-checks.json")" 'done'
+    assert [ ! -e "$RUN/step6-checked" ]
+    before=$(jq -c --arg p "$probe" 'del(.[$p])' "$RUN/step6-checks.json")
+    qmp_call() { return 1; }
+    for mode in waiting failed; do
+      [[ $mode != failed ]] || LANAI_SETUP_LIMIT=300
+      setup_run
+      if [[ $mode == waiting ]]; then assert_success; else assert_failure; assert_timeout qmp; fi
+      assert_equal "$(jq -c --arg p "$probe" 'del(.[$p])' "$RUN/step6-checks.json")" "$before"
+      assert_equal "$(jq -c --arg p "$probe" '.[$p]' "$RUN/step6-checks.json")" \
+        "$(jq -nc --arg s "$mode" '{state:$s,reason:"qmp"}')"
+      run cmd_panel
+      assert_success
+      assert_equal "$(jq -r .setup.checks[0].state <<<"$output")" 'done'
+      assert_equal "$(jq -r .setup.checks[1].state <<<"$output")" "$mode"
+    done
+  done
+}
+
 @test "redesign checks: guest startup timeout preserves observed IDD and names the guest agent" {
   step6_running "$FIX/client-logs/match.log" 5 301
   LANAI_SETUP_LIMIT=600
@@ -2355,6 +2388,7 @@ exec /usr/bin/mv "$@"'
   conf FAKE_QGA_CMD=allowlist FAKE_QMP_SCALE=false
   LANAI_SETUP_SCALE_LIMIT=37 setup_run
   assert_success
+  assert_equal "$(field message)" 'Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in to finish setup.'
   local start
   start=$(<"$RUN/step6-checked")
   LANAI_SETUP_SCALE_LIMIT=120
@@ -2367,6 +2401,8 @@ exec /usr/bin/mv "$@"'
   setup_run
   assert_success
   assert_equal "$(<"$RUN/step6-scale-limit")" 37
+  run field message
+  refute_output --partial 'within 2 minutes'
   # A replacement worker must enforce the recorded deadline too.
   echo "$((EPOCHSECONDS - 37))" >"$RUN/step6-checked"
   echo "$((EPOCHSECONDS - 100))" >"$RUN/step6-since"
