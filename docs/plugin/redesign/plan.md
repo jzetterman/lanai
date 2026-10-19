@@ -995,3 +995,7 @@ after the separate-copy rehearsal passes.
 | Diff | a (gpt-6.1-sol), 2 parts | 4 | 2 | 2 confirmed (both P2, neither a nit), 0 refuted, 0 downgraded to nit, 0 could not verify; duplicate QML comments counted once; backend review clean; regressions failed before the fixes: step entry x=0 instead of 88 and installed Button confirmation width 402.94px in a 360px panel; wait for window polish and verify both wrapped rows before bounds, and cap snapshot action widths to their row; 2 focused Bats cases pass; five consecutive runs of test/panel-qml.bats each pass all 4 cases with 0 failures and 0 skips (20 passes total); QML lint passes with existing warnings, shellcheck -x and diff whitespace checks pass; full suite omitted for the sandbox stall and /proc/locks limits; logs in /run/user/1000/lzi/ra4.kBGyrL |
 
 The diff gate ran stage (b) as one single reviewer, not a panel, to fit John's Claude budget (his call, 2026-10-18).
+
+## Follow-ups
+
+- Cut the panel's text to match the Main board. On 2026-10-19 the running panel showed status lines ("Windows is running", "Windows is available.", "Click Open window."), the full snapshot path message, and three setup and window hints under the buttons. The board shows only the header, the buttons and the section rows. Move the hints behind More actions or into tooltips. Also check the bar glyph (it renders as a text "L"), the Open window accent fill, and the section row icons against the boards.
