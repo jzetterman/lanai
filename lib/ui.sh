@@ -132,6 +132,9 @@ cmd_settings() {
       emit true "" "Saved. Memory and cores apply the next time Windows starts." "" "$reply"
     fi
   else
+    # Suggested sizing stays editable, but is not a saved panel baseline.
+    reply=$(jq -c --argjson d "$doc" '. + {baseline:(if $d.memory_gib != null and $d.cores != null then
+      {memory_gib,cores,windows_scale} else null end)}' <<<"$reply")
     emit true "" "Memory and cores apply the next time Windows starts." "" "$reply"
   fi
 }

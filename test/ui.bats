@@ -432,3 +432,35 @@ CHILD
   done
   exec {fd}>&-
 }
+
+
+@test "redesign settings: panel baseline follows saved values without changing scale intent records" {
+  local before
+  # Keep the panel's host probes inert; this tests the real settings read/save path.
+  shared_facts() { printf 'ActiveState=inactive\nLanaiStorage=/test-copy\nLanaiInstall=present\nLanaiContainer=none\n'; }
+  status_facts() { printf 'ActiveState=inactive\nLanaiSetup=done\n'; }
+  setup_plan() { setup_decision 7 'done'; }
+  cmd_snapshots() { emit true '' '' '' '{"snapshots":[]}'; }
+  build_stamp_current() { return 0; }
+  build_patches_current() { return 0; }
+  setup_finished 2 "$LANAI_SIGNIN_STEP"
+  run cmd_settings 16 8 250
+  assert_success
+  before=$(cat "$(settings_file)")
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c .settings.baseline <<<"$output")" '{"memory_gib":16,"cores":8,"windows_scale":250}'
+  assert_equal "$(cat "$(settings_file)")" "$before"
+  run cmd_settings 20 10
+  assert_success
+  assert_equal "$(jq .scale_save "$(settings_file)")" 1
+  run cmd_panel
+  assert_equal "$(jq -c .settings.baseline <<<"$output")" '{"memory_gib":20,"cores":10,"windows_scale":250}'
+  # Sizing suggestions are not a saved baseline or saved header values.
+  jq 'del(.memory_gib)' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  settings_seed() { echo '{"memory_gib":8,"cores":4}'; }
+  run cmd_panel
+  assert_equal "$(jq .settings.baseline <<<"$output")" null
+  assert_equal "$(jq -r .header.meta <<<"$output")" ''
+}

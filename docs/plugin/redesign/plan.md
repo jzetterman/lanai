@@ -387,6 +387,51 @@ An unfinished restore still exposes setup guidance and recovery. A new setup
 attempt supersedes an older timeout. Keep daily controls beside pending updates
 where the existing descriptors allow them, regardless of the chosen card.
 
+Phase 3 implementation is complete. Shared validation remains blocked by the
+spike flock test in this sandbox. The backend presentation fields retain the old
+panel fields and button guards. Saved headers and Settings baselines exclude
+suggested sizing when saved values are absent. Setup maps storage preparation and client
+preparation to Prepare, step 4, and aggregates only accepted check outcomes.
+The sign-in duration requires a current worker, matching invocation and valid
+check evidence. Log rows copy the exact journal command or available file path.
+The bar distinguishes an active restore from interrupted recovery and keeps the
+normal Drivers wait active. No QML consumer changed.
+
+All ten named panel cases and the additional settings baseline case failed
+before implementation. Further failing assertions caught suggested sizing
+being presented as saved values and active restore markers receiving failure
+priority. Fixture replies for all ten boards were inspected. Active restores
+retain saved header values and setup guidance; interrupted restores retain
+failure priority. The fixture replies are under
+`/run/user/1000/lzi/lr3.boards.xiGQET`.
+
+The final focused command exited successfully with 181 passes and one skip for
+the unavailable comma-decimal locale. The targeted redesign run passed all 17
+cases, including the snapshot and restore regressions
+from phase 2. The full shellcheck command and `git diff --check` passed.
+Focused logs are under `/run/user/1000/lzi/lr3.final.fSkTec`.
+
+The shared block passed QML lint with its existing warnings. Bats reported
+839 passes and 79 skips, then stalled with 918 of 919 results present. The
+missing result was the unchanged spike case `disk_locked: live flock on btrfs
+shows in the real /proc/locks`. The run was interrupted and exited 1. Running
+that case alone without the watchdog failed at `spike/test/lgtest.bats:190`:
+`disk_locked()` did not see the acquired flock. This is not a successful full
+suite result. The orchestrator must rerun it outside this sandbox.
+
+The skips were 76 cases without `LANAI_TEST_BTRFS_DIR`, the pinned-source build
+without `LANAI_TEST_LG_TARBALL`, an unavailable strace measurement and a missing
+comma-decimal locale. Guest tests ran with pwsh. The shared block stopped at
+Bats and retained `/run/user/1000/lzi/lr3.shared.bLo43I`. Shellcheck ran separately
+afterward and passed. The affected panel, settings and panel-job files were
+rerun without the watchdog: 181 cases passed and the locale case skipped. The log is
+`/run/user/1000/lzi/lr3.final.fSkTec/affected.log`.
+The QML lint import directory was redirected into the runtime folder
+without changing the lint script. The unchanged spike harness ignores TMPDIR
+and created its btrfs fixtures under `spike/work/test-tmp`, contrary to this
+session's temporary-path constraint. Teardown removed them. No VM, review stage
+or commit ran. No spec behaviour changed beyond this phase.
+
 ## Phase 4: Rebuild the daily panel and detail sections
 
 Read `LanaiPanel.qml` completely, `LanaiModel.qml:control()` and `run()`,

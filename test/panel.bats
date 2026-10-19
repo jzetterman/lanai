@@ -138,7 +138,7 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   checks_passed
   run cmd_panel
   exec {fd}>&-
-  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Waiting for the display scale task. It starts when the Windows user who ran setup signs in. If Windows asks for a password, sign in within 2 minutes.'
+  assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Waiting for the display scale task. If Windows is at its sign-in screen, or another user is signed in, sign in as the Windows user who ran setup.'
   # With no setup job running, nothing waits: Continue setup checks again.
   run cmd_panel
   assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" 'Click Continue setup so Lanai can check Windows.'
@@ -382,12 +382,15 @@ display_snapshot() {
   run cmd_panel
   assert_success
   assert_equal "$(jq -c '.restore | [.pending,.name,.label,.warning]' <<<"$output")" '[true,"20261012T091200Z","Unfinished restore of Oct 12, 2026 at 09:12 UTC","Keep Windows stopped until the restore finishes."]'
+  assert_equal "$(jq -r .bar.mode <<<"$output")" failed
   exec {fd}>"$S/lock"
   flock -n "$fd"
   jq -nc --argjson p "$pid" '{operation:"restore",phase:"checking",done:0,total:0,pid:$p}' >"$S/image-progress.json"
   run cmd_panel
   assert_success
   assert_equal "$(jq -r .restore.label <<<"$output")" 'Restoring Oct 12, 2026 at 09:12 UTC'
+  assert_equal "$(jq -r .bar.mode <<<"$output")" busy
+  assert_equal "$(jq -r .header.meta <<<"$output")" '8 GiB · 4 cores · Auto'
   display_snapshot "$(data_dir)/snapshots/20261013T101500Z"
   exec {job_fd}>"$S/panel-job.lock"
   flock -n "$job_fd"
@@ -516,13 +519,20 @@ assert_plan_agreement() {
     run cmd_panel
     assert_success
     assert_equal "$(jq -r .state <<<"$output")" "$expected"
+    case $expected in
+      not-installed|in-use|version-mismatch) assert_equal "$(jq -r .bar.mode <<<"$output")" attention ;;
+      setup-needed) assert_equal "$(jq -r .bar.mode <<<"$output")" stopped ;;
+      starting|running|stopping) assert_equal "$(jq -r .bar.mode <<<"$output")" active ;;
+      *) assert_equal "$(jq -r .bar.mode <<<"$output")" "$expected" ;;
+    esac
     assert_equal "$(jq -r '[.label,.headline,.cause,.next,.notice,.warning,.busy,.buttons,.setup,.result,.settings,.snapshots,.logs] | length' <<<"$output")" 13
     case $expected in
       stopped) assert_right_click start ;;
       running) assert_right_click open ;;
       *) assert_right_click panel ;;
     esac
-    refute_output --partial 'journalctl'
+    # The journal command belongs only to the clipboard payload.
+    assert_equal "$(jq 'del(.logs.rows[].copy_text) | tostring | contains("journalctl")' <<<"$output")" false
     refute_output --partial '—'
   done
 }
@@ -2539,4 +2549,359 @@ assert_rerun_warning() {
   assert_equal "$(jq -r .setup.step <<<"$output")" 4
   assert_equal "$(jq -r .result.setup <<<"$output")" "$cont"
   assert_equal "$(jq -r .buttons.continue_setup.label <<<"$output")" 'Continue setup'
+}
+
+
+@test "redesign header: daily saved values include scale in Failed" {
+  state "$CURRENT"
+  jq '.memory_gib=12 | .cores=6 | .windows_scale=175' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  for ST in inactive failed; do
+    RESULT=exit-code
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .header.title <<<"$output")" Windows
+    assert_equal "$(jq -r .header.meta <<<"$output")" '12 GiB · 6 cores · 175%'
+    assert_equal "$(jq -r .header.badge <<<"$output")" "$([[ $ST == failed ]] && echo Failed || echo Stopped)"
+    assert_equal "$(jq -r .layout <<<"$output")" "$([[ $ST == failed ]] && echo failed || echo daily)"
+    assert_equal "$(jq -r .sections.default <<<"$output")" "$([[ $ST == failed ]] && echo logs || echo '')"
+  done
+  cmd_settings() { return 1; }
+  run cmd_panel
+  assert_equal "$(jq -r .header.meta <<<"$output")" ''
+  assert_equal "$(jq -r .settings.baseline <<<"$output")" null
+}
+
+@test "redesign setup: Check through Verify map six steps and completion has no seventh step" {
+  local step name number
+  for step in 1 2 3 4 5 6 7; do
+    setup_plan() { setup_decision "$step" "$([[ $step == 7 ]] && echo 'done' || echo checks)"; }
+    case $step in
+      1) name=Check ;; 2) name=Packages ;; 3) name=Snapshot ;; 4) name=Prepare ;;
+      5) name=Drivers ;; 6) name=Verify ;; 7) name='' ;;
+    esac
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .setup.name <<<"$output")" "$name"
+    assert_equal "$(jq -r '.setup.steps | map(.name) | join(",")' <<<"$output")" 'Check,Packages,Snapshot,Prepare,Drivers,Verify'
+    assert_equal "$(jq '[.setup.steps[] | select(.state == "current")] | length' <<<"$output")" "$([[ $step == 7 ]] && echo 0 || echo 1)"
+    if [[ $step == 7 ]]; then
+      assert_equal "$(jq -r .setup.number <<<"$output")" null
+      assert_equal "$(jq -r .setup.step_line <<<"$output")" ''
+      assert_equal "$(jq -r .layout <<<"$output")" daily
+      assert_equal "$(jq '[.setup.steps[] | select(.state == "complete")] | length' <<<"$output")" 6
+    else
+      number=$step
+      assert_equal "$(jq -r .header.meta <<<"$output")" "Step $number of 6 · $name"
+      assert_equal "$(jq -r .header.badge <<<"$output")" Setup
+      assert_equal "$(jq '[.setup.steps[] | select(.state == "complete")] | length' <<<"$output")" "$((step - 1))"
+    fi
+  done
+}
+
+@test "redesign setup: Prepare covers 3a and client build with their actual guidance" {
+  state '{"snapshot":"declined"}'
+  rm "$STORE/windows.base"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c '.setup | [.number,.name,.step_line,.title]' <<<"$output")" '[4,"Prepare","Step 4 of 6","Prepare the Windows install"]'
+  assert_equal "$(jq -r .header.meta <<<"$output")" 'Step 4 of 6 · Prepare'
+  assert_equal "$(jq -r .setup.lines[0] <<<"$output")" 'Continue setup to prepare the Windows install.'
+  echo base >"$STORE/windows.base"
+  build_stamp_current() { return 1; }
+  run cmd_panel
+  assert_equal "$(jq -c '.setup | [.number,.name,.step_line,.title]' <<<"$output")" '[4,"Prepare","Step 4 of 6","Prepare the Windows window"]'
+  assert_equal "$(jq -r .header.meta <<<"$output")" 'Step 4 of 6 · Prepare'
+  assert_equal "$(jq -r .setup.lines[0] <<<"$output")" 'Continue setup to prepare the Windows window. This may take several minutes.'
+}
+
+# Current attempt detail with fixed probe vocabulary, written as setup does.
+redesign_check_detail() {
+  jq -nc --arg l "$STORE" --arg i "$INV" --argjson s "$(cat "$RUN/step6-since")" \
+    --argjson c "$1" '$c + {location:$l,invocation:$i,since:$s}' >"$RUN/step6-checks.json"
+}
+
+@test "redesign verify: checklist labels and aggregate states follow actual outcomes" {
+  state '{"snapshot":"declined","step5":true}'
+  ST=active
+  echo "$((EPOCHSECONDS - 10))" >"$RUN/step6-since"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c '.setup.checks | map(.label)' <<<"$output")" '["Display driver","Windows agents","Scale task"]'
+  assert_equal "$(jq -c '.setup.checks | map(.state)' <<<"$output")" '["not_checked","not_checked","not_checked"]'
+  redesign_check_detail '{"idd":{"state":"done"},"spice":{"state":"done"},"clock":{"state":"waiting","reason":"clock"},"allowlist":{"state":"not_checked"},"scale":{"state":"not_checked"}}'
+  run cmd_panel
+  assert_equal "$(jq -c '.setup.checks | map(.state)' <<<"$output")" '["done","waiting","not_checked"]'
+  assert_equal "$(jq -r .setup.checks[1].detail <<<"$output")" 'Waiting for the QEMU guest agent clock.'
+  redesign_check_detail '{"idd":{"state":"failed","reason":"mismatch"},"spice":{"state":"not_checked"},"clock":{"state":"not_checked"},"allowlist":{"state":"failed","reason":"allowlist"},"scale":{"state":"not_checked"}}'
+  run cmd_panel
+  assert_equal "$(jq -r .setup.checks[0].status <<<"$output")" Failed
+  assert_equal "$(jq -r .setup.checks[1].detail <<<"$output")" 'The QEMU guest agent allow-list failed.'
+  echo "$((EPOCHSECONDS - 5))" >"$RUN/step6-checked"
+  run cmd_panel
+  assert_equal "$(jq -c '.setup.checks | map(.status)' <<<"$output")" '["Done","Done","Not checked"]'
+  rm "$RUN/step6-checks.json"
+  run cmd_panel
+  assert_equal "$(jq -c '.setup.checks | map(.state)' <<<"$output")" '["done","done","not_checked"]'
+}
+
+@test "redesign countdown: active worker exposes remaining duration and stopped work hides it" {
+  local fd before after started limit=180
+  state '{"snapshot":"declined","step5":true}'
+  ST=active
+  export LANAI_SETUP_SCALE_LIMIT=$limit
+  started=$((EPOCHSECONDS - 30))
+  echo "$((started - 5))" >"$RUN/step6-since"
+  echo "$started" >"$RUN/step6-checked"
+  redesign_check_detail '{"idd":{"state":"done"},"spice":{"state":"done"},"clock":{"state":"done"},"allowlist":{"state":"done"},"scale":{"state":"waiting","reason":"scale-task"}}'
+  panel_result_write setup "$(jq -nc --argjson t "$started" '{command:"setup",invocation:"inv",started:$t,reply:{ok:true,step:"6"}}')"
+  exec {fd}>"$S/panel-job.lock"; flock "$fd"
+  before=$EPOCHSECONDS
+  run cmd_panel
+  after=$EPOCHSECONDS
+  assert_success
+  assert_equal "$(jq -r .setup.countdown.started_at <<<"$output")" "$started"
+  assert_equal "$(jq -r .setup.countdown.limit_seconds <<<"$output")" "$limit"
+  assert_equal "$(jq -r .setup.countdown.label <<<"$output")" 'Time remaining to sign in'
+  assert_equal "$(jq -r .bar.mode <<<"$output")" attention
+  assert [ "$(jq .setup.countdown.remaining_seconds <<<"$output")" -ge "$((limit - (after - started)))" ]
+  assert [ "$(jq .setup.countdown.remaining_seconds <<<"$output")" -le "$((limit - (before - started)))" ]
+  refute_output --partial 'within 2 minutes'
+  : >"$RUN/step6-stopped"
+  run cmd_panel
+  assert_equal "$(jq .setup.countdown <<<"$output")" null
+  rm "$RUN/step6-stopped"
+  INV=other
+  run cmd_panel
+  assert_equal "$(jq .setup.countdown <<<"$output")" null
+  INV=inv
+  export LANAI_SETUP_SCALE_LIMIT=120
+  run cmd_panel
+  assert_equal "$(jq .setup.countdown.limit_seconds <<<"$output")" 120
+  export LANAI_SETUP_SCALE_LIMIT=invalid
+  run cmd_panel
+  assert_equal "$(jq .setup.countdown <<<"$output")" null
+  export LANAI_SETUP_SCALE_LIMIT=$limit
+  rm "$RUN/step6-checked"
+  run cmd_panel
+  assert_equal "$(jq .setup.countdown <<<"$output")" null
+  echo "$((EPOCHSECONDS + 10))" >"$RUN/step6-checked"
+  run cmd_panel
+  assert_equal "$(jq .setup.countdown <<<"$output")" null
+  echo "$((EPOCHSECONDS - 200))" >"$RUN/step6-since"
+  echo "$((EPOCHSECONDS - 190))" >"$RUN/step6-checked"
+  redesign_check_detail '{"idd":{"state":"done"},"spice":{"state":"done"},"clock":{"state":"done"},"allowlist":{"state":"done"},"scale":{"state":"waiting","reason":"scale-task"}}'
+  run cmd_panel
+  assert_equal "$(jq .setup.countdown.remaining_seconds <<<"$output")" 0
+  assert_equal "$(cat "$RUN/step6-checked")" "$(jq .setup.countdown.started_at <<<"$output")"
+  exec {fd}>&-
+  run cmd_panel
+  assert_equal "$(jq .setup.countdown <<<"$output")" null
+}
+
+@test "redesign logs: every available row has exact copy text and a short display name" {
+  local id path
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c '.logs.rows | map(.id)' <<<"$output")" '["vm"]'
+  assert_equal "$(jq -r .logs.rows[0].copy_text <<<"$output")" "$LANAI_LOGS"
+  for path in "$RUN/client.log" "$S/build-client.log" "$S/panel-job.log" "$S/panel-run.log"; do : >"$path"; done
+  run cmd_panel
+  assert_equal "$(jq -c '.logs.rows | map(.label)' <<<"$output")" '["VM","Window","Build","Jobs","Actions"]'
+  for id in client build job command; do
+    case $id in client) path=$RUN/client.log ;; build) path=$S/build-client.log ;;
+      job) path=$S/panel-job.log ;; command) path=$S/panel-run.log ;; esac
+    assert_equal "$(jq -r --arg id "$id" '.logs.rows[] | select(.id == $id) | .copy_text' <<<"$output")" "$path"
+    assert_equal "$(jq -r --arg id "$id" '.logs.rows[] | select(.id == $id) | .display' <<<"$output")" "${path##*/}"
+  done
+  assert_equal "$(jq -r .logs.copied <<<"$output")" Copied
+  assert_equal "$(jq -r .logs.copy_error <<<"$output")" 'Could not copy. Try again.'
+  assert_equal "$(jq -r .logs.rows[0].copy_label <<<"$output")" 'Copy VM log command'
+  rm "$S/panel-job.log"
+  run cmd_panel
+  assert_equal "$(jq '[.logs.rows[] | select(.id == "job")] | length' <<<"$output")" 0
+  run_dir() { return 1; }
+  run cmd_panel
+  assert_equal "$(jq '[.logs.rows[] | select(.id == "client")] | length' <<<"$output")" 0
+}
+
+@test "redesign settings: baseline and Save Saved Reset Unsaved words come from backend" {
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c .settings.baseline <<<"$output")" '{"memory_gib":8,"cores":4,"windows_scale":"auto"}'
+  assert_equal "$(jq -c .settings.labels <<<"$output")" '{"memory":"Memory (GiB)","cores":"CPU cores","scale":"Windows scale","save":"Save","saved":"Saved","reset":"Reset","unsaved":"Unsaved"}'
+  assert_equal "$(jq -c .sections <<<"$output")" '{"settings":"Settings","snapshots":"Snapshots","logs":"Logs","default":""}'
+  printf invalid >"$(settings_file)"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq .settings.baseline <<<"$output")" null
+  assert_equal "$(jq -r .buttons.save_settings.enable <<<"$output")" false
+}
+
+@test "redesign bar: failure attention busy active stopped priority and Drivers exception" {
+  local fd image_fd pid=$BASHPID total
+  state "$CURRENT"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c .bar <<<"$output")" '{"mode":"stopped","percent":null}'
+  ST=activating
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" active
+  ST=deactivating
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" active
+  ST=inactive
+  exec {image_fd}>"$S/lock"; flock "$image_fd"
+  for total in 0 100; do
+    jq -nc --argjson p "$pid" --argjson t "$total" '{operation:"snapshot",phase:"hashing",done:0,total:$t,pid:$p}' >"$S/image-progress.json"
+    run cmd_panel
+    assert_equal "$(jq -r .bar.mode <<<"$output")" busy
+    assert_equal "$(jq .bar.percent <<<"$output")" "$([[ $total == 0 ]] && echo null || echo 0)"
+  done
+  exec {image_fd}>&-
+  rm "$S/image-progress.json"
+  state '{"snapshot":"declined"}'
+  ST=active
+  echo '{"setup":true}' >"$S/boot.json"
+  panel_result_write setup '{"command":"setup","started":1,"reply":{"ok":true,"step":"5"}}'
+  exec {fd}>"$S/panel-job.lock"; flock "$fd"
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" active
+  exec {fd}>&-
+  panel_result_write setup '{"command":"setup","started":1,"ended":2,"reply":{"ok":true,"step":"5"}}'
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" active
+  panel_result_write vm '{"command":"stop","invocation":"inv","started":2,"ended":3,"reply":{"ok":false}}'
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+  rm "$S/panel-result-vm.json"
+  : >"$S/restore-in-progress"
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+  assert_equal "$(jq -r .layout <<<"$output")" restoring
+  rm "$S/restore-in-progress"
+  ST=failed RESULT=exit-code
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+}
+
+@test "redesign bar: setup timeout and user prompts request attention despite unsuccessful replies" {
+  local fd
+  state '{"snapshot":"declined","step5":true}'
+  ST=active
+  timeout_record scale-task
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .bar.mode <<<"$output")" attention
+  assert_equal "$(jq -r .layout <<<"$output")" setup_timeout
+  assert_equal "$(jq -r .header.meta <<<"$output")" 'Step 6 of 6 · Verify · Setup needed'
+  # A newer attempt supersedes the old timeout even under the same invocation.
+  echo "$EPOCHSECONDS" >"$RUN/step6-since"
+  run cmd_panel
+  assert_equal "$(jq -r .layout <<<"$output")" setup_verify
+  state '{}'
+  ST=inactive
+  rm "$RUN/step6-since"
+  panel_result_write setup '{"command":"setup","started":1,"ended":2,"reply":{"ok":false,"step":"3"}}'
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" attention
+  host_packages_missing() { echo package; }
+  panel_result_write setup '{"command":"setup","started":1,"ended":2,"reply":{"ok":false,"step":"2","missing":["package"]}}'
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" attention
+  exec {fd}>"$S/panel-job.lock"; flock "$fd"
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" attention
+  exec {fd}>&-
+  state "$CURRENT"
+  ST=active INV=new
+  panel_result_write vm '{"command":"start","invocation":"old","started":1,"ended":2,"reply":{"ok":false}}'
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" active
+}
+
+@test "redesign actions: every existing guard survives the presentation choice" {
+  local boot
+  state "$CURRENT"
+  build_patches_current() { return 1; }
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .primary_action <<<"$output")" start
+  assert_equal "$(jq -c '.buttons.start | [.show,.enable]' <<<"$output")" '[true,true]'
+  ST=active
+  qmp_call() { printf '{"return":{"status":"running"}}\n{"return":[{"label":"qga0","frontend-open":true}]}\n'; }
+  run cmd_panel
+  assert_equal "$(jq -r .primary_action <<<"$output")" open
+  assert_equal "$(jq -c '.buttons.open | [.show,.enable]' <<<"$output")" '[true,true]'
+  build_patches_current() { return 0; }
+  state '{"snapshot":"declined","done":true,"round":true,"step5":true}'
+  for boot in setup step6; do
+    echo "{\"$boot\":true,\"window\":false}" >"$S/boot.json"
+    run cmd_panel
+    assert_equal "$(jq -r '.buttons.start.show or .buttons.open.show' <<<"$output")" false
+    assert_equal "$(jq -r '.primary_action as $a | $a == null or .buttons[$a].show' <<<"$output")" true
+    assert_equal "$(jq -r .buttons.stop.confirm <<<"$output")" "$([[ $boot == setup ]] && echo true || echo false)"
+  done
+  echo 'inv 1' >"$S/stop-requested"
+  run cmd_panel
+  assert_equal "$(jq -r .buttons.stop.confirm <<<"$output")" false
+  assert_equal "$(jq -r .buttons.force_stop.enable <<<"$output")" true
+  echo "inv $EPOCHSECONDS" >"$S/stop-requested"
+  run cmd_panel
+  assert_equal "$(jq -r .buttons.force_stop.show <<<"$output")" false
+  assert_equal "$(jq -r .buttons.open.enable <<<"$output")" false
+  ST=inactive
+  : >"$S/restore-in-progress"
+  run cmd_panel
+  assert_equal "$(jq -c '[.buttons.start.enable,.buttons.take_snapshot.enable,.buttons.finish_restore.enable]' <<<"$output")" '[false,false,true]'
+  assert_equal "$(jq -r .primary_action <<<"$output")" finish_restore
+  container_fact() { echo running; }
+  run cmd_panel
+  assert_equal "$(jq -c '[.buttons.take_snapshot.enable,.buttons.finish_restore.enable,.buttons.restore_snapshot.enable]' <<<"$output")" '[false,false,false]'
+  assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+  rm "$S/restore-in-progress"
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" attention
+  container_fact() { echo none; }
+  state '{"snapshot":"declined"}'
+  ST=active
+  echo '{"setup":true,"window":true}' >"$S/boot.json"
+  rm "$S/stop-requested"
+  client_active() { return 1; }
+  run cmd_panel
+  assert_equal "$(jq -r .buttons.reopen_window.show <<<"$output")" false
+  assert_equal "$(jq -c '.buttons.stop | [.show,.enable,.confirm]' <<<"$output")" '[true,true,true]'
+  echo '{"setup":true,"window":false}' >"$S/boot.json"
+  run cmd_panel
+  assert_equal "$(jq -c '.buttons.reopen_window | [.show,.enable]' <<<"$output")" '[true,true]'
+  state "$CURRENT"
+  echo '{"setup":false,"window":false}' >"$S/boot.json"
+  helper_alive() { return 1; }
+  run cmd_panel
+  assert_equal "$(jq -r .layout <<<"$output")" failed
+  assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+  assert_output --partial 'Some background services stopped.'
+  assert_equal "$(jq -r .buttons.force_stop.show <<<"$output")" false
+  helper_alive() { return 0; }
+  ST=unknown
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+  assert_equal "$(jq -r .sections.default <<<"$output")" logs
+  assert_equal "$(jq -r .buttons.force_stop.show <<<"$output")" false
+  ST=inactive
+  panel_result_write vm '{"command":"start","invocation":"inv","started":1,"ended":2,"reply":{"ok":false}}'
+  run cmd_panel
+  assert_equal "$(jq -c '[.layout,.header.badge,.sections.default,.bar.mode]' <<<"$output")" '["failed","Failed","logs","failed"]'
+  assert_equal "$(jq -r .buttons.force_stop.show <<<"$output")" false
+  panel_result_write vm '{"command":"start","invocation":"inv","started":3,"ended":4,"reply":{"ok":true}}'
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" stopped
+  panel_result_write setup '{"command":"setup","started":1}'
+  run cmd_panel
+  assert_equal "$(jq -r .bar.mode <<<"$output")" failed
+  assert_output --partial 'Setup was interrupted.'
+  rm "$S/panel-result-setup.json"
+  run cmd_panel --pending missing 1
+  assert_equal "$(jq -c '[.layout,.sections.default,.bar.mode]' <<<"$output")" '["failed","logs","failed"]'
+  assert_output --partial 'The operation did not start.'
 }
