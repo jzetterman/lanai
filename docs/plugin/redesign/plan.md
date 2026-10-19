@@ -896,6 +896,84 @@ creation failed. A direct Unix socket bind also failed with
 full suite in an environment that permits Unix sockets before implementation
 acceptance. No production files changed while writing this plan.
 
+## Acceptance notes
+
+Phase 8 fixture and documentation work is complete. Manual acceptance remains
+open as listed below.
+
+Phase 8 adds the ten-board integration in `test/panel-qml.bats`. It generates
+backend replies with the isolated facts in `test/panel-fixtures.bash`, shared
+with `test/panel.bats`, then loads them through the existing inert renderer and
+Process stubs. No copied JSON fixture directory was needed. The renderer's
+original 51 test functions stay in place. One integration function adds all ten
+boards and the extra recovery, read-failure, partial-check and invalid-timing
+views. BarStates uses the generated backend matrix rather than a separate
+placeholder reply.
+
+The first launch failed in fixture plumbing because HOME isolation ran twice.
+After that correction, the first renderer run found that the backend ignored the
+synthetic timeout record: its ended timestamp of 2 predated the current check
+attempt. The backend correctly kept Verify. The fixture now records the current
+end time. The next integration run passed one Bats case. Stronger bar assertions then exposed a
+fixture that produced Running with an update hint instead of Version mismatch.
+The fixture now uses the existing incompatible-client log. The missing-install
+fixture explicitly returns the missing-layout result, and the matrix checks the
+actual status as well as its badge. The strengthened integration passed too.
+No production mismatch surfaced and no production code changed. These fixes
+extend fixture support without manufacturing a production failure.
+
+The README now describes the detail rows, saved header, more actions, settings
+drafts and persistent scale intent, exact log copies, UTC snapshots, restore
+identity and measured progress, six setup steps, check meaning, conditional
+sign-in duration and bar priorities. CLAUDE.md names the shared fixture helper
+and keeps runtime check detail and the three QML responsibilities current. The
+spec retains its requirements and review history and links this evidence.
+
+The focused command `BATS_TEST_TIMEOUT=120 bats test/panel-qml.bats
+test/panel.bats` passed all 140 cases without skips. It includes the 51 original
+renderer functions and the new backend integration. The final focused run also
+passed all 140 cases without skips after the bar fixtures were strengthened.
+Its log is
+`/run/user/1000/lzi/p8-final-focused.lmb8ow/results.log`. Initial focused logs
+remain at `/run/user/1000/lzi/p8-focused.Bx3SVn/results.log`. The earlier
+integration-only run is at
+`/run/user/1000/lzi/p8-integration2.WN53pg/results.log`.
+
+The final shared Bats run passed 837 cases and skipped 84, with no failures out
+of 921 results. It did not stall. The skips were 76 cases without
+`LANAI_TEST_BTRFS_DIR`, five spike cases that need btrfs, the pinned-source build
+without `LANAI_TEST_LG_TARBALL`, the unavailable strace measurement and the
+missing comma-decimal locale. Guest C# and PowerShell checks ran with pwsh.
+The shared block exited successfully. QML lint passed with the existing hoisting
+and model-id warnings. Its full shellcheck command passed, as did a separate
+check of `test/panel-fixtures.bash` and the final `git diff --check`. Shared logs
+remain at `/run/user/1000/lzi/p8-final-checks.4KFTQj`.
+
+The validation wrapper redirected the lint helper's and spike harness's explicit
+temporary directory templates into the runtime TMPDIR. Neither script changed.
+The spike fixtures therefore ran on tmpfs, so their btrfs cases, including the
+real `/proc/locks` case, skipped. Btrfs acceptance remains for the orchestrator
+outside this sandbox. Cleanup uses `rmdir` for the empty runtime directory.
+
+Manual acceptance remains pending:
+
+| Spec acceptance row | Fixture coverage | Pending manual evidence |
+|---|---|---|
+| 1–6, 10 | Backend headers, section toggles, saved baseline, Reset, Unsaved, failed saves, reopen and repeated scale saves | Main and Settings under two installed themes, including readable uppercase header values |
+| 3–5, 8, 13 | Newest-first UTC rows, named confirmation and Cancel, CLI progress, unfinished restore identity and guarded controls | Stopped and Restoring screenshots, plus a restore and recovery rehearsal on a separate Windows copy |
+| 2–5, 9, 15 | Failed and failed-read views, log payloads, failure and retry, timeout recovery choices, existing shutdown and force-stop guards | Failed and SetupTimeout screenshots, real clipboard, failure recovery and stop timing |
+| 7, 11, 12 | All six steps, storage substep 3a, driver guidance with and without a worker, partial checks, default and overridden duration, invalid timing and timeout | Setup board screenshots and real sign-in, restart, timeout and Continue rehearsal on a separate copy |
+| 5, 14 | Backend bar priorities, Drivers exception, measured and unmeasured progress, existing keyboard shortcuts, scrolling and notice absorption | BarStates under two themes and small-screen focus and notice checks using the real shell |
+
+No disposable Omarchy shell session was configured in this sandbox. Only inert
+shell imports ran. The renderer requests 420 logical pixels and caps its height
+at 650; the integration checks both values. These are fixture dimensions, not
+screenshots from the installed shell. No theme names or screenshots are claimed.
+John must record both theme names, actual fitted sizes, screenshots and results.
+No VM was booted and no live install was touched. No review stage, agent CLI or
+commit ran. There is no spec behaviour deviation. John runs live acceptance only
+after the separate-copy rehearsal passes.
+
 ## Review log
 
 | Gate | Stage | Round | Findings | Notes |

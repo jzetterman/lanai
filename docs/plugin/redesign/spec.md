@@ -203,6 +203,22 @@ Rehearse on fixtures or a separate test copy. Never use John's live install.
   configured test copy. State the timezone on every displayed clock time;
   label countdowns as durations.
 
+## Acceptance evidence
+
+Phase 8 adds `QML redesign: all ten board views render from backend fixtures` in
+`test/panel-qml.bats`. It generates real `cmd_panel()` replies with the isolated
+fixtures shared in `test/panel-fixtures.bash`. The same inert renderer covers all
+ten boards, the bar matrix, restore recovery, read failures, partial checks and
+invalid timing. It copies no placeholder replies and starts no shell or VM.
+
+The integration passes after fixture initialization and timeout timestamps were
+corrected. It required no production change. The existing renderer also covers
+settings save intent, confirmations, keyboard navigation, notice absorption and
+clipboard failure and retry. These fixture checks do not establish visual or VM
+acceptance. Two-theme screenshots, real shell focus and a rehearsal on a separate
+Windows copy remain pending for John. See the plan's
+[acceptance notes](plan.md#acceptance-notes) for checks, counts and limitations.
+
 ## Review log
 
 | Gate | Stage | Round | Findings | Notes |

@@ -63,10 +63,11 @@ seeds them from the container's settings when readable, otherwise from half the
 host's memory (at most 16 GiB) and half its CPU threads (at most 8).
 
 Left-click Lanai's L-in-a-monitor glyph to open the panel, then click **Continue setup**.
-The panel walks through checking the install, installing host packages, offering a
-snapshot, building the pinned client, installing in Windows, restarting and checking
-the result. At the package step, **Install in a terminal** opens a terminal which
-shows the exact install command before the normal package-manager
+The panel shows Step N of 6: Check, Packages, Snapshot, Prepare, Drivers and
+Verify. Prepare covers storage preparation and building the pinned client.
+Drivers covers the Windows install, then Verify checks the result. Completion
+returns to the daily header. At the package step, **Install in a terminal** opens
+a terminal which shows the exact install command before the normal package-manager
 password prompt. Nothing else in Lanai escalates. Dependencies are listed in
 [`LANAI_HOST_PACKAGES`](lib/client.sh): QEMU and its GTK/SPICE/device modules,
 virtiofsd, passt, socat, jq, Python, diffutils and the Looking Glass build libraries
@@ -79,9 +80,16 @@ initially and grows as Windows changes. The panel reports its path and explains
 how to delete the snapshot folder. The list updates after each snapshot or restore
 job, and whenever the panel refreshes. If the filesystem cannot make a snapshot,
 the setup offer explains that you need a backup before continuing without one.
-Snapshot and restore show their phase and a progress bar with a percentage,
-also when you open the panel partway through or start from the CLI. You can close
-the panel during a snapshot. Keep Windows stopped until a restore finishes.
+Snapshots show newest first, with readable dates and times marked UTC. The count
+includes only valid snapshots for this storage location. Restoring asks you to
+confirm the named snapshot and warns that later changes will be lost. Cancel
+clears the confirmation.
+Snapshot and restore show their actual phase and measured percentage, also when
+you open the panel partway through or start from the CLI. Work with no measured
+total shows a busy indicator. A restore names its target above the controls. An
+unfinished restore keeps that name when its record is valid; otherwise it shows
+a generic restore label. You can close the panel during a snapshot. Keep Windows
+stopped until a restore finishes.
 Lanai blocks Start while a restore is unfinished. Use **Finish the unfinished
 restore** to resume it, or restore another saved snapshot to start over.
 It tries the Lanai data directory's `snapshots/`, then
@@ -122,13 +130,23 @@ Lanai then checks the folder on Linux.
 When a setup operation is running, the panel continues setup after Windows shuts
 down. Otherwise, click **Continue setup** when the setup script finishes. If Windows
 stops during the final checks, click **Continue setup** to start it again.
-Setup then checks its own work and asks you nothing: the display driver, the SPICE
-agent, the guest agent and its allow-list, and last the display scale task. The
-scale task starts when the Windows user who ran setup signs in. If Windows asks for
-a password, sign in within 2 minutes. If a part does not answer in time, setup stops
-and the panel names it. Click **Continue setup** to check again. To install
-Lanai's parts in Windows again, shut Windows down, then click **Set up in a basic
-window** or **Set up in the Windows window**. Do this too if setup.cmd stopped with a
+Verify lists Display driver, Windows agents and Scale task. Each row shows Not
+checked, Waiting, Done or Failed from the checks that actually ran. Windows agents
+is Done only after the SPICE agent, guest-agent clock and allow-list checks all
+pass. Done describes that attempt, rather than continuous health. The scale row
+checks that the task opened its port; it does not prove applied scale or a visible
+desktop.
+The scale task starts when the Windows user who ran setup signs in. Lanai cannot
+see the sign-in screen or identify the signed-in user. If Windows asks for a
+password, sign in as the user who ran setup. While setup waits for the scale task,
+the panel shows the remaining sign-in duration from the backend deadline. The
+limit defaults to 2 minutes and follows `LANAI_SETUP_SCALE_LIMIT` when overridden.
+Reopening the panel, restarting the shell or restarting Windows does not reset
+it. Missing or invalid timing shows no countdown. Continue setup after a stop
+starts fresh checks and a fresh scale wait when they pass. If a part does not
+answer in time, setup stops and the panel names it. Click **Continue setup** to
+check again. To install Lanai's parts in Windows again, shut Windows down, then
+click **Set up in a basic window** or **Set up in the Windows window**. Do this too if setup.cmd stopped with a
 message in Windows. When the panel says the display driver in Windows needs an update, or the
 QEMU guest agent in Windows is missing its allow-list, shut Windows down, then click
 **Continue setup** to set up Windows again.
@@ -142,7 +160,7 @@ update or an unfinished setup round is pending. Setup shows the pending step bes
 them. When the usual controls are hidden and the Windows window closes, use
 **Reopen the Windows window** in Setup.
 **Snapshots** is hidden while Windows runs during setup and returns when Windows is
-off. Settings stay available. The Setup section uses
+off. Settings stay available. The setup card uses
 your theme's accent color when it needs you to act and clears the highlight while
 Lanai works by itself. Its inset stays the same. During the setup boot, **Shut down**
 asks for a second click:
@@ -156,7 +174,8 @@ A failed or interrupted operation asks you to continue or retry. Click **Continu
 to go on. After a shell restart, that button checks where setup stands.
 If Windows is running without the setup drive, shut it down before continuing.
 During the final checks, wait for any shutdown to finish before continuing setup.
-To run setup again after it finishes, shut Windows down and click **Run setup again**.
+To run setup again after it finishes, shut Windows down, open **More actions**
+and click **Run setup again**.
 Choose how Windows should show during setup, or click **Cancel** to return.
 A restore's success note stays until the next snapshot action; the Setup section
 shows whether setup still needs to finish.
@@ -176,14 +195,41 @@ and **Shut down** controls. Panel controls support Tab, Shift+Tab, Enter and Spa
 Escape closes it.
 If starting or opening fails, the glyph opens the panel to explain why. It also
 opens the panel when a start reports that the previous run was forced to stop.
+The daily header shows saved memory, cores and scale. Draft edits do not change
+that line, and it does not describe the running VM's allocation. The divided
+**Settings**, **Snapshots** and **Logs** rows open one section at a time.
+**More actions** holds Run setup again, updates, notice dismissal and Force stop
+when the backend permits them. Failed opens Logs with the cause and recovery
+actions. It does not skip the Force stop wait.
+
 Settings accept whole numbers: 1–512 GiB and 1–64 cores. Memory and cores apply
 at the next start. Windows scale is “Match my monitor” (the default) or a fixed
-percentage: 100–250 in steps of 25, then 300–500 in steps of 50. **Save settings**
+percentage: 100–250 in steps of 25, then 300–500 in steps of 50. **Save**
 saves the scale only when you chose an entry in the scale list since you opened
-the panel, even the entry already shown; otherwise it saves memory and cores only.
-Reopening the panel discards unsaved settings edits.
+the panel or last used Reset, even the entry already shown; otherwise it saves
+memory and cores only. **Unsaved** marks changed drafts or a scale selection
+since the last successful save. Polls, section changes and failed saves preserve
+the drafts. **Reset** restores the current saved values locally and clears scale
+selection intent. It saves nothing and does not restore defaults. A clean panel
+shows disabled **Saved** and hides Reset and Unsaved.
+After a successful scale save, Save and Reset stay available without Unsaved.
+Another save still saves scale, even if its value is unchanged. Reset or reopening
+the panel clears that intent. Reopening also discards unsaved settings edits.
 The CLI equivalent is `bin/lanai settings <GiB> <cores> [auto|percentage]`. Three
 arguments always save the scale; two keep the scale choice.
+
+Logs has copy buttons for VM, Window, Build, Jobs and Actions when available.
+The VM button copies the user-journal command; file rows copy their full paths.
+The shortened display names do not shorten the copied text. Copy runs no log
+command. **Copied** confirms success. An inline failure keeps the button available
+for retry.
+
+The glyph uses the normal foreground when stopped, an accent and underline while
+starting, running or stopping, and a progress underline while busy. Without
+measurable progress, a fixed-width segment moves across the underline. A badge
+marks your turn or a failure. Failure takes priority, then attention, busy, active
+and stopped. The normal Drivers wait for setup.cmd keeps the active glyph while
+Windows runs. Recovery and failures keep their priority.
 
 Shut down is available while Windows starts and shuts down. It asks Windows to
 shut down cleanly and returns immediately. If Windows ignores the request while
@@ -482,7 +528,12 @@ Panel fixtures in `test/panel.bats`,
 `test/panel-jobs.bats` and `test/ui.bats` use a fake CLI and host facts without
 sockets or a VM. `test/panel-qml.bats` runs the real renderer in Qt 6 with inert
 shell and Process types when Qt 6’s test runner is available. It never starts the
-Omarchy shell. `lanai panel` supplies the complete view, including settings,
+Omarchy shell. Its ten-board integration generates real backend replies with
+`test/panel-fixtures.bash`, shared with the backend panel tests. It covers
+recovery, partial checks, invalid timing, read failures and the bar matrix too.
+The [redesign acceptance notes](docs/plugin/redesign/plan.md#acceptance-notes)
+record automated results and pending theme and VM checks. `lanai panel` supplies
+the complete view, including settings,
 snapshot names and plain-language results; the QML polls every two seconds only
 while its own panel is open, and every fifteen seconds otherwise. Direct actions
 are recorded by `lanai ui-run`; setup, snapshots, restores and updates run in session units

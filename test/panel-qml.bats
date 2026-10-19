@@ -1,9 +1,11 @@
 #!/usr/bin/env bats
 # Real QML with inert shell/Process types: no compositor, services or subprocesses.
+# shellcheck disable=SC2034,SC2329
 load helpers
+load panel-fixtures
 setup() { isolate_home; T=$BATS_TEST_TMPDIR; }
 
-@test "QML renderer: poll cadence, refresh races, literal actions and armed confirmations" {
+qml_renderer_fixture() {
   [[ -x /usr/lib/qt6/bin/qmltestrunner ]] || skip "qmltestrunner is unavailable"
   mkdir -p "$T/qml/imports/TestIo" "$T/qml/imports/TestShell" "$T/qml/imports/TestUi" "$T/qml/imports/TestCommons"
   cp "$REPO/LanaiModel.qml" "$REPO/LanaiPanel.qml" "$REPO/Widget.qml" "$T/qml/"
@@ -1739,7 +1741,331 @@ TestCase {
   }
 }
 QML
-  QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME='' QT_STYLE_OVERRIDE=Basic QML_DISABLE_DISK_CACHE=1 run /usr/lib/qt6/bin/qmltestrunner -input "$T/qml" -import "$T/qml/imports"
+}
+
+qml_renderer_run() {
+  QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME='' QT_STYLE_OVERRIDE=Basic QML_DISABLE_DISK_CACHE=1 run /usr/lib/qt6/bin/qmltestrunner -input "$T/qml" -import "$T/qml/imports" "$@"
   assert_success
   refute_output --partial 'FAIL!'
+}
+
+@test "QML renderer: poll cadence, refresh races, literal actions and armed confirmations" {
+  qml_renderer_fixture
+  qml_renderer_run
+}
+
+panel_board_view() {
+  cmd_panel | jq -c --arg name "$1" '{key:$name,value:.}' >>"$T/boards.jsonl"
+}
+
+@test "QML redesign: all ten board views render from backend fixtures" {
+  [[ -x /usr/lib/qt6/bin/qmltestrunner ]] || skip "qmltestrunner is unavailable"
+  panel_fixture_setup
+  # Restore real snapshot validation after the shared fixture's empty list stub.
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  local name snap image_fd job_fd started pid=$BASHPID
+  jq '.memory_gib=12 | .cores=6 | .windows_scale=175' "$(settings_file)" >"$T/settings"
+  mv "$T/settings" "$(settings_file)"
+  for name in 20260902T070500Z 20261012T091200Z 20260930T184700Z; do
+    display_snapshot "$(data_dir)/snapshots/$name"
+  done
+  for name in "$RUN/client.log" "$S/build-client.log" "$S/panel-job.log" "$S/panel-run.log"; do : >"$name"; done
+  state "$CURRENT"
+  qmp_call() { printf '{"return":{"status":"running"}}\n{"return":[{"label":"qga0","frontend-open":true}]}\n'; }
+  ST=active
+  panel_board_view Main
+  panel_board_view Settings
+  ST=inactive
+  panel_board_view Stopped
+  snap=$(data_dir)/snapshots/20261012T091200Z
+  printf '%s\n%s\n' "$snap" "$STORE" >"$S/restore-in-progress"
+  exec {image_fd}>"$S/lock"; flock "$image_fd"
+  jq -nc --argjson p "$pid" '{operation:"restore",phase:"hashing",done:37,total:100,pid:$p}' >"$S/image-progress.json"
+  panel_board_view Restoring
+  exec {image_fd}>&-
+  rm "$S/image-progress.json"
+  panel_board_view RestoreRecovery
+  printf 'invalid\n%s\n' "$STORE" >"$S/restore-in-progress"
+  panel_board_view RestoreGeneric
+  rm "$S/restore-in-progress"
+  ST=failed RESULT=exit-code
+  panel_board_view Failed
+  ST=unknown RESULT=success
+  panel_board_view FailedRead
+  ST=inactive
+  for name in activating deactivating; do
+    ST=$name
+    panel_board_view "Bar-$name"
+  done
+  ST=inactive
+  container_fact() { echo running; }
+  panel_board_view Bar-in-use
+  container_fact() { echo none; }
+  cp "$FIX/client-logs/incompatible.log" "$RUN/client.log"
+  ST=active
+  panel_board_view Bar-version-mismatch
+  : >"$RUN/client.log"
+  ST=inactive
+  exec {image_fd}>"$S/lock"; flock "$image_fd"
+  for name in 0 100; do
+    jq -nc --argjson p "$pid" --argjson t "$name" '{operation:"snapshot",phase:"hashing",done:0,total:$t,pid:$p}' >"$S/image-progress.json"
+    panel_board_view "Bar-busy-$name"
+  done
+  exec {image_fd}>&-
+  rm "$S/image-progress.json"
+  # Setup's snapshot offer must have no existing snapshot for this location.
+  mv "$(data_dir)/snapshots" "$T/saved-snapshots"
+  state '{}'
+  panel_board_view SetupSnapshot
+  panel_result_write snapshots '{"command":"snapshot","started":1,"ended":2,"reply":{"ok":false,"reason":"snapshot-unsupported"}}'
+  panel_board_view SnapshotUnsupported
+  rm "$S/panel-result-snapshots.json"
+  state '{"snapshot":"declined"}'
+  ST=active
+  echo '{"setup":true,"window":false}' >"$S/boot.json"
+  panel_board_view SetupDrivers
+  panel_result_write setup '{"command":"setup","started":1,"reply":{"ok":true,"step":"5"}}'
+  exec {job_fd}>"$S/panel-job.lock"; flock "$job_fd"
+  panel_board_view DriversWorker
+  state '{"snapshot":"declined","step5":true}'
+  echo '{"step6":true,"window":false}' >"$S/boot.json"
+  started=$((EPOCHSECONDS - 30))
+  echo "$((started - 5))" >"$RUN/step6-since"
+  redesign_check_detail '{"idd":{"state":"done"},"spice":{"state":"done"},"clock":{"state":"waiting","reason":"clock"},"allowlist":{"state":"not_checked"},"scale":{"state":"not_checked"}}'
+  panel_result_write setup '{"command":"setup","invocation":"inv","started":1,"reply":{"ok":true,"step":"6"}}'
+  panel_board_view VerifyPartial
+  echo "$started" >"$RUN/step6-checked"
+  redesign_check_detail '{"idd":{"state":"done"},"spice":{"state":"done"},"clock":{"state":"done"},"allowlist":{"state":"done"},"scale":{"state":"waiting","reason":"scale-task"}}'
+  export LANAI_SETUP_SCALE_LIMIT=180
+  panel_board_view SetupVerify
+  export LANAI_SETUP_SCALE_LIMIT=120
+  panel_board_view VerifyDefaultLimit
+  export LANAI_SETUP_SCALE_LIMIT=invalid
+  panel_board_view InvalidTiming
+  unset LANAI_SETUP_SCALE_LIMIT
+  exec {job_fd}>&-
+  ST=inactive
+  timeout_record scale-task
+  panel_result_write setup "$(jq --argjson t "$EPOCHSECONDS" '.started=$t | .ended=$t' "$S/panel-result-setup.json")"
+  panel_board_view SetupTimeout
+  rm "$S/panel-result-setup.json" "$RUN/step6-since" "$RUN/step6-checked" "$RUN/step6-checks.json"
+  state '{}'
+  host_packages_missing() { echo package; }
+  panel_board_view SetupPackages
+  host_packages_missing() { :; }
+  share_check() { return 1; }
+  panel_board_view SetupCheck
+  share_check() { return 0; }
+  state '{"snapshot":"declined"}'
+  rm "$STORE/windows.base"
+  panel_board_view PrepareStorage
+  echo base >"$STORE/windows.base"
+  build_stamp_current() { return 1; }
+  panel_board_view PrepareClient
+  build_stamp_current() { return 0; }
+  state "$CURRENT"
+  cmd_snapshots() { return 1; }
+  panel_board_view SnapshotReadFailure
+  cp "$(settings_file)" "$T/saved-settings"
+  printf invalid >"$(settings_file)"
+  panel_board_view SettingsReadFailure
+  mv "$T/saved-settings" "$(settings_file)"
+  layout_check() { return 2; }
+  panel_board_view Bar-not-installed
+
+  qml_renderer_fixture
+  printf 'var views = ' >"$T/qml/BackendViews.js"
+  jq -sc from_entries "$T/boards.jsonl" >>"$T/qml/BackendViews.js"
+  sed -i '/import QtTest/a import "BackendViews.js" as Backend' "$T/qml/tst_renderer.qml"
+  sed -i '$d' "$T/qml/tst_renderer.qml"
+  cat >>"$T/qml/tst_renderer.qml" <<'QML'
+  function backendPanel(name) {
+    var v = Backend.views[name]
+    verify(v !== undefined, name)
+    compare(v.ok, true, name)
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1)
+    process(model, 'timeout').complete(JSON.stringify(v), 0)
+    var panel = createTemporaryObject(panelComponent, tests, {model:model,opened:true})
+    wait(1)
+    compare(named(panel, 'windowsHeader').title, 'Windows', name)
+    compare(named(panel, 'windowsHeader').meta, v.header.meta, name)
+    compare(named(panel, 'windowsHeader').detail, v.header.badge, name)
+    compare(named(panel, 'panelPopup').contentWidth, 420)
+    verify(named(panel, 'panelPopup').contentHeight <= 650)
+    verify(named(panel, 'settingsToggle').visible, name)
+    return {model:model,panel:panel}
+  }
+  function backendControl(p, control, enabled) {
+    var items = objects(p.panel, function(o) { return o.control === control && o.visible })
+    verify(items.length > 0, control)
+    compare(items[0].enabled, enabled, control)
+    return items[0]
+  }
+  function finishBackendPanel(p) { p.panel.destroy(); p.model.destroy(); wait(1) }
+  function test_backend_boards() {
+    var count = Quickshell.launchCount, p = backendPanel('Main'), v = p.model.view
+    compare(v.layout, 'daily'); compare(v.state, 'running')
+    compare(v.header.meta, '12 GiB · 6 cores · 175%')
+    compare(v.primary_action, 'open'); backendControl(p, 'open', true); backendControl(p, 'stop', true)
+    compare(v.buttons.force_stop.show, false)
+    ;['settings','snapshots','logs'].forEach(function(section) {
+      named(p.panel, section + 'Toggle').clicked()
+      compare(p.panel.expandedSection, section)
+      verify(named(p.panel, section + 'Details').visible)
+    })
+    compare(v.logs.rows.map(function(row) { return row.label }).join(','), 'VM,Window,Build,Jobs,Actions')
+    v.logs.rows.forEach(function(row) {
+      named(p.panel, 'copyLog-' + row.id).clicked()
+      var copy = process(p.model, 'wl-copy'); copy.begin()
+      compare(copy.input, row.copy_text); compare(copy.command.length, 1)
+      copy.complete('', 1)
+      compare(named(p.panel, 'copyFeedback-' + row.id).text, v.logs.copy_error)
+      verify(named(p.panel, 'copyLog-' + row.id).enabled)
+      named(p.panel, 'copyLog-' + row.id).clicked(); copy.begin(); copy.complete('', 0)
+      compare(named(p.panel, 'copyFeedback-' + row.id).text, v.logs.copied)
+    })
+    finishBackendPanel(p)
+
+    p = backendPanel('Settings'); v = p.model.view
+    named(p.panel, 'settingsToggle').clicked()
+    var save = backendControl(p, 'save_settings', false)
+    compare(save.text, 'Saved'); verify(!named(p.panel, 'resetSettings').visible)
+    var scale = named(p.panel, 'windowsScale')
+    compare(scale.options.length, 13); compare(scale.options[12].value, 500)
+    scale.select('175'); verify(p.panel.scaleDirty)
+    verify(named(p.panel, 'settingsToggle').text.indexOf(v.settings.labels.unsaved) !== -1)
+    named(p.panel, 'resetSettings').clicked(); verify(!p.panel.scaleTouched)
+    p.panel.memoryInput = 20
+    compare(named(p.panel, 'windowsHeader').meta, v.header.meta)
+    p.panel.close(); p.panel.open(); compare(p.panel.memoryInput, 12)
+    finishBackendPanel(p)
+
+    p = backendPanel('Stopped'); v = p.model.view
+    compare(v.state, 'stopped'); backendControl(p, 'start', true)
+    named(p.panel, 'snapshotsToggle').clicked()
+    compare(v.snapshots.count, 3)
+    compare(v.snapshots.items.map(function(item) { return item.name }).join(','), '20261012T091200Z,20260930T184700Z,20260902T070500Z')
+    var item = v.snapshots.items[0], restore = named(p.panel, 'restore-' + item.name)
+    compare(item.time, '09:12 UTC'); compare(item.date, 'Oct 12, 2026')
+    restore.clicked(); compare(p.panel.restoreArmed, item.name)
+    compare(restore.text, item.confirm_label); verify(textVisible(p.panel, item.warning))
+    named(p.panel, 'restoreCancel').clicked(); compare(p.panel.restoreArmed, '')
+    restore.clicked(); p.panel.close(); compare(p.panel.restoreArmed, '')
+    finishBackendPanel(p)
+
+    p = backendPanel('Restoring'); v = p.model.view
+    compare(v.layout, 'restoring'); compare(v.restore.name, '20261012T091200Z')
+    compare(v.restore.label, 'Restoring Oct 12, 2026 at 09:12 UTC')
+    compare(named(p.panel, 'restoreTarget').text, v.restore.label)
+    verify(textVisible(p.panel, v.restore.warning))
+    compare(named(p.panel, 'imageProgress').value, v.progress.percent)
+    verify(v.progress.percent > 0 && v.progress.percent < 100)
+    compare(named(p.panel, 'imageProgressText').text, v.progress.label + ', ' + v.progress.percent + '%')
+    backendControl(p, 'start', false)
+    named(p.panel, 'snapshotsToggle').clicked(); backendControl(p, 'take_snapshot', false)
+    verify(named(p.panel, 'operationProgress').mapToItem(p.panel,0,0).y < named(p.panel, 'dailyActions').mapToItem(p.panel,0,0).y)
+    finishBackendPanel(p)
+    ;['RestoreRecovery','RestoreGeneric'].forEach(function(name) {
+      p = backendPanel(name); v = p.model.view
+      compare(v.layout, 'restoring'); compare(v.progress, null)
+      backendControl(p, 'start', false); named(p.panel, 'snapshotsToggle').clicked()
+      backendControl(p, 'finish_restore', true); backendControl(p, 'restore_snapshot', true)
+      compare(named(p.panel, 'restoreTarget').text, name === 'RestoreGeneric' ? 'Unfinished restore' : 'Unfinished restore of Oct 12, 2026 at 09:12 UTC')
+      finishBackendPanel(p)
+    })
+
+    ;['Failed','FailedRead'].forEach(function(name) {
+      p = backendPanel(name); v = p.model.view
+      compare(v.layout, 'failed'); compare(v.bar.mode, 'failed')
+      compare(p.panel.expandedSection, 'logs'); verify(named(p.panel, 'logsDetails').visible)
+      verify(textVisible(p.panel, v.cause)); verify(textVisible(p.panel, v.next))
+      compare(v.buttons.force_stop.show, false)
+      finishBackendPanel(p)
+    })
+
+    ;[['SetupCheck',1,'Check'],['SetupPackages',2,'Packages'],['SetupSnapshot',3,'Snapshot'],
+      ['PrepareStorage',4,'Prepare'],['PrepareClient',4,'Prepare'],['SetupDrivers',5,'Drivers'],
+      ['SetupVerify',6,'Verify'],['SetupTimeout',6,'Verify']].forEach(function(row) {
+      p = backendPanel(row[0]); v = p.model.view
+      compare(v.setup.number, row[1]); compare(v.setup.name, row[2]); compare(v.header.badge, 'Setup')
+      verify(v.header.meta.indexOf('Step ' + row[1] + ' of 6 · ' + row[2]) === 0)
+      verify(named(p.panel, 'setupSteps').visible); compare(v.setup.steps.length, 6)
+      compare(named(p.panel, 'setupTitle').text, v.setup.title)
+      v.setup.lines.forEach(function(line) { verify(textVisible(p.panel, line), line) })
+      compare(v.buttons.start.show, false); compare(v.buttons.open.show, false)
+      if (row[0] === 'SetupSnapshot') {
+        backendControl(p, 'setup_snapshot', true); backendControl(p, 'skip_snapshot', true)
+        verify(v.setup.lines.join(' ').indexOf('backup') !== -1)
+      } else if (row[0] === 'SetupPackages') backendControl(p, 'install', true)
+      else if (row[0] === 'SetupDrivers') {
+        verify(v.setup.lines.join(' ').indexOf('setup.cmd') !== -1)
+        verify(v.setup.lines.join(' ').indexOf('Continue setup') !== -1)
+        backendControl(p, 'stop', true).clicked(); verify(p.panel.stopArmed)
+        backendControl(p, 'cancel', true).clicked(); verify(!p.panel.stopArmed)
+      } else if (row[0] === 'SetupVerify') {
+        compare(v.setup.checks.map(function(check) { return check.state }).join(','), 'done,done,waiting')
+        verify(v.setup.lines.join(' ').indexOf('If Windows is at its sign-in screen') !== -1)
+        compare(v.setup.countdown.limit_seconds, 180)
+        verify(named(p.panel, 'setupCountdown').visible)
+        v.setup.checks.forEach(function(check) { compare(named(p.panel, 'setupCheck-' + check.id).checkState, check.state) })
+        var duration = named(p.panel, 'setupCountdownDuration').text
+        p.panel.close(); p.panel.open(); compare(named(p.panel, 'setupCountdownDuration').text, duration)
+      } else if (row[0] === 'SetupTimeout') {
+        compare(v.layout, 'setup_timeout'); compare(v.setup.countdown, null)
+        verify(!named(p.panel, 'setupCountdown').visible)
+        backendControl(p, 'continue_setup', true); backendControl(p, 'window', true); backendControl(p, 'no_window', true)
+        verify(textVisible(p.panel, v.result.setup)); verify(v.result.setup.indexOf('setup.cmd') !== -1)
+      }
+      finishBackendPanel(p)
+    })
+    ;['DriversWorker','SnapshotUnsupported','VerifyPartial','VerifyDefaultLimit','InvalidTiming','SettingsReadFailure','SnapshotReadFailure'].forEach(function(name) {
+      p = backendPanel(name); v = p.model.view
+      if (name === 'DriversWorker') {
+        compare(v.bar.mode, 'active'); verify(v.setup.lines[0].indexOf('then Lanai starts it again') !== -1)
+      } else if (name === 'SnapshotUnsupported') verify(textVisible(p.panel, v.result.snapshots))
+      else if (name === 'VerifyPartial') {
+        compare(v.setup.checks.map(function(check) { return check.state }).join(','), 'done,waiting,not_checked')
+        verify(textVisible(p.panel, 'Waiting for the QEMU guest agent clock.'))
+        verify(!named(p.panel, 'setupCountdown').visible)
+      } else if (name === 'VerifyDefaultLimit') {
+        compare(v.setup.countdown.limit_seconds, 120); verify(named(p.panel, 'setupCountdown').visible)
+      } else if (name === 'InvalidTiming') {
+        compare(v.setup.countdown, null); verify(!named(p.panel, 'setupCountdown').visible)
+      } else if (name === 'SettingsReadFailure') {
+        named(p.panel, 'settingsToggle').clicked(); compare(v.settings.baseline, null)
+        backendControl(p, 'save_settings', false); verify(textVisible(p.panel, v.settings.error))
+      } else {
+        named(p.panel, 'snapshotsToggle').clicked(); compare(v.snapshots.count, 0)
+        verify(textVisible(p.panel, v.snapshots.error))
+      }
+      finishBackendPanel(p)
+    })
+    var w = widgetParts()
+    ;[['Stopped','stopped','stopped'],['Main','active','running'],['Bar-activating','active','starting'],['Bar-deactivating','active','stopping'],
+      ['Bar-busy-0','busy','stopped'],['Bar-busy-100','busy','stopped'],['SetupSnapshot','attention'],['SetupVerify','attention'],
+      ['Bar-in-use','attention','in-use'],['Bar-version-mismatch','attention','version-mismatch'],['Bar-not-installed','attention','not-installed'],
+      ['SetupDrivers','active'],['DriversWorker','active'],['Failed','failed','failed'],['FailedRead','failed','failed']].forEach(function(row) {
+      w.model.view = Backend.views[row[0]]; wait(1)
+      compare(w.model.view.bar.mode, row[1], row[0])
+      if (row[2]) compare(w.model.view.state, row[2], row[0])
+      compare(named(w.widget, 'barBadge').visible, row[1] === 'attention' || row[1] === 'failed', row[0])
+      var underline = named(w.widget, 'barUnderline')
+      compare(underline.visible, row[1] === 'active' || row[1] === 'busy', row[0])
+      if (row[0] === 'Bar-busy-0') {
+        compare(w.model.view.bar.percent, null); verify(named(w.widget, 'barBusyAnimation').running)
+        verify(underline.width > 0 && underline.width < underline.parent.width)
+      } else if (row[0] === 'Bar-busy-100') {
+        compare(w.model.view.bar.percent, 0); compare(underline.width, 0)
+        verify(!named(w.widget, 'barBusyAnimation').running)
+      }
+      verify(w.button.tooltipText.indexOf(w.model.view.right_click_tooltip) !== -1)
+    })
+    compare(Quickshell.launchCount, count)
+    verify(!process(w.model, w.model.cli))
+  }
+}
+QML
+  qml_renderer_run PanelRenderer::test_backend_boards
 }
