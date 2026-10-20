@@ -82,7 +82,16 @@ Use **Delete** beside a snapshot to remove that restore point. The list
 updates after each snapshot or restore job, and whenever the panel refreshes.
 If the filesystem cannot make a snapshot,
 the setup offer explains that you need a backup before continuing without one.
-Snapshots show newest first, with readable dates and times marked UTC. Each row
+You can name a snapshot in **Snapshot name (optional)** above either **Take a
+snapshot** button, or with `lanai snapshot "<name>"`. Leave it empty for a
+snapshot with no name. A name is one line of up to 64 characters, with no `<`,
+`>`, control or invisible characters. Lanai trims spaces at its ends. If Lanai refuses a name, the reason shows
+below the field and your text stays there to fix. You set a name only when you
+take the snapshot. The UTC time stays each snapshot's identity and folder name,
+so two snapshots can share a name, and Restore and Delete always use the time.
+Snapshots show newest first, with readable dates and times marked UTC. A saved
+name shows above its date. When two snapshots share a name in the same minute,
+their times show seconds. Each row
 has **Delete** and **Restore** actions. The count
 includes only valid snapshots for this storage location. Restoring asks you to
 confirm the named snapshot and warns that later changes will be lost. Cancel
