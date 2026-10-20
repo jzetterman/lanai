@@ -6,7 +6,7 @@ taken (docs/plugin/snapshot-names/spec.md). The UTC folder name stays the
 snapshot's identifier; a label is display data only.
 
 validate prints one JSON object: {"ok": true, "label": string|null} for a
-valid or empty label (only U+0020 is trimmed, at both edges), or
+valid or empty label (only U+0020, CR and LF are trimmed, at both edges), or
 {"ok": false, "reason": "invalid-label", "rule": key, "message": text}.
 An invalid label is a normal reply (exit 0); only a helper fault exits
 nonzero.
@@ -31,9 +31,9 @@ MESSAGES = {
     "invalid-utf8": "Use valid UTF-8 text.",
     "line-break": "Use one line.",
     "angle-bracket": "Remove < and >.",
-    "separator": "Use ordinary spaces between words.",
+    "separator": "Use ordinary spaces.",
     "invisible": "Remove unsupported invisible characters. Some emoji contain them.",
-    "unsupported-character": "Remove unsupported control or special characters.",
+    "unsupported-character": "Remove tabs, control characters and icon symbols.",
     "too-long": "Use 64 characters or fewer.",
 }
 
@@ -66,7 +66,8 @@ def validate(value):
     # Recover the exact argv bytes under any locale, then decode them strictly
     # as UTF-8 ourselves, so invalid bytes have their own rule, checked first.
     try:
-        text = os.fsencode(value).decode("utf-8").strip(" ")
+        # A paste often ends in a line break the field cannot show.
+        text = os.fsencode(value).decode("utf-8").strip(" \r\n")
     except UnicodeDecodeError:
         rule = "invalid-utf8"
         return {"ok": False, "reason": "invalid-label", "rule": rule, "message": MESSAGES[rule]}

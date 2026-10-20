@@ -284,14 +284,14 @@ exec /usr/bin/python3 "$@"'
   done
 }
 
-@test "snapshot labels: trimmed, 64-code-point (also padded), leading-dash and metacharacter labels are saved under the UTC identifier" {
+@test "snapshot labels: trimmed (spaces and edge line breaks), 64-code-point (also padded), leading-dash and metacharacter labels are saved under the UTC identifier" {
   snapshot_failure_fixture
   mock_image_failure
   local emoji meta
   emoji=$(printf '\xf0\x9f\x98\x80%.0s' {1..64})
   meta='50% ${HOME} $(touch pwned) `id` ; | & ../x "q" '\''s'\'''
-  local -a given=('  Before driver update  ' "$emoji" "  $emoji  " '-n' '--' "$meta")
-  local -a saved=('Before driver update' "$emoji" "$emoji" '-n' '--' "$meta")
+  local -a given=('  Before driver update  ' "$emoji" "  $emoji  " $'Pasted\n' $'\r\n Both ends \r\n' '-n' '--' "$meta")
+  local -a saved=('Before driver update' "$emoji" "$emoji" 'Pasted' 'Both ends' '-n' '--' "$meta")
   local i
   for i in "${!given[@]}"; do
     label_take "${given[$i]}"
@@ -330,7 +330,7 @@ exec /usr/bin/python3 "$@"'
     $'a\x01b' $'\tedge' $'a\xee\x80\x80b' $'a\xcd\xb8b'
     $'a\xffb' $'a\xed\xb0\x80b'
     "$(printf 'a%.0s' {1..65})" "$(printf '\xf0\x9f\x98\x80%.0s' {1..65})"
-    $'<\n' $'\xff\n'
+    $'<\nx' $'\xff\n'
   )
   local -a rules=(line-break line-break line-break line-break
     angle-bracket angle-bracket
@@ -343,9 +343,9 @@ exec /usr/bin/python3 "$@"'
   local -A messages=(
     [line-break]='Use one line.'
     [angle-bracket]='Remove < and >.'
-    [separator]='Use ordinary spaces between words.'
+    [separator]='Use ordinary spaces.'
     [invisible]='Remove unsupported invisible characters. Some emoji contain them.'
-    [unsupported-character]='Remove unsupported control or special characters.'
+    [unsupported-character]='Remove tabs, control characters and icon symbols.'
     [invalid-utf8]='Use valid UTF-8 text.'
     [too-long]='Use 64 characters or fewer.'
   )

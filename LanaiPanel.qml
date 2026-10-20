@@ -692,8 +692,8 @@ Panel {
                           objectName: "restore-" + snapshotRow.modelData.name
                           width: Math.min(implicitWidth, restoreCell.width)
                           control: snapshotRow.armed ? "restore_confirm" : "restore_snapshot"
-                          // The full confirmation wording is the note below the row,
-                          // as it is for Delete.
+                          // Short caption; the question is the note below the row and
+                          // the full wording is the accessible name, as for Delete.
                           text: snapshotRow.armed ? "Restore now" : "Restore"
                           Accessible.name: snapshotRow.armed ? snapshotRow.modelData.confirm_label : snapshotRow.modelData.restore_label
                           visible: !snapshotRow.deleting && descriptor.show

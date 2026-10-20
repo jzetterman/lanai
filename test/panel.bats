@@ -331,7 +331,7 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   assert_equal "$(jq -r '.snapshots.items[0].time' <<<"$output")" '09:12 UTC'
   assert_equal "$(jq -r '.snapshots.items[0].label' <<<"$output")" 'Oct 12, 2026 at 09:12 UTC'
   assert_equal "$(jq -r '.snapshots.items[0].restore_label' <<<"$output")" 'Restore Oct 12, 2026 at 09:12 UTC'
-  assert_equal "$(jq -r '.snapshots.items[0].confirm_label' <<<"$output")" 'Restore Oct 12, 2026 at 09:12 UTC and replace Windows'
+  assert_equal "$(jq -r '.snapshots.items[0].confirm_label' <<<"$output")" 'Restore now: Oct 12, 2026 at 09:12 UTC and replace Windows'
   assert_equal "$(jq -r '.snapshots.items[0].warning' <<<"$output")" 'Changes since this snapshot are lost.'
   assert_equal "$(jq -c '.snapshots.items[-2] | [.date,.time,.label]' <<<"$output")" '[null,null,"20260230T091200Z"]'
   assert_equal "$(jq -c '.snapshots.items[-1] | [.date,.time,.label]' <<<"$output")" '[null,null,"20260228T240000Z"]'
@@ -375,7 +375,7 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   assert_success
   assert_equal "$(jq -c '[.buttons.delete_snapshot.show,.buttons.delete_snapshot.enable,.buttons.delete_confirm.enable]' <<<"$output")" '[true,true,true]'
   assert_equal "$(jq -r .snapshots.items[0].delete_label <<<"$output")" 'Delete Oct 12, 2026 at 09:12 UTC'
-  assert_equal "$(jq -r .snapshots.items[0].delete_warning <<<"$output")" 'Current Windows stays as it is. You will lose this restore point.'
+  assert_equal "$(jq -r .snapshots.items[0].delete_warning <<<"$output")" 'Current Windows stays as it is.'
   ST=inactive
   printf '%s\n%s\n' "$snap" "$STORE" >"$S/restore-in-progress"
   run cmd_panel
@@ -454,17 +454,17 @@ labeled_snapshot() {
     "$(jq -nc --arg w "$when" '["20261012T091200Z","Before ${HOME} $(id) ../x","Oct 12, 2026","09:12 UTC",$w]')"
   assert_equal "$(jq -r .full_label <<<"$item")" "$full"
   assert_equal "$(jq -r .restore_label <<<"$item")" "Restore $full"
-  assert_equal "$(jq -r .confirm_label <<<"$item")" "Restore $full and replace Windows"
+  assert_equal "$(jq -r .confirm_label <<<"$item")" "Restore now: $full and replace Windows"
   assert_equal "$(jq -r .confirm_note <<<"$item")" "Restore this snapshot and replace Windows?"
   assert_equal "$(jq -r .delete_label <<<"$item")" "Delete $full"
-  assert_equal "$(jq -r .delete_confirm_label <<<"$item")" "Delete $full permanently"
+  assert_equal "$(jq -r .delete_confirm_label <<<"$item")" "Delete snapshot: $full, permanently"
   assert_equal "$(jq -r .delete_confirm_note <<<"$item")" "Delete this snapshot permanently?"
   # The UTC identifier stays the action target.
   assert_equal "$(jq -c '.snapshots.names | sort' <<<"$output")" '["20261011T080000Z","20261012T091200Z"]'
   assert_equal "$(jq -r '.buttons.restore_snapshot.labels["20261012T091200Z"]' <<<"$output")" 'Restore snapshot 20261012T091200Z'
   # Legacy rows keep their wording.
   assert_equal "$(jq -c '[.user_label,.full_label,.confirm_label,.delete_label]' <<<"$legacy")" \
-    '[null,"Oct 11, 2026 at 08:00 UTC","Restore Oct 11, 2026 at 08:00 UTC and replace Windows","Delete Oct 11, 2026 at 08:00 UTC"]'
+    '[null,"Oct 11, 2026 at 08:00 UTC","Restore now: Oct 11, 2026 at 08:00 UTC and replace Windows","Delete Oct 11, 2026 at 08:00 UTC"]'
 }
 
 @test "snapshot names: equal labels in one displayed minute show seconds in rows and restore status" {
@@ -486,9 +486,9 @@ labeled_snapshot() {
   first=$(jq -c '.snapshots.items[] | select(.name == "20261012T091245Z")' <<<"$output")
   assert_equal "$(jq -r .label <<<"$first")" 'Oct 12, 2026 at 09:12:45 UTC'
   assert_equal "$(jq -r .restore_label <<<"$first")" 'Restore “Same” from Oct 12, 2026 at 09:12:45 UTC'
-  assert_equal "$(jq -r .confirm_label <<<"$first")" 'Restore “Same” from Oct 12, 2026 at 09:12:45 UTC and replace Windows'
+  assert_equal "$(jq -r .confirm_label <<<"$first")" 'Restore now: “Same” from Oct 12, 2026 at 09:12:45 UTC and replace Windows'
   assert_equal "$(jq -r .delete_label <<<"$first")" 'Delete “Same” from Oct 12, 2026 at 09:12:45 UTC'
-  assert_equal "$(jq -r .delete_confirm_label <<<"$first")" 'Delete “Same” from Oct 12, 2026 at 09:12:45 UTC permanently'
+  assert_equal "$(jq -r .delete_confirm_label <<<"$first")" 'Delete snapshot: “Same” from Oct 12, 2026 at 09:12:45 UTC, permanently'
   printf '%s\n%s\n' "$(data_dir)/snapshots/20261012T091200Z" "$STORE" >"$S/restore-in-progress"
   run cmd_panel
   assert_equal "$(jq -r .restore.label <<<"$output")" 'Unfinished restore of “Same” from Oct 12, 2026 at 09:12:00 UTC'

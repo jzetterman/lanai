@@ -445,11 +445,11 @@ TestCase {
         rows:[{id:'vm',label:'VM',display:'journal: lanai-vm',copy_text:'journalctl --user -u lanai-vm',copy_label:'Copy VM log command'}]},
       snapshots:{show:true,count:1,names:['20261012T091200Z'],items:[{name:'20261012T091200Z',date:'Oct 12, 2026',time:'09:12 UTC',
         label:'Oct 12, 2026 at 09:12 UTC',restore_label:'Restore Oct 12, 2026 at 09:12 UTC',
-        confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',
+        confirm_label:'Restore now: Oct 12, 2026 at 09:12 UTC and replace Windows',
         confirm_note:'Restore this snapshot and replace Windows?',warning:'Later changes are lost.',
-        delete_label:'Delete Oct 12, 2026 at 09:12 UTC',delete_confirm_label:'Delete Oct 12, 2026 at 09:12 UTC permanently',
+        delete_label:'Delete Oct 12, 2026 at 09:12 UTC',delete_confirm_label:'Delete snapshot: Oct 12, 2026 at 09:12 UTC, permanently',
         delete_confirm_note:'Delete this snapshot permanently?',
-        delete_warning:'Current Windows stays as it is. You will lose this restore point.'}]},
+        delete_warning:'Current Windows stays as it is.'}]},
       restore:{label:'',warning:''},progress:null}
   }
   function redesignPanel() {
@@ -2242,11 +2242,11 @@ TestCase {
     function item(name, date, time, user) {
       var when = date + ' at ' + time, full = user ? '“' + user + '” from ' + when : when
       return {name:name,date:date,time:time,label:when,user_label:user,full_label:full,
-        restore_label:'Restore ' + full,confirm_label:'Restore ' + full + ' and replace Windows',
+        restore_label:'Restore ' + full,confirm_label:'Restore now: ' + full + ' and replace Windows',
         confirm_note:'Restore this snapshot and replace Windows?',
         warning:'Changes since this snapshot are lost.',delete_label:'Delete ' + full,
-        delete_confirm_label:'Delete ' + full + ' permanently',delete_confirm_note:'Delete this snapshot permanently?',
-        delete_warning:'Current Windows stays as it is. You will lose this restore point.'}
+        delete_confirm_label:'Delete snapshot: ' + full + ', permanently',delete_confirm_note:'Delete this snapshot permanently?',
+        delete_warning:'Current Windows stays as it is.'}
     }
     v.snapshots.items = [item('20261012T091230Z','Oct 12, 2026','09:12:30 UTC',meta),
       item('20261011T080000Z','Oct 11, 2026','08:00 UTC',long), item('20261010T070000Z','Oct 10, 2026','07:00 UTC',null)]
@@ -2688,8 +2688,8 @@ panel_board_view() {
     })
     var first = v.snapshots.items[0]
     compare(first.restore_label, 'Restore “' + saved + '” from ' + when)
-    compare(first.confirm_label, 'Restore “' + saved + '” from ' + when + ' and replace Windows')
-    compare(first.delete_confirm_label, 'Delete “' + saved + '” from ' + when + ' permanently')
+    compare(first.confirm_label, 'Restore now: “' + saved + '” from ' + when + ' and replace Windows')
+    compare(first.delete_confirm_label, 'Delete snapshot: “' + saved + '” from ' + when + ', permanently')
     finishBackendPanel(p)
     // Only the Labeled board's Restore and Delete clicks above launch anything.
     compare(Quickshell.launchCount, count + 2 * v.snapshots.items.length)

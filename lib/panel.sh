@@ -137,9 +137,10 @@ panel_records() {
 # Keep the UTC folder name as the identity, even when it is not a real date.
 # label stays the formatted date; user_label is the saved name or null, and
 # full_label joins both for action, confirmation and restore wording. The
-# confirm labels name the armed buttons; the confirm notes show the same words
-# as a question beside them. seconds tells apart equal labels within one
-# displayed minute.
+# confirm labels are the armed buttons' accessible names: the visible caption,
+# then the full label and date. The confirm notes are short fixed questions
+# shown below the row. seconds tells apart equal labels within one displayed
+# minute.
 panel_snapshot_item() {
   local name=$1 user=${2:-} clock='%H:%M UTC' formatted='' date='' time='' label=$1
   [[ ${3:-false} != true ]] || clock='%H:%M:%S UTC'
@@ -156,10 +157,10 @@ panel_snapshot_item() {
     (if $u == "" then $l else "“" + $u + "” from " + $l end) as $f |
     {name:$n,date:(if $d == "" then null else $d end),time:(if $t == "" then null else $t end),
       label:$l,user_label:(if $u == "" then null else $u end),full_label:$f,
-      restore_label:("Restore " + $f),confirm_label:("Restore " + $f + " and replace Windows"),confirm_note:"Restore this snapshot and replace Windows?",
+      restore_label:("Restore " + $f),confirm_label:("Restore now: " + $f + " and replace Windows"),confirm_note:"Restore this snapshot and replace Windows?",
       warning:"Changes since this snapshot are lost.",
-      delete_label:("Delete " + $f),delete_confirm_label:("Delete " + $f + " permanently"),delete_confirm_note:"Delete this snapshot permanently?",
-      delete_warning:"Current Windows stays as it is. You will lose this restore point."}'
+      delete_label:("Delete " + $f),delete_confirm_label:("Delete snapshot: " + $f + ", permanently"),delete_confirm_note:"Delete this snapshot permanently?",
+      delete_warning:"Current Windows stays as it is."}'
 }
 
 # Resolve display identity only against this read's validated snapshot list.
