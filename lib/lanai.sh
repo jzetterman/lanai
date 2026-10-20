@@ -1561,16 +1561,34 @@ cmd_force_stop() {
   emit true stopped "Windows was force-stopped." "start Windows again when you need it"
 }
 
-# snapshot: make an instant, verified copy of the storage location (spec 7),
-# and say where it lives, that it grows, and how to delete or restore it.
-# It can take minutes; the panel runs it detached (plan phases 6-7).
+# snapshot [<label>]: make an instant, verified copy of the storage location
+# (spec 7), and say where it lives, that it grows, and how to delete or
+# restore it. The optional label is the snapshot's display name; it is checked
+# before the lock or any disk access, and an invalid one is refused with its
+# rule. It can take minutes; the panel runs it detached (plan phases 6-7).
 cmd_snapshot() {
-  local out rc=0 dir name
+  local out rc=0 dir name check label
+  if (($# > 1)); then
+    emit false "" "Give at most one snapshot name. Put a name with spaces in quotes." \
+      "use lanai snapshot [name]" '{"reason":"usage"}'
+    return 2
+  fi
+  # A helper fault fails closed: no lock, no disk.
+  if ! check=$(python3 "$LANAI_LIB/snapshot-label.py" validate "${1-}") ||
+    ! jq -e 'type == "object" and (.ok | type == "boolean")' <<<"$check" >/dev/null 2>&1; then
+    emit false "" "Lanai could not check the snapshot name." "see the error output"
+    return 1
+  fi
+  if [[ $(jq -r .ok <<<"$check") != true ]]; then
+    emit false "" "$(jq -r .message <<<"$check")" "" "$(jq -c '{reason, rule}' <<<"$check")"
+    return 2
+  fi
+  label=$(jq -r '.label // ""' <<<"$check")
   if ! lanai_flock; then
     emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
     return 1
   fi
-  out=$(image_operation snapshot snapshot_create) || rc=$?
+  out=$(image_operation snapshot snapshot_create "$label") || rc=$?
   if ((rc == 3)); then
     dir=$(storage_dir) || dir="the storage location"
     emit false "" "$out" \
@@ -1582,18 +1600,32 @@ cmd_snapshot() {
   fi
   name=${out##*/}
   emit true "" "Snapshot saved at $out. It shares its data with the Windows disk, so it costs little space at first and grows as Windows changes. Delete it with: lanai delete-snapshot $name. Restore it with: lanai restore $name." "" \
-    "$(jq -n -c --arg p "$out" --arg n "$name" '{snapshot: $p, name: $n}')"
+    "$(jq -n -c --arg p "$out" --arg n "$name" --arg l "$label" \
+      '{snapshot: $p, name: $n, label: (if $l == "" then null else $l end)}')"
 }
 
 # snapshots: list the complete snapshots of the storage location, oldest
-# first.
+# first, and their labels keyed by UTC identifier. One label reader serves the
+# whole list. Between copies of one identifier the first readable label wins;
+# unlabeled identifiers have no entry. A reader fault leaves labels empty and
+# keeps the list, so Restore and Delete stay available.
 cmd_snapshots() {
-  local dir list count noun=snapshots
+  local dir list count noun=snapshots found labels='{}'
+  local -a paths=()
   dir=$(storage_dir) || return 1
   list=$(snapshot_list "$dir" | jq -R . | jq -s -c .) || return 1
   count=$(jq -r 'length' <<<"$list")
   ((count != 1)) || noun=snapshot
-  emit true "" "$count $noun" "" "{\"snapshots\": $list}"
+  mapfile -t paths < <(jq -r '.[]' <<<"$list")
+  if ((count)) && found=$(python3 "$LANAI_LIB/snapshot-label.py" read "${paths[@]}") &&
+    found=$(jq -nc --argjson p "$list" --argjson l "$found" '
+      if ($l | type) == "array" and ($l | length) == ($p | length) then
+        reduce range($p | length) as $i ({}; ($p[$i] | split("/")[-1]) as $id |
+          if has($id) or ($l[$i] | type) != "string" then . else . + {($id): $l[$i]} end)
+      else error("the label reader reply does not match the list") end' 2>/dev/null); then
+    labels=$found
+  fi
+  emit true "" "$count $noun" "" "{\"snapshots\": $list, \"labels\": $labels}"
 }
 
 # delete-snapshot <name>: remove every valid copy of this named restore point

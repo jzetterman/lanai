@@ -9,8 +9,9 @@
 # QEMU's write lock is held, given a SOURCE file (the storage location's
 # real path) and a COMPLETE file (the manifest), and only then renamed. A
 # snapshot counts only for the storage location its SOURCE names, and only
-# with a matching COMPLETE. The callers hold lanai_flock, so no two
-# snapshots or restores overlap.
+# with a matching COMPLETE. A named snapshot also holds a LABEL file, its
+# display name (lib/snapshot-label.py); it is never part of the manifest.
+# The callers hold lanai_flock, so no two snapshots or restores overlap.
 # shellcheck shell=bash
 # The operation wrapper deliberately supplies exported variables to its callees.
 # shellcheck disable=SC2030,SC2031
@@ -41,7 +42,8 @@ snapshot_roots() {
 # Return 0 when <dir> is a complete snapshot of <storage>: a real folder
 # owned by the user, in a snapshot place that passes own_dir, with a
 # snapshot name, a SOURCE naming <storage>, a COMPLETE manifest of top-level
-# install files only, and exactly those files at those sizes beside them.
+# install files only, and exactly those files at those sizes beside them. A
+# top-level LABEL of any kind is ignored here; only its reader judges it.
 # Restore checks every SHA-256 before replacing an existing disk. A deleted
 # disk is published locked before its image hash (the approved req 7 exception).
 snapshot_valid() {
@@ -56,7 +58,7 @@ snapshot_valid() {
     want+="f $name $size"$'\n'
   done <"$d/COMPLETE"
   [[ $want == *" data.img "* ]] || return 1
-  have=$(find "$d" -mindepth 1 -maxdepth 1 ! -name COMPLETE ! -name SOURCE -printf '%y %P %s\n' |
+  have=$(find "$d" -mindepth 1 -maxdepth 1 ! -name COMPLETE ! -name SOURCE ! -name LABEL -printf '%y %P %s\n' |
     LC_ALL=C sort)
   [[ $have == "$(LC_ALL=C sort <<<"${want%$'\n'}")" ]]
 }
@@ -249,9 +251,14 @@ install_list() {
   find "$1" -mindepth 1 -maxdepth 1 ! -name SOURCE ! -name COMPLETE -printf '%y %P %s\n' | LC_ALL=C sort
 }
 
-# Make a snapshot; return 3 for an unprovable image or unsupported roots.
+# Save a validated label in the unpublished snapshot folder <part>.
+snapshot_label_write() { printf '%s\n' "$2" >"$1/LABEL"; }
+
+# snapshot_create [<label>]: make a snapshot, named <label> when it is not
+# empty (cmd_snapshot validates it first); return 3 for an unprovable image
+# or unsupported roots.
 snapshot_create() {
-  local dir reason root name part='' m image name_file rc made_root
+  local label=${1:-} dir reason root name part='' m image name_file rc made_root
   dir=$(storage_dir) || return 1
   if [[ $dir == *$'\n'* ]]; then
     echo "the storage location's path holds a newline"; return 1
@@ -321,6 +328,10 @@ snapshot_create() {
       cmp -s -- "$dir/$name_file" "$part/$name_file" || rc=1
     done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%P\n' | LC_ALL=C sort)
     [[ $(install_list "$dir") == "$(install_list "$part")" ]] || rc=1
+  fi
+  # The label joins only a checked copy, and the final flush covers it.
+  if ((rc == 0)) && [[ -n $label ]] && ! snapshot_label_write "$part" "$label"; then
+    reason="its name could not be saved"; rc=1
   fi
   image_phase finishing
   if ((rc == 0)) && printf '%s\n' "$dir" >"$part/SOURCE" &&

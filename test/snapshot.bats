@@ -246,6 +246,245 @@ recovery_snapshots() {
   SNAP=$(data_dir)/snapshots/$BAD
 }
 
+# --- snapshot labels ---
+
+# Take one mocked snapshot in this shell with <args>, check it, and remove it,
+# so the next one cannot collide with its UTC second. Sets JSON and SNAP.
+label_take() {
+  run cmd_snapshot "$@"
+  assert_success
+  JSON=$output SNAP=$(jq -r .snapshot <<<"$output")
+  [[ ${SNAP##*/} =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || fail "bad identifier $SNAP"
+  assert_equal "$(jq -r .name <<<"$JSON")" "${SNAP##*/}"
+  run snapshot_find "$STORE" "${SNAP##*/}"
+  assert_success
+}
+
+# Log every helper call; image and clone helpers fail, so a test can tell
+# whether a refusal reached the disk.
+label_refusal_fixture() {
+  snapshot_failure_fixture
+  lock_disk() { echo lock >>"$T/disk.calls"; }
+  shim python3 'printf "%s %s\n" "${1##*/}" "${2:-}" >>"$T/python.calls"
+if [[ $1 == */image-proof.py || $1 == */ficlone.py ]]; then exit 1; fi
+exec /usr/bin/python3 "$@"'
+  export PATH=$T/shims:$PATH
+}
+
+@test "snapshot labels: omitted, empty and spaces-only labels make unlabeled snapshots" {
+  snapshot_failure_fixture
+  mock_image_failure
+  local -a cases=(omitted '' '   ')
+  local c
+  for c in "${cases[@]}"; do
+    if [[ $c == omitted ]]; then label_take; else label_take "$c"; fi
+    assert_equal "$(jq -c '[has("label"),.label]' <<<"$JSON")" '[true,null]'
+    assert [ ! -e "$SNAP/LABEL" ]
+    snapshot_remove "$SNAP"
+  done
+}
+
+@test "snapshot labels: trimmed, 64-code-point, leading-dash and metacharacter labels are saved under the UTC identifier" {
+  snapshot_failure_fixture
+  mock_image_failure
+  local emoji meta
+  emoji=$(printf '\xf0\x9f\x98\x80%.0s' {1..64})
+  meta='50% ${HOME} $(touch pwned) `id` ; | & ../x "q" '\''s'\'''
+  local -a given=('  Before driver update  ' "$emoji" '-n' '--' "$meta")
+  local -a saved=('Before driver update' "$emoji" '-n' '--' "$meta")
+  local i
+  for i in "${!given[@]}"; do
+    label_take "${given[$i]}"
+    assert_equal "$(jq -r .label <<<"$JSON")" "${saved[$i]}"
+    assert_equal "$(cat "$SNAP/LABEL")" "${saved[$i]}"
+    assert_equal "$(tail -c 1 "$SNAP/LABEL" | od -An -c | tr -d ' ')" '\n'
+    run cmd_snapshots
+    assert_success
+    assert_equal "$(jq -r --arg n "${SNAP##*/}" '.labels[$n]' <<<"$output")" "${saved[$i]}"
+    assert_equal "$(jq -r '.snapshots[]' <<<"$output")" "$SNAP"
+    snapshot_remove "$SNAP"
+  done
+  # 64 four-byte characters and the newline fill the 257-byte limit.
+  assert_equal "$(printf '%s\n' "$emoji" | wc -c)" 257
+  assert [ ! -e pwned ]
+  assert [ ! -e "$T/pwned" ]
+  assert [ ! -e "$STORE/pwned" ]
+}
+
+@test "snapshot labels: each refusal names its rule before the lock, the disk or a partial folder" {
+  label_refusal_fixture
+  mkdir -p "$S"
+  flock "$S/lock" sleep 30 3>&- &
+  BG_PIDS+=("$!")
+  local i
+  for ((i = 0; i < 50; i++)); do
+    flock -n "$S/lock" true || break
+    sleep 0.05
+  done
+  local -a labels=(
+    $'one\ntwo' $'one\rtwo' $'one\xe2\x80\xa8two' $'one\xe2\x80\xa9two'
+    'a<b' 'a>b'
+    $'a\xc2\xa0b' $'a\xe3\x80\x80b' $'\xc2\xa0edge'
+    $'a\xe2\x80\x8db' $'a\xc2\xadb'
+    $'a\x01b' $'\tedge' $'a\xee\x80\x80b' $'a\xcd\xb8b'
+    $'a\xffb' $'a\xed\xb0\x80b'
+    "$(printf 'a%.0s' {1..65})" "$(printf '\xf0\x9f\x98\x80%.0s' {1..65})"
+    $'<\n'
+  )
+  local -a rules=(line-break line-break line-break line-break
+    angle-bracket angle-bracket
+    separator separator separator
+    invisible invisible
+    unsupported-character unsupported-character unsupported-character unsupported-character
+    invalid-utf8 invalid-utf8
+    too-long too-long
+    line-break)
+  local -A messages=(
+    [line-break]='Use one line for the snapshot name.'
+    [angle-bracket]='Remove < and > from the name.'
+    [separator]='Use ordinary spaces between words.'
+    [invisible]='Unsupported invisible characters are not allowed.'
+    [unsupported-character]='Remove unsupported control or special characters.'
+    [invalid-utf8]='Use valid UTF-8 text.'
+    [too-long]='Use 64 characters or fewer.'
+  )
+  for i in "${!labels[@]}"; do
+    run cmd_snapshot "${labels[$i]}"
+    assert_failure 2
+    assert_equal "$(jq -c '[.ok,.reason,.rule]' <<<"$output")" "[false,\"invalid-label\",\"${rules[$i]}\"]"
+    assert_equal "$(jq -r .message <<<"$output")" "${messages[${rules[$i]}]}"
+  done
+  # The C locale reads argv bytes the same way.
+  LC_ALL=C run cmd_snapshot $'a\xffb'
+  assert_equal "$(jq -r .rule <<<"$output")" invalid-utf8
+  # Extra arguments are refused, never joined.
+  run cmd_snapshot one two
+  assert_failure 2
+  assert_equal "$(jq -r .ok <<<"$output")" false
+  assert [ ! -e "$T/disk.calls" ]
+  assert_equal "$(sort -u "$T/python.calls")" 'snapshot-label.py validate'
+  assert [ ! -e "$(data_dir)/snapshots" ]
+  assert [ ! -e "$STORE.lanai-snapshots" ]
+}
+
+@test "snapshot labels: a failed validation helper or LABEL write keeps nothing" {
+  label_refusal_fixture
+  shim python3 'printf "%s %s\n" "${1##*/}" "${2:-}" >>"$T/python.calls"
+exit 1'
+  run cmd_snapshot 'Before update'
+  assert_failure
+  assert_equal "$(jq -r .ok <<<"$output")" false
+  run cmd_snapshot
+  assert_failure
+  assert [ ! -e "$T/disk.calls" ]
+  assert_equal "$(sort -u "$T/python.calls")" 'snapshot-label.py validate'
+  mock_image_failure
+  snapshot_label_write() { printf 'Bef' >"$1/LABEL"; return 1; }
+  run cmd_snapshot 'Before update'
+  assert_failure
+  assert_output --partial 'Nothing was kept.'
+  run snapshot_list "$STORE"
+  assert_output ''
+  assert_equal "$(find "$(data_dir)" "$STORE.lanai-snapshots" -name '*.partial' 2>/dev/null)" ''
+}
+
+# Write <bytes> (printf format) as the LABEL of a new fixture snapshot <name>.
+label_fixture() {
+  local snap=$(data_dir)/snapshots/$1
+  delete_fixture_snapshot "$snap"
+  # shellcheck disable=SC2059
+  printf "$2" >"$snap/LABEL"
+}
+
+@test "snapshot labels: unreadable metadata keeps the snapshot listed, unlabeled, and deletable" {
+  use_install "$T/win"
+  local root name
+  root=$(data_dir)/snapshots
+  delete_fixture_snapshot "$root/20261001T000000Z"
+  label_fixture 20261001T000001Z 'Good one\n'
+  label_fixture 20261001T000002Z 'No newline'
+  label_fixture 20261001T000003Z "$(printf 'a%.0s' {1..300})\n"
+  label_fixture 20261001T000004Z '\xff\xfe\n'
+  label_fixture 20261001T000005Z 'one\ntwo\n'
+  label_fixture 20261001T000006Z 'two newlines\n\n'
+  label_fixture 20261001T000007Z ' edge\n'
+  label_fixture 20261001T000008Z 'edge \n'
+  label_fixture 20261001T000009Z 'a<b\n'
+  label_fixture 20261001T000010Z ''
+  delete_fixture_snapshot "$root/20261001T000011Z"
+  echo 'Linked' >"$T/linked"
+  ln -s "$T/linked" "$root/20261001T000011Z/LABEL"
+  delete_fixture_snapshot "$root/20261001T000012Z"
+  mkdir "$root/20261001T000012Z/LABEL"
+  delete_fixture_snapshot "$root/20261001T000013Z"
+  mkfifo "$root/20261001T000013Z/LABEL"
+  # A named pipe must not block the poll: the CLI runs under a deadline.
+  run --separate-stderr timeout 10 "$REPO/bin/lanai" snapshots
+  assert_success
+  assert_equal "$(jq -r '.snapshots | length' <<<"$output")" 14
+  assert_equal "$(jq -c .labels <<<"$output")" '{"20261001T000001Z":"Good one","20261001T000002Z":"No newline"}'
+  for name in 20261001T0000{00..13}Z; do
+    run snapshot_find "$STORE" "$name"
+    assert_success
+  done
+  for name in 20261001T000011Z 20261001T000012Z 20261001T000013Z 20261001T000001Z; do
+    lanai_run delete-snapshot "$name"
+    assert_success
+    assert [ ! -e "$root/$name" ]
+  done
+  assert_equal "$(cat "$T/linked")" Linked
+}
+
+@test "snapshot labels: the first readable copy's label wins and applies to every copy" {
+  use_install "$T/win"
+  local name=20261002T000000Z first second
+  delete_fixture_snapshot "$(data_dir)/snapshots/$name"
+  delete_fixture_snapshot "$STORE.lanai-snapshots/$name"
+  run cmd_snapshots
+  first=$(jq -r '.snapshots[0]' <<<"$output") second=$(jq -r '.snapshots[1]' <<<"$output")
+  printf ' bad\n' >"$first/LABEL"
+  printf 'Second copy\n' >"$second/LABEL"
+  run cmd_snapshots
+  assert_success
+  assert_equal "$(jq -c .labels <<<"$output")" "{\"$name\":\"Second copy\"}"
+  printf 'First copy\n' >"$first/LABEL"
+  run cmd_snapshots
+  assert_equal "$(jq -c .labels <<<"$output")" "{\"$name\":\"First copy\"}"
+  assert_equal "$(jq -c '.snapshots | length' <<<"$output")" 2
+}
+
+@test "snapshot labels: a failed label reader still lists every snapshot with no labels" {
+  use_install "$T/win"
+  label_fixture 20261003T000000Z 'Kept\n'
+  shim python3 'if [[ $1 == */snapshot-label.py ]]; then echo broken >&2; exit 1; fi
+exec /usr/bin/python3 "$@"'
+  export PATH=$T/shims:$PATH
+  run --separate-stderr cmd_snapshots
+  assert_success
+  assert_equal "$(jq -r '.snapshots[0] | split("/")[-1]' <<<"$output")" 20261003T000000Z
+  assert_equal "$(jq -c .labels <<<"$output")" '{}'
+}
+
+@test "snapshot labels: a labeled btrfs snapshot restores only its manifest files" {
+  btrfs_tmp
+  export XDG_DATA_HOME=$B/data
+  use_install "$B/win"
+  local before
+  before=$(tree_manifest "$B/win")
+  lanai_run snapshot '-Before update'
+  assert_success
+  NAME=$(field name) SNAP=$(field snapshot)
+  assert_equal "$(field label)" '-Before update'
+  assert_equal "$(cat "$SNAP/LABEL")" '-Before update'
+  lanai_run snapshots
+  assert_equal "$(jq -r --arg n "$NAME" '.labels[$n]' <<<"$JSON")" '-Before update'
+  echo changed >"$B/win/windows.vars"
+  lanai_run restore "$NAME"
+  assert_success
+  assert [ ! -e "$B/win/LABEL" ]
+  assert_equal "$(tree_manifest "$B/win")" "$before"
+}
+
 # --- refusals, on any filesystem ---
 
 @test "snapshot and restore refuse while Lanai's VM runs, changing nothing" {
