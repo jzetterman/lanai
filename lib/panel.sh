@@ -136,8 +136,10 @@ panel_records() {
 # panel_snapshot_item <name> [<user label>] [seconds true|false]: one row.
 # Keep the UTC folder name as the identity, even when it is not a real date.
 # label stays the formatted date; user_label is the saved name or null, and
-# full_label joins both for action, confirmation and restore wording. seconds
-# tells apart equal labels within one displayed minute.
+# full_label joins both for action, confirmation and restore wording. The
+# confirm labels name the armed buttons; the confirm notes show the same words
+# as a question beside them. seconds tells apart equal labels within one
+# displayed minute.
 panel_snapshot_item() {
   local name=$1 user=${2:-} clock='%H:%M UTC' formatted='' date='' time='' label=$1
   [[ ${3:-false} != true ]] || clock='%H:%M:%S UTC'
@@ -152,11 +154,12 @@ panel_snapshot_item() {
   fi
   jq -nc --arg n "$name" --arg d "$date" --arg t "$time" --arg l "$label" --arg u "$user" '
     (if $u == "" then $l else "“" + $u + "” from " + $l end) as $f |
+    ("Restore " + $f + " and replace Windows") as $rc | ("Delete " + $f + " permanently") as $dc |
     {name:$n,date:(if $d == "" then null else $d end),time:(if $t == "" then null else $t end),
       label:$l,user_label:(if $u == "" then null else $u end),full_label:$f,
-      restore_label:("Restore " + $f),confirm_label:("Restore " + $f + " and replace Windows"),
+      restore_label:("Restore " + $f),confirm_label:$rc,confirm_note:($rc + "?"),
       warning:"Changes since this snapshot are lost.",
-      delete_label:("Delete " + $f),delete_confirm_label:("Delete " + $f + " permanently"),
+      delete_label:("Delete " + $f),delete_confirm_label:$dc,delete_confirm_note:($dc + "?"),
       delete_warning:"Current Windows stays as it is. You will lose this restore point."}'
 }
 
@@ -528,12 +531,12 @@ cmd_panel() {
       ($p.step != "6" or $checkSince == null or ($d.ended // $now) >= $checkSince);
     ($p.finished == false and $p.step == "6" and currentSetup and
       $rec.records.setup.reply.ok == false and $rec.records.setup.reply.stop == "timeout") as $timeout |
-    # Settings and snapshot name refusals stay beside their fields; prompts and
-    # timeouts keep their setup view.
+    # Settings and snapshot name refusals stay beside their fields (panel_words
+    # gives a name refusal empty words, so the $r test keeps it out); prompts
+    # and timeouts keep their setup view.
     (["vm","setup","snapshots","client"] | any(.[];
       . as $g | $rec.records[$g] as $d |
       ($r[$g] != "" and $d != null and ($d.invocation == null or $d.invocation == $invocation) and
-        $d.reply.reason != "invalid-label" and
         ($d.reply.ok == false or (($rec.held|not) and ($d|has("started")) and ($d|has("ended")|not))) and
       (if $g == "setup" then currentSetup and ($timeout|not) and
         (($d.reply.step == "2" and $d.reply.missing != null) or

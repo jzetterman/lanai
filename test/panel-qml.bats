@@ -445,8 +445,10 @@ TestCase {
         rows:[{id:'vm',label:'VM',display:'journal: lanai-vm',copy_text:'journalctl --user -u lanai-vm',copy_label:'Copy VM log command'}]},
       snapshots:{show:true,count:1,names:['20261012T091200Z'],items:[{name:'20261012T091200Z',date:'Oct 12, 2026',time:'09:12 UTC',
         label:'Oct 12, 2026 at 09:12 UTC',restore_label:'Restore Oct 12, 2026 at 09:12 UTC',
-        confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',warning:'Later changes are lost.',
+        confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',
+        confirm_note:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows?',warning:'Later changes are lost.',
         delete_label:'Delete Oct 12, 2026 at 09:12 UTC',delete_confirm_label:'Delete Oct 12, 2026 at 09:12 UTC permanently',
+        delete_confirm_note:'Delete Oct 12, 2026 at 09:12 UTC permanently?',
         delete_warning:'Current Windows stays as it is. You will lose this restore point.'}]},
       restore:{label:'',warning:''},progress:null}
   }
@@ -1092,8 +1094,11 @@ TestCase {
     verify(!restore.visible)
     compare(remove.text, 'Delete snapshot')
     compare(remove.Accessible.name, item.delete_confirm_label)
+    compare(named(p.panel, 'deleteConfirm-' + item.name).text, item.delete_confirm_note)
+    verify(named(p.panel, 'deleteConfirm-' + item.name).visible)
     verify(textVisible(p.panel, item.delete_warning))
     named(p.panel, 'deleteCancel-' + item.name).clicked()
+    verify(!named(p.panel, 'deleteConfirm-' + item.name).visible)
     compare(p.panel.deleteArmed, '')
     compare(Quickshell.lastCommand.length, 0)
     remove.clicked()
@@ -1130,7 +1135,7 @@ TestCase {
         var note = named(p.panel, 'restoreConfirm-' + item.name)
         compare(note.visible, armed)
         if (armed) {
-          compare(note.text, item.confirm_label)
+          compare(note.text, item.confirm_note)
           verify(note.mapToItem(flick, 0, 0).x + note.width <= flick.width && note.contentWidth <= note.width + 0.5)
         }
         restore.forceActiveFocus()
@@ -2095,24 +2100,44 @@ TestCase {
       keyClick(Qt.Key_Return)
       compare(launched(), JSON.stringify(['snapshot','Before update']))
       nameSettle(p)
+      var count = Quickshell.launchCount
       n.field.forceActiveFocus(); keyClick(Qt.Key_Enter)
+      compare(Quickshell.launchCount, count + 1)
       compare(launched(), JSON.stringify(['snapshot','Before update']))
       nameSettle(p)
-      // Enter starts nothing while the adjacent action is disabled or hidden.
-      var count = Quickshell.launchCount, v = JSON.parse(JSON.stringify(p.view))
-      v.buttons[setup ? 'setup_snapshot' : 'take_snapshot'].enable = false
-      p.model.view = v; wait(1)
-      verify(n.field.visible)
-      n.field.forceActiveFocus(); keyClick(Qt.Key_Return)
+      // The field hides while its action is disabled or hidden, and neither
+      // Enter nor the action starts anything then.
+      var v = JSON.parse(JSON.stringify(p.view)), action = v.buttons[setup ? 'setup_snapshot' : 'take_snapshot']
+      count = Quickshell.launchCount
+      action.enable = false
+      p.model.view = JSON.parse(JSON.stringify(v)); wait(1)
+      verify(!n.field.visible && !n.caption.visible)
+      n.field.accepted(); n.take.clicked()
       compare(Quickshell.launchCount, count)
-      v.buttons[setup ? 'setup_snapshot' : 'take_snapshot'].show = false
+      action.enable = true; action.show = false
       p.model.view = JSON.parse(JSON.stringify(v)); wait(1)
       verify(!n.field.visible)
-      n.field.accepted()
+      n.field.accepted(); n.take.clicked()
       compare(Quickshell.launchCount, count)
       p.model.view = JSON.parse(JSON.stringify(p.view)); wait(1)
+      verify(n.field.visible)
       compare(n.field.text, 'Before update')
     })
+    p.panel.destroy()
+  }
+  function test_snapshot_name_enter_from_a_hidden_field_starts_nothing() {
+    var p = namePanel(true), daily = nameParts(p, false)
+    typeInto(daily.field, 'Hidden'); verify(daily.field.activeFocus)
+    // A poll or a click collapses Snapshots while the action stays usable.
+    named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+    verify(!daily.field.visible)
+    var action = p.model.control('take_snapshot')
+    verify(action.show === true && action.enable === true)
+    var count = Quickshell.launchCount
+    keyClick(Qt.Key_Return)
+    compare(Quickshell.launchCount, count)
+    named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+    compare(daily.field.text, 'Hidden')
     p.panel.destroy()
   }
   function test_snapshot_name_refusal_shows_beside_its_field_and_keeps_the_draft() {
@@ -2217,8 +2242,9 @@ TestCase {
       var when = date + ' at ' + time, full = user ? '“' + user + '” from ' + when : when
       return {name:name,date:date,time:time,label:when,user_label:user,full_label:full,
         restore_label:'Restore ' + full,confirm_label:'Restore ' + full + ' and replace Windows',
+        confirm_note:'Restore ' + full + ' and replace Windows?',
         warning:'Changes since this snapshot are lost.',delete_label:'Delete ' + full,
-        delete_confirm_label:'Delete ' + full + ' permanently',
+        delete_confirm_label:'Delete ' + full + ' permanently',delete_confirm_note:'Delete ' + full + ' permanently?',
         delete_warning:'Current Windows stays as it is. You will lose this restore point.'}
     }
     v.snapshots.items = [item('20261012T091230Z','Oct 12, 2026','09:12:30 UTC',meta),
@@ -2272,11 +2298,15 @@ TestCase {
           } else if (armed === 'restore') {
             compare(restore.text, 'Restore now'); compare(restore.Accessible.name, item.confirm_label)
             var note = named(panel, 'restoreConfirm-' + item.name)
-            verify(note.visible); compare(note.text, item.confirm_label)
+            verify(note.visible); compare(note.text, item.confirm_note)
             verify(inBounds(note, flick) && note.contentWidth <= note.width + 0.5)
             verify(textVisible(panel, item.warning))
           } else {
             compare(remove.text, 'Delete snapshot'); compare(remove.Accessible.name, item.delete_confirm_label)
+            var deleteNote = named(panel, 'deleteConfirm-' + item.name)
+            verify(deleteNote.visible); compare(deleteNote.text, item.delete_confirm_note)
+            verify(inBounds(deleteNote, flick) && deleteNote.contentWidth <= deleteNote.width + 0.5,
+              item.name + ' Delete note at ' + width)
             verify(textVisible(panel, item.delete_warning))
           }
         })
@@ -2295,7 +2325,7 @@ TestCase {
   function test_restore_and_controls() {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)
-    model.view = {buttons:{restore_snapshot:{show:true,enable:true,label:'Restore',labels:{snapshot:'Restore snapshot snapshot'}},restore_confirm:{show:true,enable:true,label:'Confirm',labels:{snapshot:'Restore snapshot and replace Windows'}}},setup:{},settings:{},snapshots:{names:['snapshot'],items:[{name:'snapshot',label:'snapshot',restore_label:'Restore snapshot snapshot',confirm_label:'Restore snapshot and replace Windows'}]},result:{},logs:{}}
+    model.view = {buttons:{restore_snapshot:{show:true,enable:true,label:'Restore',labels:{snapshot:'Restore snapshot snapshot'}},restore_confirm:{show:true,enable:true,label:'Confirm',labels:{snapshot:'Restore snapshot and replace Windows'}}},setup:{},settings:{},snapshots:{names:['snapshot'],items:[{name:'snapshot',label:'snapshot',restore_label:'Restore snapshot snapshot',confirm_label:'Restore snapshot and replace Windows',confirm_note:'Restore snapshot and replace Windows?'}]},result:{},logs:{}}
     var panel = createTemporaryObject(panelComponent, tests, {model:model})
     wait(1)
     named(panel, 'snapshotsToggle').clicked()
@@ -2307,7 +2337,7 @@ TestCase {
     compare(restore.control, 'restore_confirm')
     compare(restore.text, 'Restore now')
     compare(restore.Accessible.name, 'Restore snapshot and replace Windows')
-    verify(textVisible(panel, 'Restore snapshot and replace Windows'))
+    verify(textVisible(panel, 'Restore snapshot and replace Windows?'))
     restore.clicked()
     compare(Quickshell.lastCommand[1], 'ui-job')
     compare(Quickshell.lastCommand.slice(3).join(' '), 'restore snapshot')
@@ -2621,7 +2651,7 @@ panel_board_view() {
     compare(item.time, '09:12 UTC'); compare(item.date, 'Oct 12, 2026')
     restore.clicked(); compare(p.panel.restoreArmed, item.name)
     compare(restore.text, 'Restore now'); compare(restore.Accessible.name, item.confirm_label)
-    verify(textVisible(p.panel, item.confirm_label)); verify(textVisible(p.panel, item.warning))
+    verify(textVisible(p.panel, item.confirm_note)); verify(textVisible(p.panel, item.warning))
     named(p.panel, 'restoreCancel').clicked(); compare(p.panel.restoreArmed, '')
     restore.clicked(); p.panel.close(); compare(p.panel.restoreArmed, '')
     finishBackendPanel(p)
@@ -2642,14 +2672,15 @@ panel_board_view() {
       compare(restore.Accessible.name, item.restore_label); compare(remove.Accessible.name, item.delete_label)
       restore.clicked()
       compare(restore.text, 'Restore now'); compare(restore.Accessible.name, item.confirm_label)
-      compare(named(p.panel, 'restoreConfirm-' + item.name).text, item.confirm_label)
+      compare(named(p.panel, 'restoreConfirm-' + item.name).text, item.confirm_note)
       verify(named(p.panel, 'restoreConfirm-' + item.name).visible)
       restore.clicked()
       compare(launched(), JSON.stringify(['restore', item.name]))
       // The poll's empty view rebuilds the rows, so look the button up again.
       p.model.pendingToken = ''; ready(p.model); p.model.view = Backend.views['Labeled']; wait(1)
       remove = named(p.panel, 'delete-' + item.name)
-      remove.clicked(); compare(remove.Accessible.name, item.delete_confirm_label); remove.clicked()
+      remove.clicked(); compare(remove.Accessible.name, item.delete_confirm_label)
+      compare(named(p.panel, 'deleteConfirm-' + item.name).text, item.delete_confirm_note); remove.clicked()
       compare(launched(), JSON.stringify(['delete-snapshot', item.name]))
       p.model.pendingToken = ''; ready(p.model); p.model.view = Backend.views['Labeled']; wait(1)
     })

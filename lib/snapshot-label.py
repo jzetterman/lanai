@@ -28,24 +28,19 @@ MAX_BYTES = 257  # 64 four-byte characters and one newline
 
 # Checked in this order; the first rule a label breaks is its reply.
 MESSAGES = {
+    "invalid-utf8": "Use valid UTF-8 text.",
     "line-break": "Use one line for the snapshot name.",
     "angle-bracket": "Remove < and > from the name.",
     "separator": "Use ordinary spaces between words.",
-    "invisible": "Unsupported invisible characters are not allowed.",
+    "invisible": "Remove unsupported invisible characters. Some emoji contain them.",
     "unsupported-character": "Remove unsupported control or special characters.",
-    "invalid-utf8": "Use valid UTF-8 text.",
     "too-long": "Use 64 characters or fewer.",
 }
 
 
-def escaped(ch):
-    """True for an undecodable byte that surrogateescape kept (U+DC80-U+DCFF)."""
-    return "\udc80" <= ch <= "\udcff"
-
-
 def rule_of(char):
     """Return the character rule <char> breaks, or None."""
-    if char in "\r\n  ":
+    if char in "\r\n\u2028\u2029":
         return "line-break"
     if char in "<>":
         return "angle-bracket"
@@ -61,19 +56,20 @@ def rule_of(char):
 
 def broken_rule(text):
     """Return the first rule a trimmed, nonempty label breaks, or None."""
-    chars = [ch for ch in text if not escaped(ch)]
-    found = {rule_of(ch) for ch in chars}
-    if len(chars) != len(text):
-        found.add("invalid-utf8")
+    found = {rule_of(ch) for ch in text}
     if len(text) > MAX_CHARS:
         found.add("too-long")
     return next((rule for rule in MESSAGES if rule in found), None)
 
 
 def validate(value):
-    # Recover the exact argv bytes under any locale, then decode them as UTF-8
-    # ourselves, so invalid bytes have their own rule.
-    text = os.fsencode(value).decode("utf-8", "surrogateescape").strip(" ")
+    # Recover the exact argv bytes under any locale, then decode them strictly
+    # as UTF-8 ourselves, so invalid bytes have their own rule, checked first.
+    try:
+        text = os.fsencode(value).decode("utf-8").strip(" ")
+    except UnicodeDecodeError:
+        rule = "invalid-utf8"
+        return {"ok": False, "reason": "invalid-label", "rule": rule, "message": MESSAGES[rule]}
     if not text:
         return {"ok": True, "label": None}
     rule = broken_rule(text)

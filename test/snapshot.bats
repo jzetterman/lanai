@@ -321,6 +321,7 @@ exec /usr/bin/python3 "$@"'
     flock -n "$S/lock" true || break
     sleep 0.05
   done
+  ! flock -n "$S/lock" true || fail "lock not held"
   local -a labels=(
     $'one\ntwo' $'one\rtwo' $'one\xe2\x80\xa8two' $'one\xe2\x80\xa9two'
     'a<b' 'a>b'
@@ -329,7 +330,7 @@ exec /usr/bin/python3 "$@"'
     $'a\x01b' $'\tedge' $'a\xee\x80\x80b' $'a\xcd\xb8b'
     $'a\xffb' $'a\xed\xb0\x80b'
     "$(printf 'a%.0s' {1..65})" "$(printf '\xf0\x9f\x98\x80%.0s' {1..65})"
-    $'<\n'
+    $'<\n' $'\xff\n'
   )
   local -a rules=(line-break line-break line-break line-break
     angle-bracket angle-bracket
@@ -338,12 +339,12 @@ exec /usr/bin/python3 "$@"'
     unsupported-character unsupported-character unsupported-character unsupported-character
     invalid-utf8 invalid-utf8
     too-long too-long
-    line-break)
+    line-break invalid-utf8)
   local -A messages=(
     [line-break]='Use one line for the snapshot name.'
     [angle-bracket]='Remove < and > from the name.'
     [separator]='Use ordinary spaces between words.'
-    [invisible]='Unsupported invisible characters are not allowed.'
+    [invisible]='Remove unsupported invisible characters. Some emoji contain them.'
     [unsupported-character]='Remove unsupported control or special characters.'
     [invalid-utf8]='Use valid UTF-8 text.'
     [too-long]='Use 64 characters or fewer.'
@@ -405,6 +406,8 @@ label_fixture() {
   label_fixture 20261001T000001Z 'Good one\n'
   label_fixture 20261001T000002Z 'No newline'
   label_fixture 20261001T000003Z "$(printf 'a%.0s' {1..300})\n"
+  # Valid through byte 257, so only the 258-byte read cap refuses it.
+  label_fixture 20261001T000014Z "$(printf '\\xf0\\x9f\\x98\\x80%.0s' {1..64})\nx"
   label_fixture 20261001T000004Z '\xff\xfe\n'
   label_fixture 20261001T000005Z 'one\ntwo\n'
   label_fixture 20261001T000006Z 'two newlines\n\n'
@@ -419,12 +422,15 @@ label_fixture() {
   mkdir "$root/20261001T000012Z/LABEL"
   delete_fixture_snapshot "$root/20261001T000013Z"
   mkfifo "$root/20261001T000013Z/LABEL"
-  # A named pipe must not block the poll: the CLI runs under a deadline.
+  label_fixture 20261001T000015Z ''
+  truncate -s 1G "$root/20261001T000015Z/LABEL"
+  # A named pipe or a huge LABEL must not block the poll: the CLI runs under
+  # a deadline.
   run --separate-stderr timeout 10 "$REPO/bin/lanai" snapshots
   assert_success
-  assert_equal "$(jq -r '.snapshots | length' <<<"$output")" 14
+  assert_equal "$(jq -r '.snapshots | length' <<<"$output")" 16
   assert_equal "$(jq -c .labels <<<"$output")" '{"20261001T000001Z":"Good one","20261001T000002Z":"No newline"}'
-  for name in 20261001T0000{00..13}Z; do
+  for name in 20261001T0000{00..15}Z; do
     run snapshot_find "$STORE" "$name"
     assert_success
   done

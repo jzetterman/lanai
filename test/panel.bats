@@ -455,8 +455,10 @@ labeled_snapshot() {
   assert_equal "$(jq -r .full_label <<<"$item")" "$full"
   assert_equal "$(jq -r .restore_label <<<"$item")" "Restore $full"
   assert_equal "$(jq -r .confirm_label <<<"$item")" "Restore $full and replace Windows"
+  assert_equal "$(jq -r .confirm_note <<<"$item")" "Restore $full and replace Windows?"
   assert_equal "$(jq -r .delete_label <<<"$item")" "Delete $full"
   assert_equal "$(jq -r .delete_confirm_label <<<"$item")" "Delete $full permanently"
+  assert_equal "$(jq -r .delete_confirm_note <<<"$item")" "Delete $full permanently?"
   # The UTC identifier stays the action target.
   assert_equal "$(jq -c '.snapshots.names | sort' <<<"$output")" '["20261011T080000Z","20261012T091200Z"]'
   assert_equal "$(jq -r '.buttons.restore_snapshot.labels["20261012T091200Z"]' <<<"$output")" 'Restore snapshot 20261012T091200Z'
@@ -487,6 +489,7 @@ labeled_snapshot() {
   assert_equal "$(jq -r .confirm_label <<<"$first")" 'Restore “Same” from Oct 12, 2026 at 09:12:45 UTC and replace Windows'
   assert_equal "$(jq -r .delete_label <<<"$first")" 'Delete “Same” from Oct 12, 2026 at 09:12:45 UTC'
   assert_equal "$(jq -r .delete_confirm_label <<<"$first")" 'Delete “Same” from Oct 12, 2026 at 09:12:45 UTC permanently'
+  assert_equal "$(jq -r .delete_confirm_note <<<"$first")" 'Delete “Same” from Oct 12, 2026 at 09:12:45 UTC permanently?'
   printf '%s\n%s\n' "$(data_dir)/snapshots/20261012T091200Z" "$STORE" >"$S/restore-in-progress"
   run cmd_panel
   assert_equal "$(jq -r .restore.label <<<"$output")" 'Unfinished restore of “Same” from Oct 12, 2026 at 09:12:00 UTC'

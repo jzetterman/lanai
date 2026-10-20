@@ -691,7 +691,8 @@ Panel {
                           objectName: "restore-" + snapshotRow.modelData.name
                           width: Math.min(implicitWidth, restoreCell.width)
                           control: snapshotRow.armed ? "restore_confirm" : "restore_snapshot"
-                          // The full confirmation wording is the note below the row.
+                          // The full confirmation wording is the note below the row,
+                          // as it is for Delete.
                           text: snapshotRow.armed ? "Restore now" : "Restore"
                           Accessible.name: snapshotRow.armed ? snapshotRow.modelData.confirm_label : snapshotRow.modelData.restore_label
                           visible: !snapshotRow.deleting && descriptor.show
@@ -703,7 +704,8 @@ Panel {
                       }
                     }
                   }
-                  Note { objectName: "restoreConfirm-" + snapshotRow.modelData.name; text: snapshotRow.armed ? snapshotRow.modelData.confirm_label : "" }
+                  Note { objectName: "restoreConfirm-" + snapshotRow.modelData.name; text: snapshotRow.armed ? snapshotRow.modelData.confirm_note : "" }
+                  Note { objectName: "deleteConfirm-" + snapshotRow.modelData.name; text: snapshotRow.deleting ? snapshotRow.modelData.delete_confirm_note : "" }
                   Note { text: snapshotRow.armed ? snapshotRow.modelData.warning : snapshotRow.deleting ? snapshotRow.modelData.delete_warning : "" }
                   Action { objectName: "deleteCancel-" + snapshotRow.modelData.name; control: "cancel"
                     visible: snapshotRow.deleting && descriptor.show; onClicked: root.deleteArmed = "" }
@@ -966,16 +968,18 @@ Panel {
 
   // A labelled single-line snapshot name above its Take a snapshot action.
   // It submits its exact text: no validator, mask or trimming. The backend
-  // checks the name, and its refusal shows below the field.
+  // checks the name, and its refusal shows below the field. It shows only
+  // while its action is usable; the draft lives on in its NameDraft.
   component NameField: Column {
     id: nameField
     required property string name
     required property string accessibleName
     required property NameDraft draft
     required property string actionControl
+    readonly property var action: root.model.control(actionControl)
     width: parent.width
     spacing: Style.space(4)
-    visible: root.model.control(actionControl).show === true
+    visible: action.show === true && action.enable === true
     Note {
       objectName: nameField.name + "Caption"
       text: "Snapshot name (optional)"
@@ -991,8 +995,9 @@ Panel {
       Accessible.name: nameField.accessibleName
       Accessible.description: nameField.draft.error
       onTextChanged: nameField.draft.text = text
-      onAccepted: root.takeSnapshot(nameField.draft, nameField.actionControl)
-      onActiveFocusChanged: if (activeFocus) root.reveal(this)
+      // A focused field still gets Enter after a section above hides it.
+      onAccepted: if (nameField.visible) root.takeSnapshot(nameField.draft, nameField.actionControl)
+      onActiveFocusChanged: if (activeFocus) root.reveal(nameField)
     }
     Note {
       objectName: nameField.name + "Error"
