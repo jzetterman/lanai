@@ -82,10 +82,13 @@ Use **Delete** beside a snapshot to remove that restore point. The list
 updates after each snapshot or restore job, and whenever the panel refreshes.
 If the filesystem cannot make a snapshot,
 the setup offer explains that you need a backup before continuing without one.
-You can name a snapshot in **Snapshot name (optional)** above either **Take a
-snapshot** button, or with `lanai snapshot "<name>"`. Leave it empty for a
-snapshot with no name. A name is one line of up to 64 characters, with no `<`,
-`>`, control or invisible characters. Only ordinary spaces may separate words.
+Either **Take a snapshot** button asks for an optional name first: it opens
+**Snapshot name (optional)** and becomes **Save snapshot**. Save snapshot, or
+Enter in the field, takes the snapshot. **Cancel** closes the field and keeps
+your text for next time. From a terminal, use `lanai snapshot "<name>"`. Leave
+the name empty for a snapshot with no name. A name is one line of up to 64
+characters, with no `<`, `>`, control or invisible characters. Only ordinary
+spaces may separate words.
 Lanai trims spaces and line breaks at the ends of a name. If Lanai refuses a
 name, the reason shows below the field and your text stays there to fix. You
 set a name only when you take the snapshot. The UTC time stays each snapshot's

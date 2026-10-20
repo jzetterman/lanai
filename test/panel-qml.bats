@@ -450,7 +450,7 @@ TestCase {
         delete_label:'Delete Oct 12, 2026 at 09:12 UTC',delete_confirm_label:'Delete snapshot: Oct 12, 2026 at 09:12 UTC, permanently',
         delete_confirm_note:'Delete this snapshot permanently?',
         delete_warning:'Current Windows stays as it is.'}]},
-      restore:{label:'',warning:''},progress:null}
+      restore:{label:'',warning:''},progress:null,busy:{active:false,line:''}}
   }
   function redesignPanel() {
     var model = createTemporaryObject(modelComponent, tests)
@@ -2016,7 +2016,8 @@ TestCase {
     compare(action.command.slice(3).join(' '), 'force-stop --confirm')
     panel.destroy(); wait(1)
   }
-  // Snapshot name fields: the setup layout at step 3 shows both fields.
+  // Snapshot name prompts: the setup layout at step 3 shows both actions.
+  // Views carry busy, as the real backend always sends it.
   function nameView(setup) {
     var v = setup ? setupView('3') : redesignView()
     if (setup) {
@@ -2025,6 +2026,7 @@ TestCase {
       v.buttons.skip_snapshot = {show:true,enable:true,label:'Continue without a snapshot'}
     }
     v.buttons.take_snapshot = {show:true,enable:true,label:'Take a snapshot'}
+    v.busy = {active:false,line:''}
     v.snapshots.job = null
     return v
   }
@@ -2041,13 +2043,14 @@ TestCase {
   function nameParts(p, setup) {
     var prefix = setup ? 'setupSnapshotName' : 'snapshotName'
     return {field:named(p.panel, prefix + 'Field'), caption:named(p.panel, prefix + 'Caption'),
-      error:named(p.panel, prefix + 'Error'),
+      error:named(p.panel, prefix + 'Error'), cancel:named(p.panel, prefix + 'Cancel'),
       take:objects(p.panel, function(o) { return o.control === (setup ? 'setup_snapshot' : 'take_snapshot') })[0]}
   }
+  function copy(v) { return JSON.parse(JSON.stringify(v)) }
   // Clear the launch guard and show <view> again, as a later poll would.
   function nameSettle(p, v) {
-    p.model.pendingToken = ''; ready(p.model)
-    p.model.view = JSON.parse(JSON.stringify(v || p.view)); wait(1)
+    p.model.pendingToken = ''
+    p.model.view = copy(v || p.view); wait(1)
   }
   function launched() { return JSON.stringify(Quickshell.lastCommand.slice(3)) }
   function typeInto(field, text) {
@@ -2055,43 +2058,105 @@ TestCase {
     for (var i = 0; i < text.length; i++) keyClick(text[i])
   }
   function jobView(v, token, ok, message) {
-    var w = JSON.parse(JSON.stringify(v))
+    var w = copy(v)
     w.snapshots.job = {token:token,ended:ok !== null,ok:ok,message:message || ''}
     return w
   }
-  function test_snapshot_name_fields_are_labelled_distinct_and_in_bounds() {
-    var p = namePanel(true), popup = named(p.panel, 'panelPopup'), flick = named(p.panel, 'panelScroll')
+  // <v> while a job runs: the snapshot actions are disabled and the backend is busy.
+  function runningView(v) {
+    var w = copy(v)
+    ;['take_snapshot','setup_snapshot','skip_snapshot'].forEach(function(key) { if (w.buttons[key]) w.buttons[key].enable = false })
+    w.busy = {active:true,line:'Taking a snapshot.'}
+    return w
+  }
+  // <v> in the Failed layout, which opens Logs by itself. Nothing is busy.
+  function failedView(v) {
+    var w = copy(v)
+    w.layout = 'failed'; w.sections.default = 'logs'; w.busy = {active:false,line:''}
+    return w
+  }
+  // An unreadable poll: the model shows its own Failed view, which has no busy key.
+  function failPoll(p) {
+    p.model.refresh()
+    var poll = process(p.model, 'timeout')
+    while (poll.running) poll.complete('unreadable', 1)
+    compare(p.model.view.layout, 'failed')
+    compare(p.model.view.busy, undefined)
+  }
+  // The panel's own focus scope, which takes focus when no control can.
+  function panelFocus(p) { return named(p.panel, 'panelPopup').children[0] }
+  function test_snapshot_prompt_opens_on_click_and_cancel_closes_it() {
+    var p = namePanel(true), scope = panelFocus(p)
     ;[false,true].forEach(function(setup) {
-      var n = nameParts(p, setup)
-      verify(n.field !== undefined && n.caption !== undefined, setup ? 'setup' : 'daily')
-      verify(n.field.visible && n.caption.visible)
-      compare(n.caption.text, 'Snapshot name (optional)')
-      compare(n.field.Accessible.name, setup ? 'Setup snapshot name (optional)' : 'Snapshot name (optional)')
-      compare(n.field.text, '')
-      compare(n.field.validator, null)
-      compare(n.field.inputMask, '')
-      verify(n.field.activeFocusOnTab)
-      n.field.forceActiveFocus(); verify(n.field.activeFocus)
-      ;[420,360,260].forEach(function(width) {
-        popup.contentWidth = width
-        verify(waitForPolish(flick.Window.window))
-        var caption = n.caption.mapToItem(flick, 0, 0), field = n.field.mapToItem(flick, 0, 0), take = n.take.mapToItem(flick, 0, 0)
-        verify(field.x >= 0 && field.x + n.field.width <= flick.width, 'name field overflows at ' + width)
-        verify(caption.x >= 0 && caption.x + n.caption.width <= flick.width)
-        verify(caption.y + n.caption.height <= field.y, 'caption is not above its field at ' + width)
-        verify(field.y + n.field.height <= take.y, 'field is not above Take a snapshot at ' + width)
-      })
+      var n = nameParts(p, setup), count = Quickshell.launchCount, which = setup ? 'setup' : 'daily'
+      verify(n.field !== undefined && n.cancel !== undefined, which)
+      verify(!n.field.visible && !n.caption.visible && !n.cancel.visible, which)
+      compare(n.take.text, 'Take a snapshot')
+      // The first click starts nothing: it opens the field with focus in it.
+      n.take.clicked(); wait(1)
+      compare(Quickshell.launchCount, count)
+      verify(n.field.visible && n.caption.visible, which)
+      verify(n.field.activeFocus, which)
+      compare(n.take.text, 'Save snapshot')
+      verify(n.cancel.visible && n.cancel.enabled); compare(n.cancel.text, 'Cancel')
+      typeInto(n.field, 'Draft')
+      // Cancel by mouse: focus in the field moves to Take a snapshot.
+      n.cancel.clicked(); wait(1)
+      verify(!n.field.visible && !n.cancel.visible, which)
+      compare(n.take.text, 'Take a snapshot')
+      verify(n.take.activeFocus, which)
+      // Cancel by keyboard.
+      n.take.clicked(); wait(1)
+      compare(n.field.text, 'Draft'); verify(n.field.activeFocus)
+      n.cancel.forceActiveFocus(); verify(n.cancel.activeFocus)
+      keyClick(Qt.Key_Return); wait(1)
+      verify(!n.field.visible && !n.cancel.visible, which)
+      verify(n.take.activeFocus, which)
+      // Closing the panel closes the prompt.
+      n.take.clicked(); wait(1)
+      p.panel.close(); wait(1)
+      compare(p.panel.namePrompt, '')
+      p.panel.open(); named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+      verify(!n.field.visible, which)
+      // So does Escape in the field, which closes the panel.
+      n.take.clicked(); wait(1); verify(n.field.activeFocus)
+      keyClick(Qt.Key_Escape); wait(1)
+      verify(!p.panel.opened, which); compare(p.panel.namePrompt, '')
+      p.panel.open(); named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+      verify(!n.field.visible, which)
+      n.take.clicked(); wait(1)
+      compare(n.field.text, 'Draft')
+      n.cancel.clicked(); wait(1)
+      compare(Quickshell.launchCount, count)
     })
+    // Collapsing Snapshots closes the daily prompt, not the setup one, and
+    // focus moves to the panel because Take a snapshot is out of sight.
+    var daily = nameParts(p, false), setup = nameParts(p, true)
+    daily.take.clicked(); wait(1); verify(daily.field.activeFocus)
+    named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+    compare(p.panel.namePrompt, '')
+    compare(scope.Window.activeFocusItem, scope)
+    named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+    verify(!daily.field.visible); compare(daily.take.text, 'Take a snapshot')
+    daily.take.clicked(); wait(1); compare(daily.field.text, 'Draft')
+    setup.take.clicked(); wait(1)
+    named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+    compare(p.panel.namePrompt, 'setup_snapshot'); verify(setup.field.visible)
     p.panel.destroy()
   }
-  function test_snapshot_name_fields_submit_exact_text_from_button_and_enter() {
+  function test_snapshot_prompt_submits_exact_text_from_save_and_enter() {
     var p = namePanel(true)
     ;[false,true].forEach(function(setup) {
       var n = nameParts(p, setup)
-      n.take.clicked()
+      n.take.clicked(); wait(1)
+      // Save snapshot from the keyboard: focus goes back to the field,
+      // where a refusal will show.
+      n.take.forceActiveFocus(); keyClick(Qt.Key_Return)
       compare(launched(), JSON.stringify(['snapshot','']))
       compare(Quickshell.lastCommand[2], p.model.pendingToken)
+      verify(n.field.activeFocus)
       nameSettle(p)
+      verify(n.field.visible)
       typeInto(n.field, '   ')
       n.take.clicked()
       compare(launched(), JSON.stringify(['snapshot','   ']))
@@ -2105,57 +2170,299 @@ TestCase {
       compare(Quickshell.launchCount, count + 1)
       compare(launched(), JSON.stringify(['snapshot','Before update']))
       nameSettle(p)
-      // The field hides while its action is disabled or hidden, and neither
-      // Enter nor the action starts anything then.
-      var v = JSON.parse(JSON.stringify(p.view)), action = v.buttons[setup ? 'setup_snapshot' : 'take_snapshot']
+      // The prompt closes while its action is disabled or hidden, and
+      // neither Enter nor the action starts or opens anything then.
+      var v = copy(p.view), action = v.buttons[setup ? 'setup_snapshot' : 'take_snapshot']
       count = Quickshell.launchCount
       action.enable = false
-      p.model.view = JSON.parse(JSON.stringify(v)); wait(1)
+      p.model.view = copy(v); wait(1)
       verify(!n.field.visible && !n.caption.visible)
       n.field.accepted(); n.take.clicked()
-      compare(Quickshell.launchCount, count)
+      compare(Quickshell.launchCount, count); compare(p.panel.namePrompt, '')
       action.enable = true; action.show = false
-      p.model.view = JSON.parse(JSON.stringify(v)); wait(1)
+      p.model.view = copy(v); wait(1)
       verify(!n.field.visible)
       n.field.accepted(); n.take.clicked()
-      compare(Quickshell.launchCount, count)
-      p.model.view = JSON.parse(JSON.stringify(p.view)); wait(1)
+      compare(Quickshell.launchCount, count); compare(p.panel.namePrompt, '')
+      p.model.view = copy(p.view); wait(1)
+      verify(!n.field.visible)
+      n.take.clicked(); wait(1)
       verify(n.field.visible)
       compare(n.field.text, 'Before update')
+      n.cancel.clicked()
     })
     p.panel.destroy()
   }
+  function test_snapshot_prompt_runs_once_and_hides_cancel_while_its_snapshot_runs() {
+    var p = namePanel(true)
+    ;[false,true].forEach(function(setup) {
+      var n = nameParts(p, setup), which = setup ? 'setup' : 'daily'
+      n.take.clicked(); wait(1)
+      typeInto(n.field, 'Mine')
+      n.take.clicked()
+      var token = Quickshell.lastCommand[2], count = Quickshell.launchCount
+      compare(launched(), JSON.stringify(['snapshot','Mine']))
+      verify(!n.cancel.visible, which)
+      // A poll before the job record appears still shows the older record.
+      p.model.pendingToken = ''
+      ;[jobView(runningView(p.view), 'panel-older', true), jobView(runningView(p.view), token, null)].forEach(function(v) {
+        p.model.view = copy(v); wait(1)
+        verify(n.field.visible && !n.field.readOnly, which)
+        compare(n.take.text, 'Save snapshot'); verify(!n.take.enabled)
+        verify(!n.cancel.visible, which)
+        n.take.clicked(); n.field.forceActiveFocus(); keyClick(Qt.Key_Return)
+        compare(Quickshell.launchCount, count)
+      })
+      // The field stays editable; a newer draft outlasts the success.
+      typeInto(n.field, '!')
+      compare(n.field.text, 'Mine!')
+      p.model.view = jobView(p.view, token, true); wait(1)
+      compare(p.panel.namePrompt, '')
+      verify(!n.field.visible); compare(n.field.text, 'Mine!')
+      verify(n.take.activeFocus, which)
+      // Escape closes the panel and the prompt while its snapshot runs; the
+      // snapshot still clears the unchanged draft when it succeeds.
+      n.take.clicked(); wait(1); n.take.clicked()
+      token = Quickshell.lastCommand[2]
+      nameSettle(p, jobView(runningView(p.view), token, null))
+      n.field.forceActiveFocus(); keyClick(Qt.Key_Escape); wait(1)
+      verify(!p.panel.opened); compare(p.panel.namePrompt, '')
+      p.panel.open(); named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+      p.model.view = jobView(p.view, token, true); wait(1)
+      compare(n.field.text, '')
+    })
+    p.panel.destroy()
+  }
+  function test_snapshot_prompt_stays_open_after_failures_and_closes_after_success() {
+    var p = namePanel(false), n = nameParts(p, false)
+    function reexpand() {
+      compare(p.panel.expandedSection, 'logs')
+      compare(p.panel.namePrompt, 'take_snapshot')
+      named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+      verify(n.field.visible && n.cancel.visible)
+      compare(n.take.text, 'Save snapshot')
+    }
+    n.take.clicked(); wait(1); typeInto(n.field, 'a<b'); n.take.clicked()
+    var token = Quickshell.lastCommand[2]
+    // A name refusal shows beside the open field, and Cancel comes back.
+    nameSettle(p, jobView(p.view, token, false, 'Remove < and >.'))
+    verify(n.field.visible && n.error.visible && n.cancel.visible)
+    compare(n.error.text, 'Remove < and >.'); compare(n.field.text, 'a<b')
+    // A failed job without a message.
+    n.field.selectAll(); typeInto(n.field, 'Fine'); n.take.clicked()
+    token = Quickshell.lastCommand[2]
+    verify(!n.error.visible)
+    nameSettle(p, jobView(runningView(p.view), token, null))
+    p.model.view = jobView(p.view, token, false); wait(1)
+    verify(n.field.visible && n.cancel.visible); compare(n.field.text, 'Fine')
+    // A failed job that brings the Failed layout opens Logs; the prompt stays open.
+    n.take.clicked(); token = Quickshell.lastCommand[2]
+    nameSettle(p, jobView(runningView(p.view), token, null))
+    p.model.view = jobView(failedView(p.view), token, false); wait(1)
+    reexpand()
+    // An interrupted job: its record never ends, but nothing is busy, so Cancel shows again.
+    n.take.clicked(); token = Quickshell.lastCommand[2]
+    nameSettle(p, jobView(runningView(p.view), token, null)); verify(!n.cancel.visible)
+    p.model.view = jobView(failedView(p.view), token, null); wait(1)
+    reexpand()
+    // A failed launch: no record of it, nothing busy.
+    n.take.clicked(); token = Quickshell.lastCommand[2]
+    nameSettle(p, jobView(runningView(p.view), 'panel-older', true)); verify(!n.cancel.visible)
+    var failed = failedView(p.view); failed.result.launch = 'Lanai could not start the snapshot.'
+    p.model.view = jobView(failed, 'panel-older', true); wait(1)
+    reexpand()
+    compare(n.field.text, 'Fine')
+    // Success closes the prompt and clears the unchanged draft.
+    n.take.clicked(); token = Quickshell.lastCommand[2]
+    nameSettle(p, jobView(runningView(p.view), token, null))
+    p.model.view = jobView(p.view, token, true); wait(1)
+    compare(p.panel.namePrompt, ''); verify(!n.field.visible && !n.cancel.visible)
+    compare(n.take.text, 'Take a snapshot'); compare(n.field.text, '')
+    p.panel.destroy()
+  }
+  function test_snapshot_prompt_closes_with_its_draft_when_its_action_turns_off() {
+    var p = namePanel(true), scope = panelFocus(p)
+    ;[false,true].forEach(function(setup) {
+      var n = nameParts(p, setup), key = setup ? 'setup_snapshot' : 'take_snapshot', which = setup ? 'setup' : 'daily'
+      function reopen() {
+        nameSettle(p)
+        if (!setup && p.panel.expandedSection !== 'snapshots') named(p.panel, 'snapshotsToggle').clicked()
+        n.take.clicked(); wait(1)
+        verify(n.field.visible && n.field.activeFocus, which)
+        compare(n.field.text, 'Kept')
+      }
+      n.take.clicked(); wait(1); typeInto(n.field, 'Kept')
+      // Hidden: the prompt closes, and focus in it moves to the panel.
+      var v = copy(p.view); v.buttons[key].show = false
+      p.model.view = v; wait(1)
+      compare(p.panel.namePrompt, '', which)
+      compare(scope.Window.activeFocusItem, scope)
+      reopen()
+      // Windows starts: the action is disabled with no snapshot of the prompt's own.
+      v = copy(p.view); v.buttons[key].enable = false
+      p.model.view = v; wait(1)
+      compare(p.panel.namePrompt, '', which)
+      compare(scope.Window.activeFocusItem, scope)
+      reopen()
+      // Another job begins.
+      p.model.view = jobView(runningView(p.view), 'panel-other', null); wait(1)
+      compare(p.panel.namePrompt, '', which)
+      reopen()
+      // An interrupted job, then Windows starts before the next poll.
+      n.take.clicked(); var token = Quickshell.lastCommand[2]
+      nameSettle(p, jobView(runningView(p.view), token, null))
+      v = jobView(p.view, token, null); v.buttons[key].enable = false
+      p.model.view = v; wait(1)
+      compare(p.panel.namePrompt, '', which)
+      reopen(); verify(n.cancel.visible)
+      // The unreadable-poll view during its own snapshot closes the prompt
+      // but keeps the launch, so a later success clears the unchanged draft.
+      n.take.clicked(); token = Quickshell.lastCommand[2]
+      nameSettle(p, jobView(runningView(p.view), token, null))
+      failPoll(p)
+      compare(p.panel.namePrompt, '', which)
+      compare(n.field.text, 'Kept')
+      p.model.view = jobView(p.view, token, true); wait(1)
+      compare(n.field.text, '', which)
+      compare(p.panel.namePrompt, '')
+    })
+    p.panel.destroy()
+  }
+  function test_snapshot_prompt_is_one_open_prompt_or_armed_action() {
+    var p = namePanel(true), daily = nameParts(p, false), setup = nameParts(p, true)
+    ;['restore_snapshot','restore_confirm','delete_snapshot','delete_confirm'].forEach(function(key) { p.view.buttons[key] = redesignView().buttons[key] })
+    nameSettle(p)
+    var name = p.view.snapshots.items[0].name, count = Quickshell.launchCount
+    var restore = named(p.panel, 'restore-' + name), remove = named(p.panel, 'delete-' + name)
+    verify(restore.visible && remove.visible)
+    daily.take.clicked(); wait(1)
+    setup.take.clicked(); wait(1)
+    compare(p.panel.namePrompt, 'setup_snapshot')
+    verify(!daily.field.visible && !daily.cancel.visible && setup.field.visible && setup.field.activeFocus)
+    compare(daily.take.text, 'Take a snapshot')
+    daily.take.clicked(); wait(1)
+    verify(daily.field.visible && !setup.field.visible && !setup.cancel.visible)
+    compare(setup.take.text, 'Take a snapshot')
+    // Arming Restore or Delete closes the prompt; opening a prompt disarms them.
+    restore.clicked(); compare(p.panel.restoreArmed, name); compare(p.panel.namePrompt, '')
+    daily.take.clicked(); compare(p.panel.restoreArmed, ''); compare(p.panel.namePrompt, 'take_snapshot')
+    remove.clicked(); compare(p.panel.deleteArmed, name); compare(p.panel.namePrompt, '')
+    setup.take.clicked(); compare(p.panel.deleteArmed, ''); compare(p.panel.namePrompt, 'setup_snapshot')
+    restore.clicked(); compare(p.panel.restoreArmed, name); compare(p.panel.namePrompt, '')
+    setup.take.clicked(); compare(p.panel.restoreArmed, '')
+    remove.clicked(); compare(p.panel.namePrompt, '')
+    daily.take.clicked(); compare(p.panel.deleteArmed, '')
+    compare(Quickshell.launchCount, count)
+    p.panel.destroy()
+  }
+  function test_snapshot_prompt_shows_a_refusal_that_settled_while_it_was_closed() {
+    var p = namePanel(false), n = nameParts(p, false)
+    n.take.clicked(); wait(1); typeInto(n.field, 'a<b'); n.take.clicked()
+    var token = Quickshell.lastCommand[2]
+    nameSettle(p, jobView(runningView(p.view), token, null))
+    p.panel.close(); wait(1); compare(p.panel.namePrompt, '')
+    p.model.view = jobView(p.view, token, false, 'Remove < and >.'); wait(1)
+    p.panel.open(); named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+    verify(!n.field.visible && !n.error.visible)
+    n.take.clicked(); wait(1)
+    verify(n.error.visible); compare(n.error.text, 'Remove < and >.')
+    compare(n.field.Accessible.description, 'Remove < and >.'); compare(n.field.text, 'a<b')
+    n.take.clicked()
+    verify(!n.error.visible); compare(n.field.Accessible.description, '')
+    p.panel.destroy()
+  }
+  function test_snapshot_prompts_fit_and_keep_their_tab_order() {
+    ;[false,true].forEach(function(setup) {
+      var p = namePanel(setup), n = nameParts(p, setup), which = setup ? 'setup' : 'daily'
+      if (!setup) {
+        p.view.snapshots.saved = {path:'/copy',path_line:'Snapshot saved at /copy',advice:'',
+          copy_label:'Copy snapshot path',show_label:'Show details',hide_label:'Hide details'}
+        nameSettle(p)
+      }
+      // Show details in the daily row; Continue without a snapshot in the setup row.
+      var next = setup ? objects(p.panel, function(o) { return o.control === 'skip_snapshot' })[0]
+        : named(p.panel, 'snapshotLocationToggle')
+      var popup = named(p.panel, 'panelPopup'), flick = named(p.panel, 'panelScroll')
+      verify(next.visible, which)
+      n.take.clicked(); wait(1)
+      compare(n.caption.text, 'Snapshot name (optional)')
+      compare(n.field.Accessible.name, setup ? 'Setup snapshot name (optional)' : 'Snapshot name (optional)')
+      compare(n.field.validator, null); compare(n.field.inputMask, '')
+      if (setup) compare(nameParts(p, false).field.Accessible.name, 'Snapshot name (optional)')
+      ;[420,360,260].forEach(function(width) {
+        popup.contentWidth = width
+        n.field.forceActiveFocus()
+        verify(waitForPolish(flick.Window.window))
+        ;[n.caption, n.field, n.take, n.cancel, next].forEach(function(item) {
+          verify(item.visible && inBounds(item, flick), which + ' ' + item.objectName + ' at ' + width)
+        })
+        var caption = n.caption.mapToItem(flick, 0, 0), field = n.field.mapToItem(flick, 0, 0)
+        var take = n.take.mapToItem(flick, 0, 0), cancel = n.cancel.mapToItem(flick, 0, 0), other = next.mapToItem(flick, 0, 0)
+        verify(caption.y + n.caption.height <= field.y, 'caption above its field at ' + width)
+        verify(field.y + n.field.height <= take.y && field.y + n.field.height <= cancel.y, 'field above its buttons at ' + width)
+        // Save snapshot, then Cancel, and neither overlaps the row's other button.
+        verify(take.x + n.take.width <= cancel.x || take.y + n.take.height <= cancel.y, which + ' Cancel follows Save at ' + width)
+        ;[[n.take, take], [n.cancel, cancel]].forEach(function(pair) {
+          var item = pair[0], at = pair[1]
+          verify(at.x + item.width <= other.x || other.x + next.width <= at.x
+            || at.y + item.height <= other.y || other.y + next.height <= at.y, which + ' ' + item.objectName + ' overlaps at ' + width)
+        })
+        // Tab goes field, Save snapshot, Cancel, then the row's other button.
+        ;[n.take, n.cancel, next].forEach(function(item) {
+          keyClick(Qt.Key_Tab)
+          verify(item.activeFocus, which + ' Tab to ' + item.objectName + ' at ' + width)
+        })
+      })
+      // Save snapshot stays put when Cancel hides at submission.
+      n.field.forceActiveFocus()
+      verify(waitForPolish(flick.Window.window))
+      var x = n.take.mapToItem(flick, 0, 0).x
+      n.take.clicked()
+      nameSettle(p, jobView(runningView(p.view), Quickshell.lastCommand[2], null))
+      verify(waitForPolish(flick.Window.window))
+      verify(n.field.visible && !n.cancel.visible)
+      compare(n.take.mapToItem(flick, 0, 0).x, x)
+      p.panel.destroy()
+    })
+  }
   function test_snapshot_name_hidden_field_takes_no_keys_or_enter() {
-    var p = namePanel(true), daily = nameParts(p, false)
+    var p = namePanel(false), daily = nameParts(p, false)
+    daily.take.clicked(); wait(1)
     typeInto(daily.field, 'Hidden'); verify(daily.field.activeFocus)
-    // A poll or a click collapses Snapshots while the action stays usable.
-    named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+    // A failure opens Logs by itself; the prompt stays open out of sight.
+    p.model.view = failedView(p.view); wait(1)
+    compare(p.panel.expandedSection, 'logs'); compare(p.panel.namePrompt, 'take_snapshot')
     verify(!daily.field.visible)
     var action = p.model.control('take_snapshot')
     verify(action.show === true && action.enable === true)
     var count = Quickshell.launchCount
     // The hidden field keeps focus, but neither keys nor Enter reach it.
+    verify(daily.field.activeFocus)
     keyClick('x'); keyClick(Qt.Key_Return)
     compare(Quickshell.launchCount, count)
     named(p.panel, 'snapshotsToggle').clicked(); wait(1)
-    compare(daily.field.text, 'Hidden')
+    verify(daily.field.visible); compare(daily.field.text, 'Hidden')
     p.panel.destroy()
   }
   function test_snapshot_name_refusal_shows_beside_its_field_and_keeps_the_draft() {
     var p = namePanel(true), daily = nameParts(p, false), setup = nameParts(p, true)
+    daily.take.clicked(); wait(1)
     typeInto(daily.field, 'a<b')
     daily.take.clicked()
     compare(launched(), JSON.stringify(['snapshot','a<b']))
     var dailyToken = Quickshell.lastCommand[2]
     nameSettle(p, jobView(p.view, dailyToken, false, 'Remove < and >.'))
+    verify(daily.field.visible)
     compare(daily.error.text, 'Remove < and >.'); verify(daily.error.visible)
     compare(daily.field.Accessible.description, 'Remove < and >.')
     var siblings = Array.from(daily.field.parent.children)
     compare(siblings.indexOf(daily.error), siblings.indexOf(daily.field) + 1)
     compare(daily.field.text, 'a<b')
-    verify(!setup.error.visible); compare(setup.field.Accessible.description, '')
+    compare(setup.field.Accessible.description, '')
     verify(daily.take.visible && daily.take.enabled); verify(setup.take.visible && setup.take.enabled)
     // A real multiline paste reaches the backend unchanged.
+    setup.take.clicked(); wait(1)
+    verify(!daily.field.visible && setup.field.visible && !setup.error.visible)
     clipboardSource.text = 'first\nsecond'; clipboardSource.selectAll(); clipboardSource.copy()
     setup.field.forceActiveFocus(); setup.field.paste()
     compare(setup.field.text, 'first\nsecond')
@@ -2171,6 +2478,8 @@ TestCase {
     // A refusal for another launch reaches neither field; the next submission clears its own note.
     p.model.view = jobView(p.view, 'panel-other', false, 'Use 64 characters or fewer.'); wait(1)
     compare(daily.error.text, 'Remove < and >.'); compare(setup.error.text, 'Use one line.')
+    daily.take.clicked(); wait(1)
+    verify(daily.error.visible)
     daily.take.clicked()
     verify(!daily.error.visible); compare(daily.field.Accessible.description, '')
     compare(setup.error.text, 'Use one line.')
@@ -2178,49 +2487,57 @@ TestCase {
   }
   function test_snapshot_name_drafts_survive_polls_sections_and_failures() {
     var p = namePanel(true), daily = nameParts(p, false), setup = nameParts(p, true)
-    typeInto(daily.field, 'Keep me'); typeInto(setup.field, 'Setup draft')
-    p.model.view = JSON.parse(JSON.stringify(p.view)); wait(1)
-    compare(daily.field.text, 'Keep me'); compare(setup.field.text, 'Setup draft')
+    daily.take.clicked(); wait(1); typeInto(daily.field, 'Keep me')
+    setup.take.clicked(); wait(1); typeInto(setup.field, 'Setup draft')
+    p.model.view = copy(p.view); wait(1)
+    verify(setup.field.visible); compare(setup.field.text, 'Setup draft')
+    daily.take.clicked(); wait(1)
+    compare(daily.field.text, 'Keep me')
     named(p.panel, 'snapshotsToggle').clicked(); verify(!daily.field.visible)
-    named(p.panel, 'snapshotsToggle').clicked(); verify(daily.field.visible)
+    named(p.panel, 'snapshotsToggle').clicked()
+    daily.take.clicked(); wait(1); verify(daily.field.visible)
     compare(daily.field.text, 'Keep me')
     daily.take.clicked()
     var token = Quickshell.lastCommand[2]
     nameSettle(p, jobView(p.view, token, false))
-    compare(daily.field.text, 'Keep me'); verify(!daily.error.visible)
-    // An unreadable poll shows the Failed view; the drafts outlast it.
-    p.model.refresh(); process(p.model, 'timeout').complete('unreadable', 1)
-    compare(p.model.view.layout, 'failed')
-    p.model.view = JSON.parse(JSON.stringify(p.view)); wait(1)
-    compare(daily.field.text, 'Keep me'); compare(setup.field.text, 'Setup draft')
-    // A dropped click keeps the draft and sends nothing.
+    verify(daily.field.visible); compare(daily.field.text, 'Keep me'); verify(!daily.error.visible)
+    // An unreadable poll shows the Failed view, which closes the prompt; the drafts outlast it.
+    failPoll(p)
+    compare(p.panel.namePrompt, '')
+    p.model.view = copy(p.view); wait(1)
+    named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+    daily.take.clicked(); wait(1); compare(daily.field.text, 'Keep me')
+    setup.take.clicked(); wait(1); compare(setup.field.text, 'Setup draft')
+    // A dropped click keeps the draft and the prompt, and sends nothing.
     p.model.run(['setup'], true)
     var count = Quickshell.launchCount
     setup.take.clicked()
     compare(Quickshell.launchCount, count); verify(p.model.clickNotice !== '')
-    compare(setup.field.text, 'Setup draft')
+    verify(setup.field.visible); compare(setup.field.text, 'Setup draft')
     p.panel.destroy()
   }
   function test_snapshot_name_success_clears_only_its_unchanged_draft() {
     var p = namePanel(true), daily = nameParts(p, false), setup = nameParts(p, true)
-    typeInto(daily.field, 'One'); daily.take.clicked()
+    daily.take.clicked(); wait(1); typeInto(daily.field, 'One'); daily.take.clicked()
     var dailyToken = Quickshell.lastCommand[2]
-    nameSettle(p)
-    typeInto(setup.field, 'Two'); setup.take.clicked()
-    var setupToken = Quickshell.lastCommand[2]
-    nameSettle(p, jobView(p.view, setupToken, null))
-    compare(setup.field.text, 'Two')
-    p.model.view = jobView(p.view, 'panel-other', true); wait(1)
-    compare(daily.field.text, 'One'); compare(setup.field.text, 'Two')
+    nameSettle(p, jobView(runningView(p.view), dailyToken, null))
+    p.model.view = jobView(runningView(p.view), 'panel-other', true); wait(1)
+    compare(daily.field.text, 'One'); compare(p.panel.namePrompt, 'take_snapshot')
     p.model.view = jobView(p.view, dailyToken, true); wait(1)
-    compare(daily.field.text, ''); compare(setup.field.text, 'Two')
+    compare(daily.field.text, ''); compare(p.panel.namePrompt, '')
+    // A draft edited while its own snapshot runs stays after that success.
+    setup.take.clicked(); wait(1); typeInto(setup.field, 'Two'); setup.take.clicked()
+    var setupToken = Quickshell.lastCommand[2]
+    nameSettle(p, jobView(runningView(p.view), setupToken, null))
     setup.field.cursorPosition = 3; typeInto(setup.field, '!')
     p.model.view = jobView(p.view, setupToken, true); wait(1)
-    compare(setup.field.text, 'Two!')
-    // An unchanged setup draft clears on its own success; daily's newer draft stays.
-    nameSettle(p); setup.take.clicked()
+    compare(setup.field.text, 'Two!'); compare(p.panel.namePrompt, '')
+    // An unchanged setup draft clears on its own success; daily's draft stays.
+    daily.take.clicked(); wait(1); typeInto(daily.field, 'Three')
+    setup.take.clicked(); wait(1); setup.take.clicked()
     var againToken = Quickshell.lastCommand[2]
-    typeInto(daily.field, 'Three')
+    compare(launched(), JSON.stringify(['snapshot','Two!']))
+    nameSettle(p, jobView(runningView(p.view), againToken, null))
     p.model.view = jobView(p.view, againToken, true); wait(1)
     compare(setup.field.text, ''); compare(daily.field.text, 'Three')
     p.panel.destroy()
@@ -2418,7 +2735,7 @@ qml_renderer_run() {
     PanelRenderer::test_redesign_delete_snapshot_requires_named_confirmation_and_keeps_actions_in_bounds \
     PanelRenderer::test_redesign_restore_dates_identity_cancel_and_invalidated_target \
     PanelRenderer::test_snapshot_labels_wrap_above_dates_and_confirmations_stay_in_bounds \
-    PanelRenderer::test_snapshot_name_fields_are_labelled_distinct_and_in_bounds \
+    PanelRenderer::test_snapshot_prompts_fit_and_keep_their_tab_order \
     PanelRenderer::test_snapshot_name_refusal_shows_beside_its_field_and_keeps_the_draft
 }
 
@@ -2764,11 +3081,17 @@ panel_board_view() {
       if (row[0] === 'SetupSnapshot') {
         backendControl(p, 'setup_snapshot', true); backendControl(p, 'skip_snapshot', true)
         verify(v.setup.lines.join(' ').indexOf('backup') !== -1)
-        // Both name fields show together, with distinct accessible names.
+        // Neither name field shows until its prompt opens; their accessible names differ.
         named(p.panel, 'snapshotsToggle').clicked(); backendControl(p, 'take_snapshot', true)
-        compare(named(p.panel, 'setupSnapshotNameField').Accessible.name, 'Setup snapshot name (optional)')
-        compare(named(p.panel, 'snapshotNameField').Accessible.name, 'Snapshot name (optional)')
-        verify(named(p.panel, 'setupSnapshotNameField').visible && named(p.panel, 'snapshotNameField').visible)
+        var setupField = named(p.panel, 'setupSnapshotNameField'), dailyField = named(p.panel, 'snapshotNameField')
+        verify(!setupField.visible && !dailyField.visible)
+        backendControl(p, 'setup_snapshot', true).clicked(); wait(1)
+        verify(setupField.visible && !dailyField.visible)
+        compare(setupField.Accessible.name, 'Setup snapshot name (optional)')
+        backendControl(p, 'take_snapshot', true).clicked(); wait(1)
+        verify(dailyField.visible && !setupField.visible)
+        compare(dailyField.Accessible.name, 'Snapshot name (optional)')
+        compare(Quickshell.launchCount, count)
       } else if (row[0] === 'SetupPackages') backendControl(p, 'install', true)
       else if (row[0] === 'SetupDrivers') {
         verify(v.setup.lines.join(' ').indexOf('setup.cmd') !== -1)
