@@ -390,7 +390,8 @@ exit 1'
 
 # Write <bytes> (printf format) as the LABEL of a new fixture snapshot <name>.
 label_fixture() {
-  local snap=$(data_dir)/snapshots/$1
+  local snap
+  snap=$(data_dir)/snapshots/$1
   delete_fixture_snapshot "$snap"
   # shellcheck disable=SC2059
   printf "$2" >"$snap/LABEL"

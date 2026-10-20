@@ -83,6 +83,7 @@ SH
 }
 
 @test "ui job: a snapshot label is one literal argument through the launcher and worker" {
+  # shellcheck disable=SC2016 # The label must stay literal.
   local label='50% ${HOME} $(touch pwned) `id` ; ../x'
   run cmd_ui_job launch snapshot "$label"
   assert_success
@@ -90,6 +91,7 @@ SH
   assert_output --partial "$(printf 'ui-job-worker\nlaunch\nsnapshot\n%s' "$label")"
   assert_equal "$(tail -n 1 "$T/launch")" "$label"
   # The CLI stand-in records its argument count and each argument.
+  # shellcheck disable=SC2016 # Expands in the stand-in, not here.
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$#" "$@" >"$T/argv"\necho "{\\"ok\\":true}"\n' >"$LANAI_BIN/lanai"
   run cmd_ui_job_worker token snapshot "$label"
   assert_success
