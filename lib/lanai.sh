@@ -1581,7 +1581,7 @@ cmd_snapshot() {
     return 1
   fi
   name=${out##*/}
-  emit true "" "Snapshot saved at $out. It shares its data with the Windows disk, so it costs little space at first and grows as Windows changes. Delete it with: rm -rf ${out@Q}. Restore it with: lanai restore $name." "" \
+  emit true "" "Snapshot saved at $out. It shares its data with the Windows disk, so it costs little space at first and grows as Windows changes. Delete it with: lanai delete-snapshot $name. Restore it with: lanai restore $name." "" \
     "$(jq -n -c --arg p "$out" --arg n "$name" '{snapshot: $p, name: $n}')"
 }
 
@@ -1594,6 +1594,58 @@ cmd_snapshots() {
   count=$(jq -r 'length' <<<"$list")
   ((count != 1)) || noun=snapshot
   emit true "" "$count $noun" "" "{\"snapshots\": $list}"
+}
+
+# delete-snapshot <name>: remove every valid copy of this named restore point
+# for the current storage location. The active Windows disk is never touched.
+cmd_delete_snapshot() {
+  local name=${1:-} dir snap removed=0 failed=false remaining=false details
+  local -a targets=()
+  if (($# != 1)) || [[ ! $name =~ $LANAI_SNAP_RE ]]; then
+    emit false "" "Name one snapshot to delete." "choose a snapshot from lanai snapshots" '{"reason":"invalid-name"}'
+    return 2
+  fi
+  if ! lanai_flock; then
+    emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
+    return 1
+  fi
+  if restore_pending >/dev/null; then
+    emit false "" "Finish the unfinished restore before deleting a snapshot." "" '{"reason":"restore-pending"}'
+    return 1
+  fi
+  if ! dir=$(storage_dir); then
+    emit false "" "Lanai cannot find the Windows storage location." "check the storage setting" '{"reason":"storage"}'
+    return 1
+  fi
+  while IFS= read -r snap; do
+    [[ ${snap##*/} != "$name" ]] || targets+=("$snap")
+  done < <(snapshot_list "$dir")
+  if ((${#targets[@]} == 0)); then
+    emit false "" "There is no complete snapshot named $name for this Windows storage." "refresh the snapshot list" '{"reason":"snapshot-not-found"}'
+    return 1
+  fi
+  for snap in "${targets[@]}"; do
+    if snapshot_valid "$snap" "$dir" && snapshot_remove "$snap" && [[ ! -e $snap && ! -L $snap ]]; then
+      ((removed+=1))
+    else
+      failed=true
+    fi
+  done
+  if $failed; then
+    if snapshot_find "$dir" "$name" >/dev/null; then remaining=true; fi
+    details=$(jq -nc --arg n "$name" --argjson count "$removed" --argjson remains "$remaining" \
+      '{reason:"snapshot-delete-failed",name:$n,deleted_copies:$count,remaining:$remains}')
+    if $remaining; then
+      emit false "" "Could not delete every copy of $name. The restore point is still available." \
+        "check the snapshot job log and try again" "$details"
+    else
+      emit false "" "Could not remove every file of $name. The restore point is no longer available." \
+        "check the snapshot job log" "$details"
+    fi
+    return 1
+  fi
+  details=$(jq -nc --arg n "$name" --argjson count "$removed" '{name:$n,deleted_copies:$count}')
+  emit true "" "Deleted snapshot $name. Current Windows is unchanged." "" "$details"
 }
 
 # restore [<name>]: return the storage location to a snapshot (spec 7).

@@ -341,6 +341,74 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   assert_equal "$(jq -r '.snapshots[0] | split("/")[-1]' <<<"$output")" 20260228T240000Z
 }
 
+@test "redesign snapshots: running guidance is brief and saved details can be disclosed" {
+  state '{"snapshot":"declined","done":true}'
+  panel_result_write snapshots '{"command":"snapshot","ended":1,"reply":{"ok":true,"snapshot":"/copy"}}'
+  ST=active
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .snapshots.line <<<"$output")" 'Shut down Windows to take a snapshot.'
+  assert_equal "$(jq -r .snapshots.saved.summary <<<"$output")" 'Snapshot saved.'
+  assert_equal "$(jq -r .snapshots.saved.show_label <<<"$output")" 'Show details'
+  assert_equal "$(jq -r .snapshots.saved.hide_label <<<"$output")" 'Hide details'
+  assert_equal "$(jq -r .snapshots.saved.details <<<"$output")" "$(jq -r .result.snapshots <<<"$output")"
+  assert_equal "$(jq -r .snapshots.saved.path <<<"$output")" '/copy'
+  assert_equal "$(jq -r .snapshots.saved.path_line <<<"$output")" 'Snapshot saved at /copy'
+  assert_equal "$(jq -r .snapshots.saved.advice <<<"$output")" 'It shares disk space at first and grows as Windows changes. To delete it, use Delete beside the snapshot below.'
+  assert_equal "$(jq -r .snapshots.saved.copy_label <<<"$output")" 'Copy snapshot path'
+  ST=inactive
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .snapshots.line <<<"$output")" 'No snapshots yet.'
+}
+
+@test "snapshot deletion: running view offers a named action and unfinished restores disable it" {
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  local snap="$(data_dir)/snapshots/20261012T091200Z" fd
+  display_snapshot "$snap"
+  state '{"snapshot":"taken","done":true}'
+  ST=active
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c '[.buttons.delete_snapshot.show,.buttons.delete_snapshot.enable,.buttons.delete_confirm.enable]' <<<"$output")" '[true,true,true]'
+  assert_equal "$(jq -r .snapshots.items[0].delete_label <<<"$output")" 'Delete Oct 12, 2026 at 09:12 UTC'
+  assert_equal "$(jq -r .snapshots.items[0].delete_warning <<<"$output")" 'Current Windows stays as it is. You will lose this restore point.'
+  ST=inactive
+  printf '%s\n%s\n' "$snap" "$STORE" >"$S/restore-in-progress"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c '[.buttons.delete_snapshot.show,.buttons.delete_snapshot.enable,.buttons.delete_confirm.enable]' <<<"$output")" '[true,false,false]'
+  rm "$S/restore-in-progress"
+  exec {fd}>"$S/panel-job.lock"
+  flock -n "$fd"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .buttons.delete_snapshot.enable <<<"$output")" false
+  exec {fd}>&-
+}
+
+@test "snapshot deletion: panel reports success and partial failure from structured job results" {
+  state '{"snapshot":"taken","done":true}'
+  panel_result_write snapshots '{"command":"delete-snapshot","ended":2,"reply":{"ok":true,"name":"20261012T091200Z"}}'
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .result.snapshots <<<"$output")" 'Snapshot deleted. Current Windows is unchanged.'
+  panel_result_write snapshots '{"command":"delete-snapshot","ended":3,"reply":{"ok":false,"reason":"snapshot-delete-failed","remaining":true}}'
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .result.snapshots <<<"$output")" 'Could not delete every copy. The restore point is still available. Check the snapshot job log and try again.'
+}
+
+@test "snapshot deletion: interrupted job names deletion without claiming the restore point survived" {
+  state '{"snapshot":"taken","done":true}'
+  panel_result_write snapshots '{"command":"delete-snapshot","started":1,"args":["20261012T091200Z"]}'
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .result.snapshots <<<"$output")" 'Snapshot deletion was interrupted. Check whether the snapshot is still listed before trying again.'
+  refute_output --partial 'Setup was interrupted'
+}
+
 @test "redesign snapshots: counts exclude partial, foreign and invalid snapshots" {
   # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
   source "$REPO/lib/snapshot.sh"
@@ -745,7 +813,7 @@ assert_plan_agreement() {
   panel_result_write snapshots '{"command":"snapshot","ended":1,"reply":{"ok":true,"snapshot":"/copy"}}'
   run cmd_panel
   assert_output --partial 'grows as Windows changes'
-  assert_output --partial 'file manager'
+  assert_output --partial 'use Delete beside the snapshot'
   panel_result_write snapshots '{"command":"restore","ended":1,"reply":{"ok":true}}'
   run cmd_panel
   assert_equal "$(jq -r .result.snapshots <<<"$output")" 'The snapshot was restored.'

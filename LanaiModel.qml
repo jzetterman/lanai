@@ -36,23 +36,27 @@ Item {
   function logRow(id) {
     return (view.logs.rows || []).find(function(row) { return row.id === id })
   }
+  function copyTarget(id) {
+    if (id === "snapshot") return (view.snapshots.saved || {}).path || ""
+    var row = logRow(id)
+    return row ? row.copy_text : ""
+  }
   function clearCopies() { copyResults = ({}); copyGeneration++ }
   function copyFeedback(id) {
-    var result = copyResults[id], row = logRow(id)
-    return result && row && result.target === row.copy_text ? result.text : ""
+    var result = copyResults[id]
+    return result && result.target === copyTarget(id) ? result.text : ""
   }
   onViewChanged: {
     var kept = ({})
     Object.keys(copyResults).forEach(function(id) {
-      var row = root.logRow(id)
-      if (row && row.copy_text === root.copyResults[id].target) kept[id] = root.copyResults[id]
+      if (root.copyTarget(id) && root.copyTarget(id) === root.copyResults[id].target) kept[id] = root.copyResults[id]
     })
     copyResults = kept
   }
   function copyFinished(success) {
     if (!copyingId) return
-    var row = logRow(copyingId), results
-    if (copyingGeneration === copyGeneration && row && row.copy_text === copyingText) {
+    var target = copyTarget(copyingId), results
+    if (copyingGeneration === copyGeneration && target && target === copyingText) {
       results = Object.assign({}, copyResults)
       results[copyingId] = {target: copyingText, text: success ? view.logs.copied : view.logs.copy_error}
       copyResults = results
@@ -69,10 +73,15 @@ Item {
     })
   }
   function copyLog(id) {
-    var row = logRow(id)
-    if (copyingId || !row || typeof row.copy_text !== "string" || !row.copy_text) return
+    if (!logRow(id)) return
+    copyValue(id)
+  }
+  function copySnapshotPath() { copyValue("snapshot") }
+  function copyValue(id) {
+    var target = copyTarget(id)
+    if (copyingId || typeof target !== "string" || !target) return
     copyingId = id
-    copyingText = row.copy_text
+    copyingText = target
     copyingGeneration = ++copyGeneration
     copyStarted = false
     var results = Object.assign({}, copyResults)

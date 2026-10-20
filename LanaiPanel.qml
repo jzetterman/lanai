@@ -18,6 +18,8 @@ Panel {
   property bool forceArmed: false
   property bool stopArmed: false
   property string restoreArmed: ""
+  property string deleteArmed: ""
+  property bool snapshotDetailsOpen: false
   property bool setupAgainArmed: false
   property string expandedSection: ""
   property bool moreActionsOpen: false
@@ -27,6 +29,8 @@ Panel {
   property double countdownNow: Date.now()
   readonly property double countdownRemaining: Math.max(0, countdownSeconds - Math.max(0, Math.floor((countdownNow - countdownAt) / 1000)))
   readonly property var snapshotItems: root.model.view.snapshots.items || []
+  readonly property var snapshotSaved: root.model.view.snapshots.saved || {}
+  readonly property bool quietMain: root.model.view.layout === "daily" && root.model.view.state === "running"
   readonly property bool hasMoreActions: root.model.control("force_stop").show === true
     || root.model.control("dismiss_notice").show === true || root.model.control("update_client").show === true
     || (root.model.view.setup.finished === true && setupSection.hasContent)
@@ -86,6 +90,7 @@ Panel {
       expandedSection = (root.model.view.sections || {}).default || ""
       previousDefaultSection = expandedSection
       moreActionsOpen = false
+      snapshotDetailsOpen = false
       memoryInput = Qt.binding(function() { return root.model.view.settings.memory_gib || 1 })
       coresInput = Qt.binding(function() { return root.model.view.settings.cores || 1 })
       windowsScaleInput = Qt.binding(function() { return root.model.view.settings.windows_scale === undefined ? "auto" : root.model.view.settings.windows_scale })
@@ -94,7 +99,7 @@ Panel {
       root.resetNumberText()
       savedBaseline = baselineFromView()
       root.model.clearCopies()
-    } else { stopArmed = false; forceArmed = false; restoreArmed = ""; setupAgainArmed = false; root.model.clickNotice = "" }
+    } else { stopArmed = false; forceArmed = false; restoreArmed = ""; deleteArmed = ""; setupAgainArmed = false; root.model.clickNotice = "" }
   }
   Connections {
     target: root.model
@@ -106,11 +111,15 @@ Panel {
       if (!root.model.control("restore_snapshot").show || !root.model.control("restore_snapshot").enable
           || !root.model.control("restore_confirm").show || !root.model.control("restore_confirm").enable
           || !root.snapshotItems.some(function(item) { return item.name === root.restoreArmed })) root.restoreArmed = ""
+      if (!root.model.control("delete_snapshot").show || !root.model.control("delete_snapshot").enable
+          || !root.model.control("delete_confirm").show || !root.model.control("delete_confirm").enable
+          || !root.snapshotItems.some(function(item) { return item.name === root.deleteArmed })) root.deleteArmed = ""
       var section = (root.model.view.sections || {}).default || (root.model.view.layout === "failed" ? "logs" : "")
       if (root.opened && section !== "" && root.previousDefaultSection !== section)
         root.expandedSection = section
       root.previousDefaultSection = section
       if (!root.model.view.setup.finished) root.setupAgainArmed = false
+      if (!root.model.view.snapshots.saved) root.snapshotDetailsOpen = false
     }
     function onSettingsSaved(memoryGib: int, cores: int, windowsScale: var) {
       root.memoryInput = memoryGib
@@ -289,14 +298,17 @@ Panel {
               }
             }
           }
-          Note { text: root.model.view.headline || "" }
-          Note { text: root.model.view.cause || "" }
-          Note { text: root.model.view.next || "" }
+          Note { text: root.quietMain ? "" : root.model.view.headline || "" }
+          Note { text: root.quietMain ? "" : root.model.view.cause || "" }
+          Note { text: root.quietMain ? "" : root.model.view.next || "" }
           Note { text: root.model.view.notice || "" }
           Note { text: root.model.view.warning || "" }
           Note { text: root.model.view.result.client || "" }
           Note { text: root.model.view.setup.show === true ? "" : root.model.view.result.setup || "" }
-          Note { text: root.model.control("setup_snapshot").show ? "" : root.model.view.result.snapshots || "" }
+          // Successful daily snapshot details belong with the snapshot list.
+          // Failed operations use the Failed layout and keep their result in view.
+          Note { text: root.model.control("setup_snapshot").show || root.model.view.layout === "daily"
+            ? "" : root.model.view.result.snapshots || "" }
           Note { text: (root.model.view.busy || {}).line || "" }
           Note { text: root.model.view.result.launch || "" }
           Note { text: root.stopArmed ? root.model.control("stop_confirm").hint || "" : "" }
@@ -407,7 +419,7 @@ Panel {
             Action { control: "update_client"; onClicked: root.model.run(["build-client"], true) }
           }
           Repeater {
-            model: Object.keys(root.model.view.buttons || {}).filter(function(key) {
+            model: root.quietMain ? [] : Object.keys(root.model.view.buttons || {}).filter(function(key) {
               var d = root.model.control(key)
               return d.show && !d.enable && d.hint
             })
@@ -509,31 +521,149 @@ Panel {
               visible: root.expandedSection === "snapshots"
               Note { text: root.model.view.snapshots.line || "" }
               Note { text: root.model.view.snapshots.error || "" }
-              Flow {
+              Note { text: root.model.view.layout === "daily" && root.model.view.snapshots.saved
+                ? root.snapshotSaved.summary : "" }
+              Item {
+                id: snapshotActions
+                objectName: "snapshotActions"
                 width: parent.width
-                spacing: Style.space(6)
-                Action { control: "take_snapshot"; onClicked: root.model.run(["snapshot"], true) }
-                Action { control: "finish_restore"; onClicked: root.model.run(["restore"], true) }
+                readonly property real gap: Style.space(6)
+                readonly property bool wrap: snapshotDetailsButton.visible && takeSnapshotAction.visible
+                  && snapshotDetailsButton.implicitWidth + takeSnapshotAction.implicitWidth + gap > width
+                visible: (root.model.view.layout === "daily" && !!root.model.view.snapshots.saved)
+                  || root.model.control("take_snapshot").show
+                height: wrap ? snapshotDetailsButton.height + gap + takeSnapshotAction.height
+                  : Math.max(snapshotDetailsButton.visible ? snapshotDetailsButton.height : 0,
+                    takeSnapshotAction.visible ? takeSnapshotAction.height : 0)
+                Button {
+                  id: snapshotDetailsButton
+                  objectName: "snapshotLocationToggle"
+                  width: Math.min(implicitWidth, parent.width)
+                  y: snapshotActions.wrap ? 0 : (parent.height - height) / 2
+                  text: root.snapshotDetailsOpen ? root.snapshotSaved.hide_label || "" : root.snapshotSaved.show_label || ""
+                  visible: root.model.view.layout === "daily" && !!root.model.view.snapshots.saved
+                  bordered: true
+                  focusable: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  Accessible.name: text
+                  Accessible.expandable: true
+                  Accessible.expanded: root.snapshotDetailsOpen
+                  onActiveFocusChanged: if (activeFocus) root.reveal(this)
+                  onClicked: root.snapshotDetailsOpen = !root.snapshotDetailsOpen
+                }
+                Action {
+                  id: takeSnapshotAction
+                  control: "take_snapshot"
+                  width: Math.min(implicitWidth, parent.width)
+                  x: Math.max(0, parent.width - width)
+                  y: snapshotActions.wrap ? snapshotDetailsButton.height + snapshotActions.gap : (parent.height - height) / 2
+                  onClicked: root.model.run(["snapshot"], true)
+                }
               }
+              Item {
+                id: snapshotPathRow
+                objectName: "snapshotPathRow"
+                width: parent.width
+                visible: root.model.view.layout === "daily" && !!root.model.view.snapshots.saved && root.snapshotDetailsOpen
+                height: Math.max(snapshotPathText.implicitHeight, snapshotCopyButton.height)
+                Note {
+                  id: snapshotPathText
+                  objectName: "snapshotPathText"
+                  width: Math.min(implicitWidth, Math.max(0, parent.width - snapshotCopyButton.width - Style.space(6)))
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.snapshotSaved.path_line || ""
+                }
+                PanelActionButton {
+                  id: snapshotCopyButton
+                  objectName: "copySnapshotPath"
+                  x: snapshotPathText.width + Style.space(6)
+                  anchors.bottom: parent.bottom
+                  iconText: "󰆏"
+                  tooltipText: root.model.copyingId ? root.model.view.logs.copy_busy || "" : root.snapshotSaved.copy_label || ""
+                  Accessible.name: root.snapshotSaved.copy_label || ""
+                  enabled: root.model.copyingId === ""
+                  focusable: true
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onActiveFocusChanged: if (activeFocus) root.reveal(this)
+                  onClicked: root.model.copySnapshotPath()
+                }
+              }
+              Note { objectName: "copySnapshotFeedback"; text: snapshotPathRow.visible ? root.model.copyFeedback("snapshot") : "" }
+              Note { objectName: "snapshotAdvice"; text: snapshotPathRow.visible ? root.snapshotSaved.advice || "" : "" }
+              Note { text: root.model.view.layout === "daily" && !root.model.view.snapshots.saved
+                ? root.model.view.result.snapshots || "" : "" }
+              Action { control: "finish_restore"; width: Math.min(implicitWidth, parent.width)
+                onClicked: root.model.run(["restore"], true) }
               Repeater {
                 model: root.snapshotItems
                 delegate: Column {
                   id: snapshotRow
                   required property var modelData
+                  readonly property bool armed: root.restoreArmed === modelData.name
+                  readonly property bool deleting: root.deleteArmed === modelData.name
                   width: parent.width
                   spacing: Style.space(6)
-                  Note { text: snapshotRow.modelData.date ? snapshotRow.modelData.date + " · " + snapshotRow.modelData.time : snapshotRow.modelData.label }
-                  Action {
-                    objectName: "restore-" + snapshotRow.modelData.name
-                    width: Math.min(implicitWidth, parent.width)
-                    control: root.restoreArmed === snapshotRow.modelData.name ? "restore_confirm" : "restore_snapshot"
-                    text: root.restoreArmed === snapshotRow.modelData.name ? snapshotRow.modelData.confirm_label : snapshotRow.modelData.restore_label
-                    onClicked: {
-                      if (root.restoreArmed === snapshotRow.modelData.name) { root.restoreArmed = ""; root.model.run(["restore", snapshotRow.modelData.name], true) }
-                      else root.restoreArmed = snapshotRow.modelData.name
+                  Flow {
+                    width: parent.width
+                    spacing: Style.space(6)
+                    Item {
+                      id: snapshotDateCell
+                      width: snapshotRow.armed || snapshotRow.deleting ? parent.width
+                        : Math.max(0, parent.width - restoreCell.width - parent.spacing)
+                      height: snapshotRow.armed || snapshotRow.deleting ? snapshotDate.implicitHeight
+                        : Math.max(snapshotDate.implicitHeight, restoreButton.implicitHeight, deleteButton.implicitHeight)
+                      Note {
+                        id: snapshotDate
+                        width: parent.width
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: snapshotRow.modelData.date ? snapshotRow.modelData.date + " · " + snapshotRow.modelData.time : snapshotRow.modelData.label
+                      }
+                    }
+                    Item {
+                      id: restoreCell
+                      width: Math.min(parent.width, (deleteButton.visible ? deleteButton.implicitWidth : 0)
+                        + (deleteButton.visible && restoreButton.visible ? Style.space(6) : 0)
+                        + (restoreButton.visible ? restoreButton.implicitWidth : 0))
+                      height: snapshotRow.armed || snapshotRow.deleting
+                        ? Math.max(restoreButton.implicitHeight, deleteButton.implicitHeight) : snapshotDateCell.height
+                      Row {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Style.space(6)
+                        Action {
+                          id: deleteButton
+                          objectName: "delete-" + snapshotRow.modelData.name
+                          width: Math.min(implicitWidth, restoreCell.width)
+                          control: snapshotRow.deleting ? "delete_confirm" : "delete_snapshot"
+                          text: snapshotRow.deleting ? "Delete snapshot" : "Delete"
+                          Accessible.name: snapshotRow.deleting ? snapshotRow.modelData.delete_confirm_label : snapshotRow.modelData.delete_label
+                          visible: !snapshotRow.armed && descriptor.show
+                          onClicked: {
+                            if (snapshotRow.deleting) { root.deleteArmed = ""; root.model.run(["delete-snapshot", snapshotRow.modelData.name], true) }
+                            else { root.restoreArmed = ""; root.deleteArmed = snapshotRow.modelData.name }
+                          }
+                        }
+                        Action {
+                          id: restoreButton
+                          objectName: "restore-" + snapshotRow.modelData.name
+                          width: Math.min(implicitWidth, restoreCell.width)
+                          control: snapshotRow.armed ? "restore_confirm" : "restore_snapshot"
+                          text: snapshotRow.armed ? snapshotRow.modelData.confirm_label : "Restore"
+                          Accessible.name: snapshotRow.armed ? snapshotRow.modelData.confirm_label : snapshotRow.modelData.restore_label
+                          visible: !snapshotRow.deleting && descriptor.show
+                          onClicked: {
+                            if (snapshotRow.armed) { root.restoreArmed = ""; root.model.run(["restore", snapshotRow.modelData.name], true) }
+                            else { root.deleteArmed = ""; root.restoreArmed = snapshotRow.modelData.name }
+                          }
+                        }
+                      }
                     }
                   }
-                  Note { text: root.restoreArmed === snapshotRow.modelData.name ? snapshotRow.modelData.warning : "" }
+                  Note { text: snapshotRow.armed ? snapshotRow.modelData.warning : snapshotRow.deleting ? snapshotRow.modelData.delete_warning : "" }
+                  Action { objectName: "deleteCancel-" + snapshotRow.modelData.name; control: "cancel"
+                    visible: snapshotRow.deleting && descriptor.show; onClicked: root.deleteArmed = "" }
                 }
               }
               Action { objectName: "restoreCancel"; control: "cancel"; visible: root.restoreArmed !== "" && descriptor.show; onClicked: root.restoreArmed = "" }
@@ -731,7 +861,9 @@ Panel {
         Action { control: "skip_snapshot"; onClicked: root.model.run(["setup", "--no-snapshot"], true) }
       }
       Note { text: root.model.control("setup_snapshot").show ? root.model.view.result.snapshots || "" : "" }
-      Note { text: root.model.control("continue_setup").hint || "" }
+      // Disabled buttons cannot expose their tooltips in the installed shell.
+      Note { text: root.model.view.setup.finished && root.model.control("continue_setup").enable
+        ? "" : root.model.control("continue_setup").hint || "" }
       Note { text: root.model.view.setup.again_line || ""; visible: root.setupAgainArmed }
       // After a step 6 time-out with Windows off, the display buttons
       // show directly: they repeat the Windows install, no arming. The
@@ -741,9 +873,11 @@ Panel {
         spacing: Style.space(6)
         visible: !root.model.view.setup.finished || root.setupAgainArmed
         Action { control: "no_window"; onClicked: root.model.run(["setup", "--no-window"], true) }
-        Note { text: root.model.control("no_window").show ? root.model.control("no_window").hint || "" : "" }
+        Note { text: root.model.control("no_window").show && (!root.model.view.setup.finished || !root.model.control("no_window").enable)
+          ? root.model.control("no_window").hint || "" : "" }
         Action { control: "window"; onClicked: root.model.run(["setup", "--window"], true) }
-        Note { text: root.model.control("window").show ? root.model.control("window").hint || "" : "" }
+        Note { text: root.model.control("window").show && (!root.model.view.setup.finished || !root.model.control("window").enable)
+          ? root.model.control("window").hint || "" : "" }
       }
       Action { control: "cancel"; visible: root.setupAgainArmed && descriptor.show; onClicked: root.setupAgainArmed = false }
       Note { text: root.model.view.setup.show === true ? root.model.view.result.setup || "" : "" }
@@ -791,7 +925,8 @@ Panel {
     objectName: control === root.model.view.primary_action ? "primaryAction" : "action-" + control
     text: descriptor.label
     selected: control === root.model.view.primary_action
-    tooltipText: descriptor.hint || ""
+    tooltipText: descriptor.hint || (root.quietMain && control === "open"
+      ? [root.model.view.cause || "", root.model.view.next || ""].filter(function(line) { return line !== "" }).join(" ") : "")
     visible: descriptor.show
     enabled: descriptor.enable
     focusable: true

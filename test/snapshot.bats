@@ -103,6 +103,102 @@ take_snapshot() {
   NAME=$(field name) SNAP=$(field snapshot)
 }
 
+# Build a complete snapshot without requiring reflinks for delete-only tests.
+delete_fixture_snapshot() {
+  local snap=$1
+  mkdir -p "${snap%/*}"
+  mkdir -m 700 "$snap"
+  cp -a "$STORE/." "$snap/"
+  printf '%s\n' "$STORE" >"$snap/SOURCE"
+  tree_manifest "$STORE" >"$snap/COMPLETE"
+}
+
+@test "delete-snapshot: removes both valid copies of one name without changing the running Windows disk" {
+  use_install "$T/win"
+  local name=20261019T120000Z other=20261018T120000Z before
+  delete_fixture_snapshot "$(data_dir)/snapshots/$name"
+  delete_fixture_snapshot "$STORE.lanai-snapshots/$name"
+  delete_fixture_snapshot "$(data_dir)/snapshots/$other"
+  echo unrelated >"$T/unrelated"
+  before=$(tree_manifest "$STORE")
+  echo active >"$T/unit-state"
+  lanai_run delete-snapshot "$name"
+  assert_success
+  assert_equal "$(field name)" "$name"
+  assert_equal "$(field deleted_copies)" 2
+  assert [ ! -e "$(data_dir)/snapshots/$name" ]
+  assert [ ! -e "$STORE.lanai-snapshots/$name" ]
+  assert [ -d "$(data_dir)/snapshots/$other" ]
+  assert_equal "$(cat "$T/unrelated")" unrelated
+  assert_equal "$(tree_manifest "$STORE")" "$before"
+  run snapshot_find "$STORE" "$name"
+  assert_failure
+}
+
+@test "delete-snapshot: invalid, missing, foreign and damaged targets leave files intact" {
+  use_install "$T/win"
+  local name=20261019T120000Z snap="$(data_dir)/snapshots/20261019T120000Z" before
+  delete_fixture_snapshot "$snap"
+  before=$(tree_manifest "$STORE")
+  lanai_run delete-snapshot '../win'
+  assert_failure 2
+  assert [ -d "$snap" ]
+  lanai_run delete-snapshot "$name" extra
+  assert_failure 2
+  assert [ -d "$snap" ]
+  printf '%s\n' "$T/foreign" >"$snap/SOURCE"
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  assert_equal "$(field reason)" snapshot-not-found
+  assert [ -d "$snap" ]
+  printf '%s\n' "$STORE" >"$snap/SOURCE"
+  echo unexpected >"$snap/extra"
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  assert [ -f "$snap/extra" ]
+  assert_equal "$(tree_manifest "$STORE")" "$before"
+}
+
+@test "delete-snapshot: unfinished restore and operation lock refuse deletion" {
+  use_install "$T/win"
+  local name=20261019T120000Z snap="$(data_dir)/snapshots/20261019T120000Z" fd
+  delete_fixture_snapshot "$snap"
+  mark_restore "$snap" "$STORE"
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  assert_equal "$(field reason)" restore-pending
+  assert [ -d "$snap" ]
+  rm "$S/restore-in-progress"
+  mkdir -p "$S"
+  exec {fd}>"$S/lock"
+  flock -n "$fd"
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  assert_equal "$(field reason)" busy
+  assert [ -d "$snap" ]
+  exec {fd}>&-
+}
+
+@test "delete-snapshot: partial failure reports a remaining restore point" {
+  use_install "$T/win"
+  local name=20261019T120000Z first="$(data_dir)/snapshots/20261019T120000Z" second="$STORE.lanai-snapshots/20261019T120000Z"
+  delete_fixture_snapshot "$first"
+  delete_fixture_snapshot "$second"
+  eval "$(declare -f snapshot_remove | sed '1s/snapshot_remove/real_snapshot_remove/')"
+  snapshot_remove() {
+    [[ $1 != "$second" ]] || return 1
+    real_snapshot_remove "$1"
+  }
+  run cmd_delete_snapshot "$name"
+  assert_failure
+  assert_equal "$(jq -r .reason <<<"$output")" snapshot-delete-failed
+  assert_equal "$(jq -r .remaining <<<"$output")" true
+  assert_equal "$(jq -r .deleted_copies <<<"$output")" 1
+  assert [ ! -e "$first" ]
+  assert [ -d "$second" ]
+  assert_equal "$(snapshot_find "$STORE" "$name")" "$second"
+}
+
 # Failure fixtures copy plainly and mock only the image helper, never a VM.
 snapshot_failure_fixture() {
   use_install "$T/storage"
@@ -852,7 +948,7 @@ exit 1'
   assert_equal "$(stat -c %a "$B/data/lanai/snapshots")" 700
   run field message
   assert_output --partial "grows as Windows changes"
-  assert_output --partial "rm -rf ${SNAP@Q}"
+  assert_output --partial "lanai delete-snapshot ${SNAP##*/}"
   assert_output --partial "lanai restore $NAME"
   lanai_run snapshots
   assert_success

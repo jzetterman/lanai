@@ -68,6 +68,20 @@ SH
   assert_output --partial $'ui-job-worker\nlaunch\nsetup\n--window'
 }
 
+@test "ui job: delete-snapshot keeps the literal target and records a snapshot result" {
+  run cmd_ui_job launch delete-snapshot 20261019T120000Z
+  assert_success
+  run cat "$T/launch"
+  assert_output --partial $'ui-job-worker\nlaunch\ndelete-snapshot\n20261019T120000Z'
+  run cmd_ui_job_worker token delete-snapshot 20261019T120000Z
+  assert_success
+  assert_equal "$(cat "$T/calls")" 'delete-snapshot 20261019T120000Z'
+  assert_equal "$(jq -r .command "$S/panel-result-snapshots.json")" delete-snapshot
+  assert_equal "$(jq -c .args "$S/panel-result-snapshots.json")" '["20261019T120000Z"]'
+  assert_equal "$(jq -r .reply.ok "$S/panel-result-snapshots.json")" true
+  assert [ -n "$(jq -r '.ended // empty' "$S/panel-result-snapshots.json")" ]
+}
+
 @test "ui job: the worker gets the session's display and Hyprland instance for boot_vm" {
   WAYLAND_DISPLAY=wayland-4 HYPRLAND_INSTANCE_SIGNATURE=sig_9 run cmd_ui_job launch setup
   assert_success

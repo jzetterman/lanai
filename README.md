@@ -76,14 +76,20 @@ and tools. Files Lanai downloads itself are pinned with SHA-256 in
 
 Accept the snapshot offer before the first boot, or make a backup and explicitly
 continue without a snapshot. A snapshot shares disk blocks, takes little space
-initially and grows as Windows changes. The panel reports its path and explains
-how to delete the snapshot folder. The list updates after each snapshot or restore
-job, and whenever the panel refreshes. If the filesystem cannot make a snapshot,
+initially and grows as Windows changes. After a snapshot, expand Snapshots and
+choose **Show details** to see its path and copy it with the icon beside it.
+Use **Delete** beside a snapshot to remove that restore point. The list
+updates after each snapshot or restore job, and whenever the panel refreshes.
+If the filesystem cannot make a snapshot,
 the setup offer explains that you need a backup before continuing without one.
-Snapshots show newest first, with readable dates and times marked UTC. The count
+Snapshots show newest first, with readable dates and times marked UTC. Each row
+has **Delete** and **Restore** actions. The count
 includes only valid snapshots for this storage location. Restoring asks you to
 confirm the named snapshot and warns that later changes will be lost. Cancel
-clears the confirmation.
+clears the confirmation. Deleting also asks you to confirm the named snapshot.
+It removes that restore point while leaving the current Windows state intact.
+You can delete a snapshot while Windows runs. Deletion is unavailable during
+another snapshot operation or an unfinished restore.
 Snapshot and restore show their actual phase and measured percentage, also when
 you open the panel partway through or start from the CLI. Work with no measured
 total shows a busy indicator. A restore names its target above the controls. An
@@ -95,7 +101,9 @@ restore** to resume it, or restore another saved snapshot to start over.
 When restore work stops unfinished, the panel opens Snapshots to show these actions.
 It tries the Lanai data directory's `snapshots/`, then
 `<storage>.lanai-snapshots/` on the storage filesystem. Both VMs must be stopped for
-snapshot or restore. Before a new snapshot, Lanai removes interrupted snapshot
+snapshot or restore. **Take a snapshot** stays visible but is disabled while Windows
+runs, another VM uses the install, a restore is pending, or an operation is busy.
+Before a new snapshot, Lanai removes interrupted snapshot
 folders whose recorded storage location matches this install, freeing their shared
 blocks. Other locations and folders with no recorded location are left alone.
 A restore requires running Lanai setup again.
@@ -540,9 +548,13 @@ The [redesign acceptance notes](docs/plugin/redesign/plan.md#acceptance-notes)
 record automated results and pending theme and VM checks. `lanai panel` supplies
 the complete view, including settings,
 snapshot names and plain-language results; the QML polls every two seconds only
-while its own panel is open, and every fifteen seconds otherwise. Direct actions
-are recorded by `lanai ui-run`; setup, snapshots, restores and updates run in session units
-through `lanai ui-job`, with diagnostics in Lanai’s state directory as
+while its own panel is open, and every fifteen seconds otherwise.
+On the running Main view, the status badge and Open window button carry the
+routine status; Open window's extra guidance is in its tooltip. Successful
+snapshot details and a path copy button are available in Snapshots through **Show details**, while failures
+remain visible above the controls. Direct actions are recorded by `lanai ui-run`; setup, snapshots,
+restores and updates run in session units through `lanai ui-job`, with
+diagnostics in Lanai’s state directory as
 `panel-run.log` and `panel-job.log`. The panel labels these as the button actions
 log and the setup, snapshot, restore and update log. Rapid repeated clicks keep the first
 launch pending. Other controls preserve a failed launch notice until the next

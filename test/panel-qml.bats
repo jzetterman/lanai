@@ -424,13 +424,17 @@ TestCase {
       sections:{settings:'Settings',snapshots:'Snapshots',logs:'Logs',default:''},primary_action:'start',
       buttons:{start:{show:true,enable:true,label:'Start Windows'},cancel:{show:true,enable:true,label:'Cancel'},
         restore_snapshot:{show:true,enable:true,label:'Restore'},restore_confirm:{show:true,enable:true,label:'Confirm'},
+        delete_snapshot:{show:true,enable:true,label:'Delete snapshot'},delete_confirm:{show:true,enable:true,label:'Delete snapshot permanently'},
         save_settings:{show:true,enable:true,label:'Save settings'}},setup:{finished:true},
       settings:{memory_gib:12,cores:6,windows_scale:175,baseline:{memory_gib:12,cores:6,windows_scale:175},
         labels:{memory:'Memory (GiB)',cores:'CPU cores',scale:'Windows scale',save:'Save',saved:'Saved',reset:'Reset',unsaved:'Unsaved'}},
-      result:{},logs:{rows:[{id:'vm',label:'VM',display:'journal: lanai-vm',copy_text:'journalctl --user -u lanai-vm',copy_label:'Copy VM log command'}]},
+      result:{},logs:{copied:'Copied',copy_error:'Could not copy.',copy_busy:'Copying',
+        rows:[{id:'vm',label:'VM',display:'journal: lanai-vm',copy_text:'journalctl --user -u lanai-vm',copy_label:'Copy VM log command'}]},
       snapshots:{show:true,count:1,names:['20261012T091200Z'],items:[{name:'20261012T091200Z',date:'Oct 12, 2026',time:'09:12 UTC',
         label:'Oct 12, 2026 at 09:12 UTC',restore_label:'Restore Oct 12, 2026 at 09:12 UTC',
-        confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',warning:'Later changes are lost.'}]},
+        confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',warning:'Later changes are lost.',
+        delete_label:'Delete Oct 12, 2026 at 09:12 UTC',delete_confirm_label:'Delete Oct 12, 2026 at 09:12 UTC permanently',
+        delete_warning:'Current Windows stays as it is. You will lose this restore point.'}]},
       restore:{label:'',warning:''},progress:null}
   }
   function redesignPanel() {
@@ -503,6 +507,74 @@ TestCase {
     compare(hero.detail, 'Stopped')
     verify(!named(p.panel, 'setupSteps').visible)
     verify(!textVisible(p.panel, 'Step 7 of 6'))
+  }
+  function test_main_keeps_routine_copy_out_of_collapsed_panel() {
+    var p = redesignPanel(), v = redesignView()
+    v.state = 'running'; v.header.badge = 'Running'; v.primary_action = 'open'
+    v.headline = 'Windows is running'; v.cause = 'Windows is available.'; v.next = 'Click Open window.'
+    v.buttons.start.show = false
+    v.buttons.open = {show:true,enable:true,label:'Open window'}
+    v.buttons.stop = {show:true,enable:true,label:'Shut down'}
+    v.buttons.continue_setup = {show:true,enable:false,label:'Run setup again',hint:'Shut Windows down first.'}
+    v.buttons.window = {show:true,enable:false,label:'Set up in a basic window',hint:'Use this if the window is blank.'}
+    v.buttons.no_window = {show:true,enable:false,label:'Set up in the Windows window',hint:'Use this if the driver works.'}
+    v.result.snapshots = 'Snapshot saved at /home/john/snapshots/example. It shares disk space at first.'
+    v.snapshots.saved = {summary:'Snapshot saved.',details:v.result.snapshots,
+      path:'/home/john/snapshots/example',path_line:'Snapshot saved at /home/john/snapshots/example',
+      advice:'It shares disk space at first.',copy_label:'Copy snapshot path',
+      show_label:'Show details',hide_label:'Hide details'}
+    p.model.view = v
+    verify(!textVisible(p.panel, v.headline))
+    verify(!textVisible(p.panel, v.cause))
+    verify(!textVisible(p.panel, v.next))
+    compare(named(p.panel, 'primaryAction').tooltipText, v.cause + ' ' + v.next)
+    verify(!textVisible(p.panel, v.result.snapshots))
+    verify(!textVisible(p.panel, v.buttons.continue_setup.hint))
+    named(p.panel, 'moreActionsToggle').clicked()
+    verify(textVisible(p.panel, v.buttons.continue_setup.hint))
+    verify(!textVisible(p.panel, v.buttons.window.hint))
+    verify(!textVisible(p.panel, v.buttons.no_window.hint))
+    named(p.panel, 'snapshotsToggle').clicked()
+    verify(textVisible(p.panel, v.snapshots.saved.summary))
+    verify(!textVisible(p.panel, v.result.snapshots))
+    named(p.panel, 'snapshotLocationToggle').clicked()
+    verify(textVisible(p.panel, v.snapshots.saved.path_line))
+    verify(textVisible(p.panel, v.snapshots.saved.advice))
+    verify(!textVisible(p.panel, v.result.snapshots))
+    var copyButton = named(p.panel, 'copySnapshotPath')
+    var pathRow = named(p.panel, 'snapshotPathRow'), pathText = named(p.panel, 'snapshotPathText')
+    compare(copyButton.Accessible.name, v.snapshots.saved.copy_label)
+    verify(copyButton.focusable)
+    ;[420,260].forEach(function(width) {
+      named(p.panel, 'panelPopup').contentWidth = width
+      verify(waitForPolish(named(p.panel, 'panelScroll').Window.window))
+      verify(Math.abs(copyButton.x - pathText.width - 6) <= 1)
+      verify(copyButton.x + copyButton.width <= pathRow.width,
+        'Snapshot copy icon overflows ' + width + 'px panel')
+      verify(copyButton.y + copyButton.height <= pathRow.height)
+    })
+    copyButton.clicked()
+    var copy = process(p.model, 'wl-copy')
+    verify(copy.running)
+    compare(copy.command.length, 1)
+    copy.begin()
+    compare(copy.input, v.snapshots.saved.path)
+    verify(copy.wroteWithStdin)
+    copy.complete('', 0)
+    compare(named(p.panel, 'copySnapshotFeedback').text, 'Copied')
+    copyButton.clicked(); copy.begin(); copy.complete('', 1)
+    compare(named(p.panel, 'copySnapshotFeedback').text, v.logs.copy_error)
+    v.snapshots.saved.path = '/home/john/snapshots/new'
+    v.snapshots.saved.path_line = 'Snapshot saved at ' + v.snapshots.saved.path
+    p.model.view = JSON.parse(JSON.stringify(v))
+    compare(named(p.panel, 'copySnapshotFeedback').text, '')
+    v.warning = 'The Windows window did not open in time.'
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(textVisible(p.panel, v.warning))
+    v.layout = 'failed'; v.snapshots.saved = null; v.result.snapshots = 'Lanai could not take the snapshot.'
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(textVisible(p.panel, v.result.snapshots))
+    p.panel.destroy()
   }
   function test_redesign_snapshot_skip_keeps_backup_and_filesystem_advice() {
     var p = redesignPanel(), v = setupView('3')
@@ -956,7 +1028,8 @@ TestCase {
     named(p.panel, 'snapshotsToggle').clicked(); wait(1)
     var restore = named(p.panel, 'restore-20261012T091200Z')
     verify(restore !== undefined)
-    compare(restore.text, p.model.view.snapshots.items[0].restore_label)
+    compare(restore.text, 'Restore')
+    compare(restore.Accessible.name, p.model.view.snapshots.items[0].restore_label)
     restore.clicked()
     compare(p.panel.restoreArmed, '20261012T091200Z')
     verify(objects(p.panel, function(o) { return o.text === 'Later changes are lost.' && o.visible }).length > 0)
@@ -978,6 +1051,51 @@ TestCase {
     compare(p.panel.restoreArmed, '')
     p.panel.destroy()
   }
+  function test_redesign_delete_snapshot_requires_named_confirmation_and_keeps_actions_in_bounds() {
+    var p = redesignPanel(), v = redesignView(), item = v.snapshots.items[0]
+    Quickshell.lastCommand = []
+    named(p.panel, 'snapshotsToggle').clicked()
+    var popup = named(p.panel, 'panelPopup'), flick = named(p.panel, 'panelScroll')
+    var restore = named(p.panel, 'restore-' + item.name)
+    var remove = named(p.panel, 'delete-' + item.name)
+    verify(remove !== undefined)
+    compare(remove.text, 'Delete')
+    compare(remove.Accessible.name, item.delete_label)
+    ;[420,360,260].forEach(function(width) {
+      popup.contentWidth = width
+      verify(waitForPolish(flick.Window.window))
+      var row = restore.parent.parent
+      var restorePoint = restore.mapToItem(row, restore.width, 0)
+      var deletePoint = remove.mapToItem(row, remove.width, 0)
+      verify(Math.abs(restorePoint.x - row.width) <= 1)
+      verify(deletePoint.x + 4 <= restorePoint.x)
+      verify(deletePoint.x >= 0)
+      verify(restorePoint.x <= flick.width)
+    })
+    remove.clicked()
+    compare(p.panel.deleteArmed, item.name)
+    verify(!restore.visible)
+    compare(remove.text, 'Delete snapshot')
+    compare(remove.Accessible.name, item.delete_confirm_label)
+    verify(textVisible(p.panel, item.delete_warning))
+    named(p.panel, 'deleteCancel-' + item.name).clicked()
+    compare(p.panel.deleteArmed, '')
+    compare(Quickshell.lastCommand.length, 0)
+    remove.clicked()
+    remove.clicked()
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'delete-snapshot ' + item.name)
+    compare(p.panel.deleteArmed, '')
+    p.model.pendingToken = ''; ready(p.model)
+    remove.clicked()
+    v.snapshots.items = []; v.snapshots.names = []; p.model.view = JSON.parse(JSON.stringify(v))
+    compare(p.panel.deleteArmed, '')
+    v = redesignView(); p.model.view = v
+    named(p.panel, 'delete-' + item.name).clicked()
+    v.buttons.delete_snapshot.enable = false; p.model.view = JSON.parse(JSON.stringify(v))
+    compare(p.panel.deleteArmed, '')
+    p.panel.close(); compare(p.panel.deleteArmed, '')
+    p.panel.destroy()
+  }
   function test_redesign_snapshot_actions_fit_narrow_panel() {
     var p = redesignPanel()
     named(p.panel, 'snapshotsToggle').clicked()
@@ -988,7 +1106,7 @@ TestCase {
       verify(waitForPolish(flick.Window.window))
       ;[false,true].forEach(function(armed) {
         p.panel.restoreArmed = armed ? '20261012T091200Z' : ''
-        compare(restore.text, armed ? p.model.view.snapshots.items[0].confirm_label : p.model.view.snapshots.items[0].restore_label)
+        compare(restore.text, armed ? p.model.view.snapshots.items[0].confirm_label : 'Restore')
         restore.forceActiveFocus()
         verify(waitForPolish(flick.Window.window))
         verify(restore.activeFocus)
@@ -996,8 +1114,54 @@ TestCase {
         verify(point.x >= 0)
         verify(point.x + restore.width <= flick.width, 'Snapshot action overflows ' + width + 'px panel: ' + restore.width)
         verify(point.y >= 0 && point.y + restore.height <= flick.height)
+        if (!armed) {
+          var date = objects(p.panel, function(o) { return o.text === 'Oct 12, 2026 · 09:12 UTC' && o.visible })[0]
+          var datePoint = date.mapToItem(flick, 0, 0)
+          verify(Math.abs(datePoint.y + date.height / 2 - (point.y + restore.height / 2)) <= 1,
+            'Snapshot date and Restore label are not centered on the same line at ' + width + 'px')
+          var row = restore.parent.parent
+          verify(Math.abs(restore.mapToItem(row, restore.width, 0).x - row.width) <= 1,
+            'Restore button is not at the right edge of the snapshot row at ' + width + 'px')
+        }
       })
     })
+    p.panel.destroy()
+  }
+  function test_redesign_snapshot_management_actions_share_a_row() {
+    var p = redesignPanel(), v = redesignView()
+    v.snapshots.saved = {summary:'Snapshot saved.',details:'Saved at /copy.',show_label:'Show details',hide_label:'Hide details'}
+    v.buttons.take_snapshot = {show:true,enable:false,label:'Take a snapshot'}
+    p.model.view = v
+    named(p.panel, 'snapshotsToggle').clicked()
+    var popup = named(p.panel, 'panelPopup'), flick = named(p.panel, 'panelScroll')
+    var row = named(p.panel, 'snapshotActions'), details = named(p.panel, 'snapshotLocationToggle')
+    var take = objects(p.panel, function(o) { return o.control === 'take_snapshot' })[0]
+    verify(row !== undefined)
+    verify(details.bordered)
+    verify(take.visible && !take.enabled)
+    ;[420,360,260].forEach(function(width) {
+      popup.contentWidth = width
+      verify(waitForPolish(flick.Window.window))
+      var rowPoint = row.mapToItem(flick, 0, 0)
+      var detailsPoint = details.mapToItem(flick, 0, 0)
+      var takePoint = take.mapToItem(flick, 0, 0)
+      verify(Math.abs(detailsPoint.x - rowPoint.x) <= 1)
+      verify(Math.abs(take.mapToItem(row, take.width, 0).x - row.width) <= 1)
+      verify(detailsPoint.x + details.width <= rowPoint.x + row.width)
+      verify(takePoint.x >= rowPoint.x)
+      if (width >= 360)
+        verify(Math.abs(detailsPoint.y + details.height / 2 - (takePoint.y + take.height / 2)) <= 1,
+          'Snapshot management actions should share a line at ' + width + 'px')
+      if (Math.abs(detailsPoint.y + details.height / 2 - (takePoint.y + take.height / 2)) <= 1)
+        verify(detailsPoint.x + details.width + 4 <= takePoint.x)
+      else
+        verify(takePoint.y >= detailsPoint.y + details.height)
+    })
+    v.snapshots.saved = null
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(!details.visible)
+    verify(take.visible)
+    verify(Math.abs(take.mapToItem(row, take.width, 0).x - row.width) <= 1)
     p.panel.destroy()
   }
   function test_redesign_progress_stays_above_actions_for_snapshot_and_restore() {
@@ -1469,8 +1633,10 @@ TestCase {
       verify(!client.visible)
       compare(Quickshell.lastCommand.length, 0)
       again.clicked()
-      verify(objects(panel, function(o) { return o.text === model.control('no_window').hint && o.visible }).length > 0)
-      verify(objects(panel, function(o) { return o.text === model.control('window').hint && o.visible }).length > 0)
+      compare(client.tooltipText, model.control('no_window').hint)
+      compare(screen.tooltipText, model.control('window').hint)
+      verify(!textVisible(panel, model.control('no_window').hint))
+      verify(!textVisible(panel, model.control('window').hint))
       panel.close(); panel.open()
       named(panel, 'moreActionsToggle').clicked()
       verify(!client.visible)
@@ -1827,7 +1993,8 @@ TestCase {
     wait(1)
     named(panel, 'snapshotsToggle').clicked()
     var restore = objects(panel, function(o) { return o.control === 'restore_snapshot' })[0]
-    compare(restore.text, 'Restore snapshot snapshot')
+    compare(restore.text, 'Restore')
+    compare(restore.Accessible.name, 'Restore snapshot snapshot')
     restore.clicked()
     compare(panel.restoreArmed, 'snapshot')
     compare(restore.control, 'restore_confirm')
@@ -1903,6 +2070,8 @@ qml_renderer_run() {
   property real bottomPadding: 0' "$T/qml/imports/TestUi/BorderSurface.qml"
   sed -i 's/property color background: "black"/property color background: "black"; property var tooltip: ({background:"black",text:"white",border:"white"})/' "$T/qml/imports/TestCommons/Color.qml"
   qml_renderer_run PanelRenderer::test_redesign_snapshot_actions_fit_narrow_panel \
+    PanelRenderer::test_redesign_snapshot_management_actions_share_a_row \
+    PanelRenderer::test_redesign_delete_snapshot_requires_named_confirmation_and_keeps_actions_in_bounds \
     PanelRenderer::test_redesign_restore_dates_identity_cancel_and_invalidated_target
 }
 

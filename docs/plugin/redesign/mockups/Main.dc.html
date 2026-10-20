@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lanai panel, running</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#7aa2f7}a:hover{color:#c0caf5}
+button{font-family:inherit}
+select{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 460px; height: 680px; box-sizing: border-box; background: #13141c; font-family: 'JetBrains Mono', ui-monospace, monospace; color: #c0caf5; position: relative">
+  <div style="height: 30px; background: #1a1b26; border-bottom: 1px solid #292e42; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; font-size: 12px; color: #a9b1d6">
+    <div style="display: flex; gap: 14px"><span style="color: {{accent}}; font-weight: 700">1</span><span>2</span><span>3</span></div>
+    <div style="display: flex; align-items: center; gap: 14px">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><path d="M12 19.5v.01"/></svg>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.5 9.5a4 4 0 0 1 0 5"/></svg>
+      <div style="height: 30px; width: 30px; display: flex; align-items: center; justify-content: center; color: {{accent}}; border-bottom: 2px solid {{accent}}; box-sizing: border-box">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.2" role="img" aria-label="Lanai"><rect x="2.5" y="2" width="13" height="10.5"/><path d="M7.2 4.8v5h3.8"/><path d="M6 15.5h6"/></svg>
+      </div>
+    </div>
+  </div>
+
+  <section style="width: 420px; margin: 8px 20px 0; background: #1a1b26; border: 1px solid #3b4261; box-sizing: border-box" aria-label="Lanai">
+    <div style="padding: 20px 20px 16px; display: flex; flex-direction: column; gap: 18px">
+      <div style="display: flex; align-items: center; gap: 14px">
+        <div style="width: 44px; height: 44px; flex: none; border: 1px solid #3b4261; display: flex; align-items: center; justify-content: center; color: {{accent}}">
+          <svg width="24" height="24" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><rect x="2.5" y="2" width="13" height="10.5"/><path d="M7.2 4.8v5h3.8"/><path d="M6 15.5h6"/></svg>
+        </div>
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+          <div style="font-size: 15px; font-weight: 600; letter-spacing: -0.01em">Windows</div>
+          <div style="display: flex; gap: 12px; font-size: 12px; color: #8c94bf">
+            <span style="display: inline-flex; align-items: center; gap: 5px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="7" width="18" height="10"/><path d="M7 7v10M11 7v10M15 7v10M3 20h18"/></svg>{{savedMem}} GiB</span>
+            <span style="display: inline-flex; align-items: center; gap: 5px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="6" y="6" width="12" height="12"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>{{savedCores}} cores</span>
+            <span style="display: inline-flex; align-items: center; gap: 5px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>{{savedScaleShort}}</span>
+          </div>
+        </div>
+        <div style="display: inline-flex; align-items: center; gap: 7px; height: 24px; padding: 0 10px; border: 1px solid rgba(158,206,106,0.35); background: rgba(158,206,106,0.08); color: #9ece6a; font-size: 12px; font-weight: 500; flex: none">
+          <span style="width: 6px; height: 6px; background: #9ece6a; display: block"></span>Running
+        </div>
+      </div>
+
+      <sc-if value="{{showActions}}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; gap: 8px; position: relative">
+          <button type="button" style="flex: 1; height: 44px; background: {{accent}}; color: #16161e; border: 0; display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 13px; font-weight: 600; cursor: pointer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16"/><path d="M3 9h18"/></svg>Open window
+          </button>
+          <button type="button" aria-label="Shut down" title="Shut down" style="width: 44px; height: 44px; background: transparent; border: 1px solid #3b4261; color: #c0caf5; display: flex; align-items: center; justify-content: center; cursor: pointer">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
+          </button>
+          <button type="button" aria-label="More actions" aria-expanded="{{moreExpanded}}" onClick="{{toggleMore}}" style="width: 44px; height: 44px; background: {{moreBg}}; border: 1px solid #3b4261; color: #c0caf5; display: flex; align-items: center; justify-content: center; cursor: pointer">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+          </button>
+          <sc-if value="{{more}}" hint-placeholder-val="{{ false }}">
+            <div style="position: absolute; right: 0; top: 50px; width: 210px; background: #1f2335; border: 1px solid #3b4261; z-index: 3; padding: 4px 0; box-shadow: 0 12px 28px rgba(0,0,0,0.45)">
+              <button type="button" onClick="{{armForce}}" style="width: 100%; height: 40px; background: transparent; border: 0; color: #f7768e; display: flex; align-items: center; gap: 10px; padding: 0 14px; font-size: 13px; cursor: pointer; text-align: left">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/><path d="M4 4l16 16"/></svg>Force stop
+              </button>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{forceArmed}}" hint-placeholder-val="{{ false }}">
+        <div style="border: 1px solid rgba(247,118,142,0.45); background: rgba(247,118,142,0.07); padding: 14px; display: flex; flex-direction: column; gap: 12px">
+          <div style="display: flex; align-items: center; gap: 10px">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f7768e" stroke-width="1.7" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17.5v.01"/></svg>
+            <div style="font-size: 13px; font-weight: 600; color: #f7768e">Force stop Windows?</div>
+          </div>
+          <div style="font-size: 12px; color: #a9b1d6">Unsaved work in Windows is lost.</div>
+          <div style="display: flex; gap: 8px; justify-content: flex-end">
+            <button type="button" onClick="{{cancelForce}}" style="height: 36px; padding: 0 16px; background: transparent; border: 1px solid #3b4261; color: #c0caf5; font-size: 12px; cursor: pointer">Cancel</button>
+            <button type="button" onClick="{{cancelForce}}" style="height: 36px; padding: 0 16px; background: #f7768e; border: 0; color: #16161e; font-size: 12px; font-weight: 600; cursor: pointer">Force stop</button>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+
+    <button type="button" aria-expanded="{{settingsExpanded}}" onClick="{{toggleSettings}}" style="display: flex; align-items: center; gap: 12px; width: 100%; height: 48px; padding: 0 20px; background: transparent; border: 0; border-top: 1px solid #292e42; color: #c0caf5; font-size: 13px; cursor: pointer; text-align: left">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8c94bf" stroke-width="1.6" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><rect x="13" y="5" width="4" height="4"/><rect x="7" y="15" width="4" height="4"/></svg>
+      <span style="flex: 1">Settings</span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8c94bf" stroke-width="2" aria-hidden="true" style="transform: rotate({{settingsRot}}deg)"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+    <sc-if value="{{isSettings}}" hint-placeholder-val="{{ false }}">
+      <div style="padding: 4px 20px 20px; display: flex; flex-direction: column; gap: 12px">
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px">
+          <div style="background: #1f2335; border: 1px solid #292e42; padding: 12px; display: flex; flex-direction: column; gap: 8px">
+            <div style="font-size: 11px; color: #8c94bf; letter-spacing: 0.08em; text-transform: uppercase">Memory</div>
+            <div style="display: flex; align-items: center; justify-content: space-between">
+              <button type="button" aria-label="Less memory" onClick="{{memDown}}" style="width: 36px; height: 36px; background: transparent; border: 1px solid #3b4261; color: #c0caf5; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+              <div><span style="font-size: 20px; font-weight: 600">{{mem}}</span><span style="font-size: 12px; color: #8c94bf"> GiB</span></div>
+              <button type="button" aria-label="More memory" onClick="{{memUp}}" style="width: 36px; height: 36px; background: transparent; border: 1px solid #3b4261; color: #c0caf5; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg></button>
+            </div>
+          </div>
+          <div style="background: #1f2335; border: 1px solid #292e42; padding: 12px; display: flex; flex-direction: column; gap: 8px">
+            <div style="font-size: 11px; color: #8c94bf; letter-spacing: 0.08em; text-transform: uppercase">Cores</div>
+            <div style="display: flex; align-items: center; justify-content: space-between">
+              <button type="button" aria-label="Fewer cores" onClick="{{coresDown}}" style="width: 36px; height: 36px; background: transparent; border: 1px solid #3b4261; color: #c0caf5; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+              <div><span style="font-size: 20px; font-weight: 600">{{cores}}</span></div>
+              <button type="button" aria-label="More cores" onClick="{{coresUp}}" style="width: 36px; height: 36px; background: transparent; border: 1px solid #3b4261; color: #c0caf5; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg></button>
+            </div>
+          </div>
+        </div>
+        <label style="display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 11px; color: #8c94bf; letter-spacing: 0.08em; text-transform: uppercase">Windows scale</span>
+          <span style="position: relative; display: block">
+            <select value="{{scale}}" onChange="{{setScale}}" style="width: 100%; height: 40px; background: #1f2335; border: 1px solid #3b4261; color: #c0caf5; font-size: 13px; padding: 0 36px 0 12px; appearance: none; -webkit-appearance: none; border-radius: 0; cursor: pointer">
+              <option value="auto">Match my monitor</option>
+              <option value="100">100%</option>
+              <option value="125">125%</option>
+              <option value="150">150%</option>
+              <option value="175">175%</option>
+              <option value="200">200%</option>
+              <option value="250">250%</option>
+              <option value="300">300%</option>
+            </select>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8c94bf" stroke-width="2" aria-hidden="true" style="position: absolute; right: 12px; top: 13px; pointer-events: none"><path d="M6 9l6 6 6-6"/></svg>
+          </span>
+        </label>
+        <div style="display: flex; align-items: center; gap: 12px">
+          <div style="flex: 1; display: flex; align-items: center; gap: 7px; font-size: 11px; color: #8c94bf">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.01"/></svg>
+            Memory and cores apply on next start
+          </div>
+          <sc-if value="{{dirty}}" hint-placeholder-val="{{ false }}">
+            <button type="button" onClick="{{save}}" style="height: 36px; padding: 0 18px; background: {{accent}}; border: 0; color: #16161e; font-size: 12px; font-weight: 600; cursor: pointer">Save</button>
+          </sc-if>
+          <sc-if value="{{clean}}" hint-placeholder-val="{{ true }}">
+            <button type="button" disabled="{{ true }}" style="height: 36px; padding: 0 18px; background: transparent; border: 1px solid #292e42; color: #565f89; font-size: 12px">Saved</button>
+          </sc-if>
+        </div>
+      </div>
+    </sc-if>
+
+    <button type="button" aria-expanded="{{snapshotsExpanded}}" onClick="{{toggleSnapshots}}" style="display: flex; align-items: center; gap: 12px; width: 100%; height: 48px; padding: 0 20px; background: transparent; border: 0; border-top: 1px solid #292e42; color: #c0caf5; font-size: 13px; cursor: pointer; text-align: left">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8c94bf" stroke-width="1.6" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+      <span style="flex: 1">Snapshots</span>
+      <span style="font-size: 12px; color: #8c94bf">3</span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8c94bf" stroke-width="2" aria-hidden="true" style="transform: rotate({{snapshotsRot}}deg)"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+    <sc-if value="{{isSnapshots}}" hint-placeholder-val="{{ false }}">
+      <div style="padding: 0 20px 16px; display: flex; flex-direction: column">
+        <sc-for list="{{snapshots}}" as="snap" hint-placeholder-count="3">
+          <div style="display: flex; align-items: center; gap: 12px; height: 44px; border-bottom: 1px solid #24283b">
+            <span style="width: 6px; height: 6px; border: 1px solid #565f89; display: block"></span>
+            <span style="flex: 1; font-size: 13px">{{snap.date}}</span>
+            <span style="font-size: 12px; color: #8c94bf">{{snap.time}}</span>
+            <button type="button" disabled="{{ true }}" aria-label="Restore {{snap.date}} (shut down first)" style="width: 32px; height: 32px; background: transparent; border: 1px solid #292e42; color: #565f89; display: flex; align-items: center; justify-content: center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
+          </div>
+        </sc-for>
+        <div style="display: flex; align-items: center; gap: 7px; padding-top: 12px; font-size: 11px; color: #8c94bf">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="5" y="11" width="14" height="10"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          Shut down to take or restore a snapshot
+        </div>
+      </div>
+    </sc-if>
+
+    <button type="button" aria-expanded="{{logsExpanded}}" onClick="{{toggleLogs}}" style="display: flex; align-items: center; gap: 12px; width: 100%; height: 48px; padding: 0 20px; background: transparent; border: 0; border-top: 1px solid #292e42; color: #c0caf5; font-size: 13px; cursor: pointer; text-align: left">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8c94bf" stroke-width="1.6" aria-hidden="true"><path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/><path d="M9 13h6M9 17h6"/></svg>
+      <span style="flex: 1">Logs</span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8c94bf" stroke-width="2" aria-hidden="true" style="transform: rotate({{logsRot}}deg)"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+    <sc-if value="{{isLogs}}" hint-placeholder-val="{{ false }}">
+      <div style="padding: 0 20px 16px; display: flex; flex-direction: column">
+        <sc-for list="{{logs}}" as="log" hint-placeholder-count="5">
+          <div style="display: flex; align-items: center; gap: 12px; height: 44px; border-bottom: 1px solid #24283b">
+            <span style="width: 72px; font-size: 13px">{{log.name}}</span>
+            <span style="flex: 1; min-width: 0; font-size: 12px; color: #8c94bf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{log.file}}</span>
+            <button type="button" aria-label="Copy {{log.name}} log path" title="Copy path" style="width: 32px; height: 32px; background: transparent; border: 1px solid #3b4261; color: #a9b1d6; display: flex; align-items: center; justify-content: center; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="8" width="13" height="13"/><path d="M16 8V3H3v13h5"/></svg></button>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#7aa2f7","options":["#7aa2f7","#cba6f7","#a7c080","#d79921"]},"$preview":{"width":460,"height":680}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { open: '', more: false, forceArmed: false, mem: 8, cores: 4, scale: 'auto', savedMem: 8, savedCores: 4, savedScale: 'auto' };
+  }
+  toggle(name) {
+    this.setState({ open: this.state.open === name ? '' : name, more: false });
+  }
+  renderVals() {
+    const s = this.state;
+    const dirty = s.mem !== s.savedMem || s.cores !== s.savedCores || s.scale !== s.savedScale;
+    return {
+      accent: this.props.accent ?? '#7aa2f7',
+      isSettings: s.open === 'settings',
+      isSnapshots: s.open === 'snapshots',
+      isLogs: s.open === 'logs',
+      settingsExpanded: String(s.open === 'settings'),
+      snapshotsExpanded: String(s.open === 'snapshots'),
+      logsExpanded: String(s.open === 'logs'),
+      settingsRot: s.open === 'settings' ? 90 : 0,
+      snapshotsRot: s.open === 'snapshots' ? 90 : 0,
+      logsRot: s.open === 'logs' ? 90 : 0,
+      toggleSettings: () => this.toggle('settings'),
+      toggleSnapshots: () => this.toggle('snapshots'),
+      toggleLogs: () => this.toggle('logs'),
+      more: s.more,
+      moreExpanded: String(s.more),
+      moreBg: s.more ? '#24283b' : 'transparent',
+      toggleMore: () => this.setState({ more: !s.more }),
+      armForce: () => this.setState({ more: false, forceArmed: true }),
+      cancelForce: () => this.setState({ forceArmed: false }),
+      forceArmed: s.forceArmed,
+      showActions: !s.forceArmed,
+      mem: s.mem,
+      cores: s.cores,
+      scale: s.scale,
+      savedMem: s.savedMem,
+      savedCores: s.savedCores,
+      savedScaleShort: s.savedScale === 'auto' ? 'Auto' : s.savedScale + '%',
+      memDown: () => this.setState({ mem: Math.max(1, s.mem - 1) }),
+      memUp: () => this.setState({ mem: Math.min(512, s.mem + 1) }),
+      coresDown: () => this.setState({ cores: Math.max(1, s.cores - 1) }),
+      coresUp: () => this.setState({ cores: Math.min(64, s.cores + 1) }),
+      setScale: (e) => this.setState({ scale: e.target.value }),
+      dirty: dirty,
+      clean: !dirty,
+      save: () => this.setState({ savedMem: s.mem, savedCores: s.cores, savedScale: s.scale }),
+      snapshots: [
+        { date: 'Oct 12, 2026', time: '09:12 UTC' },
+        { date: 'Sep 30, 2026', time: '18:47 UTC' },
+        { date: 'Sep 02, 2026', time: '07:05 UTC' }
+      ],
+      logs: [
+        { name: 'VM', file: 'journal: lanai-vm' },
+        { name: 'Window', file: 'client.log' },
+        { name: 'Build', file: 'build-client.log' },
+        { name: 'Jobs', file: 'panel-job.log' },
+        { name: 'Actions', file: 'panel-run.log' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>
