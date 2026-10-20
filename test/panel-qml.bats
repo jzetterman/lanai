@@ -446,9 +446,9 @@ TestCase {
       snapshots:{show:true,count:1,names:['20261012T091200Z'],items:[{name:'20261012T091200Z',date:'Oct 12, 2026',time:'09:12 UTC',
         label:'Oct 12, 2026 at 09:12 UTC',restore_label:'Restore Oct 12, 2026 at 09:12 UTC',
         confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',
-        confirm_note:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows?',warning:'Later changes are lost.',
+        confirm_note:'Restore this snapshot and replace Windows?',warning:'Later changes are lost.',
         delete_label:'Delete Oct 12, 2026 at 09:12 UTC',delete_confirm_label:'Delete Oct 12, 2026 at 09:12 UTC permanently',
-        delete_confirm_note:'Delete Oct 12, 2026 at 09:12 UTC permanently?',
+        delete_confirm_note:'Delete this snapshot permanently?',
         delete_warning:'Current Windows stays as it is. You will lose this restore point.'}]},
       restore:{label:'',warning:''},progress:null}
   }
@@ -2243,9 +2243,9 @@ TestCase {
       var when = date + ' at ' + time, full = user ? '“' + user + '” from ' + when : when
       return {name:name,date:date,time:time,label:when,user_label:user,full_label:full,
         restore_label:'Restore ' + full,confirm_label:'Restore ' + full + ' and replace Windows',
-        confirm_note:'Restore ' + full + ' and replace Windows?',
+        confirm_note:'Restore this snapshot and replace Windows?',
         warning:'Changes since this snapshot are lost.',delete_label:'Delete ' + full,
-        delete_confirm_label:'Delete ' + full + ' permanently',delete_confirm_note:'Delete ' + full + ' permanently?',
+        delete_confirm_label:'Delete ' + full + ' permanently',delete_confirm_note:'Delete this snapshot permanently?',
         delete_warning:'Current Windows stays as it is. You will lose this restore point.'}
     }
     v.snapshots.items = [item('20261012T091230Z','Oct 12, 2026','09:12:30 UTC',meta),

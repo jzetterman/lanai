@@ -154,12 +154,11 @@ panel_snapshot_item() {
   fi
   jq -nc --arg n "$name" --arg d "$date" --arg t "$time" --arg l "$label" --arg u "$user" '
     (if $u == "" then $l else "“" + $u + "” from " + $l end) as $f |
-    ("Restore " + $f + " and replace Windows") as $rc | ("Delete " + $f + " permanently") as $dc |
     {name:$n,date:(if $d == "" then null else $d end),time:(if $t == "" then null else $t end),
       label:$l,user_label:(if $u == "" then null else $u end),full_label:$f,
-      restore_label:("Restore " + $f),confirm_label:$rc,confirm_note:($rc + "?"),
+      restore_label:("Restore " + $f),confirm_label:("Restore " + $f + " and replace Windows"),confirm_note:"Restore this snapshot and replace Windows?",
       warning:"Changes since this snapshot are lost.",
-      delete_label:("Delete " + $f),delete_confirm_label:$dc,delete_confirm_note:($dc + "?"),
+      delete_label:("Delete " + $f),delete_confirm_label:("Delete " + $f + " permanently"),delete_confirm_note:"Delete this snapshot permanently?",
       delete_warning:"Current Windows stays as it is. You will lose this restore point."}'
 }
 
