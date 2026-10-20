@@ -332,7 +332,7 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   assert_equal "$(jq -r '.snapshots.items[0].label' <<<"$output")" 'Oct 12, 2026 at 09:12 UTC'
   assert_equal "$(jq -r '.snapshots.items[0].restore_label' <<<"$output")" 'Restore Oct 12, 2026 at 09:12 UTC'
   assert_equal "$(jq -r '.snapshots.items[0].confirm_label' <<<"$output")" 'Restore Oct 12, 2026 at 09:12 UTC and replace Windows'
-  assert_equal "$(jq -r '.snapshots.items[0].warning' <<<"$output")" 'Replaces Windows. Changes since this snapshot are lost.'
+  assert_equal "$(jq -r '.snapshots.items[0].warning' <<<"$output")" 'Changes since this snapshot are lost.'
   assert_equal "$(jq -c '.snapshots.items[-2] | [.date,.time,.label]' <<<"$output")" '[null,null,"20260230T091200Z"]'
   assert_equal "$(jq -c '.snapshots.items[-1] | [.date,.time,.label]' <<<"$output")" '[null,null,"20260228T240000Z"]'
   assert_equal "$(jq -r '.buttons.restore_snapshot.labels["20261012T091200Z"]' <<<"$output")" 'Restore snapshot 20261012T091200Z'

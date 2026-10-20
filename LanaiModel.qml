@@ -106,6 +106,8 @@ Item {
 
   // Commands use literal argv and no deadline. Long work starts a session unit.
   // A click while the last action runs is dropped, and clickNotice says so.
+  // Returns the launch token, which a long job's record carries, or "" for a
+  // dropped click.
   function run(args, longJob) {
     var now = Math.floor(Date.now() / 1000)
     if (actionProcess.running || (longJob && pendingToken && now - pendingAt < 10)) {
@@ -113,7 +115,7 @@ Item {
       clickNoticeAt = Date.now()
       clickNoticeTimer.interval = 5000
       clickNoticeTimer.restart()
-      return
+      return ""
     }
     var clickToken = token()
     if (longJob) {
@@ -125,6 +127,7 @@ Item {
       actionProcess.command = [cli, "ui-run", clickToken].concat(args)
       actionProcess.running = true
     }
+    return clickToken
   }
 
   Timer {

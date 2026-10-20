@@ -65,6 +65,35 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   // qmllint enable missing-property
 
+  // Each snapshot name field's draft, its last launch and the backend's
+  // refusal of it. They live here so polls, collapsed sections and failed
+  // jobs keep them.
+  NameDraft { id: dailyName }
+  NameDraft { id: setupName }
+
+  // Take a snapshot with a name field's exact text. Enter calls this too, so
+  // it starts only while the adjacent action is shown and enabled.
+  function takeSnapshot(draft: NameDraft, control: string) {
+    var action = root.model.control(control)
+    if (action.show !== true || action.enable !== true) return
+    var text = draft.text, token = root.model.run(["snapshot", text], true)
+    if (token === "") return
+    draft.sentToken = token
+    draft.sentText = text
+    draft.error = ""
+  }
+  // Give the latest snapshot job to the field that launched it: a name
+  // refusal shows beside that field, and success clears an unchanged draft.
+  function settleSnapshotJob(draft: NameDraft) {
+    var job = (root.model.view.snapshots || {}).job
+    if (!job || draft.sentToken === "" || job.token !== draft.sentToken) return
+    if (job.reason === "invalid-label") draft.error = job.message || ""
+    else if (job.ended === true && job.ok === true) {
+      if (draft.text === draft.sentText) draft.text = ""
+      draft.sentToken = ""
+    }
+  }
+
   // Only interpolate the backend duration. Polls re-anchor it; opening does not.
   Component.onCompleted: anchorCountdown()
   Timer {
@@ -124,6 +153,8 @@ Panel {
       root.previousDefaultSection = section
       if (!root.model.view.setup.finished) root.setupAgainArmed = false
       if (!root.model.view.snapshots.saved) root.snapshotDetailsOpen = false
+      root.settleSnapshotJob(dailyName)
+      root.settleSnapshotJob(setupName)
     }
     function onSettingsSaved(memoryGib: int, cores: int, windowsScale: var) {
       root.memoryInput = memoryGib
@@ -525,6 +556,12 @@ Panel {
               visible: root.expandedSection === "snapshots"
               Note { text: root.model.view.snapshots.line || "" }
               Note { text: root.model.view.snapshots.error || "" }
+              NameField {
+                name: "snapshotName"
+                accessibleName: "Snapshot name (optional)"
+                draft: dailyName
+                actionControl: "take_snapshot"
+              }
               Item {
                 id: snapshotActions
                 objectName: "snapshotActions"
@@ -560,7 +597,7 @@ Panel {
                   width: Math.min(implicitWidth, parent.width)
                   x: Math.max(0, parent.width - width)
                   y: snapshotActions.wrap ? snapshotDetailsButton.height + snapshotActions.gap : (parent.height - height) / 2
-                  onClicked: root.model.run(["snapshot"], true)
+                  onClicked: root.takeSnapshot(dailyName, "take_snapshot")
                 }
               }
               Item {
@@ -607,6 +644,8 @@ Panel {
                   readonly property bool deleting: root.deleteArmed === modelData.name
                   width: parent.width
                   spacing: Style.space(6)
+                  // The saved name, when there is one, wraps above its date.
+                  Note { objectName: "snapshotLabel-" + snapshotRow.modelData.name; text: snapshotRow.modelData.user_label || "" }
                   Flow {
                     width: parent.width
                     spacing: Style.space(6)
@@ -652,7 +691,8 @@ Panel {
                           objectName: "restore-" + snapshotRow.modelData.name
                           width: Math.min(implicitWidth, restoreCell.width)
                           control: snapshotRow.armed ? "restore_confirm" : "restore_snapshot"
-                          text: snapshotRow.armed ? snapshotRow.modelData.confirm_label : "Restore"
+                          // The full confirmation wording is the note below the row.
+                          text: snapshotRow.armed ? "Restore now" : "Restore"
                           Accessible.name: snapshotRow.armed ? snapshotRow.modelData.confirm_label : snapshotRow.modelData.restore_label
                           visible: !snapshotRow.deleting && descriptor.show
                           onClicked: {
@@ -663,6 +703,7 @@ Panel {
                       }
                     }
                   }
+                  Note { objectName: "restoreConfirm-" + snapshotRow.modelData.name; text: snapshotRow.armed ? snapshotRow.modelData.confirm_label : "" }
                   Note { text: snapshotRow.armed ? snapshotRow.modelData.warning : snapshotRow.deleting ? snapshotRow.modelData.delete_warning : "" }
                   Action { objectName: "deleteCancel-" + snapshotRow.modelData.name; control: "cancel"
                     visible: snapshotRow.deleting && descriptor.show; onClicked: root.deleteArmed = "" }
@@ -849,6 +890,12 @@ Panel {
           text: Math.floor(root.countdownRemaining / 60) + ":" + String(root.countdownRemaining % 60).padStart(2, "0")
         }
       }
+      NameField {
+        name: "setupSnapshotName"
+        accessibleName: "Setup snapshot name (optional)"
+        draft: setupName
+        actionControl: "setup_snapshot"
+      }
       Flow {
         width: parent.width
         spacing: Style.space(6)
@@ -859,7 +906,7 @@ Panel {
         }
         Action { control: "reopen_window"; onClicked: root.model.run(["open"], false) }
         Action { control: "install"; onClicked: root.model.run(["setup-host"], false) }
-        Action { control: "setup_snapshot"; onClicked: root.model.run(["snapshot"], true) }
+        Action { control: "setup_snapshot"; onClicked: root.takeSnapshot(setupName, "setup_snapshot") }
         Action { control: "skip_snapshot"; onClicked: root.model.run(["setup", "--no-snapshot"], true) }
       }
       Note { text: root.model.control("setup_snapshot").show ? root.model.view.result.snapshots || "" : "" }
@@ -906,6 +953,51 @@ Panel {
     onClicked: {
       root.expandedSection = root.expandedSection === section ? "" : section
       Qt.callLater(function() { root.reveal(detailRow) })
+    }
+  }
+
+  // One name field's state; see dailyName and setupName.
+  component NameDraft: QtObject {
+    property string text: ""
+    property string sentToken: ""
+    property string sentText: ""
+    property string error: ""
+  }
+
+  // A labelled single-line snapshot name above its Take a snapshot action.
+  // It submits its exact text: no validator, mask or trimming. The backend
+  // checks the name, and its refusal shows below the field.
+  component NameField: Column {
+    id: nameField
+    required property string name
+    required property string accessibleName
+    required property NameDraft draft
+    required property string actionControl
+    width: parent.width
+    spacing: Style.space(4)
+    visible: root.model.control(actionControl).show === true
+    Note {
+      objectName: nameField.name + "Caption"
+      text: "Snapshot name (optional)"
+      color: Qt.darker(root.foreground, 1.4)
+    }
+    TextField {
+      objectName: nameField.name + "Field"
+      width: parent.width
+      clip: true
+      text: nameField.draft.text
+      foreground: root.foreground
+      font.family: root.fontFamily
+      Accessible.name: nameField.accessibleName
+      Accessible.description: nameField.draft.error
+      onTextChanged: nameField.draft.text = text
+      onAccepted: root.takeSnapshot(nameField.draft, nameField.actionControl)
+      onActiveFocusChanged: if (activeFocus) root.reveal(this)
+    }
+    Note {
+      objectName: nameField.name + "Error"
+      text: nameField.draft.error
+      color: Commons.Color.urgent
     }
   }
 

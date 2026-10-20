@@ -155,7 +155,7 @@ panel_snapshot_item() {
     {name:$n,date:(if $d == "" then null else $d end),time:(if $t == "" then null else $t end),
       label:$l,user_label:(if $u == "" then null else $u end),full_label:$f,
       restore_label:("Restore " + $f),confirm_label:("Restore " + $f + " and replace Windows"),
-      warning:"Replaces Windows. Changes since this snapshot are lost.",
+      warning:"Changes since this snapshot are lost.",
       delete_label:("Delete " + $f),delete_confirm_label:("Delete " + $f + " permanently"),
       delete_warning:"Current Windows stays as it is. You will lose this restore point."}'
 }
