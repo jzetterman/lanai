@@ -284,14 +284,14 @@ exec /usr/bin/python3 "$@"'
   done
 }
 
-@test "snapshot labels: trimmed, 64-code-point, leading-dash and metacharacter labels are saved under the UTC identifier" {
+@test "snapshot labels: trimmed, 64-code-point (also padded), leading-dash and metacharacter labels are saved under the UTC identifier" {
   snapshot_failure_fixture
   mock_image_failure
   local emoji meta
   emoji=$(printf '\xf0\x9f\x98\x80%.0s' {1..64})
   meta='50% ${HOME} $(touch pwned) `id` ; | & ../x "q" '\''s'\'''
-  local -a given=('  Before driver update  ' "$emoji" '-n' '--' "$meta")
-  local -a saved=('Before driver update' "$emoji" '-n' '--' "$meta")
+  local -a given=('  Before driver update  ' "$emoji" "  $emoji  " '-n' '--' "$meta")
+  local -a saved=('Before driver update' "$emoji" "$emoji" '-n' '--' "$meta")
   local i
   for i in "${!given[@]}"; do
     label_take "${given[$i]}"

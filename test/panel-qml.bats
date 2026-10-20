@@ -2191,6 +2191,12 @@ TestCase {
     setup.field.cursorPosition = 3; typeInto(setup.field, '!')
     p.model.view = jobView(p.view, setupToken, true); wait(1)
     compare(setup.field.text, 'Two!')
+    // An unchanged setup draft clears on its own success; daily's newer draft stays.
+    nameSettle(p); setup.take.clicked()
+    var againToken = Quickshell.lastCommand[2]
+    typeInto(daily.field, 'Three')
+    p.model.view = jobView(p.view, againToken, true); wait(1)
+    compare(setup.field.text, ''); compare(daily.field.text, 'Three')
     p.panel.destroy()
   }
   function test_run_returns_the_launch_token_or_empty_for_a_dropped_click() {
