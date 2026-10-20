@@ -1790,7 +1790,9 @@ The orchestrator runs the gate; delegates run no review stage.
   operations publish phases, byte progress and owner under the operation lock;
   QML renders the percentage with a comma after the label, showing the label
   once and keeping "Keep Windows stopped until it finishes." visible during
-  restore and "You can close this panel." visible during a snapshot. Labels say
+  restore and "You can close this panel." visible during a snapshot. (Superseded:
+  no busy line shows beside progress or a running restore, and no busy line says
+  "You can close this panel."; see redesign/stopped-copy.md.) Labels say
   "Taking a snapshot: making an instant copy" and include the articles in the
   checking and reading phases. Checks are labeled before cloning starts;
   replacing the disk covers
@@ -2924,7 +2926,8 @@ keeping each fact):
   While Windows runs: "... until you shut Windows down and click Run setup
   again."
 - Busy line: "Updating the Windows window. This may take several minutes. You
-  can start Windows when it finishes. You can close this panel."
+  can start Windows when it finishes. You can close this panel." (Superseded:
+  the line drops "You can close this panel."; see redesign/stopped-copy.md.)
 - Another build running (`build-busy`): "Another build is running. Try again
   when it finishes."
 - Done (panel and `lanai build-client`): "The Windows window is updated. If the

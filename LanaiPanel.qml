@@ -30,7 +30,11 @@ Panel {
   readonly property double countdownRemaining: Math.max(0, countdownSeconds - Math.max(0, Math.floor((countdownNow - countdownAt) / 1000)))
   readonly property var snapshotItems: root.model.view.snapshots.items || []
   readonly property var snapshotSaved: root.model.view.snapshots.saved || {}
-  readonly property bool quietMain: root.model.view.layout === "daily" && root.model.view.state === "running"
+  // Hides the status lines and disabled-action hints where the badge,
+  // buttons, or a running restore's target and warning already say it.
+  readonly property bool quietMain: (root.model.view.layout === "daily"
+      && (root.model.view.state === "running" || root.model.view.state === "stopped"))
+    || (root.model.view.restore || {}).active === true
   readonly property bool hasMoreActions: root.model.control("force_stop").show === true
     || root.model.control("dismiss_notice").show === true || root.model.control("update_client").show === true
     || (root.model.view.setup.finished === true && setupSection.hasContent)
@@ -521,8 +525,6 @@ Panel {
               visible: root.expandedSection === "snapshots"
               Note { text: root.model.view.snapshots.line || "" }
               Note { text: root.model.view.snapshots.error || "" }
-              Note { text: root.model.view.layout === "daily" && root.model.view.snapshots.saved
-                ? root.snapshotSaved.summary : "" }
               Item {
                 id: snapshotActions
                 objectName: "snapshotActions"

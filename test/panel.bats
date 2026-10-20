@@ -348,7 +348,8 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   run cmd_panel
   assert_success
   assert_equal "$(jq -r .snapshots.line <<<"$output")" 'Shut down Windows to take a snapshot.'
-  assert_equal "$(jq -r .snapshots.saved.summary <<<"$output")" 'Snapshot saved.'
+  # The list already shows the new snapshot first: no separate summary line.
+  assert_equal "$(jq -r '.snapshots.saved | has("summary")' <<<"$output")" false
   assert_equal "$(jq -r .snapshots.saved.show_label <<<"$output")" 'Show details'
   assert_equal "$(jq -r .snapshots.saved.hide_label <<<"$output")" 'Hide details'
   assert_equal "$(jq -r .snapshots.saved.details <<<"$output")" "$(jq -r .result.snapshots <<<"$output")"
@@ -1442,7 +1443,7 @@ assert_plan_agreement() {
   panel_result_write setup '{"command":"setup","started":1,"reply":{"ok":true,"step":"5"}}'
   exec {fd}>"$S/panel-job.lock"; flock "$fd"
   run cmd_panel
-  assert_equal "$(jq -r .busy.line <<<"$output")" 'Waiting for Windows to finish setup. You can close this panel.'
+  assert_equal "$(jq -r .busy.line <<<"$output")" 'Waiting for Windows to finish setup.'
   assert_equal "$(jq -r '.setup.lines[0]' <<<"$output")" "In Windows, open Lanai's setup drive and run setup.cmd. Windows shuts down by itself when it finishes, then Lanai starts it again to check it. Use Shut down only if setup.cmd stops responding, or when its shared-folder check tells you to."
   exec {fd}>&-
 }
@@ -2035,7 +2036,8 @@ setup_worker() {
   assert_equal "$(jq -r '.busy.active' <<<"$output")" true
   assert_equal "$(jq -r '.buttons.take_snapshot.enable' <<<"$output")" false
   assert_equal "$(jq -r '.progress.label' <<<"$output")" "Taking a snapshot: reading the image"
-  assert_equal "$(jq -r '.busy.line' <<<"$output")" "You can close this panel."
+  # The progress line and bar say what runs: no busy line beside them.
+  assert_equal "$(jq -r '.busy.line' <<<"$output")" ''
   refute_output --partial '—'
   local phase label
   for phase in cloning checking; do
@@ -2045,12 +2047,13 @@ setup_worker() {
     assert_success
     if [[ $phase == cloning ]]; then label='making an instant copy'; else label='checking the shared storage'; fi
     assert_equal "$(jq -r '.progress.label' <<<"$output")" "Taking a snapshot: $label"
-    assert_equal "$(jq -r '.busy.line' <<<"$output")" 'You can close this panel.'
+    assert_equal "$(jq -r '.busy.line' <<<"$output")" ''
   done
   jq '.operation="restore"' "$S/image-progress.json" >"$S/next.json"
   mv "$S/next.json" "$S/image-progress.json"
   run cmd_panel
-  assert_equal "$(jq -r '.busy.line' <<<"$output")" "Keep Windows stopped until it finishes."
+  assert_equal "$(jq -r '.busy.line' <<<"$output")" ''
+  assert_equal "$(jq -r '.restore.warning' <<<"$output")" 'Keep Windows stopped until the restore finishes.'
   jq '.done=100 | .phase="replacing"' "$S/image-progress.json" >"$S/next.json"
   mv "$S/next.json" "$S/image-progress.json"
   run cmd_panel
@@ -2059,6 +2062,55 @@ setup_worker() {
   exec {fd}>&-
   run cmd_panel
   assert_equal "$(jq -r '.progress' <<<"$output")" null
+}
+
+@test "panel busy: job lines without progress name the job, never closing the panel" {
+  local fd job group step
+  exec {fd}>"$S/panel-job.lock"; flock "$fd"
+  for job in setup snapshot delete-snapshot restore build-client setup:5 setup:6; do
+    step=${job#*:}
+    group=$(panel_group "${job%%:*}")
+    rm -f "$S"/panel-result-*.json
+    if [[ $job == *:* ]]; then
+      panel_result_write "$group" "$(jq -nc --arg s "$step" '{command:"setup",started:1,reply:{ok:true,step:$s}}')"
+    else
+      panel_result_write "$group" "$(jq -nc --arg c "$job" '{command:$c,args:[],started:1}')"
+    fi
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .busy.active <<<"$output")" true
+    [[ $(jq -r .busy.line <<<"$output") != *"You can close this panel."* ]] || fail "$job: $(jq -r .busy.line <<<"$output")"
+  done
+  rm -f "$S"/panel-result-*.json
+  panel_result_write snapshots '{"command":"delete-snapshot","args":["20261012T091200Z"],"started":1}'
+  run cmd_panel
+  assert_equal "$(jq -r .busy.line <<<"$output")" 'Deleting a snapshot.'
+  exec {fd}>&-
+}
+
+@test "panel busy: a running restore has no busy line, only its target and warning" {
+  local fd
+  state "$CURRENT"
+  : >"$S/restore-in-progress"
+  panel_result_write snapshots '{"command":"restore","args":[],"started":1}'
+  exec {fd}>"$S/panel-job.lock"; flock "$fd"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .progress <<<"$output")" null
+  assert_equal "$(jq -r .restore.active <<<"$output")" true
+  assert_equal "$(jq -r .busy.active <<<"$output")" true
+  assert_equal "$(jq -r .busy.line <<<"$output")" ''
+  assert_equal "$(jq -r .restore.warning <<<"$output")" 'Keep Windows stopped until the restore finishes.'
+  exec {fd}>&-
+  # Unheld, the record is an interrupted restore: nothing runs.
+  run cmd_panel
+  assert_equal "$(jq -r .restore.active <<<"$output")" false
+  assert_equal "$(jq -r .restore.pending <<<"$output")" true
+  assert_equal "$(jq -r .busy.line <<<"$output")" ''
+  # A Finish click still waiting for its record is not yet the restore.
+  run cmd_panel --pending finish "$EPOCHSECONDS"
+  assert_equal "$(jq -r .restore.active <<<"$output")" false
+  assert_equal "$(jq -r .busy.line <<<"$output")" 'Starting the operation.'
 }
 
 @test "panel progress: dead owners, unrelated open files, wrong lock inodes and malformed records are ignored" {
@@ -2442,11 +2494,11 @@ assert_rerun_warning() {
   run cmd_panel
   assert_equal "$(jq -c '.buttons.update_client | [.show,.enable]' <<<"$output")" '[true,false]'
   assert_equal "$(jq -r .buttons.start.enable <<<"$output")" false
-  assert_equal "$(jq -r .busy.line <<<"$output")" 'Updating the Windows window. This may take several minutes. You can start Windows when it finishes. You can close this panel.'
+  assert_equal "$(jq -r .busy.line <<<"$output")" 'Updating the Windows window. This may take several minutes. You can start Windows when it finishes.'
   # A running Windows has no Start button to wait for.
   ST=active
   run cmd_panel
-  assert_equal "$(jq -r .busy.line <<<"$output")" 'Updating the Windows window. This may take several minutes. You can close this panel.'
+  assert_equal "$(jq -r .busy.line <<<"$output")" 'Updating the Windows window. This may take several minutes.'
   exec {fd}>&-
 }
 

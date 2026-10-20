@@ -382,6 +382,9 @@ cmd_panel() {
     ($token != "" and ($seen|not) and $now - $at < 10) as $pending |
     ($rec.held or $pending or $progress != null) as $busy |
     ($rec.held and $job.command == "setup") as $setupJob |
+    # A running restore, as panel_restore decides it: an unheld record is an
+    # interrupted one.
+    ($progress.operation == "restore" or ($rec.held and $job.command == "restore")) as $restoring |
     (($rec.held|not) and ($rec.records.setup|has("started")) and ($rec.records.setup|has("ended")|not)) as $interruptedSetup |
     # A step 6 time-out with Windows off: the display buttons repeat the
     # Windows install, beside Continue setup, with no arming step.
@@ -406,11 +409,13 @@ cmd_panel() {
      right_click:$rightClick,
      right_click_tooltip:({start:"Right-click: Start Windows.",open:"Right-click: Open the Windows window.",panel:"Right-click: Open the panel."}[$rightClick]),
      pending_ack:(if $seen then $token else "" end),
-     progress:$progress,restore:$restore,notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
-     busy:{active:$busy,line:(if $progress != null then (if ($progress.label | startswith("Restoring Windows:")) then "Keep Windows stopped until it finishes." else "You can close this panel." end) elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
-       elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.","delete-snapshot":"Deleting a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes.",
-         "build-client":("Updating the Windows window. This may take several minutes. " +
-           (if $off then "You can start Windows when it finishes. " else "" end) + "You can close this panel.")}[$job.command // ""] //
+     progress:$progress,restore:($restore + {active:$restoring}),notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
+     # Progress, or the target and warning of a running restore, says what runs.
+     busy:{active:$busy,line:(if $progress != null or $restoring then ""
+       elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup." else "Checking Windows." end)
+       elif $busy then ({setup:"Working on setup.",snapshot:"Taking a snapshot.","delete-snapshot":"Deleting a snapshot.",
+         "build-client":("Updating the Windows window. This may take several minutes." +
+           (if $off then " You can start Windows when it finishes." else "" end))}[$job.command // ""] //
          "Starting the operation.") else "" end)},
      result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot, restore and update log, then try again." else "" end)}),
      setup:{show:($p.finished|not),finished:$p.finished,
@@ -516,7 +521,6 @@ cmd_panel() {
         (($d.reply.step == "2" and $d.reply.missing != null) or
           ($d.reply.step == "3" and $d.reply.reason == null) | not)
        else true end)))) as $resultFailed |
-    ($progress.operation == "restore" or ($rec.held and $job.command == "restore")) as $restoring |
     ($st.state == "failed" or (.restore.pending and ($restoring|not)) or $resultFailed or $launchFailed or
       ($facts | contains("LanaiHelpersMissing=") or contains("LanaiClient=timeout"))) as $failed |
     .layout = (if .restore.pending or $restoring then "restoring"
@@ -531,7 +535,7 @@ cmd_panel() {
     .snapshots.saved = (if .layout == "daily" and $rec.records.snapshots.command == "snapshot"
       and $rec.records.snapshots.reply.ok == true and ($rec.records.snapshots.reply.snapshot // "") != ""
       and .result.snapshots != "" then
-        {summary:"Snapshot saved.",details:.result.snapshots,
+        {details:.result.snapshots,
           path:$rec.records.snapshots.reply.snapshot,
           path_line:("Snapshot saved at " + $rec.records.snapshots.reply.snapshot),
           advice:"It shares disk space at first and grows as Windows changes. To delete it, use Delete beside the snapshot below.",

@@ -519,7 +519,7 @@ TestCase {
     v.buttons.window = {show:true,enable:false,label:'Set up in a basic window',hint:'Use this if the window is blank.'}
     v.buttons.no_window = {show:true,enable:false,label:'Set up in the Windows window',hint:'Use this if the driver works.'}
     v.result.snapshots = 'Snapshot saved at /home/john/snapshots/example. It shares disk space at first.'
-    v.snapshots.saved = {summary:'Snapshot saved.',details:v.result.snapshots,
+    v.snapshots.saved = {details:v.result.snapshots,
       path:'/home/john/snapshots/example',path_line:'Snapshot saved at /home/john/snapshots/example',
       advice:'It shares disk space at first.',copy_label:'Copy snapshot path',
       show_label:'Show details',hide_label:'Hide details'}
@@ -535,7 +535,9 @@ TestCase {
     verify(!textVisible(p.panel, v.buttons.window.hint))
     verify(!textVisible(p.panel, v.buttons.no_window.hint))
     named(p.panel, 'snapshotsToggle').clicked()
-    verify(textVisible(p.panel, v.snapshots.saved.summary))
+    // The list shows the new snapshot first: no separate saved note.
+    verify(!textVisible(p.panel, 'Snapshot saved.'))
+    verify(named(p.panel, 'snapshotLocationToggle').visible)
     verify(!textVisible(p.panel, v.result.snapshots))
     named(p.panel, 'snapshotLocationToggle').clicked()
     verify(textVisible(p.panel, v.snapshots.saved.path_line))
@@ -1129,7 +1131,7 @@ TestCase {
   }
   function test_redesign_snapshot_management_actions_share_a_row() {
     var p = redesignPanel(), v = redesignView()
-    v.snapshots.saved = {summary:'Snapshot saved.',details:'Saved at /copy.',show_label:'Show details',hide_label:'Hide details'}
+    v.snapshots.saved = {details:'Saved at /copy.',show_label:'Show details',hide_label:'Hide details'}
     v.buttons.take_snapshot = {show:true,enable:false,label:'Take a snapshot'}
     p.model.view = v
     named(p.panel, 'snapshotsToggle').clicked()
@@ -2224,6 +2226,19 @@ panel_board_view() {
     return items[0]
   }
   function finishBackendPanel(p) { p.panel.destroy(); p.model.destroy(); wait(1) }
+  // Checks that the status lines and disabled-action hints show, or are
+  // quiet, together. Returns how many disabled hints the view offers.
+  function statusAndHints(p, name, shown) {
+    var v = p.model.view
+    ;[v.headline, v.cause, v.next].forEach(function(line) {
+      verify(line, name); compare(textVisible(p.panel, line), shown, name + ': ' + line)
+    })
+    var hints = Object.keys(v.buttons).filter(function(key) {
+      var d = v.buttons[key]; return d.show && !d.enable && d.hint
+    })
+    hints.forEach(function(key) { compare(textVisible(p.panel, v.buttons[key].hint), shown, name + ': ' + key) })
+    return hints.length
+  }
   function test_backend_boards() {
     var count = Quickshell.launchCount, p = backendPanel('Main'), v = p.model.view
     compare(v.layout, 'daily'); compare(v.state, 'running')
@@ -2264,6 +2279,10 @@ panel_board_view() {
 
     p = backendPanel('Stopped'); v = p.model.view
     compare(v.state, 'stopped'); backendControl(p, 'start', true)
+    // The badge and Start Windows say it all. Idle, no hint shows today;
+    // this guards the quiet rule.
+    compare(v.layout, 'daily'); statusAndHints(p, 'Stopped', false)
+    compare(backendControl(p, 'start', true).tooltipText, '')
     named(p.panel, 'snapshotsToggle').clicked()
     compare(v.snapshots.count, 3)
     compare(v.snapshots.items.map(function(item) { return item.name }).join(','), '20261012T091200Z,20260930T184700Z,20260902T070500Z')
@@ -2283,8 +2302,12 @@ panel_board_view() {
     compare(named(p.panel, 'imageProgress').value, v.progress.percent)
     verify(v.progress.percent > 0 && v.progress.percent < 100)
     compare(named(p.panel, 'imageProgressText').text, v.progress.label + ', ' + v.progress.percent + '%')
+    compare(v.restore.active, true); compare(v.busy.line, '')
+    verify(statusAndHints(p, 'Restoring', false) > 0)
     backendControl(p, 'start', false)
     named(p.panel, 'snapshotsToggle').clicked(); backendControl(p, 'take_snapshot', false)
+    // Positions are valid only after the window lays the panel out.
+    verify(waitForPolish(named(p.panel, 'panelScroll').Window.window))
     verify(named(p.panel, 'operationProgress').mapToItem(p.panel,0,0).y < named(p.panel, 'dailyActions').mapToItem(p.panel,0,0).y)
     finishBackendPanel(p)
     ;['RestoreRecovery','RestoreGeneric'].forEach(function(name) {
@@ -2295,14 +2318,28 @@ panel_board_view() {
       verify(named(p.panel, 'snapshotsDetails').visible)
       backendControl(p, 'finish_restore', true); backendControl(p, 'restore_snapshot', true)
       compare(named(p.panel, 'restoreTarget').text, name === 'RestoreGeneric' ? 'Unfinished restore' : 'Unfinished restore of Oct 12, 2026 at 09:12 UTC')
+      // Nothing runs, so the status lines and hints say what to do.
+      compare(v.restore.active, false); verify(statusAndHints(p, name, true) > 0)
       finishBackendPanel(p)
     })
+    ;['Bar-busy-0','Bar-busy-100'].forEach(function(name) {
+      p = backendPanel(name); v = p.model.view
+      compare(v.layout, 'daily'); compare(v.state, 'stopped'); compare(v.busy.line, '')
+      verify(statusAndHints(p, name, false) > 0)
+      compare(backendControl(p, 'start', false).tooltipText, '')
+      finishBackendPanel(p)
+    })
+    // In the daily layout only stopped and running are quiet: starting keeps its lines.
+    p = backendPanel('Bar-activating'); v = p.model.view
+    compare(v.layout, 'daily'); compare(v.state, 'starting')
+    statusAndHints(p, 'Bar-activating', true)
+    finishBackendPanel(p)
 
     ;['Failed','FailedRead'].forEach(function(name) {
       p = backendPanel(name); v = p.model.view
       compare(v.layout, 'failed'); compare(v.bar.mode, 'failed')
       compare(p.panel.expandedSection, 'logs'); verify(named(p.panel, 'logsDetails').visible)
-      verify(textVisible(p.panel, v.cause)); verify(textVisible(p.panel, v.next))
+      statusAndHints(p, name, true)
       compare(v.buttons.force_stop.show, false)
       finishBackendPanel(p)
     })
