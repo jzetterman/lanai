@@ -645,7 +645,8 @@ Panel {
                   width: parent.width
                   spacing: Style.space(6)
                   // The saved name, when there is one, wraps above its date.
-                  Note { objectName: "snapshotLabel-" + snapshotRow.modelData.name; text: snapshotRow.modelData.user_label || "" }
+                  Note { objectName: "snapshotLabel-" + snapshotRow.modelData.name; text: snapshotRow.modelData.user_label || ""
+                    font.weight: Font.DemiBold }
                   Flow {
                     width: parent.width
                     spacing: Style.space(6)

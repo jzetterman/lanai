@@ -567,11 +567,9 @@ cmd_panel() {
     # null until a reply exists; message is the rule text of a name refusal only.
     .snapshots.job = ($rec.records.snapshots as $d |
       if $d.command == "snapshot" and ($d.token | type) == "string" then
-        ($d.reply.reason == "invalid-label" and ($d.reply.rule | type) == "string" and
-          ($d.reply.message | type) == "string") as $refused |
         {token:$d.token,ended:($d | has("ended")),ok:(if ($d.reply.ok | type) == "boolean" then $d.reply.ok else null end),
-          reason:($d.reply.reason // null),rule:(if $refused then $d.reply.rule else null end),
-          message:(if $refused then $d.reply.message else "" end)}
+          reason:($d.reply.reason // null),
+          message:(if $d.reply.reason == "invalid-label" then ($d.reply.message // "") else "" end)}
       else null end) |
     .settings += {baseline:(.settings.baseline // null),
       labels:{memory:"Memory (GiB)",cores:"CPU cores",scale:"Windows scale",save:"Save",saved:"Saved",reset:"Reset",unsaved:"Unsaved"}} |

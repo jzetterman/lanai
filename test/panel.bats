@@ -534,7 +534,7 @@ snapshot_job() {
     [[ $(jq -r .bar.mode <<<"$output") != failed ]] || fail "the bar shows Failed"
     [[ $(jq -r .header.badge <<<"$output") != Failed ]] || fail "the badge shows Failed"
     assert_equal "$(jq -c .snapshots.job <<<"$output")" \
-      "{\"token\":\"$layout-field\",\"ended\":true,\"ok\":false,\"reason\":\"invalid-label\",\"rule\":\"angle-bracket\",\"message\":\"Remove < and > from the name.\"}"
+      "{\"token\":\"$layout-field\",\"ended\":true,\"ok\":false,\"reason\":\"invalid-label\",\"message\":\"Remove < and > from the name.\"}"
   done
   # The daily view shows a Snapshots result note only for other failures.
   run panel_words snapshot "$reply"
@@ -543,7 +543,7 @@ snapshot_job() {
   run cmd_panel
   assert_equal "$(jq -r .layout <<<"$output")" failed
   assert_equal "$(jq -r .result.snapshots <<<"$output")" 'Lanai could not take the snapshot. Check the snapshot log and try again.'
-  assert_equal "$(jq -c '.snapshots.job | [.token,.ok,.rule,.message]' <<<"$output")" '["other",false,null,""]'
+  assert_equal "$(jq -c '.snapshots.job | [.token,.ok,.message]' <<<"$output")" '["other",false,""]'
 }
 
 @test "snapshot names: a snapshot job's token and outcome show in daily and setup layouts" {
@@ -554,7 +554,7 @@ snapshot_job() {
     run cmd_panel
     assert_success
     assert_equal "$(jq -r .layout <<<"$output")" "$layout"
-    assert_equal "$(jq -c .snapshots.job <<<"$output")" "{\"token\":\"$layout-ok\",\"ended\":true,\"ok\":true,\"reason\":null,\"rule\":null,\"message\":\"\"}"
+    assert_equal "$(jq -c .snapshots.job <<<"$output")" "{\"token\":\"$layout-ok\",\"ended\":true,\"ok\":true,\"reason\":null,\"message\":\"\"}"
   done
   exec {fd}>"$S/panel-job.lock"
   flock -n "$fd"

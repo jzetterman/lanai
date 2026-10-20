@@ -29,3 +29,5 @@ Tests cover all three entry points, an omitted CLI label, extra arguments, a lea
 | b single (claude-opus-5-5) | 3 | 6 | Three should-fix and three nits confirmed: define shared-character paste checking and immediate feedback, extend seconds to every action/status string, fix unlabeled JSON, reject non-regular and edge-spaced metadata, and cover the remaining acceptance details. Integrated; the three-round cap requires John's decision before the next stage. |
 
 On October 20, 2026, John cut the panel's as-you-type character check to keep one validation rule: the backend checks on submission and the panel shows its refusal beside the field.
+
+On October 20, 2026, John accepted one transport limit: process arguments end at a NUL character, so a NUL pasted into a panel field cuts the name short. The text before the NUL is checked and saved as usual; the text after it is lost.

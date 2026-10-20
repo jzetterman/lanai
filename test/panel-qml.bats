@@ -2279,6 +2279,7 @@ TestCase {
           verify(date !== undefined && inBounds(date, flick), item.name + ' date at ' + width)
           if (item.user_label) {
             verify(label.visible); compare(label.text, item.user_label)
+            compare(label.font.weight, Font.DemiBold)
             verify(inBounds(label, flick) && label.contentWidth <= label.width + 0.5, item.name + ' label at ' + width)
             verify(label.mapToItem(flick, 0, 0).y + label.height <= date.mapToItem(flick, 0, 0).y, 'label above date at ' + width)
           } else {
