@@ -137,7 +137,8 @@ delete_fixture_snapshot() {
 
 @test "delete-snapshot: invalid, missing, foreign and damaged targets leave files intact" {
   use_install "$T/win"
-  local name=20261019T120000Z snap="$(data_dir)/snapshots/20261019T120000Z" before
+  local name=20261019T120000Z snap before
+  snap="$(data_dir)/snapshots/20261019T120000Z"
   delete_fixture_snapshot "$snap"
   before=$(tree_manifest "$STORE")
   lanai_run delete-snapshot '../win'
@@ -161,7 +162,8 @@ delete_fixture_snapshot() {
 
 @test "delete-snapshot: unfinished restore and operation lock refuse deletion" {
   use_install "$T/win"
-  local name=20261019T120000Z snap="$(data_dir)/snapshots/20261019T120000Z" fd
+  local name=20261019T120000Z snap fd
+  snap="$(data_dir)/snapshots/20261019T120000Z"
   delete_fixture_snapshot "$snap"
   mark_restore "$snap" "$STORE"
   lanai_run delete-snapshot "$name"
@@ -181,7 +183,8 @@ delete_fixture_snapshot() {
 
 @test "delete-snapshot: partial failure reports a remaining restore point" {
   use_install "$T/win"
-  local name=20261019T120000Z first="$(data_dir)/snapshots/20261019T120000Z" second="$STORE.lanai-snapshots/20261019T120000Z"
+  local name=20261019T120000Z first second="$STORE.lanai-snapshots/20261019T120000Z"
+  first="$(data_dir)/snapshots/20261019T120000Z"
   delete_fixture_snapshot "$first"
   delete_fixture_snapshot "$second"
   eval "$(declare -f snapshot_remove | sed '1s/snapshot_remove/real_snapshot_remove/')"

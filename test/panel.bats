@@ -365,7 +365,8 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
 @test "snapshot deletion: running view offers a named action and unfinished restores disable it" {
   # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
   source "$REPO/lib/snapshot.sh"
-  local snap="$(data_dir)/snapshots/20261012T091200Z" fd
+  local snap fd
+  snap="$(data_dir)/snapshots/20261012T091200Z"
   display_snapshot "$snap"
   state '{"snapshot":"taken","done":true}'
   ST=active
