@@ -29,8 +29,8 @@ MAX_BYTES = 257  # 64 four-byte characters and one newline
 # Checked in this order; the first rule a label breaks is its reply.
 MESSAGES = {
     "invalid-utf8": "Use valid UTF-8 text.",
-    "line-break": "Use one line for the snapshot name.",
-    "angle-bracket": "Remove < and > from the name.",
+    "line-break": "Use one line.",
+    "angle-bracket": "Remove < and >.",
     "separator": "Use ordinary spaces between words.",
     "invisible": "Remove unsupported invisible characters. Some emoji contain them.",
     "unsupported-character": "Remove unsupported control or special characters.",

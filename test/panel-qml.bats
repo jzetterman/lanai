@@ -2054,9 +2054,9 @@ TestCase {
     field.forceActiveFocus()
     for (var i = 0; i < text.length; i++) keyClick(text[i])
   }
-  function jobView(v, token, ok, reason, rule, message) {
+  function jobView(v, token, ok, message) {
     var w = JSON.parse(JSON.stringify(v))
-    w.snapshots.job = {token:token,ended:ok !== null,ok:ok,reason:reason || null,rule:rule || null,message:message || ''}
+    w.snapshots.job = {token:token,ended:ok !== null,ok:ok,message:message || ''}
     return w
   }
   function test_snapshot_name_fields_are_labelled_distinct_and_in_bounds() {
@@ -2125,7 +2125,7 @@ TestCase {
     })
     p.panel.destroy()
   }
-  function test_snapshot_name_enter_from_a_hidden_field_starts_nothing() {
+  function test_snapshot_name_hidden_field_takes_no_keys_or_enter() {
     var p = namePanel(true), daily = nameParts(p, false)
     typeInto(daily.field, 'Hidden'); verify(daily.field.activeFocus)
     // A poll or a click collapses Snapshots while the action stays usable.
@@ -2134,7 +2134,8 @@ TestCase {
     var action = p.model.control('take_snapshot')
     verify(action.show === true && action.enable === true)
     var count = Quickshell.launchCount
-    keyClick(Qt.Key_Return)
+    // The hidden field keeps focus, but neither keys nor Enter reach it.
+    keyClick('x'); keyClick(Qt.Key_Return)
     compare(Quickshell.launchCount, count)
     named(p.panel, 'snapshotsToggle').clicked(); wait(1)
     compare(daily.field.text, 'Hidden')
@@ -2146,9 +2147,9 @@ TestCase {
     daily.take.clicked()
     compare(launched(), JSON.stringify(['snapshot','a<b']))
     var dailyToken = Quickshell.lastCommand[2]
-    nameSettle(p, jobView(p.view, dailyToken, false, 'invalid-label', 'angle-bracket', 'Remove < and > from the name.'))
-    compare(daily.error.text, 'Remove < and > from the name.'); verify(daily.error.visible)
-    compare(daily.field.Accessible.description, 'Remove < and > from the name.')
+    nameSettle(p, jobView(p.view, dailyToken, false, 'Remove < and >.'))
+    compare(daily.error.text, 'Remove < and >.'); verify(daily.error.visible)
+    compare(daily.field.Accessible.description, 'Remove < and >.')
     var siblings = Array.from(daily.field.parent.children)
     compare(siblings.indexOf(daily.error), siblings.indexOf(daily.field) + 1)
     compare(daily.field.text, 'a<b')
@@ -2161,18 +2162,18 @@ TestCase {
     setup.take.clicked()
     compare(launched(), JSON.stringify(['snapshot','first\nsecond']))
     var setupToken = Quickshell.lastCommand[2]
-    nameSettle(p, jobView(p.view, setupToken, false, 'invalid-label', 'line-break', 'Use one line for the snapshot name.'))
-    compare(setup.error.text, 'Use one line for the snapshot name.'); verify(setup.error.visible)
-    compare(setup.field.Accessible.description, 'Use one line for the snapshot name.')
+    nameSettle(p, jobView(p.view, setupToken, false, 'Use one line.'))
+    compare(setup.error.text, 'Use one line.'); verify(setup.error.visible)
+    compare(setup.field.Accessible.description, 'Use one line.')
     compare(setup.field.text, 'first\nsecond')
-    compare(daily.error.text, 'Remove < and > from the name.')
+    compare(daily.error.text, 'Remove < and >.')
     verify(daily.take.enabled && setup.take.enabled)
     // A refusal for another launch reaches neither field; the next submission clears its own note.
-    p.model.view = jobView(p.view, 'panel-other', false, 'invalid-label', 'too-long', 'Use 64 characters or fewer.'); wait(1)
-    compare(daily.error.text, 'Remove < and > from the name.'); compare(setup.error.text, 'Use one line for the snapshot name.')
+    p.model.view = jobView(p.view, 'panel-other', false, 'Use 64 characters or fewer.'); wait(1)
+    compare(daily.error.text, 'Remove < and >.'); compare(setup.error.text, 'Use one line.')
     daily.take.clicked()
     verify(!daily.error.visible); compare(daily.field.Accessible.description, '')
-    compare(setup.error.text, 'Use one line for the snapshot name.')
+    compare(setup.error.text, 'Use one line.')
     p.panel.destroy()
   }
   function test_snapshot_name_drafts_survive_polls_sections_and_failures() {
@@ -2185,7 +2186,7 @@ TestCase {
     compare(daily.field.text, 'Keep me')
     daily.take.clicked()
     var token = Quickshell.lastCommand[2]
-    nameSettle(p, jobView(p.view, token, false, 'snapshot-failed'))
+    nameSettle(p, jobView(p.view, token, false))
     compare(daily.field.text, 'Keep me'); verify(!daily.error.visible)
     // An unreadable poll shows the Failed view; the drafts outlast it.
     p.model.refresh(); process(p.model, 'timeout').complete('unreadable', 1)

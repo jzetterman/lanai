@@ -95,8 +95,8 @@ marked UTC. A saved name shows above its date. When two snapshots share a name
 in the same minute, their times show seconds. Each row has **Delete** and
 **Restore** actions. The count
 includes only valid snapshots for this storage location. Restoring asks you to
-confirm the named snapshot and warns that later changes will be lost. Cancel
-clears the confirmation. Deleting also asks you to confirm the named snapshot.
+confirm the snapshot you chose and warns that later changes will be lost. Cancel
+clears the confirmation. Deleting also asks you to confirm the snapshot you chose.
 It removes that restore point while leaving the current Windows state intact.
 You can delete a snapshot while Windows runs. Deletion is unavailable during
 another snapshot operation or an unfinished restore.

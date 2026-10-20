@@ -9,8 +9,8 @@ The Python helper owns the validation rule and its user-facing messages. It chec
 | Rule key | Trigger | Message |
 | --- | --- | --- |
 | `invalid-utf8` | Invalid UTF-8 argv bytes | Use valid UTF-8 text. |
-| `line-break` | CR, LF, U+2028, U+2029 | Use one line for the snapshot name. |
-| `angle-bracket` | `<` or `>` | Remove < and > from the name. |
+| `line-break` | CR, LF, U+2028, U+2029 | Use one line. |
+| `angle-bracket` | `<` or `>` | Remove < and >. |
 | `separator` | Other Unicode category Z characters except U+0020 | Use ordinary spaces between words. |
 | `invisible` | Unicode category Cf | Remove unsupported invisible characters. Some emoji contain them. |
 | `unsupported-character` | Other Unicode category C characters | Remove unsupported control or special characters. |

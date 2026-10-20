@@ -474,14 +474,14 @@ labeled_snapshot() {
   labeled_snapshot 20261012T091200Z Same
   labeled_snapshot 20261012T091245Z Same
   labeled_snapshot 20261012T091230Z Other
-  labeled_snapshot 20261012T101200Z Same
+  labeled_snapshot 20261012T091300Z Same
   display_snapshot "$(data_dir)/snapshots/20261012T091210Z"
   display_snapshot "$(data_dir)/snapshots/20261012T091220Z"
   export TZ=Pacific/Honolulu LC_TIME=C.utf8
   run cmd_panel
   assert_success
   assert_equal "$(jq -c '.snapshots.items | map([.name,.time])' <<<"$output")" \
-    '[["20261012T101200Z","10:12 UTC"],["20261012T091245Z","09:12:45 UTC"],["20261012T091230Z","09:12 UTC"],["20261012T091220Z","09:12 UTC"],["20261012T091210Z","09:12 UTC"],["20261012T091200Z","09:12:00 UTC"]]'
+    '[["20261012T091300Z","09:13 UTC"],["20261012T091245Z","09:12:45 UTC"],["20261012T091230Z","09:12 UTC"],["20261012T091220Z","09:12 UTC"],["20261012T091210Z","09:12 UTC"],["20261012T091200Z","09:12:00 UTC"]]'
   local first
   first=$(jq -c '.snapshots.items[] | select(.name == "20261012T091245Z")' <<<"$output")
   assert_equal "$(jq -r .label <<<"$first")" 'Oct 12, 2026 at 09:12:45 UTC'
@@ -534,7 +534,7 @@ snapshot_job() {
     [[ $(jq -r .bar.mode <<<"$output") != failed ]] || fail "the bar shows Failed"
     [[ $(jq -r .header.badge <<<"$output") != Failed ]] || fail "the badge shows Failed"
     assert_equal "$(jq -c .snapshots.job <<<"$output")" \
-      "{\"token\":\"$layout-field\",\"ended\":true,\"ok\":false,\"reason\":\"invalid-label\",\"message\":\"Remove < and > from the name.\"}"
+      "{\"token\":\"$layout-field\",\"ended\":true,\"ok\":false,\"message\":\"Remove < and >.\"}"
   done
   # The daily view shows a Snapshots result note only for other failures.
   run panel_words snapshot "$reply"
@@ -554,7 +554,7 @@ snapshot_job() {
     run cmd_panel
     assert_success
     assert_equal "$(jq -r .layout <<<"$output")" "$layout"
-    assert_equal "$(jq -c .snapshots.job <<<"$output")" "{\"token\":\"$layout-ok\",\"ended\":true,\"ok\":true,\"reason\":null,\"message\":\"\"}"
+    assert_equal "$(jq -c .snapshots.job <<<"$output")" "{\"token\":\"$layout-ok\",\"ended\":true,\"ok\":true,\"message\":\"\"}"
   done
   exec {fd}>"$S/panel-job.lock"
   flock -n "$fd"

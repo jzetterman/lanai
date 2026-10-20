@@ -568,7 +568,6 @@ cmd_panel() {
     .snapshots.job = ($rec.records.snapshots as $d |
       if $d.command == "snapshot" and ($d.token | type) == "string" then
         {token:$d.token,ended:($d | has("ended")),ok:(if ($d.reply.ok | type) == "boolean" then $d.reply.ok else null end),
-          reason:($d.reply.reason // null),
           message:(if $d.reply.reason == "invalid-label" then ($d.reply.message // "") else "" end)}
       else null end) |
     .settings += {baseline:(.settings.baseline // null),

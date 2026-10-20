@@ -87,7 +87,7 @@ Panel {
   function settleSnapshotJob(draft: NameDraft) {
     var job = (root.model.view.snapshots || {}).job
     if (!job || draft.sentToken === "" || job.token !== draft.sentToken) return
-    if (job.reason === "invalid-label") draft.error = job.message || ""
+    if (job.message) draft.error = job.message
     else if (job.ended === true && job.ok === true) {
       if (draft.text === draft.sentText) draft.text = ""
       draft.sentToken = ""
@@ -995,6 +995,8 @@ Panel {
       font.family: root.fontFamily
       Accessible.name: nameField.accessibleName
       Accessible.description: nameField.draft.error
+      // A hidden field keeps focus; keys must not edit its unseen draft.
+      readOnly: !nameField.visible
       onTextChanged: nameField.draft.text = text
       // A focused field still gets Enter after a section above hides it.
       onAccepted: if (nameField.visible) root.takeSnapshot(nameField.draft, nameField.actionControl)

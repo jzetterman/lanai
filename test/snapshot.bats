@@ -341,8 +341,8 @@ exec /usr/bin/python3 "$@"'
     too-long too-long
     line-break invalid-utf8)
   local -A messages=(
-    [line-break]='Use one line for the snapshot name.'
-    [angle-bracket]='Remove < and > from the name.'
+    [line-break]='Use one line.'
+    [angle-bracket]='Remove < and >.'
     [separator]='Use ordinary spaces between words.'
     [invisible]='Remove unsupported invisible characters. Some emoji contain them.'
     [unsupported-character]='Remove unsupported control or special characters.'
@@ -423,7 +423,7 @@ label_fixture() {
   delete_fixture_snapshot "$root/20261001T000013Z"
   mkfifo "$root/20261001T000013Z/LABEL"
   label_fixture 20261001T000015Z ''
-  truncate -s 1G "$root/20261001T000015Z/LABEL"
+  truncate -s 1T "$root/20261001T000015Z/LABEL"
   # A named pipe or a huge LABEL must not block the poll: the CLI runs under
   # a deadline.
   run --separate-stderr timeout 10 "$REPO/bin/lanai" snapshots
