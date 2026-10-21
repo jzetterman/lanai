@@ -458,7 +458,7 @@ TestCase {
     older.name = '20261001T080000Z'; older.date = 'Oct 1, 2026'; older.time = '08:00 UTC'
     older.label = 'Oct 1, 2026 at 08:00 UTC'; older.restore_label = 'Restore ' + older.label
     older.confirm_label = 'Restore ' + older.label + ' and replace Windows'
-    older.delete_label = 'Delete ' + older.label; older.delete_confirm_label = 'Delete ' + older.label + ' permanently'
+    older.delete_label = 'Delete ' + older.label; older.delete_confirm_label = 'Delete snapshot: ' + older.label + ', permanently'
     v.snapshots.items.push(older); v.snapshots.names.push(older.name); v.snapshots.count = 2
     return v
   }
