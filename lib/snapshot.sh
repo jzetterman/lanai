@@ -261,9 +261,6 @@ snapshot_label_write() { printf '%s\n' "$2" >"$1/LABEL"; }
 snapshot_create() {
   local label=${1:-} dir reason root name part='' m image name_file rc made_root
   dir=$(storage_dir) || return 1
-  if [[ $dir == *$'\n'* ]]; then
-    echo "the storage location's path holds a newline"; return 1
-  fi
   if reason=$(snapshot_blocked) || reason=$(restore_pending) || reason=$(storage_problem "$dir" snapshot); then
     echo "$reason"; return 1
   fi

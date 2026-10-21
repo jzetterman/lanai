@@ -174,28 +174,37 @@ settings_file() {
 # path that does not exist prints as is. ~/.windows is the default only when
 # there is no settings file at all. Fails when the settings file is a symlink
 # (dangling or not), cannot be read or parsed, or names a relative path, so a
-# broken file never falls back to the live install.
+# broken file never falls back to the live install. Also fails when the path
+# or its real path holds a newline: callers read snapshot roots and lists
+# one path per line.
 storage_dir() {
-  local f dir=""
+  local f dir="" real
   f=$(settings_file)
   # Only a settings file that does not exist at all means the default.
   if [[ -L $f ]]; then
     echo "lanai: $f is a symlink; Lanai reads only a regular settings file" >&2
     return 1
   elif [[ -e $f ]]; then
-    dir=$(jq -r 'if (type == "object" and (.storage | type) == "string") then .storage
+    # The x keeps a trailing newline in the path from being dropped.
+    dir=$(jq -j 'if (type == "object" and (.storage | type) == "string") then .storage
       elif (type == "object" and .storage == null) then ""
-      else error("storage must be a string") end' "$f") || {
+      else error("storage must be a string") end' "$f" && printf x) || {
       echo "lanai: cannot read the storage location from $f" >&2
       return 1
     }
+    dir=${dir%x}
     [[ -z $dir || $dir == /* ]] || {
       echo "lanai: the storage location in $f must be an absolute path" >&2
       return 1
     }
   fi
   [[ -n $dir ]] || dir=$HOME/.windows
-  realpath -e -- "$dir" 2>/dev/null || printf '%s\n' "$dir"
+  if real=$(realpath -e -- "$dir" 2>/dev/null && printf x); then dir=${real%$'\n'x}; fi
+  if [[ $dir == *$'\n'* ]]; then
+    echo "lanai: the storage location must not contain a newline: ${dir@Q}" >&2
+    return 1
+  fi
+  printf '%s\n' "$dir"
 }
 
 # Print the path of omarchy-windows-vm's compose file: the system one, else

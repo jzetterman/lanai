@@ -102,7 +102,9 @@ includes only valid snapshots for this storage location. Restoring asks you to
 confirm the snapshot you chose with **Restore now** and warns that later
 changes will be lost. Deleting asks you to confirm with **Delete snapshot**
 and leaves Windows as it is.
-The **Cancel** under the row clears either confirmation. A deleted snapshot
+The **Cancel** under the row clears either confirmation. A confirming click
+counts only after a short pause, so holding a key cannot arm and confirm in
+one press. A deleted snapshot
 leaves the list, with no separate message. You can delete a snapshot while
 Windows runs or while another VM uses it. Deletion is unavailable while another
 operation runs or a restore is unfinished.
@@ -575,7 +577,7 @@ remain visible above the controls. Direct actions are recorded by `lanai ui-run`
 restores and updates run in session units through `lanai ui-job`, with
 diagnostics in Lanai’s state directory as
 `panel-run.log` and `panel-job.log`. The panel labels these as the button actions
-log and the setup, snapshot, restore and update log. Rapid repeated clicks keep the first
+log and the Jobs log. Rapid repeated clicks keep the first
 launch pending. Other controls preserve a failed launch notice until the next
 setup, snapshot, restore or update starts. The Windows window log has its own
 path, and so does the Windows window build log, `build-client.log` in Lanai’s

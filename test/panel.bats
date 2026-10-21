@@ -342,24 +342,39 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
 }
 
 @test "redesign snapshots: running guidance is brief and saved details can be disclosed" {
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  local snap
+  snap="$(data_dir)/snapshots/20261012T091200Z"
+  display_snapshot "$snap"
   state '{"snapshot":"declined","done":true}'
-  panel_result_write snapshots '{"command":"snapshot","ended":1,"reply":{"ok":true,"snapshot":"/copy"}}'
+  panel_result_write snapshots "$(jq -nc --arg s "$snap" '{command:"snapshot",ended:1,reply:{ok:true,snapshot:$s}}')"
   ST=active
   run cmd_panel
   assert_success
-  assert_equal "$(jq -r .snapshots.line <<<"$output")" 'Shut down Windows to take a snapshot.'
+  assert_equal "$(jq -r .snapshots.line <<<"$output")" 'Shut down Windows to take or restore snapshots.'
   # The list already shows the new snapshot first: no separate summary line.
   assert_equal "$(jq -r '.snapshots.saved | has("summary")' <<<"$output")" false
   assert_equal "$(jq -r .snapshots.saved.show_label <<<"$output")" 'Show details'
   assert_equal "$(jq -r .snapshots.saved.hide_label <<<"$output")" 'Hide details'
-  assert_equal "$(jq -r .snapshots.saved.path <<<"$output")" '/copy'
-  assert_equal "$(jq -r .snapshots.saved.path_line <<<"$output")" 'Snapshot saved at /copy'
+  assert_equal "$(jq -r .snapshots.saved.path <<<"$output")" "$snap"
+  assert_equal "$(jq -r .snapshots.saved.path_line <<<"$output")" "Snapshot saved at $snap"
   assert_equal "$(jq -r .snapshots.saved.advice <<<"$output")" 'It shares disk space at first and grows as Windows changes. To delete it, use Delete beside the snapshot below.'
   assert_equal "$(jq -r .snapshots.saved.copy_label <<<"$output")" 'Copy snapshot path'
+  # Stopped with snapshots, the badge and rows say it all.
   ST=inactive
   run cmd_panel
   assert_success
+  assert_equal "$(jq -r .snapshots.line <<<"$output")" ''
+  assert_equal "$(jq -r .snapshots.saved.path <<<"$output")" "$snap"
+  # Deleted outside the panel (the CLI or a file manager), the snapshot
+  # leaves no details, path or Delete advice behind.
+  rm -rf "$snap"
+  run cmd_panel
+  assert_success
   assert_equal "$(jq -r .snapshots.line <<<"$output")" 'No snapshots yet.'
+  assert_equal "$(jq -c .snapshots.saved <<<"$output")" null
+  assert_equal "$(jq -r .result.snapshots <<<"$output")" ''
 }
 
 @test "snapshot deletion: running view offers a named action and unfinished restores disable it" {
@@ -574,7 +589,7 @@ snapshot_job() {
   snapshot_job other '{"ok":false,"message":"UNTRUSTED"}'
   run cmd_panel
   assert_equal "$(jq -r .layout <<<"$output")" failed
-  assert_equal "$(jq -r .result.snapshots <<<"$output")" 'Lanai could not take the snapshot. Check the snapshot log and try again.'
+  assert_equal "$(jq -r .result.snapshots <<<"$output")" 'Lanai could not take the snapshot. Check the Jobs log and try again.'
   assert_equal "$(jq -c '.snapshots.job | [.token,.ok,.message]' <<<"$output")" '["other",false,""]'
 }
 
@@ -980,7 +995,10 @@ assert_plan_agreement() {
   panel_result_write vm '{"command":"start","invocation":"old","ended":1,"reply":{"ok":true,"network":false}}'
   run cmd_panel
   assert_equal "$(jq -r '.result.setup + .result.vm' <<<"$output")" ''
-  panel_result_write snapshots '{"command":"snapshot","ended":1,"reply":{"ok":true,"snapshot":"/copy"}}'
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  display_snapshot "$(data_dir)/snapshots/20261012T091200Z"
+  panel_result_write snapshots "$(jq -nc --arg s "$(data_dir)/snapshots/20261012T091200Z" '{command:"snapshot",ended:1,reply:{ok:true,snapshot:$s}}')"
   run cmd_panel
   assert_output --partial 'grows as Windows changes'
   assert_output --partial 'use Delete beside the snapshot'
@@ -1020,7 +1038,7 @@ assert_plan_agreement() {
   for reason in busy session settings layout missing restore share container manager active record no-media nostart incomplete qmp guest-boot window-closed idd-missing mismatch allowlist agents scale-task client snapshot-unsupported invalid-reply; do
     text=$(panel_words setup "$(jq -nc --arg r "$reason" '{ok:false,step:"1",reason:$r,message:"UNTRUSTED",next:"UNTRUSTED"}')")
     assert [ -n "$text" ]
-    refute [ "$text" = 'Setup could not finish. Check the setup log, then continue setup.' ]
+    refute [ "$text" = 'Setup could not finish. Check the Jobs log, then continue setup.' ]
     refute [ "$text" = UNTRUSTED ]
   done
   for command in start open stop force-stop notice-seen settings setup-host setup snapshot restore; do
@@ -1193,6 +1211,8 @@ assert_plan_agreement() {
   run cmd_panel
   assert_output --partial 'could not read the VM settings'
   assert_output --partial 'could not read the snapshot list'
+  # The error says it; no empty-list line beside it.
+  assert_equal "$(jq -r .snapshots.line <<<"$output")" ''
   printf '{"storage":"%s","memory_gib":8,"cores":4}\n' "$STORE" >"$(settings_file)"
   snapshot_list() { return 1; }
   run cmd_panel
@@ -1683,18 +1703,25 @@ assert_plan_agreement() {
 @test "panel: logs and reply guidance use the same names" {
   run cmd_panel
   assert_equal "$(jq -r .logs.client <<<"$output")" "Windows window log: $RUN/client.log"
-  assert_equal "$(jq -r .logs.job <<<"$output")" "Setup, snapshot, restore and update log: $S/panel-job.log"
+  assert_equal "$(jq -r .logs.job <<<"$output")" "Jobs log: $S/panel-job.log"
   assert_equal "$(jq -r .logs.command <<<"$output")" "Button actions log: $S/panel-run.log"
   run panel_words setup '{"ok":false,"reason":"client"}'
   assert_output 'The Windows window could not open. Check the Windows window log and try again.'
   run panel_words setup '{"ok":false}'
-  assert_output 'Setup could not finish. Check the setup log, then continue setup.'
+  assert_output 'Setup could not finish. Check the Jobs log, then continue setup.'
   run panel_words snapshot '{"ok":false}'
-  assert_output 'Lanai could not take the snapshot. Check the snapshot log and try again.'
+  assert_output 'Lanai could not take the snapshot. Check the Jobs log and try again.'
   run panel_words restore '{"ok":false}'
-  assert_output 'Lanai could not restore the snapshot. Check the restore log before trying again.'
+  assert_output 'Lanai could not restore the snapshot. Check the Jobs log before trying again.'
+  run panel_words setup '{"ok":false,"step":"5","reason":"record"}'
+  assert_output 'Lanai could not save its setup progress. Check the Jobs log and try again.'
+  local command
+  for command in setup snapshot restore build-client; do
+    run panel_words "$command" '{"ok":false,"reason":"manager"}'
+    assert_output 'Lanai cannot reach your session services. Check the Jobs log and try again.'
+  done
   run cmd_panel --pending never "$((EPOCHSECONDS - 11))"
-  assert_equal "$(jq -r .result.launch <<<"$output")" 'The operation did not start. Check the setup, snapshot, restore and update log, then try again.'
+  assert_equal "$(jq -r .result.launch <<<"$output")" 'The operation did not start. Check the Jobs log, then try again.'
 }
 
 @test "panel: repair prompt and named restore labels come from the backend" {
@@ -2684,7 +2711,7 @@ assert_rerun_warning() {
   assert_output 'Another build of the Windows window is running. Try again when it finishes.'
   # ui_call writes the CLI's stderr to the job log, not the build log.
   run panel_words build-client '{"ok":false,"reason":"invalid-reply"}'
-  assert_output 'Lanai did not give a readable reply. Check the update log and try again.'
+  assert_output 'Lanai did not give a readable reply. Check the Jobs log and try again.'
   run cmd_panel
   assert_equal "$(jq -r .logs.build <<<"$output")" "Windows window build log: $S/build-client.log"
 }

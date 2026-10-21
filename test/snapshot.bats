@@ -262,6 +262,27 @@ delete_fixture_snapshot() {
   assert_equal "$(tree_manifest "$target")" "$before"
 }
 
+@test "delete-snapshot: a storage path with a newline lists and deletes nothing outside the snapshot roots" {
+  local name=20261019T120000Z store=$T/a$'\n'b planted
+  use_install "$store"
+  # One root per line would read $T/a and b.lanai-snapshots (relative to
+  # the working folder) as roots. Plant a complete snapshot in each.
+  for planted in "$T/a/$name" "$T/b.lanai-snapshots/$name"; do
+    delete_fixture_snapshot "$planted"
+  done
+  cd "$T"
+  lanai_run snapshots
+  assert_failure
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  for planted in "$T/a/$name" "$T/b.lanai-snapshots/$name"; do
+    assert [ -f "$planted/COMPLETE" ]
+  done
+  run storage_dir
+  assert_failure
+  assert_equal "$output" "lanai: the storage location must not contain a newline: ${store@Q}"
+}
+
 @test "snapshot_remove: a symlink goes without touching its target's modes" {
   local target="$T/target" link="$T/link"
   B=$target
