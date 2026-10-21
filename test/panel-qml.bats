@@ -2244,6 +2244,11 @@ TestCase {
     }
     n.take.clicked(); wait(1); typeInto(n.field, 'a<b'); n.take.clicked()
     var token = Quickshell.lastCommand[2]
+    // The worker records the end before it releases its lock, so a poll can
+    // see the refusal while still busy. The prompt stays open with it.
+    nameSettle(p, jobView(runningView(p.view), token, false, 'Remove < and >.'))
+    compare(p.panel.namePrompt, 'take_snapshot')
+    verify(n.field.visible && n.error.visible && !n.cancel.visible)
     // A name refusal shows beside the open field, and Cancel comes back.
     nameSettle(p, jobView(p.view, token, false, 'Remove < and >.'))
     verify(n.field.visible && n.error.visible && n.cancel.visible)

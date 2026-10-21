@@ -126,9 +126,11 @@ Panel {
   // Give the latest snapshot job to the prompt that launched it: a name
   // refusal shows beside its field, and success clears an unchanged draft
   // and closes the prompt. sentToken marks the prompt's snapshot as running
-  // until its job ends or nothing is busy, which also covers a failed
-  // launch and a worker that never wrote its end record. The unreadable-poll
-  // view has no busy key, so it keeps the token.
+  // until nothing is busy, which also covers a failed launch and a worker
+  // that never wrote its end record. Not on the end record alone: the
+  // worker writes it before it releases its lock, and a poll in between is
+  // still busy. The unreadable-poll view has no busy key, so it keeps the
+  // token.
   function settleSnapshotJob(draft: NameDraft, control: string) {
     var job = (root.model.view.snapshots || {}).job
     if (draft.sentToken === "") return
@@ -138,7 +140,7 @@ Panel {
       if (draft.text === draft.sentText) draft.text = ""
       if (namePrompt === control) closeNamePrompt()
     }
-    if ((own && job.ended === true) || (root.model.view.busy || {}).active === false) draft.sentToken = ""
+    if ((root.model.view.busy || {}).active === false) draft.sentToken = ""
   }
 
   // Only interpolate the backend duration. Polls re-anchor it; opening does not.
