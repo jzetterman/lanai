@@ -424,7 +424,7 @@ TestCase {
       sections:{settings:'Settings',snapshots:'Snapshots',logs:'Logs',default:''},primary_action:'start',
       buttons:{start:{show:true,enable:true,label:'Start Windows'},cancel:{show:true,enable:true,label:'Cancel'},
         restore_snapshot:{show:true,enable:true,label:'Restore'},restore_confirm:{show:true,enable:true,label:'Confirm'},
-        delete_snapshot:{show:true,enable:true,label:'Delete'},delete_confirm:{show:true,enable:true,label:'Delete permanently'},
+        delete_snapshot:{show:true,enable:true,label:'Delete'},delete_confirm:{show:true,enable:true,label:'Delete snapshot'},
         save_settings:{show:true,enable:true,label:'Save settings'}},setup:{finished:true},
       settings:{memory_gib:12,cores:6,windows_scale:175,baseline:{memory_gib:12,cores:6,windows_scale:175},
         labels:{memory:'Memory (GiB)',cores:'CPU cores',scale:'Windows scale',save:'Save',saved:'Saved',reset:'Reset',unsaved:'Unsaved'}},
@@ -433,7 +433,7 @@ TestCase {
       snapshots:{show:true,count:1,names:['20261012T091200Z'],items:[{name:'20261012T091200Z',date:'Oct 12, 2026',time:'09:12 UTC',
         label:'Oct 12, 2026 at 09:12 UTC',restore_label:'Restore Oct 12, 2026 at 09:12 UTC',
         confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',warning:'Later changes are lost.',
-        delete_label:'Delete Oct 12, 2026 at 09:12 UTC',delete_confirm_label:'Delete Oct 12, 2026 at 09:12 UTC permanently',
+        delete_label:'Delete Oct 12, 2026 at 09:12 UTC',delete_confirm_label:'Delete snapshot: Oct 12, 2026 at 09:12 UTC, permanently',
         delete_warning:'Windows stays as it is. You will lose this restore point.'}]},
       restore:{label:'',warning:''},progress:null}
   }
@@ -443,7 +443,7 @@ TestCase {
     older.name = '20261001T080000Z'; older.date = 'Oct 1, 2026'; older.time = '08:00 UTC'
     older.label = 'Oct 1, 2026 at 08:00 UTC'; older.restore_label = 'Restore ' + older.label
     older.confirm_label = 'Restore ' + older.label + ' and replace Windows'
-    older.delete_label = 'Delete ' + older.label; older.delete_confirm_label = 'Delete ' + older.label + ' permanently'
+    older.delete_label = 'Delete ' + older.label; older.delete_confirm_label = 'Delete snapshot: ' + older.label + ', permanently'
     v.snapshots.items.push(older); v.snapshots.names.push(older.name); v.snapshots.count = 2
     return v
   }

@@ -374,9 +374,9 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   assert_success
   assert_equal "$(jq -c '[.buttons.delete_snapshot.show,.buttons.delete_snapshot.enable,.buttons.delete_confirm.enable]' <<<"$output")" '[true,true,true]'
   # The rows show these words; the item labels name the target.
-  assert_equal "$(jq -c '[.buttons.delete_snapshot.label,.buttons.delete_confirm.label,.buttons.restore_snapshot.label]' <<<"$output")" '["Delete","Delete permanently","Restore"]'
+  assert_equal "$(jq -c '[.buttons.delete_snapshot.label,.buttons.delete_confirm.label,.buttons.restore_snapshot.label]' <<<"$output")" '["Delete","Delete snapshot","Restore"]'
   assert_equal "$(jq -r .snapshots.items[0].delete_label <<<"$output")" 'Delete Oct 12, 2026 at 09:12 UTC'
-  assert_equal "$(jq -r .snapshots.items[0].delete_confirm_label <<<"$output")" 'Delete Oct 12, 2026 at 09:12 UTC permanently'
+  assert_equal "$(jq -r .snapshots.items[0].delete_confirm_label <<<"$output")" 'Delete snapshot: Oct 12, 2026 at 09:12 UTC, permanently'
   assert_equal "$(jq -r .snapshots.items[0].delete_warning <<<"$output")" 'Windows stays as it is. You will lose this restore point.'
   assert_equal "$(jq -r .snapshots.line <<<"$output")" 'Shut down Windows to take or restore snapshots.'
   # Another VM blocks taking and restoring, but deletion still works.

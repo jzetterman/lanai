@@ -85,7 +85,7 @@ Snapshots show newest first, with readable dates and times marked UTC. Each row
 has **Delete** and **Restore** actions. The count
 includes only valid snapshots for this storage location. Restoring asks you to
 confirm the named snapshot and warns that later changes will be lost. Deleting
-asks you to confirm with **Delete permanently** and leaves Windows as it is.
+asks you to confirm with **Delete snapshot** and leaves Windows as it is.
 The **Cancel** under the row clears either confirmation. A deleted snapshot
 leaves the list, with no separate message. You can delete a snapshot while
 Windows runs or while another VM uses it. Deletion is unavailable while another

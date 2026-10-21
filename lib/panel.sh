@@ -146,7 +146,7 @@ panel_snapshot_item() {
     '{name:$n,date:(if $d == "" then null else $d end),time:(if $t == "" then null else $t end),
       label:$l,restore_label:("Restore " + $l),confirm_label:("Restore " + $l + " and replace Windows"),
       warning:"Replaces Windows. Changes since this snapshot are lost.",
-      delete_label:("Delete " + $l),delete_confirm_label:("Delete " + $l + " permanently"),
+      delete_label:("Delete " + $l),delete_confirm_label:("Delete snapshot: " + $l + ", permanently"),
       delete_warning:"Windows stays as it is. You will lose this restore point."}'
 }
 
@@ -470,7 +470,7 @@ cmd_panel() {
        restore_confirm:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore and replace Windows") +
          {labels:($snaps.names | map({key:.,value:("Restore " + . + " and replace Windows")}) | from_entries)},
        delete_snapshot:button($snapshotsShow and ($snaps.names|length)>0;($busy|not) and ($st.restore_pending|not);"Delete"),
-       delete_confirm:button($snapshotsShow and ($snaps.names|length)>0;($busy|not) and ($st.restore_pending|not);"Delete permanently"),
+       delete_confirm:button($snapshotsShow and ($snaps.names|length)>0;($busy|not) and ($st.restore_pending|not);"Delete snapshot"),
        update_client:button($updateShown;($busy|not);"Update the Windows window"),
        save_settings:button(true;$settings.error == "";"Save settings")}} |
     if ($dailyControls|not) and ($st.state == "stopped" or $st.state == "running") then
