@@ -23,7 +23,7 @@ Run focused Bats suites for snapshot, panel, panel jobs, and QML; QML lint, shel
 | Plan | a (gpt-6.1-sol) | 1 | 1 | P2 confirmed: state that Claude final review remains mandatory when unavailable. |
 | Plan | a (gpt-6.1-sol) | 2 | 0 | Clean. |
 | Diff | a (gpt-6.1-sol) | 1 | 0 | Clean; full tracked diff and new snapshot deletion documents reviewed. |
-| Diff | optional (grok-4.7) | 1 | 1 | P2 confirmed: interrupted deletion fell through to the setup message; fixed with a failing then passing panel test. |
-| Diff | optional (grok-4.7) | 2 | 1 | P3 confirmed: README retained obsolete folder-deletion guidance; corrected. No code findings. |
+| Diff | opt Grok (grok-4.7) | 1 | 1 | P2 confirmed: interrupted deletion fell through to the setup message; fixed with a failing then passing panel test. |
+| Diff | opt Grok (grok-4.7) | 2 | 1 | P3 confirmed: README retained obsolete folder-deletion guidance; corrected. No code findings. |
 
 The spec, plan, and diff still need the mandatory Claude final stage after its usage window reopens. The diff also needs the Codex rerun on its final state after that stage closes. No PR has been opened.
