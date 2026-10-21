@@ -83,8 +83,10 @@ Panel {
   }
   // A Take a snapshot click opens its name prompt, closing any other prompt
   // and disarming Restore and Delete. On the open prompt the same button is
-  // Save snapshot and takes the snapshot.
+  // Save snapshot and takes the snapshot. A hidden button does neither: it
+  // keeps focus, and Enter still reaches it, when a failure opens Logs.
   function snapshotClicked(control: string) {
+    if (!namePromptParts(control).action.visible) return
     if (namePrompt === control) { takeSnapshot(namePromptParts(control).draft, control); return }
     var action = root.model.control(control)
     if (action.show !== true || action.enable !== true) return
@@ -110,6 +112,21 @@ Panel {
     }
     namePrompt = ""
   }
+  // Escape in a shown name prompt (its field, Save snapshot or Cancel)
+  // closes only the prompt. From anywhere else, or a prompt out of sight,
+  // it reaches the panel, which closes. Returns whether it closed the prompt.
+  function escapePrompt(control: string, item: Item): bool {
+    if (namePrompt !== control || !item.visible) return false
+    closeNamePrompt()
+    return true
+  }
+  // Whether the snapshot from a prompt's last submission still runs: until
+  // its job record ends, or until nothing is busy. Cancel hides meanwhile,
+  // because it cannot stop a snapshot.
+  function snapshotRunning(draft: NameDraft): bool {
+    var job = (root.model.view.snapshots || {}).job
+    return draft.sentToken !== "" && !(!!job && job.token === draft.sentToken && job.ended === true)
+  }
   // Take a snapshot with a name field's exact text. Enter calls this too, so
   // it starts only while the adjacent action is shown and enabled. Focus
   // goes to the field, so a refusal shows next to a keyboard user.
@@ -125,22 +142,36 @@ Panel {
   }
   // Give the latest snapshot job to the prompt that launched it: a name
   // refusal shows beside its field, and success clears an unchanged draft
-  // and closes the prompt. sentToken marks the prompt's snapshot as running
-  // until nothing is busy, which also covers a failed launch and a worker
-  // that never wrote its end record. Not on the end record alone: the
-  // worker writes it before it releases its lock, and a poll in between is
-  // still busy. The unreadable-poll view has no busy key, so it keeps the
-  // token.
+  // and closes the prompt. sentToken keeps the launch until nothing is
+  // busy, which also covers a failed launch and a worker that never wrote
+  // its end record. Not on the end record alone: the worker writes it
+  // before it releases its lock, and a poll in between is still busy. The
+  // unreadable-poll view has no busy key, so it keeps the token.
+  // A refusal that lands while its prompt is closed, as when the panel
+  // closed right after Save snapshot, reopens the prompt once nothing is
+  // busy, if its action is shown and enabled and nothing else is open or
+  // armed. That moves no focus and starts nothing.
   function settleSnapshotJob(draft: NameDraft, control: string) {
-    var job = (root.model.view.snapshots || {}).job
+    var job = (root.model.view.snapshots || {}).job, action = root.model.control(control)
     if (draft.sentToken === "") return
     var own = !!job && job.token === draft.sentToken
-    if (own && job.message) draft.error = job.message
-    else if (own && job.ended === true && job.ok === true) {
+    if (own && job.message) {
+      if (draft.error !== job.message) {
+        draft.error = job.message
+        draft.reopen = namePrompt !== control
+        // Screen readers would otherwise miss it: focus is already in the field.
+        if (opened) namePromptParts(control).field.Accessible.announce(job.message)
+      }
+    } else if (own && job.ended === true && job.ok === true) {
       if (draft.text === draft.sentText) draft.text = ""
       if (namePrompt === control) closeNamePrompt()
     }
-    if ((root.model.view.busy || {}).active === false) draft.sentToken = ""
+    if ((root.model.view.busy || {}).active === false) {
+      draft.sentToken = ""
+      if (draft.reopen && namePrompt === "" && restoreArmed === "" && deleteArmed === ""
+          && action.show === true && action.enable === true) namePrompt = control
+      draft.reopen = false
+    }
   }
 
   // Only interpolate the backend duration. Polls re-anchor it; opening does not.
@@ -302,6 +333,7 @@ Panel {
     contentHeight: fittedContentHeight(column.implicitHeight, Style.space(650))
     FocusScope {
       id: focusScope
+      objectName: "panelFocus"
       anchors.fill: parent
       Keys.onEscapePressed: root.close()
       Flickable {
@@ -643,10 +675,11 @@ Panel {
                 Action {
                   id: takeSnapshotAction
                   control: "take_snapshot"
-                  text: snapshotActions.prompt ? "Save snapshot" : descriptor.label
+                  text: snapshotActions.prompt ? descriptor.save_label || "" : descriptor.label
                   width: Math.min(implicitWidth, parent.width)
                   x: Math.max(0, parent.width - snapshotActions.pairWidth)
                   y: snapshotActions.wrap ? snapshotDetailsButton.height + snapshotActions.gap : (parent.height - height) / 2
+                  Keys.onEscapePressed: function(event) { event.accepted = root.escapePrompt("take_snapshot", takeSnapshotAction) }
                   onClicked: root.snapshotClicked("take_snapshot")
                 }
                 Action {
@@ -656,9 +689,10 @@ Panel {
                   width: Math.min(implicitWidth, parent.width)
                   x: takeSnapshotAction.x + takeSnapshotAction.width + snapshotActions.gap
                   y: takeSnapshotAction.y
-                  visible: snapshotActions.prompt && dailyName.sentToken === "" && descriptor.show
+                  visible: snapshotActions.prompt && !root.snapshotRunning(dailyName) && descriptor.show
                   onVisibleChanged: if (visible) snapshotActions.cancelRoom = width
                   onWidthChanged: if (visible) snapshotActions.cancelRoom = width
+                  Keys.onEscapePressed: function(event) { event.accepted = root.escapePrompt("take_snapshot", snapshotNameCancel) }
                   onClicked: root.closeNamePrompt()
                 }
                 Button {
@@ -770,9 +804,9 @@ Panel {
                           objectName: "restore-" + snapshotRow.modelData.name
                           width: Math.min(implicitWidth, restoreCell.width)
                           control: snapshotRow.armed ? "restore_confirm" : "restore_snapshot"
-                          // Short caption; the question is the note below the row and
-                          // the full wording is the accessible name, as for Delete.
-                          text: snapshotRow.armed ? root.model.control("restore_confirm").label : descriptor.label
+                          // The descriptor's short caption; the question is the note
+                          // below the row and the full wording is the accessible
+                          // name, as for Delete.
                           Accessible.name: snapshotRow.armed ? snapshotRow.modelData.confirm_label : snapshotRow.modelData.restore_label
                           visible: !snapshotRow.deleting && descriptor.show
                           onClicked: {
@@ -1000,15 +1034,29 @@ Panel {
         Action {
           id: setupSnapshotAction
           control: "setup_snapshot"
-          text: root.namePrompt === "setup_snapshot" ? "Save snapshot" : descriptor.label
+          text: root.namePrompt === "setup_snapshot" ? descriptor.save_label || "" : descriptor.label
+          Keys.onEscapePressed: function(event) { event.accepted = root.escapePrompt("setup_snapshot", setupSnapshotAction) }
           onClicked: root.snapshotClicked("setup_snapshot")
         }
-        Action {
-          id: setupNameCancel
-          objectName: "setupSnapshotNameCancel"
-          control: "cancel"
-          visible: root.namePrompt === "setup_snapshot" && setupName.sentToken === "" && descriptor.show
-          onClicked: root.closeNamePrompt()
+        // Cancel's room, kept while the prompt is open, so the buttons after
+        // it stay put when it hides at submission. A hidden Button measures
+        // no label, so the room is its last shown width.
+        Item {
+          id: setupCancelRoom
+          property real room: 0
+          visible: root.namePrompt === "setup_snapshot" && setupNameCancel.descriptor.show
+          width: room
+          height: setupSnapshotAction.height
+          Action {
+            id: setupNameCancel
+            objectName: "setupSnapshotNameCancel"
+            control: "cancel"
+            visible: root.namePrompt === "setup_snapshot" && !root.snapshotRunning(setupName) && descriptor.show
+            onVisibleChanged: if (visible) setupCancelRoom.room = width
+            onWidthChanged: if (visible) setupCancelRoom.room = width
+            Keys.onEscapePressed: function(event) { event.accepted = root.escapePrompt("setup_snapshot", setupNameCancel) }
+            onClicked: root.closeNamePrompt()
+          }
         }
         Action { control: "skip_snapshot"; onClicked: root.model.run(["setup", "--no-snapshot"], true) }
       }
@@ -1063,12 +1111,14 @@ Panel {
     }
   }
 
-  // One name prompt's state; see dailyName and setupName.
+  // One name prompt's state; see dailyName and setupName. reopen marks a
+  // refusal that landed while the prompt was closed.
   component NameDraft: QtObject {
     property string text: ""
     property string sentToken: ""
     property string sentText: ""
     property string error: ""
+    property bool reopen: false
   }
 
   // A labelled single-line snapshot name above its Take a snapshot action:
@@ -1109,6 +1159,7 @@ Panel {
       // A focused field still gets Enter after its section hides it, as
       // when a failure opens Logs with the prompt still open.
       onAccepted: if (nameField.visible) root.takeSnapshot(nameField.draft, nameField.actionControl)
+      Keys.onEscapePressed: function(event) { event.accepted = root.escapePrompt(nameField.actionControl, nameInput) }
       onActiveFocusChanged: if (activeFocus) root.reveal(nameField)
     }
     Note {
