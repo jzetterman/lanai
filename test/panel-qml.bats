@@ -908,7 +908,7 @@ TestCase {
   }
   function logView() {
     var v = redesignView()
-    v.logs = {copied:'Copied',copy_error:'Could not copy. Try again.',copy_busy:'Another log is being copied. Try again in a moment.',rows:[
+    v.logs = {copied:'Copied',copy_error:'Could not copy. Try again.',copy_busy:'Another copy is in progress. Try again in a moment.',rows:[
       {id:'vm',label:'VM',display:'journal: lanai-vm',copy_text:'journalctl --user -u lanai-vm; $(touch NEVER)\n"literal"',copy_label:'Copy VM log command'},
       {id:'client',label:'Window',display:'client.log',copy_text:'/state with spaces/client.log',copy_label:'Copy Window log path'},
       {id:'build',label:'Build',display:'build-client.log',copy_text:'/state/build-client.log',copy_label:'Copy Build log path'},
@@ -1047,9 +1047,12 @@ TestCase {
     verify(restore !== undefined)
     compare(restore.text, 'Restore')
     compare(restore.Accessible.name, p.model.view.snapshots.items[0].restore_label)
+    compare(restore.Accessible.description, '')
     restore.clicked()
     compare(p.panel.restoreArmed, '20261012T091200Z')
     verify(objects(p.panel, function(o) { return o.text === 'Later changes are lost.' && o.visible }).length > 0)
+    // Screen readers hear the armed warning with the button.
+    compare(restore.Accessible.description, 'Later changes are lost.')
     var cancel = named(p.panel, 'restoreCancel-20261012T091200Z')
     // The armed row hides its Delete. Its own Cancel sits under it, and
     // gives focus back to Restore.
@@ -1095,6 +1098,7 @@ TestCase {
     verify(remove !== undefined)
     compare(remove.text, v.buttons.delete_snapshot.label)
     compare(remove.Accessible.name, item.delete_label)
+    compare(remove.Accessible.description, '')
     ;[420,360,260].forEach(function(width) {
       popup.contentWidth = width
       ;[false,true].forEach(function(armed) {
@@ -1121,12 +1125,14 @@ TestCase {
     // The visible words are inside the accessible name (label in name).
     remove.text.split(' ').forEach(function(word) { verify(remove.Accessible.name.indexOf(word) !== -1, word) })
     verify(textVisible(p.panel, item.delete_warning))
+    compare(remove.Accessible.description, item.delete_warning)
     // The row's own Cancel sits under it, and gives focus back to Delete.
     verify(below(cancel, remove))
     cancel.forceActiveFocus(); cancel.clicked()
     compare(p.panel.deleteArmed, '')
     verify(!cancel.visible)
     verify(remove.activeFocus)
+    compare(remove.Accessible.description, '')
     compare(Quickshell.lastCommand.length, 0)
     remove.clicked()
     pastConfirmGuard(p.panel); remove.clicked()
@@ -1207,6 +1213,21 @@ TestCase {
     compare(note.length, 1)
     p.panel.destroy()
   }
+  // Returns each line <note> lays out, from a TextEdit with the same text,
+  // font, width and wrapping (Text cannot map characters to lines).
+  function laidOutLines(note) {
+    var mirror = Qt.createQmlObject('import QtQuick; TextEdit { textFormat: TextEdit.PlainText; readOnly: true }', note.parent)
+    mirror.font = note.font; mirror.wrapMode = note.wrapMode; mirror.width = note.width; mirror.text = note.text
+    compare(mirror.lineCount, note.lineCount, 'The mirror lays out the note differently')
+    var lines = [], y = null
+    for (var i = 0; i < mirror.length; i++) {
+      var top = mirror.positionToRectangle(i).y
+      if (y === null || top > y) { lines.push(''); y = top }
+      lines[lines.length - 1] += mirror.getText(i, i + 1)
+    }
+    mirror.destroy()
+    return lines
+  }
   function test_redesign_snapshot_actions_fit_narrow_panel() {
     var p = redesignPanel()
     named(p.panel, 'snapshotsToggle').clicked()
@@ -1226,7 +1247,14 @@ TestCase {
         verify(point.x + restore.width <= flick.width, 'Snapshot action overflows ' + width + 'px panel: ' + restore.width)
         verify(point.y >= 0 && point.y + restore.height <= flick.height)
         if (!armed) {
-          var date = objects(p.panel, function(o) { return o.text === 'Oct 12, 2026 · 09:12 UTC' && o.visible })[0]
+          var date = objects(p.panel, function(o) {
+            return typeof o.text === 'string' && o.text.replace(/\u00a0/g, ' ') === 'Oct 12, 2026 · 09:12 UTC' && o.visible })[0]
+          // The date may wrap, but never leaves the separator at a line end.
+          var lines = laidOutLines(date)
+          if (width === 260) verify(lines.length > 1, 'The snapshot date fits one line at 260px, so the wrap goes untested')
+          lines.forEach(function(line) {
+            verify(!/·\s*$/.test(line), 'A snapshot date line ends with its separator at ' + width + 'px: ' + JSON.stringify(lines))
+          })
           var datePoint = date.mapToItem(flick, 0, 0)
           verify(Math.abs(datePoint.y + date.height / 2 - (point.y + restore.height / 2)) <= 1,
             'Snapshot date and Restore label are not centered on the same line at ' + width + 'px')
