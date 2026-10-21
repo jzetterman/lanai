@@ -35,9 +35,14 @@ own_dir() {
 }
 
 # Print the places snapshots of <storage> may live, in order of preference,
-# each ending in NUL: a newline in a path never splits it into two roots.
+# each ending in NUL. Snapshot paths travel one per line from here on, so a
+# data folder with a newline is skipped: snapshots go beside the storage
+# location instead. storage_dir already refuses a newline in <storage>.
 snapshot_roots() {
-  printf '%s\0' "$(data_dir)/snapshots" "$1.lanai-snapshots"
+  local data
+  data=$(data_dir)
+  [[ $data == *$'\n'* ]] || printf '%s\0' "$data/snapshots"
+  printf '%s\0' "$1.lanai-snapshots"
 }
 
 # Return 0 when <dir> is a complete snapshot of <storage>: a real folder

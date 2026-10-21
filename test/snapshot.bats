@@ -287,17 +287,23 @@ delete_fixture_snapshot() {
   local name=20261019T120000Z data=$T/outside$'\n'$T/data planted
   use_install "$T/win"
   delete_fixture_snapshot "$T/win.lanai-snapshots/$name"
-  # One root per line would read $T/outside as a root. Plant a complete
-  # snapshot there.
-  planted=$T/outside/$name
-  delete_fixture_snapshot "$planted"
+  # One root per line would read $T/outside as a root, and one path per line
+  # would split a snapshot in the real data root into $T/outside and
+  # $T/data/lanai/snapshots/<name>. Plant a complete snapshot in each place.
+  # Lanai does not use a data folder with a newline, so none of them count.
   export XDG_DATA_HOME=$data
+  for planted in "$T/outside/$name" "$data/lanai/snapshots/$name" "$T/data/lanai/snapshots/$name"; do
+    delete_fixture_snapshot "$planted"
+  done
   lanai_run snapshots
   assert_success
   assert_equal "$(jq -r '.snapshots[]' <<<"$JSON")" "$T/win.lanai-snapshots/$name"
   lanai_run delete-snapshot "$name"
   assert_success
-  assert [ -f "$planted/COMPLETE" ]
+  assert_equal "$(field deleted_copies)" 1
+  for planted in "$T/outside/$name" "$data/lanai/snapshots/$name" "$T/data/lanai/snapshots/$name"; do
+    assert [ -f "$planted/COMPLETE" ]
+  done
   assert [ ! -e "$T/win.lanai-snapshots/$name" ]
 }
 
