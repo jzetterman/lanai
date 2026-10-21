@@ -19,16 +19,14 @@ Panel {
   property bool stopArmed: false
   property string restoreArmed: ""
   property string deleteArmed: ""
-  // A snapshot row arms and confirms with one button, and Take a snapshot
-  // opens its name prompt and then submits it. A held key repeats its
-  // press, so a confirming click or submission this soon after arming,
-  // opening or the last one does nothing. It outlasts common key repeat
+  // A snapshot row arms and confirms with one button, and a held key
+  // repeats its press, so a confirming click this soon after arming, or
+  // after an ignored click, does nothing. It outlasts common key repeat
   // delays (Hyprland's default is 600 ms).
   readonly property int confirmGuardMs: 800
   property double armedAt: 0
   onRestoreArmedChanged: if (restoreArmed !== "") armedAt = Date.now()
   onDeleteArmedChanged: if (deleteArmed !== "") armedAt = Date.now()
-  onNamePromptChanged: if (namePrompt !== "") armedAt = Date.now()
   property bool snapshotDetailsOpen: false
   // The open snapshot name prompt's action ("take_snapshot" or
   // "setup_snapshot"), or "" when both are closed.
@@ -138,11 +136,9 @@ Panel {
     return draft.sentToken !== "" && !(!!job && job.token === draft.sentToken && job.ended === true)
   }
   // Take a snapshot with a name field's exact text. Enter calls this too, so
-  // it starts only while the adjacent action is shown and enabled, and only
-  // past the confirm guard, so a held key never submits. Focus goes to the
-  // field, so a refusal shows next to a keyboard user.
+  // it starts only while the adjacent action is shown and enabled. Focus goes
+  // to the field, so a refusal shows next to a keyboard user.
   function takeSnapshot(draft: NameDraft, control: string) {
-    if (!confirmReady()) return
     var action = root.model.control(control)
     if (action.show !== true || action.enable !== true) return
     var text = draft.text, token = root.model.run(["snapshot", text], true)
@@ -188,6 +184,16 @@ Panel {
       }
       draft.reopen = false
     }
+  }
+
+  // A name field's Return or Enter. The installed Button clicks on key
+  // press, so a held key on Take a snapshot opens the prompt, and on Save
+  // snapshot starts the snapshot. Both move focus into the field, which
+  // then gets the key's repeats. The field takes a repeat and does nothing
+  // with it. A fresh press passes on to the field, which submits through
+  // onAccepted.
+  function nameFieldKey(event: var) {
+    event.accepted = event.isAutoRepeat === true
   }
 
   // Show the open prompt's refusal, which a reopen or panel open put in view
@@ -326,12 +332,11 @@ Panel {
           && baseline.windows_scale % 1 === 0 && baseline.windows_scale >= 100 && baseline.windows_scale <= 500))) return null
     return baseline
   }
-  // Returns true when a confirming click on an armed snapshot row, or a
-  // name prompt's submission, counts. Every click restarts the wait, so a
-  // held key never confirms or submits, not even after a launch.
+  // Returns true when a confirming click on an armed snapshot row counts.
+  // An ignored click restarts the wait, so a held key never confirms.
   function confirmReady() {
     var now = Date.now(), ready = now - armedAt >= confirmGuardMs
-    armedAt = now
+    if (!ready) armedAt = now
     return ready
   }
   function detachDrafts() {
@@ -1209,6 +1214,8 @@ Panel {
       // A focused field still gets Enter after its section hides it, as
       // when a failure opens Logs with the prompt still open.
       onAccepted: if (nameField.visible) root.takeSnapshot(nameField.draft, nameField.actionControl)
+      Keys.onReturnPressed: function(event) { root.nameFieldKey(event) }
+      Keys.onEnterPressed: function(event) { root.nameFieldKey(event) }
       Keys.onEscapePressed: function(event) { event.accepted = root.escapePrompt(nameField.actionControl, nameInput) }
       onActiveFocusChanged: if (activeFocus) root.reveal(nameField)
     }
