@@ -2504,8 +2504,9 @@ TestCase {
     p.model.view = jobView(p.view, token, false, 'Remove < and >.'); wait(1)
     compare(p.panel.namePrompt, 'take_snapshot')
     compare(scope.Window.activeFocusItem, focused); compare(Quickshell.launchCount, count)
-    p.panel.open(); named(p.panel, 'snapshotsToggle').clicked(); wait(1)
-    compare(p.panel.namePrompt, 'take_snapshot')
+    // Opening the panel shows it: Snapshots opens with the prompt.
+    p.panel.open(); wait(1)
+    compare(p.panel.namePrompt, 'take_snapshot'); compare(p.panel.expandedSection, 'snapshots')
     verify(n.field.visible && n.error.visible); compare(n.error.text, 'Remove < and >.')
     compare(n.field.Accessible.description, 'Remove < and >.'); compare(n.field.text, 'a<b')
     // The next attempt clears it. A refusal that settles while busy waits
@@ -2515,9 +2516,10 @@ TestCase {
     p.panel.close(); wait(1)
     p.model.view = jobView(runningView(p.view), token, false, 'Remove < and >.'); wait(1)
     compare(p.panel.namePrompt, '')
-    p.panel.open(); named(p.panel, 'snapshotsToggle').clicked(); wait(1)
+    p.panel.open(); wait(1); compare(p.panel.expandedSection, '')
     p.model.view = jobView(p.view, token, false, 'Remove < and >.'); wait(1)
-    compare(p.panel.namePrompt, 'take_snapshot'); verify(n.field.visible && n.error.visible)
+    compare(p.panel.namePrompt, 'take_snapshot'); compare(p.panel.expandedSection, 'snapshots')
+    verify(n.field.visible && n.error.visible)
     // A refusal seen in the open prompt does not reopen it after Cancel.
     token = submit('e<f')
     p.model.view = jobView(runningView(p.view), token, false, 'Remove < and >.'); wait(1)

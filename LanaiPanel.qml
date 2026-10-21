@@ -150,7 +150,8 @@ Panel {
   // A refusal that lands while its prompt is closed, as when the panel
   // closed right after Save snapshot, reopens the prompt once nothing is
   // busy, if its action is shown and enabled and nothing else is open or
-  // armed. That moves no focus and starts nothing.
+  // armed. That moves no focus and starts nothing. The daily prompt also
+  // opens Snapshots, here and when the panel opens, so the refusal shows.
   function settleSnapshotJob(draft: NameDraft, control: string) {
     var job = (root.model.view.snapshots || {}).job, action = root.model.control(control)
     if (draft.sentToken === "") return
@@ -169,7 +170,10 @@ Panel {
     if ((root.model.view.busy || {}).active === false) {
       draft.sentToken = ""
       if (draft.reopen && namePrompt === "" && restoreArmed === "" && deleteArmed === ""
-          && action.show === true && action.enable === true) namePrompt = control
+          && action.show === true && action.enable === true) {
+        namePrompt = control
+        if (opened && control === "take_snapshot") expandedSection = "snapshots"
+      }
       draft.reopen = false
     }
   }
@@ -202,6 +206,7 @@ Panel {
     if (opened) {
       expandedSection = (root.model.view.sections || {}).default || ""
       previousDefaultSection = expandedSection
+      if (namePrompt === "take_snapshot") expandedSection = "snapshots"
       moreActionsOpen = false
       snapshotDetailsOpen = false
       memoryInput = Qt.binding(function() { return root.model.view.settings.memory_gib || 1 })
