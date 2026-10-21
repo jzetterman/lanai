@@ -20,9 +20,10 @@ old_task_note() {
 # old_task_note for the old task, which the panel shows under the scale list).
 panel_words() {
   jq -r --arg c "$1" --arg step "${3:-}" '
-    # Every job writes panel-job.log, which the Logs section names Jobs.
+    # Every job writes panel-job.log, which the Logs section names Jobs;
+    # direct actions write panel-run.log, which it names Actions.
     def log: if ["setup","snapshot","delete-snapshot","restore","build-client"] | index([$c]) then "Jobs log"
-      else "button actions log" end;
+      else "Actions log" end;
     def oldtask: " Until you run setup again, the old scale task undoes scales you pick in Windows," +
       " and \u201cMatch my monitor\u201d does not follow the window. Running setup again also turns the Windows lock off again.";
     # Every step 6 time-out ends with both ways on (spec 7): Continue setup,
@@ -87,13 +88,13 @@ panel_words() {
         else "Setup could not prepare the Windows window. Check the Windows window build log, then click Continue setup." end)
       elif $c == "setup" and .step == "2" and .missing then ""
       elif $c == "setup" and .step == "3" and .reason == null then ""
-      else ({start:"Windows could not start. Check the button actions log and the Windows VM log and try again.",
+      else ({start:"Windows could not start. Check the Actions log and the Windows VM log and try again.",
         open:"The Windows window could not open. Check the Windows window log and try again.",
-        stop:"Windows could not be asked to shut down. Check the button actions log and try again.",
-        "force-stop":"Windows could not be force-stopped. Check the button actions log and try again.",
+        stop:"Windows could not be asked to shut down. Check the Actions log and try again.",
+        "force-stop":"Windows could not be force-stopped. Check the Actions log and try again.",
         "notice-seen":"The notice could not be dismissed. Try again.",
         settings:"Settings could not be saved. Use whole numbers from 1 to 512 for memory and 1 to 64 for cores, and choose a listed Windows scale, then try again.",
-        "setup-host":"The installation terminal could not open. Check the button actions log and try again.",
+        "setup-host":"The installation terminal could not open. Check the Actions log and try again.",
         setup:"Setup could not finish. Check the Jobs log, then continue setup.",
         snapshot:"Lanai could not take the snapshot. Check the Jobs log and try again.",
         "delete-snapshot":"Lanai could not delete the snapshot. Check the Jobs log and try again.",
@@ -341,7 +342,7 @@ cmd_panel() {
   restore=$(panel_restore "$progress" "$records" "$snapshot_paths" "$items" "$(sed -n 's/^LanaiStorage=//p' <<<"$facts")" "$s/restore-in-progress")
   logs=$(jq -nc --arg client "${run:+$run/client.log}" --arg job "$s/panel-job.log" --arg command "$s/panel-run.log" \
     --arg build "$s/build-client.log" \
-    '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Jobs log: " + $job),command:("Button actions log: " + $command),
+    '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Jobs log: " + $job),command:("Actions log: " + $command),
       build:("Windows window build log: " + $build)} +
      (if $client == "" then {} else {client:("Windows window log: " + $client)} end)')
   log_rows=$(jq -nc --arg copy "$LANAI_LOGS" \
@@ -539,6 +540,8 @@ cmd_panel() {
       elif $failed then "failed" else "daily" end) |
     .snapshots.line = (if .snapshots.error != "" then ""
       elif $st.state == "in-use" then "Stop the other VM to take or restore snapshots."
+      elif $st.state == "stopping" then (if .snapshots.count > 0 then "Wait for Windows to shut down to take or restore snapshots."
+        else "Wait for Windows to shut down to take a snapshot." end)
       elif $st.active then (if .snapshots.count > 0 then "Shut down Windows to take or restore snapshots."
         else "Shut down Windows to take a snapshot." end)
       elif .snapshots.count == 0 then "No snapshots yet." else "" end) |

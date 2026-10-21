@@ -377,6 +377,26 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   assert_equal "$(jq -r .result.snapshots <<<"$output")" ''
 }
 
+@test "redesign snapshots: the Snapshots line follows the VM state" {
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  state '{"snapshot":"declined","done":true}'
+  ST=active
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .snapshots.line <<<"$output")" 'Shut down Windows to take a snapshot.'
+  # While Windows shuts down, nothing is left for the user to do.
+  ST=deactivating
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .state <<<"$output")" stopping
+  assert_equal "$(jq -r .snapshots.line <<<"$output")" 'Wait for Windows to shut down to take a snapshot.'
+  display_snapshot "$(data_dir)/snapshots/20261012T091200Z"
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .snapshots.line <<<"$output")" 'Wait for Windows to shut down to take or restore snapshots.'
+}
+
 @test "snapshot deletion: running view offers a named action and unfinished restores disable it" {
   # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
   source "$REPO/lib/snapshot.sh"
@@ -1567,7 +1587,25 @@ assert_plan_agreement() {
   run cmd_panel
   assert_equal "$(jq -r .logs.client <<<"$output")" "Windows window log: $RUN/client.log"
   assert_equal "$(jq -r .logs.job <<<"$output")" "Jobs log: $S/panel-job.log"
-  assert_equal "$(jq -r .logs.command <<<"$output")" "Button actions log: $S/panel-run.log"
+  assert_equal "$(jq -r .logs.command <<<"$output")" "Actions log: $S/panel-run.log"
+  # The Logs rows read Jobs and Actions, so the words name those logs.
+  : >"$S/panel-job.log"; : >"$S/panel-run.log"
+  run cmd_panel
+  assert_equal "$(jq -c '[.logs.rows[] | select(.id == "job" or .id == "command") | .label]' <<<"$output")" '["Jobs","Actions"]'
+  run panel_words start '{"ok":false}'
+  assert_output 'Windows could not start. Check the Actions log and the Windows VM log and try again.'
+  run panel_words stop '{"ok":false}'
+  assert_output 'Windows could not be asked to shut down. Check the Actions log and try again.'
+  run panel_words force-stop '{"ok":false}'
+  assert_output 'Windows could not be force-stopped. Check the Actions log and try again.'
+  run panel_words setup-host '{"ok":false}'
+  assert_output 'The installation terminal could not open. Check the Actions log and try again.'
+  run panel_words open '{"ok":false,"reason":"manager"}'
+  assert_output 'Lanai cannot reach your session services. Check the Actions log and try again.'
+  run panel_words stop '{"ok":false,"reason":"invalid-reply"}'
+  assert_output 'Lanai did not give a readable reply. Check the Actions log and try again.'
+  run panel_words dismiss '{"ok":false}'
+  assert_output 'The operation could not finish. Check the Actions log and try again.'
   run panel_words setup '{"ok":false,"reason":"client"}'
   assert_output 'The Windows window could not open. Check the Windows window log and try again.'
   run panel_words setup '{"ok":false}'
