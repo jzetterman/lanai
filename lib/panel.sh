@@ -476,14 +476,15 @@ cmd_panel() {
          $p.reason != "no-media" and $p.reason != "active" and ($p.step != "6" or $st.state != "stopping");(if $p.finished then "Run setup again" else "Continue setup" end)) +
          {hint:(if $p.finished and ($off|not) then "Shut Windows down, then choose Run setup again in More actions." else "" end)},
        install:button($p.step == "2";($busy|not);"Install in a terminal"),
-       setup_snapshot:button($p.step == "3";$idle and ($busy|not);"Take a snapshot"),
+       # save_label is the caption while the name prompt is open.
+       setup_snapshot:button($p.step == "3";$idle and ($busy|not);"Take a snapshot") + {save_label:"Save snapshot"},
        skip_snapshot:button($p.step == "3";$idle and ($busy|not);"Continue without a snapshot"),
        window:(button($p.finished or ($p.choices|length)>0 or $repeat;$idle and ($busy|not);"Set up in a basic window") +
          {hint:"Use a basic window if the Windows window is blank or the display driver needs repair."}),
        no_window:(button($p.finished or ($p.choices|length)>0 or $repeat;$idle and ($busy|not);"Set up in the Windows window") +
          {hint:"Use this if the Windows display driver already works."}),
        finish_restore:button($snapshotsShow and $st.restore_pending;$off and $available and ($busy|not);"Finish the unfinished restore"),
-       take_snapshot:button($snapshotsShow;$idle and ($busy|not);"Take a snapshot"),
+       take_snapshot:button($snapshotsShow;$idle and ($busy|not);"Take a snapshot") + {save_label:"Save snapshot"},
        restore_snapshot:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore") +
          {labels:($snaps.names | map({key:.,value:("Restore snapshot " + .)}) | from_entries)},
        restore_confirm:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore now") +

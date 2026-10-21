@@ -375,6 +375,8 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   assert_equal "$(jq -c '[.buttons.delete_snapshot.show,.buttons.delete_snapshot.enable,.buttons.delete_confirm.enable]' <<<"$output")" '[true,true,true]'
   # The rows show these words; the item labels name the target.
   assert_equal "$(jq -c '[.buttons.delete_snapshot.label,.buttons.delete_confirm.label,.buttons.restore_snapshot.label]' <<<"$output")" '["Delete","Delete snapshot","Restore"]'
+  # An open name prompt turns Take a snapshot into Save snapshot.
+  assert_equal "$(jq -c '[.buttons.take_snapshot.label,.buttons.take_snapshot.save_label]' <<<"$output")" '["Take a snapshot","Save snapshot"]'
   assert_equal "$(jq -r .snapshots.items[0].delete_label <<<"$output")" 'Delete Oct 12, 2026 at 09:12 UTC'
   assert_equal "$(jq -r .snapshots.items[0].delete_confirm_label <<<"$output")" 'Delete snapshot: Oct 12, 2026 at 09:12 UTC, permanently'
   assert_equal "$(jq -r .snapshots.items[0].delete_warning <<<"$output")" 'Windows stays as it is.'
@@ -787,6 +789,7 @@ assert_plan_agreement() {
   assert_equal "$(jq -r .buttons.continue_setup.show <<<"$output")" false
   assert_equal "$(jq -r .buttons.skip_snapshot.show <<<"$output")" true
   assert_equal "$(jq -r .buttons.setup_snapshot.show <<<"$output")" true
+  assert_equal "$(jq -c '[.buttons.setup_snapshot.label,.buttons.setup_snapshot.save_label]' <<<"$output")" '["Take a snapshot","Save snapshot"]'
   assert_equal "$(jq -r .result.setup <<<"$output")" 'Lanai could not save the snapshot choice. Check that your home folder has free space, then click Continue without a snapshot or take a snapshot again.'
   run panel_words setup '{"ok":false,"step":"3"}'
   assert_output ''
