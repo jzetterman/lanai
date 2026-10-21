@@ -83,22 +83,25 @@ panel refreshes. If the filesystem cannot make a snapshot,
 the setup offer explains that you need a backup before continuing without one.
 Either **Take a snapshot** button asks for an optional name first: it opens
 **Snapshot name (optional)** and becomes **Save snapshot**. Save snapshot, or
-Enter in the field, takes the snapshot. **Cancel** closes the field and keeps
-your text for next time. From a terminal, use `lanai snapshot "<name>"`. Leave
-the name empty for a snapshot with no name. A name is one line of up to 64
+Enter in the field, takes the snapshot. **Cancel** or Escape closes the field
+and keeps your text for next time; a second Escape closes the panel. From a
+terminal, use `lanai snapshot "<name>"`. Leave the name empty for a snapshot
+with no name. A name is one line of up to 64
 characters, with no `<`, `>`, control or invisible characters. Only ordinary
 spaces may separate words.
 Lanai trims spaces and line breaks at the ends of a name. If Lanai refuses a
-name, the reason shows below the field and your text stays there to fix. You
-set a name only when you take the snapshot. The UTC time stays each snapshot's
-identity and folder name, so two snapshots can share a name, and Restore and
+name, the reason shows below the field and your text stays there to fix. If
+you closed the panel before the refusal came back, the field opens again with
+it. You set a name only when you take the snapshot. The UTC time stays each
+snapshot's identity and folder name, so two snapshots can share a name, and Restore and
 Delete always use the time. Snapshots show newest first, with readable dates
 and times marked UTC. A saved name shows above its date. When two snapshots
 share a name in the same minute, their times show seconds. Each row has
 **Delete** and **Restore** actions. The count
 includes only valid snapshots for this storage location. Restoring asks you to
-confirm the named snapshot and warns that later changes will be lost. Deleting
-asks you to confirm with **Delete snapshot** and leaves Windows as it is.
+confirm the snapshot you chose with **Restore now** and warns that later
+changes will be lost. Deleting asks you to confirm with **Delete snapshot**
+and leaves Windows as it is.
 The **Cancel** under the row clears either confirmation. A deleted snapshot
 leaves the list, with no separate message. You can delete a snapshot while
 Windows runs or while another VM uses it. Deletion is unavailable while another
