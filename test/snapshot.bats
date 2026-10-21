@@ -151,6 +151,7 @@ delete_fixture_snapshot() {
   lanai_run delete-snapshot "$name"
   assert_failure
   assert_equal "$(field reason)" snapshot-not-found
+  assert_equal "$(field next)" 'run lanai snapshots to see the list'
   assert [ -d "$snap" ]
   printf '%s\n' "$STORE" >"$snap/SOURCE"
   echo unexpected >"$snap/extra"
@@ -169,6 +170,7 @@ delete_fixture_snapshot() {
   lanai_run delete-snapshot "$name"
   assert_failure
   assert_equal "$(field reason)" restore-pending
+  assert_equal "$(field message)" 'Finish the unfinished restore before deleting a snapshot.'
   assert [ -d "$snap" ]
   rm "$S/restore-in-progress"
   mkdir -p "$S"
@@ -177,6 +179,7 @@ delete_fixture_snapshot() {
   lanai_run delete-snapshot "$name"
   assert_failure
   assert_equal "$(field reason)" busy
+  assert_equal "$(field next)" 'try again when it finishes'
   assert [ -d "$snap" ]
   exec {fd}>&-
 }
@@ -200,6 +203,76 @@ delete_fixture_snapshot() {
   assert [ ! -e "$first" ]
   assert [ -d "$second" ]
   assert_equal "$(snapshot_find "$STORE" "$name")" "$second"
+  assert_equal "$(jq -r .message <<<"$output")" "Could not delete snapshot $name. It is still listed and can be restored."
+  assert_equal "$(jq -r .next <<<"$output")" 'run lanai snapshots to see what is left, then try again'
+}
+
+@test "delete-snapshot: a removal that leaves files but no valid copy says the restore point is gone" {
+  use_install "$T/win"
+  local name=20261019T120000Z snap
+  snap="$(data_dir)/snapshots/20261019T120000Z"
+  delete_fixture_snapshot "$snap"
+  # Removal stops after the manifest goes, so no valid copy is left.
+  snapshot_remove() { rm -f -- "$1/COMPLETE"; return 1; }
+  run cmd_delete_snapshot "$name"
+  assert_failure
+  assert_equal "$(jq -r .reason <<<"$output")" snapshot-delete-failed
+  assert_equal "$(jq -r .remaining <<<"$output")" false
+  assert_equal "$(jq -r .deleted_copies <<<"$output")" 0
+  assert_equal "$(jq -r .message <<<"$output")" "Could not remove every file of snapshot $name. It is no longer listed and cannot be restored."
+  assert_equal "$(jq -r .next <<<"$output")" 'run lanai snapshots to see what is left'
+  assert [ -f "$snap/data.img" ]
+  run snapshot_find "$STORE" "$name"
+  assert_failure
+}
+
+@test "delete-snapshot: a same-name copy for another storage location stays" {
+  use_install "$T/win"
+  local name=20261019T120000Z valid foreign="$STORE.lanai-snapshots/20261019T120000Z" before
+  valid="$(data_dir)/snapshots/20261019T120000Z"
+  delete_fixture_snapshot "$valid"
+  delete_fixture_snapshot "$foreign"
+  printf '%s\n' "$T/other" >"$foreign/SOURCE"
+  before=$(tree_manifest "$foreign")
+  lanai_run delete-snapshot "$name"
+  assert_success
+  assert_equal "$(field deleted_copies)" 1
+  assert_equal "$(field message)" "Deleted snapshot $name. Current Windows is unchanged."
+  assert [ ! -e "$valid" ]
+  assert_equal "$(tree_manifest "$foreign")" "$before"
+  assert_equal "$(cat "$foreign/SOURCE")" "$T/other"
+}
+
+@test "delete-snapshot: a symlinked snapshot folder is refused and its target stays" {
+  use_install "$T/win"
+  local name=20261019T120000Z link target="$T/elsewhere/20261019T120000Z" before
+  link="$(data_dir)/snapshots/20261019T120000Z"
+  delete_fixture_snapshot "$target"
+  chmod 500 "$target"
+  before=$(tree_manifest "$target")
+  mkdir -p "${link%/*}"
+  ln -s "$target" "$link"
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  assert_equal "$(field reason)" snapshot-not-found
+  assert [ -L "$link" ]
+  assert_equal "$(stat -c %a "$target")" 500
+  assert_equal "$(tree_manifest "$target")" "$before"
+  chmod 700 "$target"
+}
+
+@test "snapshot_remove: a symlink goes without touching its target's modes" {
+  local target="$T/target" link="$T/link"
+  mkdir -p "$target/sub"
+  echo keep >"$target/sub/file"
+  chmod 500 "$target/sub" "$target"
+  ln -s "$target" "$link"
+  snapshot_remove "$link"
+  assert [ ! -e "$link" ]
+  assert [ ! -L "$link" ]
+  assert_equal "$(stat -c %a "$target" "$target/sub" | tr '\n' ' ')" '500 500 '
+  assert_equal "$(cat "$target/sub/file")" keep
+  chmod 700 "$target" "$target/sub"
 }
 
 # Failure fixtures copy plainly and mock only the image helper, never a VM.

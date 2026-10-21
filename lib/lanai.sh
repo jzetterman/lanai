@@ -1621,7 +1621,7 @@ cmd_delete_snapshot() {
     [[ ${snap##*/} != "$name" ]] || targets+=("$snap")
   done < <(snapshot_list "$dir")
   if ((${#targets[@]} == 0)); then
-    emit false "" "There is no complete snapshot named $name for this Windows storage." "refresh the snapshot list" '{"reason":"snapshot-not-found"}'
+    emit false "" "There is no complete snapshot named $name for this Windows storage." "run lanai snapshots to see the list" '{"reason":"snapshot-not-found"}'
     return 1
   fi
   for snap in "${targets[@]}"; do
@@ -1636,11 +1636,11 @@ cmd_delete_snapshot() {
     details=$(jq -nc --arg n "$name" --argjson count "$removed" --argjson remains "$remaining" \
       '{reason:"snapshot-delete-failed",name:$n,deleted_copies:$count,remaining:$remains}')
     if $remaining; then
-      emit false "" "Could not delete every copy of $name. The restore point is still available." \
-        "check the snapshot job log and try again" "$details"
+      emit false "" "Could not delete snapshot $name. It is still listed and can be restored." \
+        "run lanai snapshots to see what is left, then try again" "$details"
     else
-      emit false "" "Could not remove every file of $name. The restore point is no longer available." \
-        "check the snapshot job log" "$details"
+      emit false "" "Could not remove every file of snapshot $name. It is no longer listed and cannot be restored." \
+        "run lanai snapshots to see what is left" "$details"
     fi
     return 1
   fi
