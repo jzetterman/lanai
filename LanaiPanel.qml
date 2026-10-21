@@ -191,9 +191,12 @@ Panel {
   // snapshot starts the snapshot. Both move focus into the field, which
   // then gets the key's repeats. The field takes a repeat and does nothing
   // with it. A fresh press passes on to the field, which submits through
-  // onAccepted.
+  // onAccepted. nameFieldKeyHandled lets tests see that the field's keys
+  // reach this decision, since they cannot send a real repeat.
+  signal nameFieldKeyHandled(int key)
   function nameFieldKey(event: var) {
     event.accepted = event.isAutoRepeat === true
+    nameFieldKeyHandled(event.key)
   }
 
   // Show the open prompt's refusal, which a reopen or panel open put in view

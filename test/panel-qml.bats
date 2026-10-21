@@ -2422,6 +2422,13 @@ TestCase {
       p.panel.nameFieldKey(held); verify(held.accepted, 'repeat of ' + key)
       p.panel.nameFieldKey(fresh); verify(!fresh.accepted, 'press of ' + key)
     })
+    // The field's Return and Enter reach that decision. A test cannot send a
+    // real repeat, so check the wiring with fresh presses.
+    var n = nameParts(p, false), seen = []
+    p.panel.nameFieldKeyHandled.connect(function(key) { seen.push(key) })
+    n.take.clicked(); wait(1)
+    n.field.forceActiveFocus(); keyClick(Qt.Key_Return); keyClick(Qt.Key_Enter)
+    compare(JSON.stringify(seen), JSON.stringify([Qt.Key_Return, Qt.Key_Enter]))
     p.panel.destroy()
   }
   // A held key repeats its press. The press on Take a snapshot that opens
