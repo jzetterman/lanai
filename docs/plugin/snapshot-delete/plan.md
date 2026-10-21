@@ -11,7 +11,7 @@ Governing spec: [spec.md](spec.md).
 ## Panel and tests
 
 4. Add the Delete and confirmation descriptors, per-item accessible labels and loss warning, busy copy, and result words to `lib/panel.sh`. Enable deletion only when a validated snapshot is listed, no panel job is busy, and no restore is unfinished; Windows may be running. Keep the visible list based on the validated snapshot inventory. Add focused `test/panel.bats` cases for running, busy, and unfinished-restore states and success/failure feedback.
-5. Add a short Delete button to each snapshot row in `LanaiPanel.qml`, beside Restore. Keep Restore at the right edge. One click arms only that snapshot and shows a named warning; a second click confirms. Cancel and panel close clear the armed target. Restore and Delete disarm each other. Clear the target if a poll removes it or disables deletion. Run the deletion through `LanaiModel.run(["delete-snapshot", name], true)` and refresh after the job. Extend `test/panel-qml.bats` with confirmation, cancellation, stale-target, accessible-name, and 420/360/260 px layout checks.
+5. Add a short Delete button to each snapshot row in `LanaiPanel.qml`, beside Restore. Keep Restore at the right edge. One click arms only that snapshot and shows a named warning; a second click confirms. A confirming click within 800 ms of arming, or of an ignored click, does nothing, so a held key cannot arm and confirm in one press. Cancel and panel close clear the armed target. Restore and Delete disarm each other. Clear the target if a poll removes it or disables deletion. Run the deletion through `LanaiModel.run(["delete-snapshot", name], true)` and refresh after the job. Extend `test/panel-qml.bats` with confirmation, cancellation, stale-target, accessible-name, and 420/360/260 px layout checks.
 6. Update `README.md` with the panel action and the fact that current Windows state stays intact. Remove obsolete file-manager-only guidance from the panel details. Install changed plugin files in the active Omarchy shell and restart it after tests and review.
 
 ## Verification and reviews
@@ -22,10 +22,9 @@ Run focused Bats suites for snapshot, panel, panel jobs, and QML; QML lint, shel
 | --- | --- | ---: | ---: | --- |
 | Plan | a (gpt-6.1-sol) | 1 | 1 | P2 confirmed: state that Claude final review remains mandatory when unavailable. |
 | Plan | a (gpt-6.1-sol) | 2 | 0 | Clean. |
-| Diff | a (gpt-6.1-sol) | 1 | 0 | Clean; full tracked diff and new snapshot deletion documents reviewed. |
-| Diff | opt Grok (grok-4.7) | 1 | 1 | P2 confirmed: interrupted deletion fell through to the setup message; fixed with a failing then passing panel test. |
-| Diff | opt Grok (grok-4.7) | 2 | 1 | P3 confirmed: README retained obsolete folder-deletion guidance; corrected. No code findings. |
-
+| Diff | a (gpt-6.1-sol) | 1 | 0 | Clean; full tracked diff and new snapshot deletion documents reviewed. Refuted and downgraded counts not recorded. |
+| Diff | opt Grok (grok-4.7) | 1 | 1 | P2 confirmed: interrupted deletion fell through to the setup message; fixed with a failing then passing panel test. Refuted and downgraded counts not recorded. |
+| Diff | opt Grok (grok-4.7) | 2 | 1 | P3 confirmed: README retained obsolete folder-deletion guidance; corrected. No code findings. Refuted and downgraded counts not recorded. |
 | Diff | a (gpt-6.1-sol) | 2 | 0 | Clean on `git diff main...snapshot-delete` through ada823b, which adds the stopped panel text cut (`docs/plugin/redesign/stopped-copy.md`); 0 refuted, 0 downgraded to nit. Codex ran the focused suites. |
 | Diff | b panel (opus-5.5), 5 lenses | 1 | 27 | 35 raw, 27 distinct after dedupe; 0 refuted, 0 downgraded to nit; 7 should-fix confirmed: the in-use Snapshots line called Delete unavailable, button words were hard-coded in QML, and five test gaps proved by surviving mutations (stale-target and panel-close disarm, Restore and Delete disarming each other, refusal and failure words, the Snapshots result note, bounds). Fixed in 727d922 through a899e84 with the confirmed nits. Left as nits: one `hasSaved` property for four repeated checks, the Open window tooltip built in the generic Action, the restore row's Flow layout, one copy of the running-restore rule, the unused `restore_confirm` and `restore_snapshot.labels` words, and a refused delete showing the Failed layout. |
 
