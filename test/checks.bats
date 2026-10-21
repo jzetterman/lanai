@@ -133,6 +133,33 @@ write_compose() {
   done
 }
 
+@test "storage_dir: a settings file with more than one JSON document fails" {
+  mkdir -p "$XDG_CONFIG_HOME/lanai"
+  printf '%s\n' '{"storage":"/r/sd/a"}{"storage":"/b"}' >"$XDG_CONFIG_HOME/lanai/settings.json"
+  run storage_dir
+  assert_failure
+  assert_output --partial "cannot read the storage location"
+  refute_output --partial /r/sd/a
+  # An empty file holds no document: it is broken, not missing.
+  : >"$XDG_CONFIG_HOME/lanai/settings.json"
+  run storage_dir
+  assert_failure
+  refute_output --partial "$HOME/.windows"
+}
+
+@test "storage_dir: a storage value with a trailing newline fails, not the folder without it" {
+  mkdir -p "$XDG_CONFIG_HOME/lanai" "$T/store"
+  jq -n --arg s "$T/store"$'\n' '{storage:$s}' >"$XDG_CONFIG_HOME/lanai/settings.json"
+  run storage_dir
+  assert_failure
+  assert_output --partial "must not contain a newline"
+  # The same once the folder with the newline exists: its real path keeps it.
+  mkdir "$T/store"$'\n'
+  run storage_dir
+  assert_failure
+  assert_output --partial "must not contain a newline"
+}
+
 # --- compose_file ---
 
 @test "compose_file: the system compose when it exists" {

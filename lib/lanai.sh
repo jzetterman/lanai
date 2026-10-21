@@ -173,7 +173,8 @@ settings_file() {
 # accepts a symlinked ~/.windows), so every check sees the real folder; a
 # path that does not exist prints as is. ~/.windows is the default only when
 # there is no settings file at all. Fails when the settings file is a symlink
-# (dangling or not), cannot be read or parsed, or names a relative path, so a
+# (dangling or not), cannot be read or parsed, holds other than one JSON
+# document (an empty file included), or names a relative path, so a
 # broken file never falls back to the live install. Also fails when the path
 # or its real path holds a newline: callers read snapshot roots and lists
 # one path per line.
@@ -185,8 +186,11 @@ storage_dir() {
     echo "lanai: $f is a symlink; Lanai reads only a regular settings file" >&2
     return 1
   elif [[ -e $f ]]; then
-    # The x keeps a trailing newline in the path from being dropped.
-    dir=$(jq -j 'if (type == "object" and (.storage | type) == "string") then .storage
+    # The file must hold exactly one JSON document: -j joins the output of
+    # several with no separator. The x keeps a trailing newline in the path
+    # from being dropped.
+    dir=$(jq -j -s 'if length != 1 then error("settings must be one JSON document") else .[0] end |
+      if (type == "object" and (.storage | type) == "string") then .storage
       elif (type == "object" and .storage == null) then ""
       else error("storage must be a string") end' "$f" && printf x) || {
       echo "lanai: cannot read the storage location from $f" >&2

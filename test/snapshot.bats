@@ -283,6 +283,24 @@ delete_fixture_snapshot() {
   assert_equal "$output" "lanai: the storage location must not contain a newline: ${store@Q}"
 }
 
+@test "delete-snapshot: a data folder with a newline lists and deletes nothing outside the snapshot roots" {
+  local name=20261019T120000Z data=$T/outside$'\n'$T/data planted
+  use_install "$T/win"
+  delete_fixture_snapshot "$T/win.lanai-snapshots/$name"
+  # One root per line would read $T/outside as a root. Plant a complete
+  # snapshot there.
+  planted=$T/outside/$name
+  delete_fixture_snapshot "$planted"
+  export XDG_DATA_HOME=$data
+  lanai_run snapshots
+  assert_success
+  assert_equal "$(jq -r '.snapshots[]' <<<"$JSON")" "$T/win.lanai-snapshots/$name"
+  lanai_run delete-snapshot "$name"
+  assert_success
+  assert [ -f "$planted/COMPLETE" ]
+  assert [ ! -e "$T/win.lanai-snapshots/$name" ]
+}
+
 @test "snapshot_remove: a symlink goes without touching its target's modes" {
   local target="$T/target" link="$T/link"
   B=$target

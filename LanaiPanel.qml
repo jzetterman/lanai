@@ -254,8 +254,8 @@ Panel {
       if (!root.model.control("restore_snapshot").show || !root.model.control("restore_snapshot").enable
           || !root.model.control("restore_confirm").show || !root.model.control("restore_confirm").enable
           || !root.snapshotItems.some(function(item) { return item.name === root.restoreArmed })) root.restoreArmed = ""
+      // delete_confirm shares delete_snapshot's show and enable rules.
       if (!root.model.control("delete_snapshot").show || !root.model.control("delete_snapshot").enable
-          || !root.model.control("delete_confirm").show || !root.model.control("delete_confirm").enable
           || !root.snapshotItems.some(function(item) { return item.name === root.deleteArmed })) root.deleteArmed = ""
       var section = (root.model.view.sections || {}).default || (root.model.view.layout === "failed" ? "logs" : "")
       if (root.opened && section !== "" && root.previousDefaultSection !== section)
@@ -811,7 +811,11 @@ Panel {
                         id: snapshotDate
                         width: parent.width
                         anchors.verticalCenter: parent.verticalCenter
-                        text: snapshotRow.modelData.date ? snapshotRow.modelData.date + " · " + snapshotRow.modelData.time : snapshotRow.modelData.label
+                        // Non-breaking spaces keep "· 09:12 UTC" together, so a
+                        // narrow row wraps before the separator, not after it.
+                        text: snapshotRow.modelData.date
+                          ? snapshotRow.modelData.date + " \u00b7\u00a0" + String(snapshotRow.modelData.time).replace(/ /g, "\u00a0")
+                          : snapshotRow.modelData.label
                       }
                     }
                     Item {
@@ -831,6 +835,7 @@ Panel {
                           width: Math.min(implicitWidth, restoreCell.width)
                           control: snapshotRow.deleting ? "delete_confirm" : "delete_snapshot"
                           Accessible.name: snapshotRow.deleting ? snapshotRow.modelData.delete_confirm_label : snapshotRow.modelData.delete_label
+                          Accessible.description: snapshotRow.deleting ? snapshotRow.modelData.delete_warning || "" : ""
                           visible: !snapshotRow.armed && descriptor.show
                           onClicked: {
                             if (snapshotRow.deleting) {
@@ -849,6 +854,7 @@ Panel {
                           // below the row and the full wording is the accessible
                           // name, as for Delete.
                           Accessible.name: snapshotRow.armed ? snapshotRow.modelData.confirm_label : snapshotRow.modelData.restore_label
+                          Accessible.description: snapshotRow.armed ? snapshotRow.modelData.warning || "" : ""
                           visible: !snapshotRow.deleting && descriptor.show
                           onClicked: {
                             if (snapshotRow.armed) {
