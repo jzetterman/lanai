@@ -20,7 +20,9 @@ old_task_note() {
 # old_task_note for the old task, which the panel shows under the scale list).
 panel_words() {
   jq -r --arg c "$1" --arg step "${3:-}" '
-    def log: {setup:"setup log",snapshot:"snapshot log","delete-snapshot":"Jobs log",restore:"restore log","build-client":"update log"}[$c] // "button actions log";
+    # Every job writes panel-job.log, which the Logs section names Jobs.
+    def log: if ["setup","snapshot","delete-snapshot","restore","build-client"] | index([$c]) then "Jobs log"
+      else "button actions log" end;
     def oldtask: " Until you run setup again, the old scale task undoes scales you pick in Windows," +
       " and \u201cMatch my monitor\u201d does not follow the window. Running setup again also turns the Windows lock off again.";
     # Every step 6 time-out ends with both ways on (spec 7): Continue setup,
@@ -44,7 +46,7 @@ panel_words() {
       container:"Windows is in use by another VM. Stop it before continuing here.",
       manager:"Lanai cannot reach your session services. Check the " + log + " and try again.",
       active:"Shut Windows down before continuing setup.",
-      record:"Lanai could not save its setup progress. Check the setup log and try again.",
+      record:"Lanai could not save its setup progress. Check the Jobs log and try again.",
       "no-media":"Shut Windows down, then continue setup to attach the setup drive.",
       nostart:"Windows did not start. Check the Windows VM log before trying again.",
       incomplete:"The setup boot did not finish. Choose a display below and run setup.cmd again.",
@@ -92,10 +94,10 @@ panel_words() {
         "notice-seen":"The notice could not be dismissed. Try again.",
         settings:"Settings could not be saved. Use whole numbers from 1 to 512 for memory and 1 to 64 for cores, and choose a listed Windows scale, then try again.",
         "setup-host":"The installation terminal could not open. Check the button actions log and try again.",
-        setup:"Setup could not finish. Check the setup log, then continue setup.",
-        snapshot:"Lanai could not take the snapshot. Check the snapshot log and try again.",
+        setup:"Setup could not finish. Check the Jobs log, then continue setup.",
+        snapshot:"Lanai could not take the snapshot. Check the Jobs log and try again.",
         "delete-snapshot":"Lanai could not delete the snapshot. Check the Jobs log and try again.",
-        restore:"Lanai could not restore the snapshot. Check the restore log before trying again.",
+        restore:"Lanai could not restore the snapshot. Check the Jobs log before trying again.",
         "build-client":"The Windows window could not be updated. Check the Windows window build log (build-client.log), then try again."}[$c] //
         "The operation could not finish. Check the " + log + " and try again.") end
     elif $c == "snapshot" and .snapshot then
@@ -339,7 +341,7 @@ cmd_panel() {
   restore=$(panel_restore "$progress" "$records" "$snapshot_paths" "$items" "$(sed -n 's/^LanaiStorage=//p' <<<"$facts")" "$s/restore-in-progress")
   logs=$(jq -nc --arg client "${run:+$run/client.log}" --arg job "$s/panel-job.log" --arg command "$s/panel-run.log" \
     --arg build "$s/build-client.log" \
-    '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Setup, snapshot, restore and update log: " + $job),command:("Button actions log: " + $command),
+    '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Jobs log: " + $job),command:("Button actions log: " + $command),
       build:("Windows window build log: " + $build)} +
      (if $client == "" then {} else {client:("Windows window log: " + $client)} end)')
   log_rows=$(jq -nc --arg copy "$LANAI_LOGS" \
@@ -360,6 +362,7 @@ cmd_panel() {
     '. + {rows:$rows,copied:"Copied",copy_error:"Could not copy. Try again.",copy_busy:"Another copy is in progress. Try again in a moment."}' <<<"$logs")
   jq -nc --argjson st "$status" --argjson vm "$vm_status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
     --argjson progress "$progress" --argjson restore "$restore" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
+    --argjson snapPaths "$snapshot_paths" \
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
     --argjson clientOld "$client_old" --argjson signinMissing "$signin_missing" --argjson updateShown "$update_shown" --arg task "$task" \
@@ -383,10 +386,14 @@ cmd_panel() {
     ([$rec.records[] | select(.token == $token)] | length > 0) as $seen |
     ($token != "" and ($seen|not) and $now - $at < 10) as $pending |
     ($rec.held or $pending or $progress != null) as $busy |
-    ($rec.held and $job.command == "setup") as $setupJob |
-    # A running restore, as panel_restore decides it: an unheld record is an
-    # interrupted one.
-    ($progress.operation == "restore" or ($rec.held and $job.command == "restore")) as $restoring |
+    ($job.command == "setup") as $setupJob |
+    # A running restore, as panel_restore decides it.
+    ($progress.operation == "restore" or $job.command == "restore") as $restoring |
+    # A snapshot taken here that is still in the validated list. Deleted
+    # outside the panel, its words and details would name a dead path.
+    ($rec.records.snapshots as $d | $d.command == "snapshot" and $d.reply.ok == true and
+      ($d.reply.snapshot // "") != "") as $savedReply |
+    ($savedReply and any($snapPaths[]; . == $rec.records.snapshots.reply.snapshot)) as $saved |
     (($rec.held|not) and ($rec.records.setup|has("started")) and ($rec.records.setup|has("ended")|not)) as $interruptedSetup |
     # A step 6 time-out with Windows off: the display buttons repeat the
     # Windows install, beside Continue setup, with no arming step.
@@ -419,7 +426,8 @@ cmd_panel() {
          "build-client":("Updating the Windows window. This may take several minutes." +
            (if $off then " You can start Windows when it finishes." else "" end))}[$job.command // ""] //
          "Starting the operation.") else "" end)},
-     result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot, restore and update log, then try again." else "" end)}),
+     result:($r + {launch:(if $launchFailed then "The operation did not start. Check the Jobs log, then try again." else "" end)}
+       + (if $savedReply and ($saved|not) then {snapshots:""} else {} end)),
      setup:{show:($p.finished|not),finished:$p.finished,
        attention:(($p.finished|not) and $st.state != "stopping" and ($p.reason != "" or $r.setup != "" or $launchFailed or
          ($p.step == "3" and $rec.records.snapshots.reply.ok == false) or $st.state == "failed" or
@@ -534,9 +542,7 @@ cmd_panel() {
       elif $st.active then (if .snapshots.count > 0 then "Shut down Windows to take or restore snapshots."
         else "Shut down Windows to take a snapshot." end)
       elif .snapshots.count == 0 then "No snapshots yet." else "" end) |
-    .snapshots.saved = (if .layout == "daily" and $rec.records.snapshots.command == "snapshot"
-      and $rec.records.snapshots.reply.ok == true and ($rec.records.snapshots.reply.snapshot // "") != ""
-      and .result.snapshots != "" then
+    .snapshots.saved = (if .layout == "daily" and $saved then
         {path:$rec.records.snapshots.reply.snapshot,
           path_line:("Snapshot saved at " + $rec.records.snapshots.reply.snapshot),
           advice:"It shares disk space at first and grows as Windows changes. To delete it, use Delete beside the snapshot below.",

@@ -561,7 +561,7 @@ remain visible above the controls. Direct actions are recorded by `lanai ui-run`
 restores and updates run in session units through `lanai ui-job`, with
 diagnostics in Lanai’s state directory as
 `panel-run.log` and `panel-job.log`. The panel labels these as the button actions
-log and the setup, snapshot, restore and update log. Rapid repeated clicks keep the first
+log and the Jobs log. Rapid repeated clicks keep the first
 launch pending. Other controls preserve a failed launch notice until the next
 setup, snapshot, restore or update starts. The Windows window log has its own
 path, and so does the Windows window build log, `build-client.log` in Lanai’s
