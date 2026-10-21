@@ -139,9 +139,10 @@ snapshot_blocked() {
   fi
 }
 
-# Remove a folder this module made (it may hold read-only folders).
+# Remove a folder this module made (it may hold read-only folders). -P
+# keeps chmod off the target of a symlink named here; rm removes the link.
 snapshot_remove() {
-  chmod -R u+w -- "$1" 2>/dev/null || true
+  chmod -R -P u+w -- "$1" 2>/dev/null || true
   rm -rf -- "$1"
 }
 

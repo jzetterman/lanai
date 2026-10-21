@@ -352,7 +352,6 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   assert_equal "$(jq -r '.snapshots.saved | has("summary")' <<<"$output")" false
   assert_equal "$(jq -r .snapshots.saved.show_label <<<"$output")" 'Show details'
   assert_equal "$(jq -r .snapshots.saved.hide_label <<<"$output")" 'Hide details'
-  assert_equal "$(jq -r .snapshots.saved.details <<<"$output")" "$(jq -r .result.snapshots <<<"$output")"
   assert_equal "$(jq -r .snapshots.saved.path <<<"$output")" '/copy'
   assert_equal "$(jq -r .snapshots.saved.path_line <<<"$output")" 'Snapshot saved at /copy'
   assert_equal "$(jq -r .snapshots.saved.advice <<<"$output")" 'It shares disk space at first and grows as Windows changes. To delete it, use Delete beside the snapshot below.'
@@ -374,9 +373,21 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   run cmd_panel
   assert_success
   assert_equal "$(jq -c '[.buttons.delete_snapshot.show,.buttons.delete_snapshot.enable,.buttons.delete_confirm.enable]' <<<"$output")" '[true,true,true]'
+  # The rows show these words; the item labels name the target.
+  assert_equal "$(jq -c '[.buttons.delete_snapshot.label,.buttons.delete_confirm.label,.buttons.restore_snapshot.label]' <<<"$output")" '["Delete","Delete snapshot","Restore"]'
   assert_equal "$(jq -r .snapshots.items[0].delete_label <<<"$output")" 'Delete Oct 12, 2026 at 09:12 UTC'
-  assert_equal "$(jq -r .snapshots.items[0].delete_warning <<<"$output")" 'Current Windows stays as it is.'
+  assert_equal "$(jq -r .snapshots.items[0].delete_confirm_label <<<"$output")" 'Delete snapshot: Oct 12, 2026 at 09:12 UTC, permanently'
+  assert_equal "$(jq -r .snapshots.items[0].delete_warning <<<"$output")" 'Windows stays as it is.'
+  assert_equal "$(jq -r .snapshots.line <<<"$output")" 'Shut down Windows to take or restore snapshots.'
+  # Another VM blocks taking and restoring, but deletion still works.
   ST=inactive
+  container_fact() { echo running; }
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -r .state <<<"$output")" in-use
+  assert_equal "$(jq -r .snapshots.line <<<"$output")" 'Stop the other VM to take or restore snapshots.'
+  assert_equal "$(jq -c '[.buttons.take_snapshot.enable,.buttons.restore_snapshot.enable,.buttons.delete_snapshot.enable,.buttons.delete_confirm.enable]' <<<"$output")" '[false,false,true,true]'
+  container_fact() { echo none; }
   printf '%s\n%s\n' "$snap" "$STORE" >"$S/restore-in-progress"
   run cmd_panel
   assert_success
@@ -386,20 +397,40 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   flock -n "$fd"
   run cmd_panel
   assert_success
-  assert_equal "$(jq -r .buttons.delete_snapshot.enable <<<"$output")" false
+  assert_equal "$(jq -c '[.buttons.delete_snapshot.enable,.buttons.delete_confirm.enable]' <<<"$output")" '[false,false]'
   exec {fd}>&-
 }
 
-@test "snapshot deletion: panel reports success and partial failure from structured job results" {
+@test "snapshot deletion: success is quiet and failures say what happened from structured job results" {
   state '{"snapshot":"taken","done":true}'
+  # The row going away shows the result.
   panel_result_write snapshots '{"command":"delete-snapshot","ended":2,"reply":{"ok":true,"name":"20261012T091200Z"}}'
   run cmd_panel
   assert_success
-  assert_equal "$(jq -r .result.snapshots <<<"$output")" 'Snapshot deleted. Current Windows is unchanged.'
+  assert_equal "$(jq -r .result.snapshots <<<"$output")" ''
   panel_result_write snapshots '{"command":"delete-snapshot","ended":3,"reply":{"ok":false,"reason":"snapshot-delete-failed","remaining":true}}'
   run cmd_panel
   assert_success
-  assert_equal "$(jq -r .result.snapshots <<<"$output")" 'Could not delete every copy. The restore point is still available. Check the snapshot job log and try again.'
+  assert_equal "$(jq -r .result.snapshots <<<"$output")" 'Could not delete the snapshot. It is still listed and can be restored. Check the Jobs log and try again.'
+}
+
+@test "snapshot deletion: each failure reason has its own words, naming the Jobs log" {
+  local reply
+  while IFS='|' read -r reply words; do
+    run panel_words delete-snapshot "$reply"
+    assert_success
+    assert_equal "$output" "$words"
+  done <<'WORDS'
+{"ok":false,"reason":"snapshot-delete-failed","remaining":true}|Could not delete the snapshot. It is still listed and can be restored. Check the Jobs log and try again.
+{"ok":false,"reason":"snapshot-delete-failed","remaining":false}|Could not remove every file of the snapshot. It is no longer listed and cannot be restored. Check the Jobs log.
+{"ok":false,"reason":"snapshot-not-found"}|That snapshot was already deleted.
+{"ok":false,"reason":"restore-pending"}|Finish the unfinished restore before deleting a snapshot.
+{"ok":false,"reason":"busy"}|Another operation is running. Try deleting the snapshot when it finishes.
+{"ok":false,"reason":"manager"}|Lanai cannot reach your session services. Check the Jobs log and try again.
+{"ok":false}|Lanai could not delete the snapshot. Check the Jobs log and try again.
+{"ok":false,"reason":"storage"}|Lanai could not delete the snapshot. Check the Jobs log and try again.
+{"ok":true,"name":"20261012T091200Z"}|
+WORDS
 }
 
 @test "snapshot deletion: interrupted job names deletion without claiming the restore point survived" {
@@ -2220,6 +2251,11 @@ setup_worker() {
   run cmd_panel
   assert_equal "$(jq -r .busy.line <<<"$output")" 'Deleting a snapshot.'
   exec {fd}>&-
+  # Unheld, the record is an interrupted delete: a click waiting for its
+  # record is not that job.
+  run cmd_panel --pending next "$EPOCHSECONDS"
+  assert_equal "$(jq -r .busy.active <<<"$output")" true
+  assert_equal "$(jq -r .busy.line <<<"$output")" 'Starting the operation.'
 }
 
 @test "panel busy: a running restore has no busy line, only its target and warning" {
@@ -2984,7 +3020,7 @@ assert_rerun_warning() {
   done
   assert_equal "$(jq -r .logs.copied <<<"$output")" Copied
   assert_equal "$(jq -r .logs.copy_error <<<"$output")" 'Could not copy. Try again.'
-  assert_equal "$(jq -r .logs.copy_busy <<<"$output")" 'Another log is being copied. Try again in a moment.'
+  assert_equal "$(jq -r .logs.copy_busy <<<"$output")" 'Another copy is in progress. Try again in a moment.'
   assert_equal "$(jq -r .logs.rows[0].copy_label <<<"$output")" 'Copy VM log command'
   rm "$S/panel-job.log"
   run cmd_panel

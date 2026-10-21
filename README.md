@@ -78,9 +78,8 @@ Accept the snapshot offer before the first boot, or make a backup and explicitly
 continue without a snapshot. A snapshot shares disk blocks, takes little space
 initially and grows as Windows changes. After a snapshot, expand Snapshots and
 choose **Show details** to see its path and copy it with the icon beside it.
-Use **Delete** beside a snapshot to remove that restore point. The list
-updates after each snapshot or restore job, and whenever the panel refreshes.
-If the filesystem cannot make a snapshot,
+The list updates after each snapshot, delete or restore job, and whenever the
+panel refreshes. If the filesystem cannot make a snapshot,
 the setup offer explains that you need a backup before continuing without one.
 Either **Take a snapshot** button asks for an optional name first: it opens
 **Snapshot name (optional)** and becomes **Save snapshot**. Save snapshot, or
@@ -98,11 +97,12 @@ and times marked UTC. A saved name shows above its date. When two snapshots
 share a name in the same minute, their times show seconds. Each row has
 **Delete** and **Restore** actions. The count
 includes only valid snapshots for this storage location. Restoring asks you to
-confirm the snapshot you chose and warns that later changes will be lost. Cancel
-clears the confirmation. Deleting also asks you to confirm the snapshot you chose.
-It removes that restore point while leaving the current Windows state intact.
-You can delete a snapshot while Windows runs. Deletion is unavailable during
-another snapshot operation or an unfinished restore.
+confirm the named snapshot and warns that later changes will be lost. Deleting
+asks you to confirm with **Delete snapshot** and leaves Windows as it is.
+The **Cancel** under the row clears either confirmation. A deleted snapshot
+leaves the list, with no separate message. You can delete a snapshot while
+Windows runs or while another VM uses it. Deletion is unavailable while another
+operation runs or a restore is unfinished.
 Snapshot and restore show their actual phase and measured percentage, also when
 you open the panel partway through or start from the CLI. Work with no measured
 total shows a busy indicator. A restore names its target above the controls. An
@@ -562,8 +562,11 @@ record automated results and pending theme and VM checks. `lanai panel` supplies
 the complete view, including settings,
 snapshot names and plain-language results; the QML polls every two seconds only
 while its own panel is open, and every fifteen seconds otherwise.
-On the running Main view, the status badge and Open window button carry the
-routine status; Open window's extra guidance is in its tooltip. Successful
+With Windows running or stopped, the daily view shows no status lines or
+disabled-action hints: the status badge and the Open window or Start Windows
+button carry the routine status, and Open window's extra guidance is in its
+tooltip. A running restore is quiet too: its target, progress and warning say
+what runs. Successful
 snapshot details and a path copy button are available in Snapshots through **Show details**, while failures
 remain visible above the controls. Direct actions are recorded by `lanai ui-run`; setup, snapshots,
 restores and updates run in session units through `lanai ui-job`, with

@@ -758,7 +758,6 @@ Panel {
                           objectName: "delete-" + snapshotRow.modelData.name
                           width: Math.min(implicitWidth, restoreCell.width)
                           control: snapshotRow.deleting ? "delete_confirm" : "delete_snapshot"
-                          text: snapshotRow.deleting ? "Delete snapshot" : "Delete"
                           Accessible.name: snapshotRow.deleting ? snapshotRow.modelData.delete_confirm_label : snapshotRow.modelData.delete_label
                           visible: !snapshotRow.armed && descriptor.show
                           onClicked: {
@@ -773,7 +772,7 @@ Panel {
                           control: snapshotRow.armed ? "restore_confirm" : "restore_snapshot"
                           // Short caption; the question is the note below the row and
                           // the full wording is the accessible name, as for Delete.
-                          text: snapshotRow.armed ? "Restore now" : "Restore"
+                          text: snapshotRow.armed ? root.model.control("restore_confirm").label : descriptor.label
                           Accessible.name: snapshotRow.armed ? snapshotRow.modelData.confirm_label : snapshotRow.modelData.restore_label
                           visible: !snapshotRow.deleting && descriptor.show
                           onClicked: {
@@ -787,11 +786,16 @@ Panel {
                   Note { objectName: "restoreConfirm-" + snapshotRow.modelData.name; text: snapshotRow.armed ? snapshotRow.modelData.confirm_note : "" }
                   Note { objectName: "deleteConfirm-" + snapshotRow.modelData.name; text: snapshotRow.deleting ? snapshotRow.modelData.delete_confirm_note : "" }
                   Note { text: snapshotRow.armed ? snapshotRow.modelData.warning : snapshotRow.deleting ? snapshotRow.modelData.delete_warning : "" }
+                  // Each Cancel sits under its row and gives focus back to
+                  // the button it disarms.
                   Action { objectName: "deleteCancel-" + snapshotRow.modelData.name; control: "cancel"
-                    visible: snapshotRow.deleting && descriptor.show; onClicked: root.deleteArmed = "" }
+                    visible: snapshotRow.deleting && descriptor.show
+                    onClicked: { root.deleteArmed = ""; deleteButton.forceActiveFocus() } }
+                  Action { objectName: "restoreCancel-" + snapshotRow.modelData.name; control: "cancel"
+                    visible: snapshotRow.armed && descriptor.show
+                    onClicked: { root.restoreArmed = ""; restoreButton.forceActiveFocus() } }
                 }
               }
-              Action { objectName: "restoreCancel"; control: "cancel"; visible: root.restoreArmed !== "" && descriptor.show; onClicked: root.restoreArmed = "" }
             }
           }
 
