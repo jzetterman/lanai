@@ -470,6 +470,14 @@ TestCase {
         {id:'scale',label:'Scale task',state:'not_checked',status:'Not checked',detail:''}],countdown:null}
     return v
   }
+  // True when <lower> starts at or below the bottom of <upper>, once the
+  // layout has settled.
+  function below(lower, upper) {
+    verify(waitForPolish(lower.Window.window))
+    return lower.mapToItem(null, 0, 0).y >= upper.mapToItem(null, 0, upper.height).y
+  }
+  // Waits until a confirming click on an armed row counts.
+  function pastConfirmGuard(panel) { wait(panel.confirmGuardMs + 50) }
   function textVisible(panel, text) {
     return objects(panel, function(o) { return o.text === text && o.visible }).length > 0
   }
@@ -1043,9 +1051,11 @@ TestCase {
     compare(p.panel.restoreArmed, '20261012T091200Z')
     verify(objects(p.panel, function(o) { return o.text === 'Later changes are lost.' && o.visible }).length > 0)
     var cancel = named(p.panel, 'restoreCancel-20261012T091200Z')
-    // The row's own Cancel sits under it, and gives focus back to Restore.
+    // The armed row hides its Delete. Its own Cancel sits under it, and
+    // gives focus back to Restore.
+    verify(!named(p.panel, 'delete-20261012T091200Z').visible)
     verify(cancel.visible)
-    verify(cancel.parent === restore.parent.parent.parent.parent)
+    verify(below(cancel, restore))
     cancel.forceActiveFocus(); cancel.clicked()
     compare(p.panel.restoreArmed, '')
     verify(!cancel.visible)
@@ -1054,7 +1064,7 @@ TestCase {
     named(p.panel, 'logsToggle').clicked()
     compare(p.panel.restoreArmed, '20261012T091200Z')
     named(p.panel, 'snapshotsToggle').clicked()
-    restore.clicked()
+    pastConfirmGuard(p.panel); restore.clicked()
     compare(Quickshell.lastCommand.slice(3).join(' '), 'restore 20261012T091200Z')
     p.model.pendingToken = ''; ready(p.model)
     restore.clicked()
@@ -1112,14 +1122,14 @@ TestCase {
     remove.text.split(' ').forEach(function(word) { verify(remove.Accessible.name.indexOf(word) !== -1, word) })
     verify(textVisible(p.panel, item.delete_warning))
     // The row's own Cancel sits under it, and gives focus back to Delete.
-    verify(cancel.parent === remove.parent.parent.parent.parent)
+    verify(below(cancel, remove))
     cancel.forceActiveFocus(); cancel.clicked()
     compare(p.panel.deleteArmed, '')
     verify(!cancel.visible)
     verify(remove.activeFocus)
     compare(Quickshell.lastCommand.length, 0)
     remove.clicked()
-    remove.clicked()
+    pastConfirmGuard(p.panel); remove.clicked()
     compare(Quickshell.lastCommand.slice(3).join(' '), 'delete-snapshot ' + item.name)
     compare(p.panel.deleteArmed, '')
     // The button words come from the backend descriptors.
@@ -1144,6 +1154,31 @@ TestCase {
     p.panel.close(); compare(p.panel.deleteArmed, '')
     p.panel.destroy()
   }
+  // Holding Space repeats the key press on the one button that arms and
+  // confirms. A click right after arming, or right after an ignored click,
+  // does nothing; a click after a pause confirms.
+  function test_redesign_confirm_ignores_clicks_right_after_arming() {
+    var p = redesignPanel(), item = redesignView().snapshots.items[0], guard = p.panel.confirmGuardMs || 0
+    named(p.panel, 'snapshotsToggle').clicked()
+    ;[['delete-', 'deleteArmed', 'delete-snapshot'], ['restore-', 'restoreArmed', 'restore']].forEach(function(row) {
+      p.model.pendingToken = ''; ready(p.model); p.model.view = redesignView(); wait(1)
+      Quickshell.lastCommand = []
+      var button = named(p.panel, row[0] + item.name)
+      button.clicked(); compare(p.panel[row[1]], item.name)
+      button.clicked()
+      compare(Quickshell.lastCommand.length, 0, row[2] + ' confirmed right after arming')
+      compare(p.panel[row[1]], item.name)
+      wait(guard * 0.6); button.clicked()
+      wait(guard * 0.6); button.clicked()
+      compare(Quickshell.lastCommand.length, 0, row[2] + ' confirmed while clicks kept coming')
+      compare(p.panel[row[1]], item.name)
+      wait(guard + 50); button.clicked()
+      compare(Quickshell.lastCommand.slice(3).join(' '), row[2] + ' ' + item.name)
+      compare(p.panel[row[1]], '')
+    })
+    verify(guard >= 700, 'The guard must outlast common key repeat delays: ' + guard)
+    p.panel.destroy()
+  }
   function test_redesign_restore_and_delete_disarm_each_other_across_rows() {
     var p = redesignPanel(), v = twoSnapshotView(), first = v.snapshots.items[0].name, second = v.snapshots.items[1].name
     p.model.view = v; wait(1)
@@ -1158,6 +1193,8 @@ TestCase {
     compare(p.panel.deleteArmed, first); compare(p.panel.restoreArmed, '')
     verify(named(p.panel, 'deleteCancel-' + first).visible)
     verify(!named(p.panel, 'restoreCancel-' + second).visible)
+    // Cancel sits under its own row, above the next one.
+    verify(below(named(p.panel, 'restore-' + second), named(p.panel, 'deleteCancel-' + first)))
     p.panel.destroy()
   }
   function test_redesign_snapshot_results_show_inside_snapshots() {
@@ -1212,6 +1249,12 @@ TestCase {
     keyClick(Qt.Key_Tab); verify(cancel.activeFocus, 'Tab from the armed Delete does not reach Cancel')
     keyClick(Qt.Key_Space); compare(p.panel.deleteArmed, '')
     verify(remove.activeFocus)
+    // With the installed Button, Space arms Delete, and a second Space
+    // right after it (a held key repeats) does not confirm.
+    Quickshell.lastCommand = []
+    keyClick(Qt.Key_Space); compare(p.panel.deleteArmed, '20261012T091200Z')
+    keyClick(Qt.Key_Space); compare(p.panel.deleteArmed, '20261012T091200Z')
+    compare(Quickshell.lastCommand.length, 0)
     p.panel.destroy()
   }
   function test_redesign_snapshot_management_actions_share_a_row() {
@@ -1244,11 +1287,56 @@ TestCase {
       else
         verify(takePoint.y >= detailsPoint.y + details.height)
     })
+    // Too narrow for one line: Take a snapshot wraps under Show details,
+    // at the right edge, and the row holds both.
+    popup.contentWidth = 200
+    verify(waitForPolish(flick.Window.window))
+    verify(row.wrap)
+    verify(below(take, details))
+    verify(Math.abs(take.mapToItem(row, take.width, 0).x - row.width) <= 1)
+    verify(take.mapToItem(row, 0, take.height).y <= row.height)
+    popup.contentWidth = 420
     v.snapshots.saved = null
     p.model.view = JSON.parse(JSON.stringify(v))
     verify(!details.visible)
     verify(take.visible)
     verify(Math.abs(take.mapToItem(row, take.width, 0).x - row.width) <= 1)
+    p.panel.destroy()
+  }
+  function test_redesign_snapshot_details_collapse_on_reopen_and_when_saved_goes() {
+    var p = redesignPanel(), v = redesignView()
+    v.snapshots.saved = {path:'/copy',path_line:'Snapshot saved at /copy',advice:'Advice.',copy_label:'Copy snapshot path',
+      show_label:'Show details',hide_label:'Hide details'}
+    p.model.view = JSON.parse(JSON.stringify(v))
+    named(p.panel, 'snapshotsToggle').clicked()
+    var details = named(p.panel, 'snapshotLocationToggle'), pathRow = named(p.panel, 'snapshotPathRow')
+    details.clicked(); verify(pathRow.visible)
+    p.panel.close(); p.panel.open()
+    named(p.panel, 'snapshotsToggle').clicked()
+    verify(details.visible); verify(!pathRow.visible)
+    compare(details.text, 'Show details')
+    details.clicked(); verify(pathRow.visible)
+    var gone = JSON.parse(JSON.stringify(v)); gone.snapshots.saved = null
+    p.model.view = gone
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(details.visible); verify(!pathRow.visible)
+    p.panel.destroy()
+  }
+  // A finished setup with Run setup again enabled needs no hint; disabled,
+  // or before setup finishes, the hint shows under the buttons.
+  function test_redesign_continue_setup_hint_only_while_it_helps() {
+    var p = redesignPanel(), v = redesignView()
+    v.buttons.continue_setup = {show:true,enable:true,label:'Run setup again',hint:'Backend continue hint.'}
+    p.model.view = JSON.parse(JSON.stringify(v))
+    named(p.panel, 'moreActionsToggle').clicked()
+    verify(objects(p.panel, function(o) { return o.control === 'continue_setup' && o.visible }).length > 0)
+    verify(!textVisible(p.panel, 'Backend continue hint.'))
+    v.buttons.continue_setup.enable = false
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(textVisible(p.panel, 'Backend continue hint.'))
+    v.buttons.continue_setup.enable = true; v.setup = {show:true,finished:false}
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(textVisible(p.panel, 'Backend continue hint.'))
     p.panel.destroy()
   }
   function test_redesign_progress_stays_above_actions_for_snapshot_and_restore() {
@@ -2086,7 +2174,7 @@ TestCase {
     compare(panel.restoreArmed, 'snapshot')
     compare(restore.control, 'restore_confirm')
     compare(restore.text, 'Restore snapshot and replace Windows')
-    restore.clicked()
+    pastConfirmGuard(panel); restore.clicked()
     compare(Quickshell.lastCommand[1], 'ui-job')
     compare(Quickshell.lastCommand.slice(3).join(' '), 'restore snapshot')
     model.view = {buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}

@@ -19,6 +19,14 @@ Panel {
   property bool stopArmed: false
   property string restoreArmed: ""
   property string deleteArmed: ""
+  // A snapshot row arms and confirms with one button, and a held key
+  // repeats its press, so a confirming click this soon after arming, or
+  // after an ignored click, does nothing. It outlasts common key repeat
+  // delays (Hyprland's default is 600 ms).
+  readonly property int confirmGuardMs: 800
+  property double armedAt: 0
+  onRestoreArmedChanged: if (restoreArmed !== "") armedAt = Date.now()
+  onDeleteArmedChanged: if (deleteArmed !== "") armedAt = Date.now()
   property bool snapshotDetailsOpen: false
   property bool setupAgainArmed: false
   property string expandedSection: ""
@@ -178,6 +186,13 @@ Panel {
         || !(baseline.windows_scale === "auto" || (typeof baseline.windows_scale === "number"
           && baseline.windows_scale % 1 === 0 && baseline.windows_scale >= 100 && baseline.windows_scale <= 500))) return null
     return baseline
+  }
+  // Returns true when a confirming click on an armed snapshot row counts.
+  // An ignored click restarts the wait, so a held key never confirms.
+  function confirmReady() {
+    var now = Date.now(), ready = now - armedAt >= confirmGuardMs
+    if (!ready) armedAt = now
+    return ready
   }
   function detachDrafts() {
     memoryInput = memoryInput
@@ -642,7 +657,10 @@ Panel {
                           Accessible.name: snapshotRow.deleting ? snapshotRow.modelData.delete_confirm_label : snapshotRow.modelData.delete_label
                           visible: !snapshotRow.armed && descriptor.show
                           onClicked: {
-                            if (snapshotRow.deleting) { root.deleteArmed = ""; root.model.run(["delete-snapshot", snapshotRow.modelData.name], true) }
+                            if (snapshotRow.deleting) {
+                              if (!root.confirmReady()) return
+                              root.deleteArmed = ""; root.model.run(["delete-snapshot", snapshotRow.modelData.name], true)
+                            }
                             else { root.restoreArmed = ""; root.deleteArmed = snapshotRow.modelData.name }
                           }
                         }
@@ -655,7 +673,10 @@ Panel {
                           Accessible.name: snapshotRow.armed ? snapshotRow.modelData.confirm_label : snapshotRow.modelData.restore_label
                           visible: !snapshotRow.deleting && descriptor.show
                           onClicked: {
-                            if (snapshotRow.armed) { root.restoreArmed = ""; root.model.run(["restore", snapshotRow.modelData.name], true) }
+                            if (snapshotRow.armed) {
+                              if (!root.confirmReady()) return
+                              root.restoreArmed = ""; root.model.run(["restore", snapshotRow.modelData.name], true)
+                            }
                             else { root.deleteArmed = ""; root.restoreArmed = snapshotRow.modelData.name }
                           }
                         }
