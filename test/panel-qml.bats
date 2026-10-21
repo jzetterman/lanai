@@ -2966,7 +2966,7 @@ TestCase {
       v.snapshots.items.forEach(function(item) {
         var restore = named(panel, 'restore-' + item.name), remove = named(panel, 'delete-' + item.name)
         var label = named(panel, 'snapshotLabel-' + item.name)
-        var date = objects(panel, function(o) { return o.text === item.date + ' · ' + item.time && o.visible })[0]
+        var date = objects(panel, function(o) { return typeof o.text === 'string' && o.text.replace(/\u00a0/g, ' ') === item.date + ' · ' + item.time && o.visible })[0]
         ;['','restore','delete'].forEach(function(armed) {
           panel.restoreArmed = armed === 'restore' ? item.name : ''
           panel.deleteArmed = armed === 'delete' ? item.name : ''
@@ -3365,7 +3365,7 @@ panel_board_view() {
       var remove = named(p.panel, 'delete-' + item.name)
       compare(label.visible, item.user_label !== null, item.name)
       if (item.user_label !== null) compare(label.text, item.user_label)
-      verify(textVisible(p.panel, item.date + ' · ' + item.time), item.name)
+      verify(objects(p.panel, function(o) { return typeof o.text === 'string' && o.text.replace(/\u00a0/g, ' ') === item.date + ' · ' + item.time && o.visible }).length > 0, item.name)
       compare(restore.Accessible.name, item.restore_label); compare(remove.Accessible.name, item.delete_label)
       restore.clicked()
       compare(restore.text, 'Restore now'); compare(restore.Accessible.name, item.confirm_label)
