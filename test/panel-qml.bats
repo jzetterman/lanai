@@ -424,7 +424,7 @@ TestCase {
       sections:{settings:'Settings',snapshots:'Snapshots',logs:'Logs',default:''},primary_action:'start',
       buttons:{start:{show:true,enable:true,label:'Start Windows'},cancel:{show:true,enable:true,label:'Cancel'},
         restore_snapshot:{show:true,enable:true,label:'Restore'},restore_confirm:{show:true,enable:true,label:'Confirm'},
-        delete_snapshot:{show:true,enable:true,label:'Delete snapshot'},delete_confirm:{show:true,enable:true,label:'Delete snapshot permanently'},
+        delete_snapshot:{show:true,enable:true,label:'Delete'},delete_confirm:{show:true,enable:true,label:'Delete permanently'},
         save_settings:{show:true,enable:true,label:'Save settings'}},setup:{finished:true},
       settings:{memory_gib:12,cores:6,windows_scale:175,baseline:{memory_gib:12,cores:6,windows_scale:175},
         labels:{memory:'Memory (GiB)',cores:'CPU cores',scale:'Windows scale',save:'Save',saved:'Saved',reset:'Reset',unsaved:'Unsaved'}},
@@ -434,8 +434,18 @@ TestCase {
         label:'Oct 12, 2026 at 09:12 UTC',restore_label:'Restore Oct 12, 2026 at 09:12 UTC',
         confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',warning:'Later changes are lost.',
         delete_label:'Delete Oct 12, 2026 at 09:12 UTC',delete_confirm_label:'Delete Oct 12, 2026 at 09:12 UTC permanently',
-        delete_warning:'Current Windows stays as it is. You will lose this restore point.'}]},
+        delete_warning:'Windows stays as it is. You will lose this restore point.'}]},
       restore:{label:'',warning:''},progress:null}
+  }
+  // redesignView with a second, older snapshot below the first.
+  function twoSnapshotView() {
+    var v = redesignView(), older = JSON.parse(JSON.stringify(v.snapshots.items[0]))
+    older.name = '20261001T080000Z'; older.date = 'Oct 1, 2026'; older.time = '08:00 UTC'
+    older.label = 'Oct 1, 2026 at 08:00 UTC'; older.restore_label = 'Restore ' + older.label
+    older.confirm_label = 'Restore ' + older.label + ' and replace Windows'
+    older.delete_label = 'Delete ' + older.label; older.delete_confirm_label = 'Delete ' + older.label + ' permanently'
+    v.snapshots.items.push(older); v.snapshots.names.push(older.name); v.snapshots.count = 2
+    return v
   }
   function redesignPanel() {
     var model = createTemporaryObject(modelComponent, tests)
@@ -519,8 +529,7 @@ TestCase {
     v.buttons.window = {show:true,enable:false,label:'Set up in a basic window',hint:'Use this if the window is blank.'}
     v.buttons.no_window = {show:true,enable:false,label:'Set up in the Windows window',hint:'Use this if the driver works.'}
     v.result.snapshots = 'Snapshot saved at /home/john/snapshots/example. It shares disk space at first.'
-    v.snapshots.saved = {details:v.result.snapshots,
-      path:'/home/john/snapshots/example',path_line:'Snapshot saved at /home/john/snapshots/example',
+    v.snapshots.saved = {path:'/home/john/snapshots/example',path_line:'Snapshot saved at /home/john/snapshots/example',
       advice:'It shares disk space at first.',copy_label:'Copy snapshot path',
       show_label:'Show details',hide_label:'Hide details'}
     p.model.view = v
@@ -535,8 +544,6 @@ TestCase {
     verify(!textVisible(p.panel, v.buttons.window.hint))
     verify(!textVisible(p.panel, v.buttons.no_window.hint))
     named(p.panel, 'snapshotsToggle').clicked()
-    // The list shows the new snapshot first: no separate saved note.
-    verify(!textVisible(p.panel, 'Snapshot saved.'))
     verify(named(p.panel, 'snapshotLocationToggle').visible)
     verify(!textVisible(p.panel, v.result.snapshots))
     named(p.panel, 'snapshotLocationToggle').clicked()
@@ -1035,8 +1042,14 @@ TestCase {
     restore.clicked()
     compare(p.panel.restoreArmed, '20261012T091200Z')
     verify(objects(p.panel, function(o) { return o.text === 'Later changes are lost.' && o.visible }).length > 0)
-    named(p.panel, 'restoreCancel').clicked()
+    var cancel = named(p.panel, 'restoreCancel-20261012T091200Z')
+    // The row's own Cancel sits under it, and gives focus back to Restore.
+    verify(cancel.visible)
+    verify(cancel.parent === restore.parent.parent.parent.parent)
+    cancel.forceActiveFocus(); cancel.clicked()
     compare(p.panel.restoreArmed, '')
+    verify(!cancel.visible)
+    verify(restore.activeFocus)
     restore.clicked()
     named(p.panel, 'logsToggle').clicked()
     compare(p.panel.restoreArmed, '20261012T091200Z')
@@ -1053,6 +1066,14 @@ TestCase {
     compare(p.panel.restoreArmed, '')
     p.panel.destroy()
   }
+  // Checks that <item> lies inside the panel's width and returns its left
+  // and right edges in the scroll view.
+  function horizontalEdges(item, flick, what) {
+    var left = item.mapToItem(flick, 0, 0).x, right = item.mapToItem(flick, item.width, 0).x
+    verify(left >= 0, what + ' starts left of the panel: ' + left)
+    verify(right <= flick.width, what + ' overflows the ' + flick.width + 'px panel: ' + right)
+    return {left:left, right:right}
+  }
   function test_redesign_delete_snapshot_requires_named_confirmation_and_keeps_actions_in_bounds() {
     var p = redesignPanel(), v = redesignView(), item = v.snapshots.items[0]
     Quickshell.lastCommand = []
@@ -1060,42 +1081,93 @@ TestCase {
     var popup = named(p.panel, 'panelPopup'), flick = named(p.panel, 'panelScroll')
     var restore = named(p.panel, 'restore-' + item.name)
     var remove = named(p.panel, 'delete-' + item.name)
+    var cancel = named(p.panel, 'deleteCancel-' + item.name)
     verify(remove !== undefined)
-    compare(remove.text, 'Delete')
+    compare(remove.text, v.buttons.delete_snapshot.label)
     compare(remove.Accessible.name, item.delete_label)
     ;[420,360,260].forEach(function(width) {
       popup.contentWidth = width
-      verify(waitForPolish(flick.Window.window))
-      var row = restore.parent.parent
-      var restorePoint = restore.mapToItem(row, restore.width, 0)
-      var deletePoint = remove.mapToItem(row, remove.width, 0)
-      verify(Math.abs(restorePoint.x - row.width) <= 1)
-      verify(deletePoint.x + 4 <= restorePoint.x)
-      verify(deletePoint.x >= 0)
-      verify(restorePoint.x <= flick.width)
+      ;[false,true].forEach(function(armed) {
+        p.panel.deleteArmed = armed ? item.name : ''
+        verify(waitForPolish(flick.Window.window))
+        var del = horizontalEdges(remove, flick, 'Delete at ' + width + 'px')
+        if (armed) {
+          verify(!restore.visible)
+          verify(cancel.visible)
+          horizontalEdges(cancel, flick, 'Cancel at ' + width + 'px')
+        } else {
+          verify(!cancel.visible)
+          var res = horizontalEdges(restore, flick, 'Restore at ' + width + 'px')
+          verify(res.left >= del.right + 6, 'Delete and Restore overlap at ' + width + 'px')
+        }
+      })
     })
+    p.panel.deleteArmed = ''
     remove.clicked()
     compare(p.panel.deleteArmed, item.name)
     verify(!restore.visible)
-    compare(remove.text, 'Delete snapshot')
+    compare(remove.text, v.buttons.delete_confirm.label)
     compare(remove.Accessible.name, item.delete_confirm_label)
+    // The visible words are inside the accessible name (label in name).
+    remove.text.split(' ').forEach(function(word) { verify(remove.Accessible.name.indexOf(word) !== -1, word) })
     verify(textVisible(p.panel, item.delete_warning))
-    named(p.panel, 'deleteCancel-' + item.name).clicked()
+    // The row's own Cancel sits under it, and gives focus back to Delete.
+    verify(cancel.parent === remove.parent.parent.parent.parent)
+    cancel.forceActiveFocus(); cancel.clicked()
     compare(p.panel.deleteArmed, '')
+    verify(!cancel.visible)
+    verify(remove.activeFocus)
     compare(Quickshell.lastCommand.length, 0)
     remove.clicked()
     remove.clicked()
     compare(Quickshell.lastCommand.slice(3).join(' '), 'delete-snapshot ' + item.name)
     compare(p.panel.deleteArmed, '')
-    p.model.pendingToken = ''; ready(p.model)
-    remove.clicked()
-    v.snapshots.items = []; v.snapshots.names = []; p.model.view = JSON.parse(JSON.stringify(v))
+    // The button words come from the backend descriptors.
+    v = redesignView(); v.buttons.delete_snapshot.label = 'Remove'; v.buttons.restore_snapshot.label = 'Bring back'
+    p.model.view = v; wait(1)
+    compare(named(p.panel, 'delete-' + item.name).text, 'Remove')
+    compare(named(p.panel, 'restore-' + item.name).text, 'Bring back')
+    // A poll that drops the armed snapshot clears the target.
+    v = redesignView(); p.model.view = v; wait(1)
+    named(p.panel, 'delete-' + item.name).clicked(); compare(p.panel.deleteArmed, item.name)
+    v = redesignView(); v.snapshots.items = []; v.snapshots.names = []; v.snapshots.count = 0; p.model.view = v
     compare(p.panel.deleteArmed, '')
-    v = redesignView(); p.model.view = v
-    named(p.panel, 'delete-' + item.name).clicked()
-    v.buttons.delete_snapshot.enable = false; p.model.view = JSON.parse(JSON.stringify(v))
+    // So does a poll that disables deletion.
+    v = redesignView(); p.model.view = v; wait(1)
+    named(p.panel, 'delete-' + item.name).clicked(); compare(p.panel.deleteArmed, item.name)
+    v = redesignView(); v.buttons.delete_snapshot.enable = false; p.model.view = v
     compare(p.panel.deleteArmed, '')
+    // A poll that keeps the target keeps it armed; closing the panel clears it.
+    v = redesignView(); p.model.view = v; wait(1)
+    named(p.panel, 'delete-' + item.name).clicked(); compare(p.panel.deleteArmed, item.name)
+    p.model.view = redesignView(); compare(p.panel.deleteArmed, item.name)
     p.panel.close(); compare(p.panel.deleteArmed, '')
+    p.panel.destroy()
+  }
+  function test_redesign_restore_and_delete_disarm_each_other_across_rows() {
+    var p = redesignPanel(), v = twoSnapshotView(), first = v.snapshots.items[0].name, second = v.snapshots.items[1].name
+    p.model.view = v; wait(1)
+    named(p.panel, 'snapshotsToggle').clicked()
+    named(p.panel, 'delete-' + first).clicked()
+    compare(p.panel.deleteArmed, first)
+    named(p.panel, 'restore-' + second).clicked()
+    compare(p.panel.restoreArmed, second); compare(p.panel.deleteArmed, '')
+    verify(named(p.panel, 'restoreCancel-' + second).visible)
+    verify(!named(p.panel, 'deleteCancel-' + first).visible)
+    named(p.panel, 'delete-' + first).clicked()
+    compare(p.panel.deleteArmed, first); compare(p.panel.restoreArmed, '')
+    verify(named(p.panel, 'deleteCancel-' + first).visible)
+    verify(!named(p.panel, 'restoreCancel-' + second).visible)
+    p.panel.destroy()
+  }
+  function test_redesign_snapshot_results_show_inside_snapshots() {
+    var p = redesignPanel(), v = redesignView()
+    v.result.snapshots = 'The snapshot was restored.'
+    p.model.view = v
+    verify(!textVisible(p.panel, v.result.snapshots))
+    named(p.panel, 'snapshotsToggle').clicked()
+    var note = objects(named(p.panel, 'snapshotsDetails'), function(o) { return o.text === v.result.snapshots && o.visible })
+    compare(note.length, 1)
     p.panel.destroy()
   }
   function test_redesign_snapshot_actions_fit_narrow_panel() {
@@ -1127,11 +1199,24 @@ TestCase {
         }
       })
     })
+    // Delete and its Cancel are in the Tab chain: Tab moves from Delete to
+    // Restore, and from the armed Delete to its Cancel.
+    p.panel.restoreArmed = ''
+    var remove = named(p.panel, 'delete-20261012T091200Z'), cancel = named(p.panel, 'deleteCancel-20261012T091200Z')
+    verify(remove.focusable && remove.activeFocusOnTab)
+    remove.forceActiveFocus(); verify(remove.activeFocus)
+    keyClick(Qt.Key_Tab); verify(restore.activeFocus, 'Tab from Delete does not reach Restore')
+    p.panel.deleteArmed = '20261012T091200Z'
+    verify(cancel.visible && cancel.focusable && cancel.activeFocusOnTab)
+    remove.forceActiveFocus(); verify(remove.activeFocus)
+    keyClick(Qt.Key_Tab); verify(cancel.activeFocus, 'Tab from the armed Delete does not reach Cancel')
+    keyClick(Qt.Key_Space); compare(p.panel.deleteArmed, '')
+    verify(remove.activeFocus)
     p.panel.destroy()
   }
   function test_redesign_snapshot_management_actions_share_a_row() {
     var p = redesignPanel(), v = redesignView()
-    v.snapshots.saved = {details:'Saved at /copy.',show_label:'Show details',hide_label:'Hide details'}
+    v.snapshots.saved = {path:'/copy',show_label:'Show details',hide_label:'Hide details'}
     v.buttons.take_snapshot = {show:true,enable:false,label:'Take a snapshot'}
     p.model.view = v
     named(p.panel, 'snapshotsToggle').clicked()
@@ -2290,7 +2375,7 @@ panel_board_view() {
     compare(item.time, '09:12 UTC'); compare(item.date, 'Oct 12, 2026')
     restore.clicked(); compare(p.panel.restoreArmed, item.name)
     compare(restore.text, item.confirm_label); verify(textVisible(p.panel, item.warning))
-    named(p.panel, 'restoreCancel').clicked(); compare(p.panel.restoreArmed, '')
+    named(p.panel, 'restoreCancel-' + item.name).clicked(); compare(p.panel.restoreArmed, '')
     restore.clicked(); p.panel.close(); compare(p.panel.restoreArmed, '')
     finishBackendPanel(p)
 
