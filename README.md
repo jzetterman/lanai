@@ -83,7 +83,8 @@ panel refreshes. If the filesystem cannot make a snapshot,
 the setup offer explains that you need a backup before continuing without one.
 Either **Take a snapshot** button asks for an optional name first: it opens
 **Snapshot name (optional)** and becomes **Save snapshot**. Save snapshot, or
-Enter in the field, takes the snapshot. **Cancel** or Escape closes the field
+Enter in the field, takes the snapshot. Lanai ignores a submission right after
+the field opens, as from a held key. **Cancel** or Escape closes the field
 and keeps your text for next time; a second Escape closes the panel. From a
 terminal, use `lanai snapshot "<name>"`. Leave the name empty for a snapshot
 with no name. A name is one line of up to 64

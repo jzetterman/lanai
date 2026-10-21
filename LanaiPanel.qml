@@ -19,14 +19,16 @@ Panel {
   property bool stopArmed: false
   property string restoreArmed: ""
   property string deleteArmed: ""
-  // A snapshot row arms and confirms with one button, and a held key
-  // repeats its press, so a confirming click this soon after arming, or
-  // after an ignored click, does nothing. It outlasts common key repeat
+  // A snapshot row arms and confirms with one button, and Take a snapshot
+  // opens its name prompt and then submits it. A held key repeats its
+  // press, so a confirming click or submission this soon after arming,
+  // opening or the last one does nothing. It outlasts common key repeat
   // delays (Hyprland's default is 600 ms).
   readonly property int confirmGuardMs: 800
   property double armedAt: 0
   onRestoreArmedChanged: if (restoreArmed !== "") armedAt = Date.now()
   onDeleteArmedChanged: if (deleteArmed !== "") armedAt = Date.now()
+  onNamePromptChanged: if (namePrompt !== "") armedAt = Date.now()
   property bool snapshotDetailsOpen: false
   // The open snapshot name prompt's action ("take_snapshot" or
   // "setup_snapshot"), or "" when both are closed.
@@ -136,9 +138,11 @@ Panel {
     return draft.sentToken !== "" && !(!!job && job.token === draft.sentToken && job.ended === true)
   }
   // Take a snapshot with a name field's exact text. Enter calls this too, so
-  // it starts only while the adjacent action is shown and enabled. Focus
-  // goes to the field, so a refusal shows next to a keyboard user.
+  // it starts only while the adjacent action is shown and enabled, and only
+  // past the confirm guard, so a held key never submits. Focus goes to the
+  // field, so a refusal shows next to a keyboard user.
   function takeSnapshot(draft: NameDraft, control: string) {
+    if (!confirmReady()) return
     var action = root.model.control(control)
     if (action.show !== true || action.enable !== true) return
     var text = draft.text, token = root.model.run(["snapshot", text], true)
@@ -160,6 +164,7 @@ Panel {
   // busy, if its action is shown and enabled and nothing else is open or
   // armed. That moves no focus and starts nothing. The daily prompt also
   // opens Snapshots, here and when the panel opens, so the refusal shows.
+  // A screen reader speaks a refusal when it comes into view.
   function settleSnapshotJob(draft: NameDraft, control: string) {
     var job = (root.model.view.snapshots || {}).job, action = root.model.control(control)
     if (draft.sentToken === "") return
@@ -168,8 +173,7 @@ Panel {
       if (draft.error !== job.message) {
         draft.error = job.message
         draft.reopen = namePrompt !== control
-        // Screen readers would otherwise miss it: focus is already in the field.
-        if (opened) namePromptParts(control).field.Accessible.announce(job.message)
+        if (opened && !draft.reopen) announceRefusal(control)
       }
     } else if (own && job.ended === true && job.ok === true) {
       if (draft.text === draft.sentText) draft.text = ""
@@ -180,10 +184,23 @@ Panel {
       if (draft.reopen && namePrompt === "" && restoreArmed === "" && deleteArmed === ""
           && action.show === true && action.enable === true) {
         namePrompt = control
-        if (opened && control === "take_snapshot") expandedSection = "snapshots"
+        if (opened) showReopened()
       }
       draft.reopen = false
     }
+  }
+
+  // Show the open prompt's refusal, which a reopen or panel open put in view
+  // without moving focus: the daily prompt opens Snapshots.
+  function showReopened() {
+    if (namePrompt === "take_snapshot") expandedSection = "snapshots"
+    announceRefusal(namePrompt)
+  }
+  // Speak a prompt's refusal. Screen readers would otherwise miss it: focus
+  // is already in the field, or a reopen moved none there.
+  function announceRefusal(control: string) {
+    var parts = namePromptParts(control)
+    if (parts.draft.error !== "") parts.field.Accessible.announce(parts.draft.error)
   }
 
   // Only interpolate the backend duration. Polls re-anchor it; opening does not.
@@ -214,7 +231,7 @@ Panel {
     if (opened) {
       expandedSection = (root.model.view.sections || {}).default || ""
       previousDefaultSection = expandedSection
-      if (namePrompt === "take_snapshot") expandedSection = "snapshots"
+      if (namePrompt !== "") showReopened()
       moreActionsOpen = false
       snapshotDetailsOpen = false
       memoryInput = Qt.binding(function() { return root.model.view.settings.memory_gib || 1 })
@@ -309,11 +326,12 @@ Panel {
           && baseline.windows_scale % 1 === 0 && baseline.windows_scale >= 100 && baseline.windows_scale <= 500))) return null
     return baseline
   }
-  // Returns true when a confirming click on an armed snapshot row counts.
-  // An ignored click restarts the wait, so a held key never confirms.
+  // Returns true when a confirming click on an armed snapshot row, or a
+  // name prompt's submission, counts. Every click restarts the wait, so a
+  // held key never confirms or submits, not even after a launch.
   function confirmReady() {
     var now = Date.now(), ready = now - armedAt >= confirmGuardMs
-    if (!ready) armedAt = now
+    armedAt = now
     return ready
   }
   function detachDrafts() {
