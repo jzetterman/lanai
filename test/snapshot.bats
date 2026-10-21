@@ -247,6 +247,8 @@ delete_fixture_snapshot() {
   use_install "$T/win"
   local name=20261019T120000Z link target="$T/elsewhere/20261019T120000Z" before
   link="$(data_dir)/snapshots/20261019T120000Z"
+  # teardown makes $B writable again and removes it, even after a failure.
+  B=$T/elsewhere
   delete_fixture_snapshot "$target"
   chmod 500 "$target"
   before=$(tree_manifest "$target")
@@ -258,11 +260,11 @@ delete_fixture_snapshot() {
   assert [ -L "$link" ]
   assert_equal "$(stat -c %a "$target")" 500
   assert_equal "$(tree_manifest "$target")" "$before"
-  chmod 700 "$target"
 }
 
 @test "snapshot_remove: a symlink goes without touching its target's modes" {
   local target="$T/target" link="$T/link"
+  B=$target
   mkdir -p "$target/sub"
   echo keep >"$target/sub/file"
   chmod 500 "$target/sub" "$target"
@@ -272,7 +274,6 @@ delete_fixture_snapshot() {
   assert [ ! -L "$link" ]
   assert_equal "$(stat -c %a "$target" "$target/sub" | tr '\n' ' ')" '500 500 '
   assert_equal "$(cat "$target/sub/file")" keep
-  chmod 700 "$target" "$target/sub"
 }
 
 # Failure fixtures copy plainly and mock only the image helper, never a VM.
