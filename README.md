@@ -547,7 +547,9 @@ are stand-ins. One exception: when `LANAI_TEST_LG_TARBALL` names a local copy of
 pinned source tarball, `test/client-patches.bats` applies Lanai's patches to it,
 builds the client, and builds and runs the client's own tests. The guest C# and
 PowerShell tests in `test/guest.bats` need `pwsh`. CI does not install it, so CI
-skips them: run them locally before a merge. Lint with
+skips them: run them locally before a merge. Two QML tests in `test/panel-qml.bats`
+load the installed shell's controls from `/usr/share/omarchy/shell`, which CI does not
+have, so CI skips them too. Lint with
 `shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
 docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
 docs/plugin/proof-kit/proof-unit-stop docs/plugin/proof-kit/clock-ping
