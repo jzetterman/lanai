@@ -69,8 +69,8 @@ jobs:
           if [[ "$GROUP" == rest ]]; then
             for file in test/*.bats spike/test/*.bats; do
               named=false
-              for group in "${named_groups[@]}"; do
-                if [[ "$file" == "test/$group.bats" ]]; then
+              for name in "${named_groups[@]}"; do
+                if [[ "$file" == "test/$name.bats" ]]; then
                   named=true
                   break
                 fi
@@ -80,8 +80,8 @@ jobs:
               fi
             done
           else
-            for group in "${named_groups[@]}"; do
-              if [[ "$GROUP" == "$group" ]]; then
+            for name in "${named_groups[@]}"; do
+              if [[ "$GROUP" == "$name" ]]; then
                 files=("test/$GROUP.bats")
                 break
               fi

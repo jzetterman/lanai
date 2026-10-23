@@ -48,15 +48,18 @@ One CI run takes about 20 minutes, and each push to a PR branch starts two.
    on `main` gets its own, because GitHub cancels a pending run in a shared
    group even when `cancel-in-progress` is false.
 2. Turn the `test` job into a matrix over `group: [panel, snapshot, setup,
-   rest]` with `fail-fast: false`. Keep the container, privileges, packages,
-   checkout and the btrfs and user setup in each job as today. Lower
+   rest]` with `fail-fast: false`. Keep the container, privileges, packages
+   (less `shellcheck`, which no test calls), checkout and the btrfs and user
+   setup in each job as today. Lower
    `timeout-minutes` to 20, since the slowest group takes about 7 minutes.
 3. In the bats step, build the file list from `matrix.group` in bash. One
    bash array holds the named groups (`panel snapshot setup`). A named group
    runs `test/<group>.bats`. `rest` runs every `test/*.bats` and
    `spike/test/*.bats` file except the named ones. Any other `matrix.group`
    value exits non-zero, so a group added to the matrix but not to the array
-   fails instead of running its file twice. A new file lands in `rest` by
+   fails instead of running its file twice. The other drift, a name in the
+   array but not in the matrix, would run its file nowhere and stay green, so
+   a comment at both lists says to keep them in sync. A new file lands in `rest` by
    itself, and a renamed named file makes bats fail on the missing path. Print
    the file list before running bats, since its TAP output names no files.
 4. Move shellcheck to its own job, `shellcheck`, on `runs-on: ubuntu-24.04`
@@ -82,3 +85,4 @@ the same tree.
 | Doc | b single (opus-5.5) | 1 | 3 | Three nits, all integrated, so stage (b) closed: one array of named groups with a non-zero exit for an unknown group, print each job's file list, and pin the shellcheck job's runner and a 10-minute timeout. The doc gate is closed. |
 | Diff | a (gpt-6.1-sol) | 1 | 0 | Clean on `git diff main...ci-speed-impl` through 6b97be1; 0 refuted, 0 downgraded to nit. Codex ran the file-list logic: all 17 files (967 tests) run exactly once. |
 | Diff | b panel (opus-5.5), 3 lenses | 1 | 6 | 8 raw, 6 distinct after dedupe; 0 refuted, 0 downgraded to nit; 1 should-fix confirmed: a group added to `named_groups` but not to the matrix would drop its file from every job with CI still green, so both lists now say to keep them in sync. Fixed with these nits: the header comment now scopes privilege to the test job, says "concurrency group" and notes that tags and other branches no longer run; the test job drops the unused shellcheck package and a redundant GROUP guard; the file list prints under a label. |
+| Diff | b panel (opus-5.5), 3 lenses | 2 | 4 | 4 raw, 4 distinct; 0 refuted, 0 downgraded to nit; all nits, so stage (b) closed. Fixed: the loop variable `group` beside `GROUP` is now `name`, and plan steps 2 and 3 now name the dropped shellcheck package and the keep-in-sync comments. Accepted: an approved fork PR could edit its workflow to cancel a run by its public concurrency group, at worst one rerun. |
