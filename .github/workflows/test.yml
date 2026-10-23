@@ -7,11 +7,20 @@
 # the container a PID 1 that reaps orphans, as systemd does on a desktop;
 # BATS_TEST_TIMEOUT makes a hung test fail with its name. The runner image is
 # pinned, so a new ubuntu-latest cannot change the host under the container.
+# The groups are panel, snapshot, setup and rest; rest runs every other test
+# file in test/ and spike/test/. Pushes run on main only, and pull requests
+# run on each update. A new PR push cancels its old run; each main run has its
+# own group because GitHub cancels a pending run in a shared group.
 name: test
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -19,10 +28,14 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [panel, snapshot, setup, rest]
     container:
       image: archlinux:latest
       options: --privileged --init
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - name: Install packages
         run: >-
@@ -32,7 +45,11 @@ jobs:
         with:
           persist-credentials: false
       - name: bats
+        env:
+          GROUP: ${{ matrix.group }}
         run: |
+          set -euo pipefail
+          : "${GROUP:?GROUP is required}"
           useradd -m tester
           chown -R tester .
           install -d -m 700 -o tester /tmp/run-tester
@@ -41,8 +58,47 @@ jobs:
           mkdir -p /mnt/btrfs
           mount -o loop /tmp/btrfs.img /mnt/btrfs
           install -d -o tester /mnt/btrfs/lanai-test
+          named_groups=(panel snapshot setup)
+          files=()
+          if [[ "$GROUP" == rest ]]; then
+            for file in test/*.bats spike/test/*.bats; do
+              named=false
+              for group in "${named_groups[@]}"; do
+                if [[ "$file" == "test/$group.bats" ]]; then
+                  named=true
+                  break
+                fi
+              done
+              if [[ "$named" == false ]]; then
+                files+=("$file")
+              fi
+            done
+          else
+            for group in "${named_groups[@]}"; do
+              if [[ "$GROUP" == "$group" ]]; then
+                files=("test/$GROUP.bats")
+                break
+              fi
+            done
+          fi
+          if ((${#files[@]} == 0)); then
+            printf 'Unknown test group: %s\n' "$GROUP" >&2
+            exit 1
+          fi
+          printf '%s\n' "${files[@]}"
           runuser -u tester -- env HOME=/home/tester XDG_RUNTIME_DIR=/tmp/run-tester \
-            LANAI_TEST_BTRFS_DIR=/mnt/btrfs/lanai-test LANAI_REQUIRE_BTRFS=1 BATS_TEST_TIMEOUT=120 bats test spike/test
+            LANAI_TEST_BTRFS_DIR=/mnt/btrfs/lanai-test LANAI_REQUIRE_BTRFS=1 BATS_TEST_TIMEOUT=120 bats "${files[@]}"
+  shellcheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install shellcheck
+        run: pacman -Syu --noconfirm shellcheck
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: shellcheck
         run: >-
           shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash
