@@ -1,16 +1,21 @@
-# Runs the bats suites and shellcheck in an Arch container. bats runs as an
-# unprivileged user, so the tests of unreadable files run too. The reflink
-# tests run on a loop-mounted btrfs image (LANAI_TEST_BTRFS_DIR), which is
-# why the container is privileged: acceptable only because GitHub-hosted
-# runners are throwaway VMs; never run this job on a self-hosted runner. The
-# lock tests run QEMU under TCG with -S, so they need no KVM. --init gives
-# the container a PID 1 that reaps orphans, as systemd does on a desktop;
-# BATS_TEST_TIMEOUT makes a hung test fail with its name. The runner image is
-# pinned, so a new ubuntu-latest cannot change the host under the container.
-# The groups are panel, snapshot, setup and rest; rest runs every other test
-# file in test/ and spike/test/. Pushes run on main only, and pull requests
-# run on each update. A new PR push cancels its old run; each main run has its
-# own group because GitHub cancels a pending run in a shared group.
+# Runs the bats suites and shellcheck, each job in its own Arch container.
+# bats runs as an unprivileged user, so the tests of unreadable files run
+# too. The reflink tests run on a loop-mounted btrfs image
+# (LANAI_TEST_BTRFS_DIR), which is why the test job's container is
+# privileged: acceptable only because GitHub-hosted runners are throwaway
+# VMs; never run the test job on a self-hosted runner. The shellcheck job is
+# not privileged. The lock tests run QEMU under TCG with -S, so they need no
+# KVM. --init gives the container a PID 1 that reaps orphans, as systemd does
+# on a desktop; BATS_TEST_TIMEOUT makes a hung test fail with its name. The
+# runner image is pinned, so a new ubuntu-latest cannot change the host under
+# the container.
+#
+# The test job runs as four parallel matrix jobs: panel, snapshot and setup
+# run their own file, and rest runs every other file in test/ and
+# spike/test/, so a new file needs no change here. Pushes run on main only
+# (not on tags or other branches), and pull requests run on each update. A
+# new push to a PR cancels that PR's older run. Each main run has its own
+# concurrency group, because GitHub cancels a pending run in a shared group.
 name: test
 
 on:
@@ -31,6 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Keep in sync with named_groups in the bats step.
         group: [panel, snapshot, setup, rest]
     container:
       image: archlinux:latest
@@ -39,7 +45,7 @@ jobs:
     steps:
       - name: Install packages
         run: >-
-          pacman -Syu --noconfirm bats bats-assert bats-support shellcheck ffmpeg jq
+          pacman -Syu --noconfirm bats bats-assert bats-support ffmpeg jq
           socat e2fsprogs btrfs-progs diffutils gcc patch qemu-system-x86 qemu-img python strace
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,7 +55,6 @@ jobs:
           GROUP: ${{ matrix.group }}
         run: |
           set -euo pipefail
-          : "${GROUP:?GROUP is required}"
           useradd -m tester
           chown -R tester .
           install -d -m 700 -o tester /tmp/run-tester
@@ -58,6 +63,7 @@ jobs:
           mkdir -p /mnt/btrfs
           mount -o loop /tmp/btrfs.img /mnt/btrfs
           install -d -o tester /mnt/btrfs/lanai-test
+          # Keep in sync with matrix.group; a name here but not there is never run.
           named_groups=(panel snapshot setup)
           files=()
           if [[ "$GROUP" == rest ]]; then
@@ -85,7 +91,8 @@ jobs:
             printf 'Unknown test group: %s\n' "$GROUP" >&2
             exit 1
           fi
-          printf '%s\n' "${files[@]}"
+          printf 'Test files:\n'
+          printf '  %s\n' "${files[@]}"
           runuser -u tester -- env HOME=/home/tester XDG_RUNTIME_DIR=/tmp/run-tester \
             LANAI_TEST_BTRFS_DIR=/mnt/btrfs/lanai-test LANAI_REQUIRE_BTRFS=1 BATS_TEST_TIMEOUT=120 bats "${files[@]}"
   shellcheck:
