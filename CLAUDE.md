@@ -49,7 +49,9 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   to the pinned source, builds the client and runs its tests when
   `LANAI_TEST_LG_TARBALL` names the pinned source tarball (local only; CI skips it).
   The guest C# and PowerShell tests in `test/guest.bats` need `pwsh`, which CI does
-  not install, so CI skips them: run them locally before a merge.
+  not install, so CI skips them: run them locally before a merge. CI also skips the
+  two QML tests in `test/panel-qml.bats` that load the installed shell's controls
+  from `/usr/share/omarchy/shell`.
 
 ## Rules
 

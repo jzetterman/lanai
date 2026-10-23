@@ -47,6 +47,7 @@ jobs:
         run: >-
           pacman -Syu --noconfirm bats bats-assert bats-support ffmpeg jq
           socat e2fsprogs btrfs-progs diffutils gcc patch qemu-system-x86 qemu-img python strace
+          qt6-declarative
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
