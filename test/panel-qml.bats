@@ -424,14 +424,28 @@ TestCase {
       sections:{settings:'Settings',snapshots:'Snapshots',logs:'Logs',default:''},primary_action:'start',
       buttons:{start:{show:true,enable:true,label:'Start Windows'},cancel:{show:true,enable:true,label:'Cancel'},
         restore_snapshot:{show:true,enable:true,label:'Restore'},restore_confirm:{show:true,enable:true,label:'Confirm'},
+        delete_snapshot:{show:true,enable:true,label:'Delete'},delete_confirm:{show:true,enable:true,label:'Delete snapshot'},
         save_settings:{show:true,enable:true,label:'Save settings'}},setup:{finished:true},
       settings:{memory_gib:12,cores:6,windows_scale:175,baseline:{memory_gib:12,cores:6,windows_scale:175},
         labels:{memory:'Memory (GiB)',cores:'CPU cores',scale:'Windows scale',save:'Save',saved:'Saved',reset:'Reset',unsaved:'Unsaved'}},
-      result:{},logs:{rows:[{id:'vm',label:'VM',display:'journal: lanai-vm',copy_text:'journalctl --user -u lanai-vm',copy_label:'Copy VM log command'}]},
+      result:{},logs:{copied:'Copied',copy_error:'Could not copy.',copy_busy:'Copying',
+        rows:[{id:'vm',label:'VM',display:'journal: lanai-vm',copy_text:'journalctl --user -u lanai-vm',copy_label:'Copy VM log command'}]},
       snapshots:{show:true,count:1,names:['20261012T091200Z'],items:[{name:'20261012T091200Z',date:'Oct 12, 2026',time:'09:12 UTC',
         label:'Oct 12, 2026 at 09:12 UTC',restore_label:'Restore Oct 12, 2026 at 09:12 UTC',
-        confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',warning:'Later changes are lost.'}]},
+        confirm_label:'Restore Oct 12, 2026 at 09:12 UTC and replace Windows',warning:'Later changes are lost.',
+        delete_label:'Delete Oct 12, 2026 at 09:12 UTC',delete_confirm_label:'Delete snapshot: Oct 12, 2026 at 09:12 UTC, permanently',
+        delete_warning:'Windows stays as it is. You will lose this restore point.'}]},
       restore:{label:'',warning:''},progress:null}
+  }
+  // redesignView with a second, older snapshot below the first.
+  function twoSnapshotView() {
+    var v = redesignView(), older = JSON.parse(JSON.stringify(v.snapshots.items[0]))
+    older.name = '20261001T080000Z'; older.date = 'Oct 1, 2026'; older.time = '08:00 UTC'
+    older.label = 'Oct 1, 2026 at 08:00 UTC'; older.restore_label = 'Restore ' + older.label
+    older.confirm_label = 'Restore ' + older.label + ' and replace Windows'
+    older.delete_label = 'Delete ' + older.label; older.delete_confirm_label = 'Delete snapshot: ' + older.label + ', permanently'
+    v.snapshots.items.push(older); v.snapshots.names.push(older.name); v.snapshots.count = 2
+    return v
   }
   function redesignPanel() {
     var model = createTemporaryObject(modelComponent, tests)
@@ -456,6 +470,14 @@ TestCase {
         {id:'scale',label:'Scale task',state:'not_checked',status:'Not checked',detail:''}],countdown:null}
     return v
   }
+  // True when <lower> starts at or below the bottom of <upper>, once the
+  // layout has settled.
+  function below(lower, upper) {
+    verify(waitForPolish(lower.Window.window))
+    return lower.mapToItem(null, 0, 0).y >= upper.mapToItem(null, 0, upper.height).y
+  }
+  // Waits until a confirming click on an armed row counts.
+  function pastConfirmGuard(panel) { wait(panel.confirmGuardMs + 50) }
   function textVisible(panel, text) {
     return objects(panel, function(o) { return o.text === text && o.visible }).length > 0
   }
@@ -503,6 +525,73 @@ TestCase {
     compare(hero.detail, 'Stopped')
     verify(!named(p.panel, 'setupSteps').visible)
     verify(!textVisible(p.panel, 'Step 7 of 6'))
+  }
+  function test_main_keeps_routine_copy_out_of_collapsed_panel() {
+    var p = redesignPanel(), v = redesignView()
+    v.state = 'running'; v.header.badge = 'Running'; v.primary_action = 'open'
+    v.headline = 'Windows is running'; v.cause = 'Windows is available.'; v.next = 'Click Open window.'
+    v.buttons.start.show = false
+    v.buttons.open = {show:true,enable:true,label:'Open window'}
+    v.buttons.stop = {show:true,enable:true,label:'Shut down'}
+    v.buttons.continue_setup = {show:true,enable:false,label:'Run setup again',hint:'Shut Windows down first.'}
+    v.buttons.window = {show:true,enable:false,label:'Set up in a basic window',hint:'Use this if the window is blank.'}
+    v.buttons.no_window = {show:true,enable:false,label:'Set up in the Windows window',hint:'Use this if the driver works.'}
+    v.result.snapshots = 'Snapshot saved at /home/john/snapshots/example. It shares disk space at first.'
+    v.snapshots.saved = {path:'/home/john/snapshots/example',path_line:'Snapshot saved at /home/john/snapshots/example',
+      advice:'It shares disk space at first.',copy_label:'Copy snapshot path',
+      show_label:'Show details',hide_label:'Hide details'}
+    p.model.view = v
+    verify(!textVisible(p.panel, v.headline))
+    verify(!textVisible(p.panel, v.cause))
+    verify(!textVisible(p.panel, v.next))
+    compare(named(p.panel, 'primaryAction').tooltipText, v.cause + ' ' + v.next)
+    verify(!textVisible(p.panel, v.result.snapshots))
+    verify(!textVisible(p.panel, v.buttons.continue_setup.hint))
+    named(p.panel, 'moreActionsToggle').clicked()
+    verify(textVisible(p.panel, v.buttons.continue_setup.hint))
+    verify(!textVisible(p.panel, v.buttons.window.hint))
+    verify(!textVisible(p.panel, v.buttons.no_window.hint))
+    named(p.panel, 'snapshotsToggle').clicked()
+    verify(named(p.panel, 'snapshotLocationToggle').visible)
+    verify(!textVisible(p.panel, v.result.snapshots))
+    named(p.panel, 'snapshotLocationToggle').clicked()
+    verify(textVisible(p.panel, v.snapshots.saved.path_line))
+    verify(textVisible(p.panel, v.snapshots.saved.advice))
+    verify(!textVisible(p.panel, v.result.snapshots))
+    var copyButton = named(p.panel, 'copySnapshotPath')
+    var pathRow = named(p.panel, 'snapshotPathRow'), pathText = named(p.panel, 'snapshotPathText')
+    compare(copyButton.Accessible.name, v.snapshots.saved.copy_label)
+    verify(copyButton.focusable)
+    ;[420,260].forEach(function(width) {
+      named(p.panel, 'panelPopup').contentWidth = width
+      verify(waitForPolish(named(p.panel, 'panelScroll').Window.window))
+      verify(Math.abs(copyButton.x - pathText.width - 6) <= 1)
+      verify(copyButton.x + copyButton.width <= pathRow.width,
+        'Snapshot copy icon overflows ' + width + 'px panel')
+      verify(copyButton.y + copyButton.height <= pathRow.height)
+    })
+    copyButton.clicked()
+    var copy = process(p.model, 'wl-copy')
+    verify(copy.running)
+    compare(copy.command.length, 1)
+    copy.begin()
+    compare(copy.input, v.snapshots.saved.path)
+    verify(copy.wroteWithStdin)
+    copy.complete('', 0)
+    compare(named(p.panel, 'copySnapshotFeedback').text, 'Copied')
+    copyButton.clicked(); copy.begin(); copy.complete('', 1)
+    compare(named(p.panel, 'copySnapshotFeedback').text, v.logs.copy_error)
+    v.snapshots.saved.path = '/home/john/snapshots/new'
+    v.snapshots.saved.path_line = 'Snapshot saved at ' + v.snapshots.saved.path
+    p.model.view = JSON.parse(JSON.stringify(v))
+    compare(named(p.panel, 'copySnapshotFeedback').text, '')
+    v.warning = 'The Windows window did not open in time.'
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(textVisible(p.panel, v.warning))
+    v.layout = 'failed'; v.snapshots.saved = null; v.result.snapshots = 'Lanai could not take the snapshot.'
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(textVisible(p.panel, v.result.snapshots))
+    p.panel.destroy()
   }
   function test_redesign_snapshot_skip_keeps_backup_and_filesystem_advice() {
     var p = redesignPanel(), v = setupView('3')
@@ -819,7 +908,7 @@ TestCase {
   }
   function logView() {
     var v = redesignView()
-    v.logs = {copied:'Copied',copy_error:'Could not copy. Try again.',copy_busy:'Another log is being copied. Try again in a moment.',rows:[
+    v.logs = {copied:'Copied',copy_error:'Could not copy. Try again.',copy_busy:'Another copy is in progress. Try again in a moment.',rows:[
       {id:'vm',label:'VM',display:'journal: lanai-vm',copy_text:'journalctl --user -u lanai-vm; $(touch NEVER)\n"literal"',copy_label:'Copy VM log command'},
       {id:'client',label:'Window',display:'client.log',copy_text:'/state with spaces/client.log',copy_label:'Copy Window log path'},
       {id:'build',label:'Build',display:'build-client.log',copy_text:'/state/build-client.log',copy_label:'Copy Build log path'},
@@ -956,17 +1045,29 @@ TestCase {
     named(p.panel, 'snapshotsToggle').clicked(); wait(1)
     var restore = named(p.panel, 'restore-20261012T091200Z')
     verify(restore !== undefined)
-    compare(restore.text, p.model.view.snapshots.items[0].restore_label)
+    compare(restore.text, 'Restore')
+    compare(restore.Accessible.name, p.model.view.snapshots.items[0].restore_label)
+    compare(restore.Accessible.description, '')
     restore.clicked()
     compare(p.panel.restoreArmed, '20261012T091200Z')
     verify(objects(p.panel, function(o) { return o.text === 'Later changes are lost.' && o.visible }).length > 0)
-    named(p.panel, 'restoreCancel').clicked()
+    // Screen readers hear the armed warning with the button.
+    compare(restore.Accessible.description, 'Later changes are lost.')
+    var cancel = named(p.panel, 'restoreCancel-20261012T091200Z')
+    // The armed row hides its Delete. Its own Cancel sits under it, and
+    // gives focus back to Restore.
+    verify(!named(p.panel, 'delete-20261012T091200Z').visible)
+    verify(cancel.visible)
+    verify(below(cancel, restore))
+    cancel.forceActiveFocus(); cancel.clicked()
     compare(p.panel.restoreArmed, '')
+    verify(!cancel.visible)
+    verify(restore.activeFocus)
     restore.clicked()
     named(p.panel, 'logsToggle').clicked()
     compare(p.panel.restoreArmed, '20261012T091200Z')
     named(p.panel, 'snapshotsToggle').clicked()
-    restore.clicked()
+    pastConfirmGuard(p.panel); restore.clicked()
     compare(Quickshell.lastCommand.slice(3).join(' '), 'restore 20261012T091200Z')
     p.model.pendingToken = ''; ready(p.model)
     restore.clicked()
@@ -978,6 +1079,155 @@ TestCase {
     compare(p.panel.restoreArmed, '')
     p.panel.destroy()
   }
+  // Checks that <item> lies inside the panel's width and returns its left
+  // and right edges in the scroll view.
+  function horizontalEdges(item, flick, what) {
+    var left = item.mapToItem(flick, 0, 0).x, right = item.mapToItem(flick, item.width, 0).x
+    verify(left >= 0, what + ' starts left of the panel: ' + left)
+    verify(right <= flick.width, what + ' overflows the ' + flick.width + 'px panel: ' + right)
+    return {left:left, right:right}
+  }
+  function test_redesign_delete_snapshot_requires_named_confirmation_and_keeps_actions_in_bounds() {
+    var p = redesignPanel(), v = redesignView(), item = v.snapshots.items[0]
+    Quickshell.lastCommand = []
+    named(p.panel, 'snapshotsToggle').clicked()
+    var popup = named(p.panel, 'panelPopup'), flick = named(p.panel, 'panelScroll')
+    var restore = named(p.panel, 'restore-' + item.name)
+    var remove = named(p.panel, 'delete-' + item.name)
+    var cancel = named(p.panel, 'deleteCancel-' + item.name)
+    verify(remove !== undefined)
+    compare(remove.text, v.buttons.delete_snapshot.label)
+    compare(remove.Accessible.name, item.delete_label)
+    compare(remove.Accessible.description, '')
+    ;[420,360,260].forEach(function(width) {
+      popup.contentWidth = width
+      ;[false,true].forEach(function(armed) {
+        p.panel.deleteArmed = armed ? item.name : ''
+        verify(waitForPolish(flick.Window.window))
+        var del = horizontalEdges(remove, flick, 'Delete at ' + width + 'px')
+        if (armed) {
+          verify(!restore.visible)
+          verify(cancel.visible)
+          horizontalEdges(cancel, flick, 'Cancel at ' + width + 'px')
+        } else {
+          verify(!cancel.visible)
+          var res = horizontalEdges(restore, flick, 'Restore at ' + width + 'px')
+          verify(res.left >= del.right + 6, 'Delete and Restore overlap at ' + width + 'px')
+        }
+      })
+    })
+    p.panel.deleteArmed = ''
+    remove.clicked()
+    compare(p.panel.deleteArmed, item.name)
+    verify(!restore.visible)
+    compare(remove.text, v.buttons.delete_confirm.label)
+    compare(remove.Accessible.name, item.delete_confirm_label)
+    // The visible words are inside the accessible name (label in name).
+    remove.text.split(' ').forEach(function(word) { verify(remove.Accessible.name.indexOf(word) !== -1, word) })
+    verify(textVisible(p.panel, item.delete_warning))
+    compare(remove.Accessible.description, item.delete_warning)
+    // The row's own Cancel sits under it, and gives focus back to Delete.
+    verify(below(cancel, remove))
+    cancel.forceActiveFocus(); cancel.clicked()
+    compare(p.panel.deleteArmed, '')
+    verify(!cancel.visible)
+    verify(remove.activeFocus)
+    compare(remove.Accessible.description, '')
+    compare(Quickshell.lastCommand.length, 0)
+    remove.clicked()
+    pastConfirmGuard(p.panel); remove.clicked()
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'delete-snapshot ' + item.name)
+    compare(p.panel.deleteArmed, '')
+    // The button words come from the backend descriptors.
+    v = redesignView(); v.buttons.delete_snapshot.label = 'Remove'; v.buttons.restore_snapshot.label = 'Bring back'
+    p.model.view = v; wait(1)
+    compare(named(p.panel, 'delete-' + item.name).text, 'Remove')
+    compare(named(p.panel, 'restore-' + item.name).text, 'Bring back')
+    // A poll that drops the armed snapshot clears the target.
+    v = redesignView(); p.model.view = v; wait(1)
+    named(p.panel, 'delete-' + item.name).clicked(); compare(p.panel.deleteArmed, item.name)
+    v = redesignView(); v.snapshots.items = []; v.snapshots.names = []; v.snapshots.count = 0; p.model.view = v
+    compare(p.panel.deleteArmed, '')
+    // So does a poll that disables deletion.
+    v = redesignView(); p.model.view = v; wait(1)
+    named(p.panel, 'delete-' + item.name).clicked(); compare(p.panel.deleteArmed, item.name)
+    v = redesignView(); v.buttons.delete_snapshot.enable = false; p.model.view = v
+    compare(p.panel.deleteArmed, '')
+    // A poll that keeps the target keeps it armed; closing the panel clears it.
+    v = redesignView(); p.model.view = v; wait(1)
+    named(p.panel, 'delete-' + item.name).clicked(); compare(p.panel.deleteArmed, item.name)
+    p.model.view = redesignView(); compare(p.panel.deleteArmed, item.name)
+    p.panel.close(); compare(p.panel.deleteArmed, '')
+    p.panel.destroy()
+  }
+  // Holding Space repeats the key press on the one button that arms and
+  // confirms. A click right after arming, or right after an ignored click,
+  // does nothing; a click after a pause confirms.
+  function test_redesign_confirm_ignores_clicks_right_after_arming() {
+    var p = redesignPanel(), item = redesignView().snapshots.items[0], guard = p.panel.confirmGuardMs || 0
+    named(p.panel, 'snapshotsToggle').clicked()
+    ;[['delete-', 'deleteArmed', 'delete-snapshot'], ['restore-', 'restoreArmed', 'restore']].forEach(function(row) {
+      p.model.pendingToken = ''; ready(p.model); p.model.view = redesignView(); wait(1)
+      Quickshell.lastCommand = []
+      var button = named(p.panel, row[0] + item.name)
+      button.clicked(); compare(p.panel[row[1]], item.name)
+      button.clicked()
+      compare(Quickshell.lastCommand.length, 0, row[2] + ' confirmed right after arming')
+      compare(p.panel[row[1]], item.name)
+      wait(guard * 0.6); button.clicked()
+      wait(guard * 0.6); button.clicked()
+      compare(Quickshell.lastCommand.length, 0, row[2] + ' confirmed while clicks kept coming')
+      compare(p.panel[row[1]], item.name)
+      wait(guard + 50); button.clicked()
+      compare(Quickshell.lastCommand.slice(3).join(' '), row[2] + ' ' + item.name)
+      compare(p.panel[row[1]], '')
+    })
+    verify(guard >= 700, 'The guard must outlast common key repeat delays: ' + guard)
+    p.panel.destroy()
+  }
+  function test_redesign_restore_and_delete_disarm_each_other_across_rows() {
+    var p = redesignPanel(), v = twoSnapshotView(), first = v.snapshots.items[0].name, second = v.snapshots.items[1].name
+    p.model.view = v; wait(1)
+    named(p.panel, 'snapshotsToggle').clicked()
+    named(p.panel, 'delete-' + first).clicked()
+    compare(p.panel.deleteArmed, first)
+    named(p.panel, 'restore-' + second).clicked()
+    compare(p.panel.restoreArmed, second); compare(p.panel.deleteArmed, '')
+    verify(named(p.panel, 'restoreCancel-' + second).visible)
+    verify(!named(p.panel, 'deleteCancel-' + first).visible)
+    named(p.panel, 'delete-' + first).clicked()
+    compare(p.panel.deleteArmed, first); compare(p.panel.restoreArmed, '')
+    verify(named(p.panel, 'deleteCancel-' + first).visible)
+    verify(!named(p.panel, 'restoreCancel-' + second).visible)
+    // Cancel sits under its own row, above the next one.
+    verify(below(named(p.panel, 'restore-' + second), named(p.panel, 'deleteCancel-' + first)))
+    p.panel.destroy()
+  }
+  function test_redesign_snapshot_results_show_inside_snapshots() {
+    var p = redesignPanel(), v = redesignView()
+    v.result.snapshots = 'The snapshot was restored.'
+    p.model.view = v
+    verify(!textVisible(p.panel, v.result.snapshots))
+    named(p.panel, 'snapshotsToggle').clicked()
+    var note = objects(named(p.panel, 'snapshotsDetails'), function(o) { return o.text === v.result.snapshots && o.visible })
+    compare(note.length, 1)
+    p.panel.destroy()
+  }
+  // Returns each line <note> lays out, from a TextEdit with the same text,
+  // font, width and wrapping (Text cannot map characters to lines).
+  function laidOutLines(note) {
+    var mirror = Qt.createQmlObject('import QtQuick; TextEdit { textFormat: TextEdit.PlainText; readOnly: true }', note.parent)
+    mirror.font = note.font; mirror.wrapMode = note.wrapMode; mirror.width = note.width; mirror.text = note.text
+    compare(mirror.lineCount, note.lineCount, 'The mirror lays out the note differently')
+    var lines = [], y = null
+    for (var i = 0; i < mirror.length; i++) {
+      var top = mirror.positionToRectangle(i).y
+      if (y === null || top > y) { lines.push(''); y = top }
+      lines[lines.length - 1] += mirror.getText(i, i + 1)
+    }
+    mirror.destroy()
+    return lines
+  }
   function test_redesign_snapshot_actions_fit_narrow_panel() {
     var p = redesignPanel()
     named(p.panel, 'snapshotsToggle').clicked()
@@ -988,7 +1238,7 @@ TestCase {
       verify(waitForPolish(flick.Window.window))
       ;[false,true].forEach(function(armed) {
         p.panel.restoreArmed = armed ? '20261012T091200Z' : ''
-        compare(restore.text, armed ? p.model.view.snapshots.items[0].confirm_label : p.model.view.snapshots.items[0].restore_label)
+        compare(restore.text, armed ? p.model.view.snapshots.items[0].confirm_label : 'Restore')
         restore.forceActiveFocus()
         verify(waitForPolish(flick.Window.window))
         verify(restore.activeFocus)
@@ -996,8 +1246,125 @@ TestCase {
         verify(point.x >= 0)
         verify(point.x + restore.width <= flick.width, 'Snapshot action overflows ' + width + 'px panel: ' + restore.width)
         verify(point.y >= 0 && point.y + restore.height <= flick.height)
+        if (!armed) {
+          var date = objects(p.panel, function(o) {
+            return typeof o.text === 'string' && o.text.replace(/\u00a0/g, ' ') === 'Oct 12, 2026 · 09:12 UTC' && o.visible })[0]
+          // The date may wrap, but never leaves the separator at a line end.
+          var lines = laidOutLines(date)
+          if (width === 260) verify(lines.length > 1, 'The snapshot date fits one line at 260px, so the wrap goes untested')
+          lines.forEach(function(line) {
+            verify(!/·\s*$/.test(line), 'A snapshot date line ends with its separator at ' + width + 'px: ' + JSON.stringify(lines))
+          })
+          var datePoint = date.mapToItem(flick, 0, 0)
+          verify(Math.abs(datePoint.y + date.height / 2 - (point.y + restore.height / 2)) <= 1,
+            'Snapshot date and Restore label are not centered on the same line at ' + width + 'px')
+          var row = restore.parent.parent
+          verify(Math.abs(restore.mapToItem(row, restore.width, 0).x - row.width) <= 1,
+            'Restore button is not at the right edge of the snapshot row at ' + width + 'px')
+        }
       })
     })
+    // Delete and its Cancel are in the Tab chain: Tab moves from Delete to
+    // Restore, and from the armed Delete to its Cancel.
+    p.panel.restoreArmed = ''
+    var remove = named(p.panel, 'delete-20261012T091200Z'), cancel = named(p.panel, 'deleteCancel-20261012T091200Z')
+    verify(remove.focusable && remove.activeFocusOnTab)
+    remove.forceActiveFocus(); verify(remove.activeFocus)
+    keyClick(Qt.Key_Tab); verify(restore.activeFocus, 'Tab from Delete does not reach Restore')
+    p.panel.deleteArmed = '20261012T091200Z'
+    verify(cancel.visible && cancel.focusable && cancel.activeFocusOnTab)
+    remove.forceActiveFocus(); verify(remove.activeFocus)
+    keyClick(Qt.Key_Tab); verify(cancel.activeFocus, 'Tab from the armed Delete does not reach Cancel')
+    keyClick(Qt.Key_Space); compare(p.panel.deleteArmed, '')
+    verify(remove.activeFocus)
+    // With the installed Button, Space arms Delete, and a second Space
+    // right after it (a held key repeats) does not confirm.
+    Quickshell.lastCommand = []
+    keyClick(Qt.Key_Space); compare(p.panel.deleteArmed, '20261012T091200Z')
+    keyClick(Qt.Key_Space); compare(p.panel.deleteArmed, '20261012T091200Z')
+    compare(Quickshell.lastCommand.length, 0)
+    p.panel.destroy()
+  }
+  function test_redesign_snapshot_management_actions_share_a_row() {
+    var p = redesignPanel(), v = redesignView()
+    v.snapshots.saved = {path:'/copy',show_label:'Show details',hide_label:'Hide details'}
+    v.buttons.take_snapshot = {show:true,enable:false,label:'Take a snapshot'}
+    p.model.view = v
+    named(p.panel, 'snapshotsToggle').clicked()
+    var popup = named(p.panel, 'panelPopup'), flick = named(p.panel, 'panelScroll')
+    var row = named(p.panel, 'snapshotActions'), details = named(p.panel, 'snapshotLocationToggle')
+    var take = objects(p.panel, function(o) { return o.control === 'take_snapshot' })[0]
+    verify(row !== undefined)
+    verify(details.bordered)
+    verify(take.visible && !take.enabled)
+    ;[420,360,260].forEach(function(width) {
+      popup.contentWidth = width
+      verify(waitForPolish(flick.Window.window))
+      var rowPoint = row.mapToItem(flick, 0, 0)
+      var detailsPoint = details.mapToItem(flick, 0, 0)
+      var takePoint = take.mapToItem(flick, 0, 0)
+      verify(Math.abs(detailsPoint.x - rowPoint.x) <= 1)
+      verify(Math.abs(take.mapToItem(row, take.width, 0).x - row.width) <= 1)
+      verify(detailsPoint.x + details.width <= rowPoint.x + row.width)
+      verify(takePoint.x >= rowPoint.x)
+      if (width >= 360)
+        verify(Math.abs(detailsPoint.y + details.height / 2 - (takePoint.y + take.height / 2)) <= 1,
+          'Snapshot management actions should share a line at ' + width + 'px')
+      if (Math.abs(detailsPoint.y + details.height / 2 - (takePoint.y + take.height / 2)) <= 1)
+        verify(detailsPoint.x + details.width + 4 <= takePoint.x)
+      else
+        verify(takePoint.y >= detailsPoint.y + details.height)
+    })
+    // Too narrow for one line: Take a snapshot wraps under Show details,
+    // at the right edge, and the row holds both.
+    popup.contentWidth = 200
+    verify(waitForPolish(flick.Window.window))
+    verify(row.wrap)
+    verify(below(take, details))
+    verify(Math.abs(take.mapToItem(row, take.width, 0).x - row.width) <= 1)
+    verify(take.mapToItem(row, 0, take.height).y <= row.height)
+    popup.contentWidth = 420
+    v.snapshots.saved = null
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(!details.visible)
+    verify(take.visible)
+    verify(Math.abs(take.mapToItem(row, take.width, 0).x - row.width) <= 1)
+    p.panel.destroy()
+  }
+  function test_redesign_snapshot_details_collapse_on_reopen_and_when_saved_goes() {
+    var p = redesignPanel(), v = redesignView()
+    v.snapshots.saved = {path:'/copy',path_line:'Snapshot saved at /copy',advice:'Advice.',copy_label:'Copy snapshot path',
+      show_label:'Show details',hide_label:'Hide details'}
+    p.model.view = JSON.parse(JSON.stringify(v))
+    named(p.panel, 'snapshotsToggle').clicked()
+    var details = named(p.panel, 'snapshotLocationToggle'), pathRow = named(p.panel, 'snapshotPathRow')
+    details.clicked(); verify(pathRow.visible)
+    p.panel.close(); p.panel.open()
+    named(p.panel, 'snapshotsToggle').clicked()
+    verify(details.visible); verify(!pathRow.visible)
+    compare(details.text, 'Show details')
+    details.clicked(); verify(pathRow.visible)
+    var gone = JSON.parse(JSON.stringify(v)); gone.snapshots.saved = null
+    p.model.view = gone
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(details.visible); verify(!pathRow.visible)
+    p.panel.destroy()
+  }
+  // A finished setup with Run setup again enabled needs no hint; disabled,
+  // or before setup finishes, the hint shows under the buttons.
+  function test_redesign_continue_setup_hint_only_while_it_helps() {
+    var p = redesignPanel(), v = redesignView()
+    v.buttons.continue_setup = {show:true,enable:true,label:'Run setup again',hint:'Backend continue hint.'}
+    p.model.view = JSON.parse(JSON.stringify(v))
+    named(p.panel, 'moreActionsToggle').clicked()
+    verify(objects(p.panel, function(o) { return o.control === 'continue_setup' && o.visible }).length > 0)
+    verify(!textVisible(p.panel, 'Backend continue hint.'))
+    v.buttons.continue_setup.enable = false
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(textVisible(p.panel, 'Backend continue hint.'))
+    v.buttons.continue_setup.enable = true; v.setup = {show:true,finished:false}
+    p.model.view = JSON.parse(JSON.stringify(v))
+    verify(textVisible(p.panel, 'Backend continue hint.'))
     p.panel.destroy()
   }
   function test_redesign_progress_stays_above_actions_for_snapshot_and_restore() {
@@ -1469,8 +1836,10 @@ TestCase {
       verify(!client.visible)
       compare(Quickshell.lastCommand.length, 0)
       again.clicked()
-      verify(objects(panel, function(o) { return o.text === model.control('no_window').hint && o.visible }).length > 0)
-      verify(objects(panel, function(o) { return o.text === model.control('window').hint && o.visible }).length > 0)
+      compare(client.tooltipText, model.control('no_window').hint)
+      compare(screen.tooltipText, model.control('window').hint)
+      verify(!textVisible(panel, model.control('no_window').hint))
+      verify(!textVisible(panel, model.control('window').hint))
       panel.close(); panel.open()
       named(panel, 'moreActionsToggle').clicked()
       verify(!client.visible)
@@ -1827,12 +2196,13 @@ TestCase {
     wait(1)
     named(panel, 'snapshotsToggle').clicked()
     var restore = objects(panel, function(o) { return o.control === 'restore_snapshot' })[0]
-    compare(restore.text, 'Restore snapshot snapshot')
+    compare(restore.text, 'Restore')
+    compare(restore.Accessible.name, 'Restore snapshot snapshot')
     restore.clicked()
     compare(panel.restoreArmed, 'snapshot')
     compare(restore.control, 'restore_confirm')
     compare(restore.text, 'Restore snapshot and replace Windows')
-    restore.clicked()
+    pastConfirmGuard(panel); restore.clicked()
     compare(Quickshell.lastCommand[1], 'ui-job')
     compare(Quickshell.lastCommand.slice(3).join(' '), 'restore snapshot')
     model.view = {buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
@@ -1903,6 +2273,8 @@ qml_renderer_run() {
   property real bottomPadding: 0' "$T/qml/imports/TestUi/BorderSurface.qml"
   sed -i 's/property color background: "black"/property color background: "black"; property var tooltip: ({background:"black",text:"white",border:"white"})/' "$T/qml/imports/TestCommons/Color.qml"
   qml_renderer_run PanelRenderer::test_redesign_snapshot_actions_fit_narrow_panel \
+    PanelRenderer::test_redesign_snapshot_management_actions_share_a_row \
+    PanelRenderer::test_redesign_delete_snapshot_requires_named_confirmation_and_keeps_actions_in_bounds \
     PanelRenderer::test_redesign_restore_dates_identity_cancel_and_invalidated_target
 }
 
@@ -2055,6 +2427,19 @@ panel_board_view() {
     return items[0]
   }
   function finishBackendPanel(p) { p.panel.destroy(); p.model.destroy(); wait(1) }
+  // Checks that the status lines and disabled-action hints show, or are
+  // quiet, together. Returns how many disabled hints the view offers.
+  function statusAndHints(p, name, shown) {
+    var v = p.model.view
+    ;[v.headline, v.cause, v.next].forEach(function(line) {
+      verify(line, name); compare(textVisible(p.panel, line), shown, name + ': ' + line)
+    })
+    var hints = Object.keys(v.buttons).filter(function(key) {
+      var d = v.buttons[key]; return d.show && !d.enable && d.hint
+    })
+    hints.forEach(function(key) { compare(textVisible(p.panel, v.buttons[key].hint), shown, name + ': ' + key) })
+    return hints.length
+  }
   function test_backend_boards() {
     var count = Quickshell.launchCount, p = backendPanel('Main'), v = p.model.view
     compare(v.layout, 'daily'); compare(v.state, 'running')
@@ -2095,6 +2480,10 @@ panel_board_view() {
 
     p = backendPanel('Stopped'); v = p.model.view
     compare(v.state, 'stopped'); backendControl(p, 'start', true)
+    // The badge and Start Windows say it all. Idle, no hint shows today;
+    // this guards the quiet rule.
+    compare(v.layout, 'daily'); statusAndHints(p, 'Stopped', false)
+    compare(backendControl(p, 'start', true).tooltipText, '')
     named(p.panel, 'snapshotsToggle').clicked()
     compare(v.snapshots.count, 3)
     compare(v.snapshots.items.map(function(item) { return item.name }).join(','), '20261012T091200Z,20260930T184700Z,20260902T070500Z')
@@ -2102,7 +2491,7 @@ panel_board_view() {
     compare(item.time, '09:12 UTC'); compare(item.date, 'Oct 12, 2026')
     restore.clicked(); compare(p.panel.restoreArmed, item.name)
     compare(restore.text, item.confirm_label); verify(textVisible(p.panel, item.warning))
-    named(p.panel, 'restoreCancel').clicked(); compare(p.panel.restoreArmed, '')
+    named(p.panel, 'restoreCancel-' + item.name).clicked(); compare(p.panel.restoreArmed, '')
     restore.clicked(); p.panel.close(); compare(p.panel.restoreArmed, '')
     finishBackendPanel(p)
 
@@ -2114,8 +2503,12 @@ panel_board_view() {
     compare(named(p.panel, 'imageProgress').value, v.progress.percent)
     verify(v.progress.percent > 0 && v.progress.percent < 100)
     compare(named(p.panel, 'imageProgressText').text, v.progress.label + ', ' + v.progress.percent + '%')
+    compare(v.restore.active, true); compare(v.busy.line, '')
+    verify(statusAndHints(p, 'Restoring', false) > 0)
     backendControl(p, 'start', false)
     named(p.panel, 'snapshotsToggle').clicked(); backendControl(p, 'take_snapshot', false)
+    // Positions are valid only after the window lays the panel out.
+    verify(waitForPolish(named(p.panel, 'panelScroll').Window.window))
     verify(named(p.panel, 'operationProgress').mapToItem(p.panel,0,0).y < named(p.panel, 'dailyActions').mapToItem(p.panel,0,0).y)
     finishBackendPanel(p)
     ;['RestoreRecovery','RestoreGeneric'].forEach(function(name) {
@@ -2126,14 +2519,28 @@ panel_board_view() {
       verify(named(p.panel, 'snapshotsDetails').visible)
       backendControl(p, 'finish_restore', true); backendControl(p, 'restore_snapshot', true)
       compare(named(p.panel, 'restoreTarget').text, name === 'RestoreGeneric' ? 'Unfinished restore' : 'Unfinished restore of Oct 12, 2026 at 09:12 UTC')
+      // Nothing runs, so the status lines and hints say what to do.
+      compare(v.restore.active, false); verify(statusAndHints(p, name, true) > 0)
       finishBackendPanel(p)
     })
+    ;['Bar-busy-0','Bar-busy-100'].forEach(function(name) {
+      p = backendPanel(name); v = p.model.view
+      compare(v.layout, 'daily'); compare(v.state, 'stopped'); compare(v.busy.line, '')
+      verify(statusAndHints(p, name, false) > 0)
+      compare(backendControl(p, 'start', false).tooltipText, '')
+      finishBackendPanel(p)
+    })
+    // In the daily layout only stopped and running are quiet: starting keeps its lines.
+    p = backendPanel('Bar-activating'); v = p.model.view
+    compare(v.layout, 'daily'); compare(v.state, 'starting')
+    statusAndHints(p, 'Bar-activating', true)
+    finishBackendPanel(p)
 
     ;['Failed','FailedRead'].forEach(function(name) {
       p = backendPanel(name); v = p.model.view
       compare(v.layout, 'failed'); compare(v.bar.mode, 'failed')
       compare(p.panel.expandedSection, 'logs'); verify(named(p.panel, 'logsDetails').visible)
-      verify(textVisible(p.panel, v.cause)); verify(textVisible(p.panel, v.next))
+      statusAndHints(p, name, true)
       compare(v.buttons.force_stop.show, false)
       finishBackendPanel(p)
     })

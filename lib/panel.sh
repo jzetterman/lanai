@@ -20,7 +20,10 @@ old_task_note() {
 # old_task_note for the old task, which the panel shows under the scale list).
 panel_words() {
   jq -r --arg c "$1" --arg step "${3:-}" '
-    def log: {setup:"setup log",snapshot:"snapshot log",restore:"restore log","build-client":"update log"}[$c] // "button actions log";
+    # Every job writes panel-job.log, which the Logs section names Jobs;
+    # direct actions write panel-run.log, which it names Actions.
+    def log: if ["setup","snapshot","delete-snapshot","restore","build-client"] | index([$c]) then "Jobs log"
+      else "Actions log" end;
     def oldtask: " Until you run setup again, the old scale task undoes scales you pick in Windows," +
       " and \u201cMatch my monitor\u201d does not follow the window. Running setup again also turns the Windows lock off again.";
     # Every step 6 time-out ends with both ways on (spec 7): Continue setup,
@@ -44,7 +47,7 @@ panel_words() {
       container:"Windows is in use by another VM. Stop it before continuing here.",
       manager:"Lanai cannot reach your session services. Check the " + log + " and try again.",
       active:"Shut Windows down before continuing setup.",
-      record:"Lanai could not save its setup progress. Check the setup log and try again.",
+      record:"Lanai could not save its setup progress. Check the Jobs log and try again.",
       "no-media":"Shut Windows down, then continue setup to attach the setup drive.",
       nostart:"Windows did not start. Check the Windows VM log before trying again.",
       incomplete:"The setup boot did not finish. Choose a display below and run setup.cmd again.",
@@ -64,7 +67,16 @@ panel_words() {
       "invalid-reply":"Lanai did not give a readable reply. Check the " + log + " and try again."
     };
     if .ok == false then
-      if $c == "setup" and (.step == null or .step == "3") and .reason == "record" then
+      if $c == "delete-snapshot" and .reason == "snapshot-delete-failed" then
+        if .remaining == true then "Could not delete the snapshot. It is still listed and can be restored. Check the Jobs log and try again."
+        else "Could not remove every file of the snapshot. It is no longer listed and cannot be restored. Check the Jobs log." end
+      elif $c == "delete-snapshot" and .reason == "restore-pending" then
+        "Finish the unfinished restore before deleting a snapshot."
+      elif $c == "delete-snapshot" and .reason == "snapshot-not-found" then
+        "That snapshot was already deleted."
+      elif $c == "delete-snapshot" and .reason == "busy" then
+        "Another operation is running. Try deleting the snapshot when it finishes."
+      elif $c == "setup" and (.step == null or .step == "3") and .reason == "record" then
         "Lanai could not save the snapshot choice. Check that your home folder has free space, then click " +
         (if $step == "3" or ($step == "" and .step == "3") then
           "Continue without a snapshot or take a snapshot again."
@@ -76,20 +88,21 @@ panel_words() {
         else "Setup could not prepare the Windows window. Check the Windows window build log, then click Continue setup." end)
       elif $c == "setup" and .step == "2" and .missing then ""
       elif $c == "setup" and .step == "3" and .reason == null then ""
-      else ({start:"Windows could not start. Check the button actions log and the Windows VM log and try again.",
+      else ({start:"Windows could not start. Check the Actions log and the Windows VM log and try again.",
         open:"The Windows window could not open. Check the Windows window log and try again.",
-        stop:"Windows could not be asked to shut down. Check the button actions log and try again.",
-        "force-stop":"Windows could not be force-stopped. Check the button actions log and try again.",
+        stop:"Windows could not be asked to shut down. Check the Actions log and try again.",
+        "force-stop":"Windows could not be force-stopped. Check the Actions log and try again.",
         "notice-seen":"The notice could not be dismissed. Try again.",
         settings:"Settings could not be saved. Use whole numbers from 1 to 512 for memory and 1 to 64 for cores, and choose a listed Windows scale, then try again.",
-        "setup-host":"The installation terminal could not open. Check the button actions log and try again.",
-        setup:"Setup could not finish. Check the setup log, then continue setup.",
-        snapshot:"Lanai could not take the snapshot. Check the snapshot log and try again.",
-        restore:"Lanai could not restore the snapshot. Check the restore log before trying again.",
+        "setup-host":"The installation terminal could not open. Check the Actions log and try again.",
+        setup:"Setup could not finish. Check the Jobs log, then continue setup.",
+        snapshot:"Lanai could not take the snapshot. Check the Jobs log and try again.",
+        "delete-snapshot":"Lanai could not delete the snapshot. Check the Jobs log and try again.",
+        restore:"Lanai could not restore the snapshot. Check the Jobs log before trying again.",
         "build-client":"The Windows window could not be updated. Check the Windows window build log (build-client.log), then try again."}[$c] //
         "The operation could not finish. Check the " + log + " and try again.") end
     elif $c == "snapshot" and .snapshot then
-      "Snapshot saved at " + .snapshot + ". It shares disk space at first and grows as Windows changes. To delete it, remove that folder in your file manager."
+      "Snapshot saved at " + .snapshot + ". It shares disk space at first and grows as Windows changes. To delete it, use Delete beside the snapshot."
     elif $c == "restore" then "The snapshot was restored."
     elif $c == "build-client" then "The Windows window is updated. If the Windows window is open, close it and open it again."
     elif $c == "settings" and (.scale_saved | type) == "boolean" then
@@ -135,7 +148,9 @@ panel_snapshot_item() {
   jq -nc --arg n "$name" --arg d "$date" --arg t "$time" --arg l "$label" \
     '{name:$n,date:(if $d == "" then null else $d end),time:(if $t == "" then null else $t end),
       label:$l,restore_label:("Restore " + $l),confirm_label:("Restore " + $l + " and replace Windows"),
-      warning:"Replaces Windows. Changes since this snapshot are lost."}'
+      warning:"Replaces Windows. Changes since this snapshot are lost.",
+      delete_label:("Delete " + $l),delete_confirm_label:("Delete snapshot: " + $l + ", permanently"),
+      delete_warning:"Windows stays as it is. You will lose this restore point."}'
 }
 
 # Resolve display identity only against this read's validated snapshot list.
@@ -277,6 +292,7 @@ cmd_panel() {
       jq -e 'has("started") and (has("ended") | not)' <<<"$doc" >/dev/null; then
       case $(jq -r .command <<<"$doc") in
         snapshot) words="The snapshot did not finish. Try again." ;;
+        delete-snapshot) words="Snapshot deletion was interrupted. Check whether the snapshot is still listed before trying again." ;;
         restore) words="The restore did not finish. Finish the unfinished restore or restore another snapshot before starting Windows." ;;
         build-client) words="The update did not finish. Click Update the Windows window in More actions again." ;;
         # Run setup again's step 4 build runs while the plan is finished.
@@ -321,12 +337,12 @@ cmd_panel() {
     snapshot_paths=$(jq -c .snapshots <<<"$snapshots")
     items=$(while IFS= read -r name; do panel_snapshot_item "$name"; done < <(
       jq -r 'map(split("/")[-1]) | unique | reverse[]' <<<"$snapshot_paths") | jq -sc .)
-    snapshots=$(jq -c --argjson items "$items" '{names:(.snapshots | map(split("/")[-1])),items:$items,count:($items|length),error:"",line:(if (.snapshots|length) == 0 then "No snapshots yet." else "Restoring replaces Windows. Anything saved since the snapshot is lost. Stop Windows in both VMs before restoring." end)}' <<<"$snapshots")
+    snapshots=$(jq -c --argjson items "$items" '{names:(.snapshots | map(split("/")[-1])),items:$items,count:($items|length),error:""}' <<<"$snapshots")
   else snapshots='{"names":[],"items":[],"count":0,"error":"Lanai could not read the snapshot list. Check the settings and logs."}'; fi
   restore=$(panel_restore "$progress" "$records" "$snapshot_paths" "$items" "$(sed -n 's/^LanaiStorage=//p' <<<"$facts")" "$s/restore-in-progress")
   logs=$(jq -nc --arg client "${run:+$run/client.log}" --arg job "$s/panel-job.log" --arg command "$s/panel-run.log" \
     --arg build "$s/build-client.log" \
-    '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Setup, snapshot, restore and update log: " + $job),command:("Button actions log: " + $command),
+    '{vm:"Windows VM log: in your user journal, under lanai-vm",job:("Jobs log: " + $job),command:("Actions log: " + $command),
       build:("Windows window build log: " + $build)} +
      (if $client == "" then {} else {client:("Windows window log: " + $client)} end)')
   log_rows=$(jq -nc --arg copy "$LANAI_LOGS" \
@@ -344,9 +360,10 @@ cmd_panel() {
       '. + [{id:$id,label:$label,display:$display,copy_text:$path,copy_label:("Copy " + $label + " log path")}]' <<<"$log_rows")
   done
   logs=$(jq -c --argjson rows "$log_rows" \
-    '. + {rows:$rows,copied:"Copied",copy_error:"Could not copy. Try again.",copy_busy:"Another log is being copied. Try again in a moment."}' <<<"$logs")
+    '. + {rows:$rows,copied:"Copied",copy_error:"Could not copy. Try again.",copy_busy:"Another copy is in progress. Try again in a moment."}' <<<"$logs")
   jq -nc --argjson st "$status" --argjson vm "$vm_status" --argjson p "$plan" --argjson rec "$records" --argjson r "$results" \
     --argjson progress "$progress" --argjson restore "$restore" --argjson settings "$settings" --argjson snaps "$snapshots" --argjson logs "$logs" \
+    --argjson snapPaths "$snapshot_paths" \
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
     --argjson clientOld "$client_old" --argjson signinMissing "$signin_missing" --argjson updateShown "$update_shown" --arg task "$task" \
@@ -363,11 +380,21 @@ cmd_panel() {
       "version-mismatch":["Display driver needs an update","The Windows display needs an update","The client and Windows display driver have different versions.","Shut down and continue setup, or use Omarchy\u0027s Windows connection."],
       failed:["Failed","Windows is unavailable","Windows stopped with an error, or Lanai could not reach it.","Check the logs below. You can also use Omarchy\u0027s Windows connection after shutting Lanai down."]}) as $states |
     $states[$st.state] as $w |
-    ([$rec.records[] | select(. != null and has("started") and (has("ended")|not))] | max_by(.started) // {}) as $job |
+    # The running job: the newest unended record, only while a job holds the
+    # lock. Unheld, that record is an interrupted job, not the one running.
+    (if $rec.held then [$rec.records[] | select(. != null and has("started") and (has("ended")|not))] |
+      max_by(.started) // {} else {} end) as $job |
     ([$rec.records[] | select(.token == $token)] | length > 0) as $seen |
     ($token != "" and ($seen|not) and $now - $at < 10) as $pending |
     ($rec.held or $pending or $progress != null) as $busy |
-    ($rec.held and $job.command == "setup") as $setupJob |
+    ($job.command == "setup") as $setupJob |
+    # A running restore, as panel_restore decides it.
+    ($progress.operation == "restore" or $job.command == "restore") as $restoring |
+    # A snapshot taken here that is still in the validated list. Deleted
+    # outside the panel, its words and details would name a dead path.
+    ($rec.records.snapshots as $d | $d.command == "snapshot" and $d.reply.ok == true and
+      ($d.reply.snapshot // "") != "") as $savedReply |
+    ($savedReply and any($snapPaths[]; . == $rec.records.snapshots.reply.snapshot)) as $saved |
     (($rec.held|not) and ($rec.records.setup|has("started")) and ($rec.records.setup|has("ended")|not)) as $interruptedSetup |
     # A step 6 time-out with Windows off: the display buttons repeat the
     # Windows install, beside Continue setup, with no arming step.
@@ -392,13 +419,16 @@ cmd_panel() {
      right_click:$rightClick,
      right_click_tooltip:({start:"Right-click: Start Windows.",open:"Right-click: Open the Windows window.",panel:"Right-click: Open the panel."}[$rightClick]),
      pending_ack:(if $seen then $token else "" end),
-     progress:$progress,restore:$restore,notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
-     busy:{active:$busy,line:(if $progress != null then (if ($progress.label | startswith("Restoring Windows:")) then "Keep Windows stopped until it finishes." else "You can close this panel." end) elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup. You can close this panel." else "Checking Windows. You can close this panel." end)
-       elif $busy then ({setup:"Working on setup. You can close this panel.",snapshot:"Taking a snapshot. You can close this panel.",restore:"Restoring Windows. Keep Windows stopped until it finishes.",
-         "build-client":("Updating the Windows window. This may take several minutes. " +
-           (if $off then "You can start Windows when it finishes. " else "" end) + "You can close this panel.")}[$job.command // ""] //
+     progress:$progress,restore:($restore + {active:$restoring}),notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
+     # Progress, or the target and warning of a running restore, says what runs.
+     busy:{active:$busy,line:(if $progress != null or $restoring then ""
+       elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup." else "Checking Windows." end)
+       elif $busy then ({setup:"Working on setup.",snapshot:"Taking a snapshot.","delete-snapshot":"Deleting a snapshot.",
+         "build-client":("Updating the Windows window. This may take several minutes." +
+           (if $off then " You can start Windows when it finishes." else "" end))}[$job.command // ""] //
          "Starting the operation.") else "" end)},
-     result:($r + {launch:(if $launchFailed then "The operation did not start. Check the setup, snapshot, restore and update log, then try again." else "" end)}),
+     result:($r + {launch:(if $launchFailed then "The operation did not start. Check the Jobs log, then try again." else "" end)}
+       + (if $savedReply and ($saved|not) then {snapshots:""} else {} end)),
      setup:{show:($p.finished|not),finished:$p.finished,
        attention:(($p.finished|not) and $st.state != "stopping" and ($p.reason != "" or $r.setup != "" or $launchFailed or
          ($p.step == "3" and $rec.records.snapshots.reply.ok == false) or $st.state == "failed" or
@@ -444,10 +474,12 @@ cmd_panel() {
          {hint:"Use this if the Windows display driver already works."}),
        finish_restore:button($snapshotsShow and $st.restore_pending;$off and $available and ($busy|not);"Finish the unfinished restore"),
        take_snapshot:button($snapshotsShow;$idle and ($busy|not);"Take a snapshot"),
-       restore_snapshot:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore snapshot") +
+       restore_snapshot:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore") +
          {labels:($snaps.names | map({key:.,value:("Restore snapshot " + .)}) | from_entries)},
        restore_confirm:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore and replace Windows") +
          {labels:($snaps.names | map({key:.,value:("Restore " + . + " and replace Windows")}) | from_entries)},
+       delete_snapshot:button($snapshotsShow and ($snaps.names|length)>0;($busy|not) and ($st.restore_pending|not);"Delete"),
+       delete_confirm:button($snapshotsShow and ($snaps.names|length)>0;($busy|not) and ($st.restore_pending|not);"Delete snapshot"),
        update_client:button($updateShown;($busy|not);"Update the Windows window"),
        save_settings:button(true;$settings.error == "";"Save settings")}} |
     if ($dailyControls|not) and ($st.state == "stopped" or $st.state == "running") then
@@ -500,13 +532,25 @@ cmd_panel() {
         (($d.reply.step == "2" and $d.reply.missing != null) or
           ($d.reply.step == "3" and $d.reply.reason == null) | not)
        else true end)))) as $resultFailed |
-    ($progress.operation == "restore" or ($rec.held and $job.command == "restore")) as $restoring |
     ($st.state == "failed" or (.restore.pending and ($restoring|not)) or $resultFailed or $launchFailed or
       ($facts | contains("LanaiHelpersMissing=") or contains("LanaiClient=timeout"))) as $failed |
     .layout = (if .restore.pending or $restoring then "restoring"
       elif $timeout then "setup_timeout"
       elif .setup.show then (if $p.step == "6" then "setup_verify" else "setup" end)
       elif $failed then "failed" else "daily" end) |
+    .snapshots.line = (if .snapshots.error != "" then ""
+      elif $st.state == "in-use" then "Stop the other VM to take or restore snapshots."
+      elif $st.state == "stopping" then (if .snapshots.count > 0 then "Wait for Windows to shut down to take or restore snapshots."
+        else "Wait for Windows to shut down to take a snapshot." end)
+      elif $st.active then (if .snapshots.count > 0 then "Shut down Windows to take or restore snapshots."
+        else "Shut down Windows to take a snapshot." end)
+      elif .snapshots.count == 0 then "No snapshots yet." else "" end) |
+    .snapshots.saved = (if .layout == "daily" and $saved then
+        {path:$rec.records.snapshots.reply.snapshot,
+          path_line:("Snapshot saved at " + $rec.records.snapshots.reply.snapshot),
+          advice:"It shares disk space at first and grows as Windows changes. To delete it, use Delete beside the snapshot below.",
+          copy_label:"Copy snapshot path",show_label:"Show details",hide_label:"Hide details"}
+      else null end) |
     .settings += {baseline:(.settings.baseline // null),
       labels:{memory:"Memory (GiB)",cores:"CPU cores",scale:"Windows scale",save:"Save",saved:"Saved",reset:"Reset",unsaved:"Unsaved"}} |
     (if $p.finished then null elif $p.step == "3a" then 4 else ($p.step | tonumber) end) as $number |

@@ -1,0 +1,36 @@
+{
+  "v": 3,
+  "createdOnFiles": {"v": 1, "at": "2026-10-17T12:00:00Z"},
+  "title": "Lanai Panel Redesign",
+  "launch": {"view": "canvas"},
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {"x": 0, "y": 0, "w": 460, "h": 680, "title": "Running (interactive)", "is_interactive": true},
+    "Settings.dc.html": {"x": 540, "y": 0, "w": 460, "h": 680, "title": "Running, settings open"},
+    "Stopped.dc.html": {"x": 1080, "y": 0, "w": 460, "h": 680, "title": "Stopped, restore armed"},
+    "Restoring.dc.html": {"x": 1620, "y": 0, "w": 460, "h": 680, "title": "Restoring"},
+    "Failed.dc.html": {"x": 2160, "y": 0, "w": 460, "h": 680, "title": "Failed"},
+    "SetupSnapshot.dc.html": {"x": 0, "y": 1060, "w": 460, "h": 620, "title": "Setup, snapshot step"},
+    "SetupDrivers.dc.html": {"x": 540, "y": 1060, "w": 460, "h": 620, "title": "Setup, in Windows"},
+    "SetupVerify.dc.html": {"x": 1080, "y": 1060, "w": 460, "h": 620, "title": "Setup, sign in to finish"},
+    "SetupTimeout.dc.html": {"x": 1620, "y": 1060, "w": 460, "h": 620, "title": "Setup, check timed out"},
+    "BarStates.dc.html": {"x": 2160, "y": 1060, "w": 1000, "h": 300, "title": "Bar glyph states"}
+  },
+  "order": [
+    "Main.dc.html",
+    "Settings.dc.html",
+    "Stopped.dc.html",
+    "Restoring.dc.html",
+    "Failed.dc.html",
+    "SetupSnapshot.dc.html",
+    "SetupDrivers.dc.html",
+    "SetupVerify.dc.html",
+    "SetupTimeout.dc.html",
+    "BarStates.dc.html"
+  ],
+  "notes": {
+    "dailyTitle": {"x": 0, "y": -280, "text": "Daily use", "kind": "title1", "maxW": 2620},
+    "setupTitle": {"x": 0, "y": 780, "text": "Setup and bar", "kind": "title1", "maxW": 3160}
+  },
+  "designSystems": []
+}

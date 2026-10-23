@@ -103,6 +103,224 @@ take_snapshot() {
   NAME=$(field name) SNAP=$(field snapshot)
 }
 
+# Build a complete snapshot without requiring reflinks for delete-only tests.
+delete_fixture_snapshot() {
+  local snap=$1
+  mkdir -p "${snap%/*}"
+  mkdir -m 700 "$snap"
+  cp -a "$STORE/." "$snap/"
+  printf '%s\n' "$STORE" >"$snap/SOURCE"
+  tree_manifest "$STORE" >"$snap/COMPLETE"
+}
+
+@test "delete-snapshot: removes both valid copies of one name without changing the running Windows disk" {
+  use_install "$T/win"
+  local name=20261019T120000Z other=20261018T120000Z before
+  delete_fixture_snapshot "$(data_dir)/snapshots/$name"
+  delete_fixture_snapshot "$STORE.lanai-snapshots/$name"
+  delete_fixture_snapshot "$(data_dir)/snapshots/$other"
+  echo unrelated >"$T/unrelated"
+  before=$(tree_manifest "$STORE")
+  echo active >"$T/unit-state"
+  lanai_run delete-snapshot "$name"
+  assert_success
+  assert_equal "$(field name)" "$name"
+  assert_equal "$(field deleted_copies)" 2
+  assert [ ! -e "$(data_dir)/snapshots/$name" ]
+  assert [ ! -e "$STORE.lanai-snapshots/$name" ]
+  assert [ -d "$(data_dir)/snapshots/$other" ]
+  assert_equal "$(cat "$T/unrelated")" unrelated
+  assert_equal "$(tree_manifest "$STORE")" "$before"
+  run snapshot_find "$STORE" "$name"
+  assert_failure
+}
+
+@test "delete-snapshot: invalid, missing, foreign and damaged targets leave files intact" {
+  use_install "$T/win"
+  local name=20261019T120000Z snap before
+  snap="$(data_dir)/snapshots/20261019T120000Z"
+  delete_fixture_snapshot "$snap"
+  before=$(tree_manifest "$STORE")
+  lanai_run delete-snapshot '../win'
+  assert_failure 2
+  assert [ -d "$snap" ]
+  lanai_run delete-snapshot "$name" extra
+  assert_failure 2
+  assert [ -d "$snap" ]
+  printf '%s\n' "$T/foreign" >"$snap/SOURCE"
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  assert_equal "$(field reason)" snapshot-not-found
+  assert_equal "$(field next)" 'run lanai snapshots to see the list'
+  assert [ -d "$snap" ]
+  printf '%s\n' "$STORE" >"$snap/SOURCE"
+  echo unexpected >"$snap/extra"
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  assert [ -f "$snap/extra" ]
+  assert_equal "$(tree_manifest "$STORE")" "$before"
+}
+
+@test "delete-snapshot: unfinished restore and operation lock refuse deletion" {
+  use_install "$T/win"
+  local name=20261019T120000Z snap fd
+  snap="$(data_dir)/snapshots/20261019T120000Z"
+  delete_fixture_snapshot "$snap"
+  mark_restore "$snap" "$STORE"
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  assert_equal "$(field reason)" restore-pending
+  assert_equal "$(field message)" 'Finish the unfinished restore before deleting a snapshot.'
+  assert [ -d "$snap" ]
+  rm "$S/restore-in-progress"
+  mkdir -p "$S"
+  exec {fd}>"$S/lock"
+  flock -n "$fd"
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  assert_equal "$(field reason)" busy
+  assert_equal "$(field next)" 'try again when it finishes'
+  assert [ -d "$snap" ]
+  exec {fd}>&-
+}
+
+@test "delete-snapshot: partial failure reports a remaining restore point" {
+  use_install "$T/win"
+  local name=20261019T120000Z first second="$STORE.lanai-snapshots/20261019T120000Z"
+  first="$(data_dir)/snapshots/20261019T120000Z"
+  delete_fixture_snapshot "$first"
+  delete_fixture_snapshot "$second"
+  eval "$(declare -f snapshot_remove | sed '1s/snapshot_remove/real_snapshot_remove/')"
+  snapshot_remove() {
+    [[ $1 != "$second" ]] || return 1
+    real_snapshot_remove "$1"
+  }
+  run cmd_delete_snapshot "$name"
+  assert_failure
+  assert_equal "$(jq -r .reason <<<"$output")" snapshot-delete-failed
+  assert_equal "$(jq -r .remaining <<<"$output")" true
+  assert_equal "$(jq -r .deleted_copies <<<"$output")" 1
+  assert [ ! -e "$first" ]
+  assert [ -d "$second" ]
+  assert_equal "$(snapshot_find "$STORE" "$name")" "$second"
+  assert_equal "$(jq -r .message <<<"$output")" "Could not delete snapshot $name. It is still listed and can be restored."
+  assert_equal "$(jq -r .next <<<"$output")" 'run lanai snapshots to see what is left, then try again'
+}
+
+@test "delete-snapshot: a removal that leaves files but no valid copy says the restore point is gone" {
+  use_install "$T/win"
+  local name=20261019T120000Z snap
+  snap="$(data_dir)/snapshots/20261019T120000Z"
+  delete_fixture_snapshot "$snap"
+  # Removal stops after the manifest goes, so no valid copy is left.
+  snapshot_remove() { rm -f -- "$1/COMPLETE"; return 1; }
+  run cmd_delete_snapshot "$name"
+  assert_failure
+  assert_equal "$(jq -r .reason <<<"$output")" snapshot-delete-failed
+  assert_equal "$(jq -r .remaining <<<"$output")" false
+  assert_equal "$(jq -r .deleted_copies <<<"$output")" 0
+  assert_equal "$(jq -r .message <<<"$output")" "Could not remove every file of snapshot $name. It is no longer listed and cannot be restored."
+  assert_equal "$(jq -r .next <<<"$output")" 'run lanai snapshots to see what is left'
+  assert [ -f "$snap/data.img" ]
+  run snapshot_find "$STORE" "$name"
+  assert_failure
+}
+
+@test "delete-snapshot: a same-name copy for another storage location stays" {
+  use_install "$T/win"
+  local name=20261019T120000Z valid foreign="$STORE.lanai-snapshots/20261019T120000Z" before
+  valid="$(data_dir)/snapshots/20261019T120000Z"
+  delete_fixture_snapshot "$valid"
+  delete_fixture_snapshot "$foreign"
+  printf '%s\n' "$T/other" >"$foreign/SOURCE"
+  before=$(tree_manifest "$foreign")
+  lanai_run delete-snapshot "$name"
+  assert_success
+  assert_equal "$(field deleted_copies)" 1
+  assert_equal "$(field message)" "Deleted snapshot $name. Current Windows is unchanged."
+  assert [ ! -e "$valid" ]
+  assert_equal "$(tree_manifest "$foreign")" "$before"
+  assert_equal "$(cat "$foreign/SOURCE")" "$T/other"
+}
+
+@test "delete-snapshot: a symlinked snapshot folder is refused and its target stays" {
+  use_install "$T/win"
+  local name=20261019T120000Z link target="$T/elsewhere/20261019T120000Z" before
+  link="$(data_dir)/snapshots/20261019T120000Z"
+  # teardown makes $B writable again and removes it, even after a failure.
+  B=$T/elsewhere
+  delete_fixture_snapshot "$target"
+  chmod 500 "$target"
+  before=$(tree_manifest "$target")
+  mkdir -p "${link%/*}"
+  ln -s "$target" "$link"
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  assert_equal "$(field reason)" snapshot-not-found
+  assert [ -L "$link" ]
+  assert_equal "$(stat -c %a "$target")" 500
+  assert_equal "$(tree_manifest "$target")" "$before"
+}
+
+@test "delete-snapshot: a storage path with a newline lists and deletes nothing outside the snapshot roots" {
+  local name=20261019T120000Z store=$T/a$'\n'b planted
+  use_install "$store"
+  # One root per line would read $T/a and b.lanai-snapshots (relative to
+  # the working folder) as roots. Plant a complete snapshot in each.
+  for planted in "$T/a/$name" "$T/b.lanai-snapshots/$name"; do
+    delete_fixture_snapshot "$planted"
+  done
+  cd "$T"
+  lanai_run snapshots
+  assert_failure
+  lanai_run delete-snapshot "$name"
+  assert_failure
+  for planted in "$T/a/$name" "$T/b.lanai-snapshots/$name"; do
+    assert [ -f "$planted/COMPLETE" ]
+  done
+  run storage_dir
+  assert_failure
+  assert_equal "$output" "lanai: the storage location must not contain a newline: ${store@Q}"
+}
+
+@test "delete-snapshot: a data folder with a newline lists and deletes nothing outside the snapshot roots" {
+  local name=20261019T120000Z data=$T/outside$'\n'$T/data planted
+  use_install "$T/win"
+  delete_fixture_snapshot "$T/win.lanai-snapshots/$name"
+  # One root per line would read $T/outside as a root, and one path per line
+  # would split a snapshot in the real data root into $T/outside and
+  # $T/data/lanai/snapshots/<name>. Plant a complete snapshot in each place.
+  # Lanai does not use a data folder with a newline, so none of them count.
+  export XDG_DATA_HOME=$data
+  for planted in "$T/outside/$name" "$data/lanai/snapshots/$name" "$T/data/lanai/snapshots/$name"; do
+    delete_fixture_snapshot "$planted"
+  done
+  lanai_run snapshots
+  assert_success
+  assert_equal "$(jq -r '.snapshots[]' <<<"$JSON")" "$T/win.lanai-snapshots/$name"
+  lanai_run delete-snapshot "$name"
+  assert_success
+  assert_equal "$(field deleted_copies)" 1
+  for planted in "$T/outside/$name" "$data/lanai/snapshots/$name" "$T/data/lanai/snapshots/$name"; do
+    assert [ -f "$planted/COMPLETE" ]
+  done
+  assert [ ! -e "$T/win.lanai-snapshots/$name" ]
+}
+
+@test "snapshot_remove: a symlink goes without touching its target's modes" {
+  local target="$T/target" link="$T/link"
+  B=$target
+  mkdir -p "$target/sub"
+  echo keep >"$target/sub/file"
+  chmod 500 "$target/sub" "$target"
+  ln -s "$target" "$link"
+  snapshot_remove "$link"
+  assert [ ! -e "$link" ]
+  assert [ ! -L "$link" ]
+  assert_equal "$(stat -c %a "$target" "$target/sub" | tr '\n' ' ')" '500 500 '
+  assert_equal "$(cat "$target/sub/file")" keep
+}
+
 # Failure fixtures copy plainly and mock only the image helper, never a VM.
 snapshot_failure_fixture() {
   use_install "$T/storage"
@@ -852,7 +1070,7 @@ exit 1'
   assert_equal "$(stat -c %a "$B/data/lanai/snapshots")" 700
   run field message
   assert_output --partial "grows as Windows changes"
-  assert_output --partial "rm -rf ${SNAP@Q}"
+  assert_output --partial "lanai delete-snapshot ${SNAP##*/}"
   assert_output --partial "lanai restore $NAME"
   lanai_run snapshots
   assert_success

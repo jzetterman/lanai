@@ -33,9 +33,15 @@ own_dir() {
   [[ ${st% *} == "$(id -u)" ]] && (((8#${st#* } & 8#022) == 0))
 }
 
-# Print the places snapshots of <storage> may live, in order of preference.
+# Print the places snapshots of <storage> may live, in order of preference,
+# each ending in NUL. Snapshot paths travel one per line from here on, so a
+# data folder with a newline is skipped: snapshots go beside the storage
+# location instead. storage_dir already refuses a newline in <storage>.
 snapshot_roots() {
-  printf '%s\n' "$(data_dir)/snapshots" "$1.lanai-snapshots"
+  local data
+  data=$(data_dir)
+  [[ $data == *$'\n'* ]] || printf '%s\0' "$data/snapshots"
+  printf '%s\0' "$1.lanai-snapshots"
 }
 
 # Return 0 when <dir> is a complete snapshot of <storage>: a real folder
@@ -64,7 +70,7 @@ snapshot_valid() {
 # Print the path of every complete snapshot of <storage>, oldest first.
 snapshot_list() {
   local root d
-  while IFS= read -r root; do
+  while IFS= read -r -d '' root; do
     for d in "$root"/*; do
       if snapshot_valid "$d" "$1"; then printf '%s\t%s\n' "${d##*/}" "$d"; fi
     done
@@ -137,9 +143,10 @@ snapshot_blocked() {
   fi
 }
 
-# Remove a folder this module made (it may hold read-only folders).
+# Remove a folder this module made (it may hold read-only folders). -P
+# keeps chmod off the target of a symlink named here; rm removes the link.
 snapshot_remove() {
-  chmod -R u+w -- "$1" 2>/dev/null || true
+  chmod -R -P u+w -- "$1" 2>/dev/null || true
   rm -rf -- "$1"
 }
 
@@ -147,7 +154,7 @@ snapshot_remove() {
 # lanai_flock. Unknown SOURCE files and other locations are left alone.
 snapshot_sweep() {
   local root part source
-  while IFS= read -r root; do
+  while IFS= read -r -d '' root; do
     own_dir "$root" || continue
     for part in "$root"/*.partial; do
       [[ ${part##*/} =~ ^[0-9]{8}T[0-9]{6}Z\.partial$ ]] || continue
@@ -253,9 +260,6 @@ install_list() {
 snapshot_create() {
   local dir reason root name part='' m image name_file rc made_root
   dir=$(storage_dir) || return 1
-  if [[ $dir == *$'\n'* ]]; then
-    echo "the storage location's path holds a newline"; return 1
-  fi
   if reason=$(snapshot_blocked) || reason=$(restore_pending) || reason=$(storage_problem "$dir" snapshot); then
     echo "$reason"; return 1
   fi
@@ -271,7 +275,7 @@ snapshot_create() {
   fi
   snapshot_sweep "$dir"
   name=$(date -u +%Y%m%dT%H%M%SZ)
-  while IFS= read -r root; do
+  while IFS= read -r -d '' root; do
     made_root=false
     if [[ ! -e $root && ! -L $root ]]; then
       if ! mkdir -p -- "${root%/*}" || ! mkdir -m 700 -- "$root"; then continue; fi

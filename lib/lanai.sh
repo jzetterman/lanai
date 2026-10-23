@@ -173,29 +173,42 @@ settings_file() {
 # accepts a symlinked ~/.windows), so every check sees the real folder; a
 # path that does not exist prints as is. ~/.windows is the default only when
 # there is no settings file at all. Fails when the settings file is a symlink
-# (dangling or not), cannot be read or parsed, or names a relative path, so a
-# broken file never falls back to the live install.
+# (dangling or not), cannot be read or parsed, holds other than one JSON
+# document (an empty file included), or names a relative path, so a
+# broken file never falls back to the live install. Also fails when the path
+# or its real path holds a newline: callers read snapshot roots and lists
+# one path per line.
 storage_dir() {
-  local f dir=""
+  local f dir="" real
   f=$(settings_file)
   # Only a settings file that does not exist at all means the default.
   if [[ -L $f ]]; then
     echo "lanai: $f is a symlink; Lanai reads only a regular settings file" >&2
     return 1
   elif [[ -e $f ]]; then
-    dir=$(jq -r 'if (type == "object" and (.storage | type) == "string") then .storage
+    # The file must hold exactly one JSON document: -j joins the output of
+    # several with no separator. The x keeps a trailing newline in the path
+    # from being dropped.
+    dir=$(jq -j -s 'if length != 1 then error("settings must be one JSON document") else .[0] end |
+      if (type == "object" and (.storage | type) == "string") then .storage
       elif (type == "object" and .storage == null) then ""
-      else error("storage must be a string") end' "$f") || {
+      else error("storage must be a string") end' "$f" && printf x) || {
       echo "lanai: cannot read the storage location from $f" >&2
       return 1
     }
+    dir=${dir%x}
     [[ -z $dir || $dir == /* ]] || {
       echo "lanai: the storage location in $f must be an absolute path" >&2
       return 1
     }
   fi
   [[ -n $dir ]] || dir=$HOME/.windows
-  realpath -e -- "$dir" 2>/dev/null || printf '%s\n' "$dir"
+  if real=$(realpath -e -- "$dir" 2>/dev/null && printf x); then dir=${real%$'\n'x}; fi
+  if [[ $dir == *$'\n'* ]]; then
+    echo "lanai: the storage location must not contain a newline: ${dir@Q}" >&2
+    return 1
+  fi
+  printf '%s\n' "$dir"
 }
 
 # Print the path of omarchy-windows-vm's compose file: the system one, else
@@ -1581,7 +1594,7 @@ cmd_snapshot() {
     return 1
   fi
   name=${out##*/}
-  emit true "" "Snapshot saved at $out. It shares its data with the Windows disk, so it costs little space at first and grows as Windows changes. Delete it with: rm -rf ${out@Q}. Restore it with: lanai restore $name." "" \
+  emit true "" "Snapshot saved at $out. It shares its data with the Windows disk, so it costs little space at first and grows as Windows changes. Delete it with: lanai delete-snapshot $name. Restore it with: lanai restore $name." "" \
     "$(jq -n -c --arg p "$out" --arg n "$name" '{snapshot: $p, name: $n}')"
 }
 
@@ -1594,6 +1607,58 @@ cmd_snapshots() {
   count=$(jq -r 'length' <<<"$list")
   ((count != 1)) || noun=snapshot
   emit true "" "$count $noun" "" "{\"snapshots\": $list}"
+}
+
+# delete-snapshot <name>: remove every valid copy of this named restore point
+# for the current storage location. The active Windows disk is never touched.
+cmd_delete_snapshot() {
+  local name=${1:-} dir snap removed=0 failed=false remaining=false details
+  local -a targets=()
+  if (($# != 1)) || [[ ! $name =~ $LANAI_SNAP_RE ]]; then
+    emit false "" "Name one snapshot to delete." "choose a snapshot from lanai snapshots" '{"reason":"invalid-name"}'
+    return 2
+  fi
+  if ! lanai_flock; then
+    emit false "" "$LANAI_BUSY." "try again when it finishes" '{"reason":"busy"}'
+    return 1
+  fi
+  if restore_pending >/dev/null; then
+    emit false "" "Finish the unfinished restore before deleting a snapshot." "" '{"reason":"restore-pending"}'
+    return 1
+  fi
+  if ! dir=$(storage_dir); then
+    emit false "" "Lanai cannot find the Windows storage location." "check the storage setting" '{"reason":"storage"}'
+    return 1
+  fi
+  while IFS= read -r snap; do
+    [[ ${snap##*/} != "$name" ]] || targets+=("$snap")
+  done < <(snapshot_list "$dir")
+  if ((${#targets[@]} == 0)); then
+    emit false "" "There is no complete snapshot named $name for this Windows storage." "run lanai snapshots to see the list" '{"reason":"snapshot-not-found"}'
+    return 1
+  fi
+  for snap in "${targets[@]}"; do
+    if snapshot_valid "$snap" "$dir" && snapshot_remove "$snap" && [[ ! -e $snap && ! -L $snap ]]; then
+      ((removed+=1))
+    else
+      failed=true
+    fi
+  done
+  if $failed; then
+    if snapshot_find "$dir" "$name" >/dev/null; then remaining=true; fi
+    details=$(jq -nc --arg n "$name" --argjson count "$removed" --argjson remains "$remaining" \
+      '{reason:"snapshot-delete-failed",name:$n,deleted_copies:$count,remaining:$remains}')
+    if $remaining; then
+      emit false "" "Could not delete snapshot $name. It is still listed and can be restored." \
+        "run lanai snapshots to see what is left, then try again" "$details"
+    else
+      emit false "" "Could not remove every file of snapshot $name. It is no longer listed and cannot be restored." \
+        "run lanai snapshots to see what is left" "$details"
+    fi
+    return 1
+  fi
+  details=$(jq -nc --arg n "$name" --argjson count "$removed" '{name:$n,deleted_copies:$count}')
+  emit true "" "Deleted snapshot $name. Current Windows is unchanged." "" "$details"
 }
 
 # restore [<name>]: return the storage location to a snapshot (spec 7).
