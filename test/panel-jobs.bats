@@ -82,6 +82,27 @@ SH
   assert [ -n "$(jq -r '.ended // empty' "$S/panel-result-snapshots.json")" ]
 }
 
+@test "ui job: a snapshot label is one literal argument through the launcher and worker" {
+  # shellcheck disable=SC2016 # The label must stay literal.
+  local label='50% ${HOME} $(touch pwned) `id` ; ../x'
+  run cmd_ui_job launch snapshot "$label"
+  assert_success
+  run cat "$T/launch"
+  assert_output --partial "$(printf 'ui-job-worker\nlaunch\nsnapshot\n%s' "$label")"
+  assert_equal "$(tail -n 1 "$T/launch")" "$label"
+  # The CLI stand-in records its argument count and each argument.
+  # shellcheck disable=SC2016 # Expands in the stand-in, not here.
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$#" "$@" >"$T/argv"\necho "{\\"ok\\":true}"\n' >"$LANAI_BIN/lanai"
+  run cmd_ui_job_worker token snapshot "$label"
+  assert_success
+  assert_equal "$(cat "$T/argv")" "$(printf '2\nsnapshot\n%s' "$label")"
+  assert_equal "$(jq -r '.args | length' "$S/panel-result-snapshots.json")" 1
+  assert_equal "$(jq -r '.args[0]' "$S/panel-result-snapshots.json")" "$label"
+  assert [ ! -e pwned ]
+  assert [ ! -e "$T/pwned" ]
+  assert [ ! -e "$HOME/pwned" ]
+}
+
 @test "ui job: the worker gets the session's display and Hyprland instance for boot_vm" {
   WAYLAND_DISPLAY=wayland-4 HYPRLAND_INSTANCE_SIGNATURE=sig_9 run cmd_ui_job launch setup
   assert_success

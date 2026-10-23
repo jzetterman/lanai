@@ -67,7 +67,9 @@ panel_words() {
       "invalid-reply":"Lanai did not give a readable reply. Check the " + log + " and try again."
     };
     if .ok == false then
-      if $c == "delete-snapshot" and .reason == "snapshot-delete-failed" then
+      # A refused snapshot name shows only beside its field (snapshots.job).
+      if $c == "snapshot" and .reason == "invalid-label" then ""
+      elif $c == "delete-snapshot" and .reason == "snapshot-delete-failed" then
         if .remaining == true then "Could not delete the snapshot. It is still listed and can be restored. Check the Jobs log and try again."
         else "Could not remove every file of the snapshot. It is no longer listed and cannot be restored. Check the Jobs log." end
       elif $c == "delete-snapshot" and .reason == "restore-pending" then
@@ -133,24 +135,34 @@ panel_records() {
   jq -nc --argjson r "$records" --argjson h "$held" '{held:$h,records:$r}'
 }
 
+# panel_snapshot_item <name> [<user label>] [seconds true|false]: one row.
 # Keep the UTC folder name as the identity, even when it is not a real date.
+# label stays the formatted date; user_label is the saved name or null, and
+# full_label joins both for action, confirmation and restore wording. The
+# confirm labels are the armed buttons' accessible names: the visible caption,
+# then the full label and date. The confirm notes are short fixed questions
+# shown below the row. seconds tells apart equal labels within one displayed
+# minute.
 panel_snapshot_item() {
-  local name=$1 formatted='' date='' time='' label=$1
+  local name=$1 user=${2:-} clock='%H:%M UTC' formatted='' date='' time='' label=$1
+  [[ ${3:-false} != true ]] || clock='%H:%M:%S UTC'
   if [[ $name =~ $LANAI_SNAP_RE ]]; then
     formatted=$(LC_ALL=C date -u -d "${name:0:4}-${name:4:2}-${name:6:2} ${name:9:2}:${name:11:2}:${name:13:2} UTC" \
-      '+%Y%m%dT%H%M%SZ|%b %-d, %Y|%H:%M UTC' 2>/dev/null) || formatted=''
+      "+%Y%m%dT%H%M%SZ|%b %-d, %Y|$clock" 2>/dev/null) || formatted=''
     if [[ ${formatted%%|*} == "$name" ]]; then
       formatted=${formatted#*|}
       date=${formatted%%|*} time=${formatted#*|}
       label="$date at $time"
     fi
   fi
-  jq -nc --arg n "$name" --arg d "$date" --arg t "$time" --arg l "$label" \
-    '{name:$n,date:(if $d == "" then null else $d end),time:(if $t == "" then null else $t end),
-      label:$l,restore_label:("Restore " + $l),confirm_label:("Restore " + $l + " and replace Windows"),
-      warning:"Replaces Windows. Changes since this snapshot are lost.",
-      delete_label:("Delete " + $l),delete_confirm_label:("Delete snapshot: " + $l + ", permanently"),
-      delete_warning:"Windows stays as it is. You will lose this restore point."}'
+  jq -nc --arg n "$name" --arg d "$date" --arg t "$time" --arg l "$label" --arg u "$user" '
+    (if $u == "" then $l else "“" + $u + "” from " + $l end) as $f |
+    {name:$n,date:(if $d == "" then null else $d end),time:(if $t == "" then null else $t end),
+      label:$l,user_label:(if $u == "" then null else $u end),full_label:$f,
+      restore_label:("Restore " + $f),confirm_label:("Restore now: " + $f + " and replace Windows"),confirm_note:"Restore this snapshot and replace Windows?",
+      warning:"Changes since this snapshot are lost.",
+      delete_label:("Delete " + $f),delete_confirm_label:("Delete snapshot: " + $f + ", permanently"),delete_confirm_note:"Delete this snapshot permanently?",
+      delete_warning:"Windows stays as it is."}'
 }
 
 # Resolve display identity only against this read's validated snapshot list.
@@ -185,8 +197,8 @@ panel_restore() {
   [[ -z $name ]] || item=$(jq -c --arg n "$name" '.[] | select(.name == $n)' <<<"$items")
   jq -nc --argjson a "$active" --argjson p "$pending" --argjson i "$item" \
     '{pending:$p,name:($i.name // null),label:(if $a then
-        (if $i == null then "Restoring Windows" else "Restoring " + $i.label end)
-      elif $p then (if $i == null then "Unfinished restore" else "Unfinished restore of " + $i.label end)
+        (if $i == null then "Restoring Windows" else "Restoring " + $i.full_label end)
+      elif $p then (if $i == null then "Unfinished restore" else "Unfinished restore of " + $i.full_label end)
       else "" end),warning:(if $a or $p then "Keep Windows stopped until the restore finishes." else "" end)}'
 }
 
@@ -196,7 +208,7 @@ cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
   local client_old=false signin_missing=false update_shown=false task started=0 booted button
-  local snapshot_paths='[]' items='[]' name restore log_rows path display label
+  local snapshot_paths='[]' items='[]' name restore log_rows path display label seconds
   local check_since=null checks_stopped=false since vm_status
   if (($#)); then
     if [[ $# != 3 || $1 != --pending || ! $2 =~ ^[A-Za-z0-9-]+$ || ! $3 =~ ^[0-9]+$ ]]; then
@@ -335,8 +347,14 @@ cmd_panel() {
   else settings='{"error":"Lanai could not read the VM settings. Check the settings file."}'; fi
   if snapshots=$(cmd_snapshots 2>/dev/null) && jq -e '.ok' <<<"$snapshots" >/dev/null; then
     snapshot_paths=$(jq -c .snapshots <<<"$snapshots")
-    items=$(while IFS= read -r name; do panel_snapshot_item "$name"; done < <(
-      jq -r 'map(split("/")[-1]) | unique | reverse[]' <<<"$snapshot_paths") | jq -sc .)
+    # One row per identifier, newest first, as name, label and seconds split
+    # by U+001F (a control character no valid label holds). Equal labels in
+    # one displayed minute (the identifier's first 13 characters) get seconds.
+    items=$(while IFS=$'\x1f' read -r name label seconds; do panel_snapshot_item "$name" "$label" "$seconds"; done < <(
+      jq -r '(.labels // {}) as $l | .snapshots | map(split("/")[-1]) | unique | reverse |
+        map({name:., label:(if ($l[.] | type) == "string" then $l[.] else "" end)}) | . as $rows | .[] | . as $row |
+        ($row.label != "" and ([$rows[] | select(.label == $row.label and .name[0:13] == $row.name[0:13])] | length > 1)) as $s |
+        [$row.name, $row.label, ($s | tostring)] | join("\u001f")' <<<"$snapshots") | jq -sc .)
     snapshots=$(jq -c --argjson items "$items" '{names:(.snapshots | map(split("/")[-1])),items:$items,count:($items|length),error:""}' <<<"$snapshots")
   else snapshots='{"names":[],"items":[],"count":0,"error":"Lanai could not read the snapshot list. Check the settings and logs."}'; fi
   restore=$(panel_restore "$progress" "$records" "$snapshot_paths" "$items" "$(sed -n 's/^LanaiStorage=//p' <<<"$facts")" "$s/restore-in-progress")
@@ -431,7 +449,8 @@ cmd_panel() {
        + (if $savedReply and ($saved|not) then {snapshots:""} else {} end)),
      setup:{show:($p.finished|not),finished:$p.finished,
        attention:(($p.finished|not) and $st.state != "stopping" and ($p.reason != "" or $r.setup != "" or $launchFailed or
-         ($p.step == "3" and $rec.records.snapshots.reply.ok == false) or $st.state == "failed" or
+         ($p.step == "3" and $rec.records.snapshots.reply.ok == false and
+           $rec.records.snapshots.reply.reason != "invalid-label") or $st.state == "failed" or
          $reopen or ($setupBoot and $st.state != "starting") or ($busy|not))),step:$p.step,
        choices:(if $p.finished then ["--no-window","--window"] else $p.choices end),
        again_line:"Choose how Windows should show during setup.",
@@ -466,17 +485,18 @@ cmd_panel() {
          $p.reason != "no-media" and $p.reason != "active" and ($p.step != "6" or $st.state != "stopping");(if $p.finished then "Run setup again" else "Continue setup" end)) +
          {hint:(if $p.finished and ($off|not) then "Shut Windows down, then choose Run setup again in More actions." else "" end)},
        install:button($p.step == "2";($busy|not);"Install in a terminal"),
-       setup_snapshot:button($p.step == "3";$idle and ($busy|not);"Take a snapshot"),
+       # save_label is the caption while the name prompt is open.
+       setup_snapshot:button($p.step == "3";$idle and ($busy|not);"Take a snapshot") + {save_label:"Save snapshot"},
        skip_snapshot:button($p.step == "3";$idle and ($busy|not);"Continue without a snapshot"),
        window:(button($p.finished or ($p.choices|length)>0 or $repeat;$idle and ($busy|not);"Set up in a basic window") +
          {hint:"Use a basic window if the Windows window is blank or the display driver needs repair."}),
        no_window:(button($p.finished or ($p.choices|length)>0 or $repeat;$idle and ($busy|not);"Set up in the Windows window") +
          {hint:"Use this if the Windows display driver already works."}),
        finish_restore:button($snapshotsShow and $st.restore_pending;$off and $available and ($busy|not);"Finish the unfinished restore"),
-       take_snapshot:button($snapshotsShow;$idle and ($busy|not);"Take a snapshot"),
+       take_snapshot:button($snapshotsShow;$idle and ($busy|not);"Take a snapshot") + {save_label:"Save snapshot"},
        restore_snapshot:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore") +
          {labels:($snaps.names | map({key:.,value:("Restore snapshot " + .)}) | from_entries)},
-       restore_confirm:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore and replace Windows") +
+       restore_confirm:button($snapshotsShow and ($snaps.names|length)>0;$off and $available and ($busy|not);"Restore now") +
          {labels:($snaps.names | map({key:.,value:("Restore " + . + " and replace Windows")}) | from_entries)},
        delete_snapshot:button($snapshotsShow and ($snaps.names|length)>0;($busy|not) and ($st.restore_pending|not);"Delete"),
        delete_confirm:button($snapshotsShow and ($snaps.names|length)>0;($busy|not) and ($st.restore_pending|not);"Delete snapshot"),
@@ -523,7 +543,9 @@ cmd_panel() {
       ($p.step != "6" or $checkSince == null or ($d.ended // $now) >= $checkSince);
     ($p.finished == false and $p.step == "6" and currentSetup and
       $rec.records.setup.reply.ok == false and $rec.records.setup.reply.stop == "timeout") as $timeout |
-    # Settings refusals stay beside the drafts; prompts and timeouts keep their setup view.
+    # Settings and snapshot name refusals stay beside their fields (panel_words
+    # gives a name refusal empty words, so the $r test keeps it out); prompts
+    # and timeouts keep their setup view.
     (["vm","setup","snapshots","client"] | any(.[];
       . as $g | $rec.records[$g] as $d |
       ($r[$g] != "" and $d != null and ($d.invocation == null or $d.invocation == $invocation) and
@@ -550,6 +572,14 @@ cmd_panel() {
           path_line:("Snapshot saved at " + $rec.records.snapshots.reply.snapshot),
           advice:"It shares disk space at first and grows as Windows changes. To delete it, use Delete beside the snapshot below.",
           copy_label:"Copy snapshot path",show_label:"Show details",hide_label:"Hide details"}
+      else null end) |
+    # The latest snapshot job in any layout, so the field whose launch token
+    # matches can clear its draft or show its name refusal beside it. ok is
+    # null until a reply exists; message is the rule text of a name refusal only.
+    .snapshots.job = ($rec.records.snapshots as $d |
+      if $d.command == "snapshot" and ($d.token | type) == "string" then
+        {token:$d.token,ended:($d | has("ended")),ok:(if ($d.reply.ok | type) == "boolean" then $d.reply.ok else null end),
+          message:(if $d.reply.reason == "invalid-label" then ($d.reply.message // "") else "" end)}
       else null end) |
     .settings += {baseline:(.settings.baseline // null),
       labels:{memory:"Memory (GiB)",cores:"CPU cores",scale:"Windows scale",save:"Save",saved:"Saved",reset:"Reset",unsaved:"Unsaved"}} |

@@ -331,8 +331,8 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   assert_equal "$(jq -r '.snapshots.items[0].time' <<<"$output")" '09:12 UTC'
   assert_equal "$(jq -r '.snapshots.items[0].label' <<<"$output")" 'Oct 12, 2026 at 09:12 UTC'
   assert_equal "$(jq -r '.snapshots.items[0].restore_label' <<<"$output")" 'Restore Oct 12, 2026 at 09:12 UTC'
-  assert_equal "$(jq -r '.snapshots.items[0].confirm_label' <<<"$output")" 'Restore Oct 12, 2026 at 09:12 UTC and replace Windows'
-  assert_equal "$(jq -r '.snapshots.items[0].warning' <<<"$output")" 'Replaces Windows. Changes since this snapshot are lost.'
+  assert_equal "$(jq -r '.snapshots.items[0].confirm_label' <<<"$output")" 'Restore now: Oct 12, 2026 at 09:12 UTC and replace Windows'
+  assert_equal "$(jq -r '.snapshots.items[0].warning' <<<"$output")" 'Changes since this snapshot are lost.'
   assert_equal "$(jq -c '.snapshots.items[-2] | [.date,.time,.label]' <<<"$output")" '[null,null,"20260230T091200Z"]'
   assert_equal "$(jq -c '.snapshots.items[-1] | [.date,.time,.label]' <<<"$output")" '[null,null,"20260228T240000Z"]'
   assert_equal "$(jq -r '.buttons.restore_snapshot.labels["20261012T091200Z"]' <<<"$output")" 'Restore snapshot 20261012T091200Z'
@@ -410,9 +410,11 @@ TIMEOUT_TAIL="Click Continue setup to check again. To install Lanai's parts in W
   assert_equal "$(jq -c '[.buttons.delete_snapshot.show,.buttons.delete_snapshot.enable,.buttons.delete_confirm.enable]' <<<"$output")" '[true,true,true]'
   # The rows show these words; the item labels name the target.
   assert_equal "$(jq -c '[.buttons.delete_snapshot.label,.buttons.delete_confirm.label,.buttons.restore_snapshot.label]' <<<"$output")" '["Delete","Delete snapshot","Restore"]'
+  # An open name prompt turns Take a snapshot into Save snapshot.
+  assert_equal "$(jq -c '[.buttons.take_snapshot.label,.buttons.take_snapshot.save_label]' <<<"$output")" '["Take a snapshot","Save snapshot"]'
   assert_equal "$(jq -r .snapshots.items[0].delete_label <<<"$output")" 'Delete Oct 12, 2026 at 09:12 UTC'
   assert_equal "$(jq -r .snapshots.items[0].delete_confirm_label <<<"$output")" 'Delete snapshot: Oct 12, 2026 at 09:12 UTC, permanently'
-  assert_equal "$(jq -r .snapshots.items[0].delete_warning <<<"$output")" 'Windows stays as it is. You will lose this restore point.'
+  assert_equal "$(jq -r .snapshots.items[0].delete_warning <<<"$output")" 'Windows stays as it is.'
   assert_equal "$(jq -r .snapshots.line <<<"$output")" 'Shut down Windows to take or restore snapshots.'
   # Another VM blocks taking and restoring, but deletion still works.
   ST=inactive
@@ -496,6 +498,140 @@ WORDS
   assert_equal "$(jq -r .snapshots.count <<<"$output")" 1
   assert_equal "$(jq -c '.snapshots.items | map(.name)' <<<"$output")" '["20261012T091200Z"]'
   assert_equal "$(snapshot_find "$STORE" 20261012T091200Z)" "$(snapshot_list "$STORE" | head -n 1)"
+}
+
+# Write a display snapshot <name> with the saved label <label>.
+labeled_snapshot() {
+  display_snapshot "$(data_dir)/snapshots/$1"
+  printf '%s\n' "$2" >"$(data_dir)/snapshots/$1/LABEL"
+}
+
+@test "snapshot names: a saved label joins its UTC date in every action wording" {
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  state "$CURRENT"
+  labeled_snapshot 20261012T091200Z 'Before ${HOME} $(id) ../x'
+  display_snapshot "$(data_dir)/snapshots/20261011T080000Z"
+  export TZ=Pacific/Honolulu LC_TIME=C.utf8
+  run cmd_panel
+  assert_success
+  local item legacy
+  item=$(jq -c '.snapshots.items[0]' <<<"$output") legacy=$(jq -c '.snapshots.items[1]' <<<"$output")
+  local when='Oct 12, 2026 at 09:12 UTC' full='“Before ${HOME} $(id) ../x” from Oct 12, 2026 at 09:12 UTC'
+  assert_equal "$(jq -c '[.name,.user_label,.date,.time,.label]' <<<"$item")" \
+    "$(jq -nc --arg w "$when" '["20261012T091200Z","Before ${HOME} $(id) ../x","Oct 12, 2026","09:12 UTC",$w]')"
+  assert_equal "$(jq -r .full_label <<<"$item")" "$full"
+  assert_equal "$(jq -r .restore_label <<<"$item")" "Restore $full"
+  assert_equal "$(jq -r .confirm_label <<<"$item")" "Restore now: $full and replace Windows"
+  assert_equal "$(jq -r .confirm_note <<<"$item")" "Restore this snapshot and replace Windows?"
+  assert_equal "$(jq -r .delete_label <<<"$item")" "Delete $full"
+  assert_equal "$(jq -r .delete_confirm_label <<<"$item")" "Delete snapshot: $full, permanently"
+  assert_equal "$(jq -r .delete_confirm_note <<<"$item")" "Delete this snapshot permanently?"
+  # The UTC identifier stays the action target.
+  assert_equal "$(jq -c '.snapshots.names | sort' <<<"$output")" '["20261011T080000Z","20261012T091200Z"]'
+  assert_equal "$(jq -r '.buttons.restore_snapshot.labels["20261012T091200Z"]' <<<"$output")" 'Restore snapshot 20261012T091200Z'
+  # Legacy rows keep their wording.
+  assert_equal "$(jq -c '[.user_label,.full_label,.confirm_label,.delete_label]' <<<"$legacy")" \
+    '[null,"Oct 11, 2026 at 08:00 UTC","Restore now: Oct 11, 2026 at 08:00 UTC and replace Windows","Delete Oct 11, 2026 at 08:00 UTC"]'
+}
+
+@test "snapshot names: equal labels in one displayed minute show seconds in rows and restore status" {
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  state "$CURRENT"
+  labeled_snapshot 20261012T091200Z Same
+  labeled_snapshot 20261012T091245Z Same
+  labeled_snapshot 20261012T091230Z Other
+  labeled_snapshot 20261012T091300Z Same
+  display_snapshot "$(data_dir)/snapshots/20261012T091210Z"
+  display_snapshot "$(data_dir)/snapshots/20261012T091220Z"
+  export TZ=Pacific/Honolulu LC_TIME=C.utf8
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c '.snapshots.items | map([.name,.time])' <<<"$output")" \
+    '[["20261012T091300Z","09:13 UTC"],["20261012T091245Z","09:12:45 UTC"],["20261012T091230Z","09:12 UTC"],["20261012T091220Z","09:12 UTC"],["20261012T091210Z","09:12 UTC"],["20261012T091200Z","09:12:00 UTC"]]'
+  local first
+  first=$(jq -c '.snapshots.items[] | select(.name == "20261012T091245Z")' <<<"$output")
+  assert_equal "$(jq -r .label <<<"$first")" 'Oct 12, 2026 at 09:12:45 UTC'
+  assert_equal "$(jq -r .restore_label <<<"$first")" 'Restore “Same” from Oct 12, 2026 at 09:12:45 UTC'
+  assert_equal "$(jq -r .confirm_label <<<"$first")" 'Restore now: “Same” from Oct 12, 2026 at 09:12:45 UTC and replace Windows'
+  assert_equal "$(jq -r .delete_label <<<"$first")" 'Delete “Same” from Oct 12, 2026 at 09:12:45 UTC'
+  assert_equal "$(jq -r .delete_confirm_label <<<"$first")" 'Delete snapshot: “Same” from Oct 12, 2026 at 09:12:45 UTC, permanently'
+  printf '%s\n%s\n' "$(data_dir)/snapshots/20261012T091200Z" "$STORE" >"$S/restore-in-progress"
+  run cmd_panel
+  assert_equal "$(jq -r .restore.label <<<"$output")" 'Unfinished restore of “Same” from Oct 12, 2026 at 09:12:00 UTC'
+  local fd
+  exec {fd}>"$S/lock"
+  flock -n "$fd"
+  jq -nc --argjson p "$BASHPID" '{operation:"restore",phase:"checking",done:0,total:0,pid:$p,target:"20261012T091245Z"}' >"$S/image-progress.json"
+  run cmd_panel
+  assert_equal "$(jq -r .restore.label <<<"$output")" 'Restoring “Same” from Oct 12, 2026 at 09:12:45 UTC'
+  exec {fd}>&-
+}
+
+@test "snapshot names: a failed label reader keeps every row, unlabeled and restorable" {
+  # shellcheck source-path=SCRIPTDIR source=../lib/snapshot.sh
+  source "$REPO/lib/snapshot.sh"
+  state "$CURRENT"
+  labeled_snapshot 20261012T091200Z Kept
+  python3() { [[ $1 != */snapshot-label.py ]] || return 1; command python3 "$@"; }
+  run cmd_panel
+  assert_success
+  assert_equal "$(jq -c '.snapshots.items | map([.name,has("user_label"),.user_label])' <<<"$output")" '[["20261012T091200Z",true,null]]'
+  assert_equal "$(jq -c '[.buttons.restore_snapshot.show,.buttons.restore_snapshot.enable,.buttons.delete_snapshot.enable]' <<<"$output")" '[true,true,true]'
+}
+
+# Write the snapshots group's record for token <token> and reply <json>.
+snapshot_job() {
+  panel_result_write snapshots "$(jq -nc --arg t "$1" --argjson r "$2" '{token:$t,command:"snapshot",args:["a<b"],started:1,ended:2,reply:$r}')"
+}
+
+@test "snapshot names: an invalid-label refusal reaches only its field, in daily and setup layouts" {
+  local reply layout
+  reply=$(cmd_snapshot 'a<b') || true
+  assert_equal "$(jq -c '[.reason,.rule]' <<<"$reply")" '["invalid-label","angle-bracket"]'
+  for layout in setup daily; do
+    [[ $layout == setup ]] || state "$CURRENT"
+    snapshot_job "$layout-field" "$reply"
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .layout <<<"$output")" "$layout"
+    assert_equal "$(jq -r .result.snapshots <<<"$output")" ''
+    assert_equal "$(jq -r .sections.default <<<"$output")" ''
+    [[ $(jq -r .bar.mode <<<"$output") != failed ]] || fail "the bar shows Failed"
+    [[ $(jq -r .header.badge <<<"$output") != Failed ]] || fail "the badge shows Failed"
+    assert_equal "$(jq -c .snapshots.job <<<"$output")" \
+      "{\"token\":\"$layout-field\",\"ended\":true,\"ok\":false,\"message\":\"Remove < and >.\"}"
+  done
+  # The daily view shows a Snapshots result note only for other failures.
+  run panel_words snapshot "$reply"
+  assert_output ''
+  snapshot_job other '{"ok":false,"message":"UNTRUSTED"}'
+  run cmd_panel
+  assert_equal "$(jq -r .layout <<<"$output")" failed
+  assert_equal "$(jq -r .result.snapshots <<<"$output")" 'Lanai could not take the snapshot. Check the Jobs log and try again.'
+  assert_equal "$(jq -c '.snapshots.job | [.token,.ok,.message]' <<<"$output")" '["other",false,""]'
+}
+
+@test "snapshot names: a snapshot job's token and outcome show in daily and setup layouts" {
+  local layout fd
+  for layout in setup daily; do
+    [[ $layout == setup ]] || state "$CURRENT"
+    snapshot_job "$layout-ok" '{"ok":true,"snapshot":"/copy","name":"20261012T091200Z","label":"a"}'
+    run cmd_panel
+    assert_success
+    assert_equal "$(jq -r .layout <<<"$output")" "$layout"
+    assert_equal "$(jq -c .snapshots.job <<<"$output")" "{\"token\":\"$layout-ok\",\"ended\":true,\"ok\":true,\"message\":\"\"}"
+  done
+  exec {fd}>"$S/panel-job.lock"
+  flock -n "$fd"
+  panel_result_write snapshots '{"token":"running","command":"snapshot","args":[],"started":1}'
+  run cmd_panel
+  assert_equal "$(jq -c '.snapshots.job | [.token,.ended,.ok]' <<<"$output")" '["running",false,null]'
+  exec {fd}>&-
+  panel_result_write snapshots '{"token":"gone","command":"delete-snapshot","args":["20261012T091200Z"],"started":1,"ended":2,"reply":{"ok":true}}'
+  run cmd_panel
+  assert_equal "$(jq -c .snapshots.job <<<"$output")" null
 }
 
 @test "redesign restore: marker supplies the target without a panel job" {
@@ -688,6 +824,7 @@ assert_plan_agreement() {
   assert_equal "$(jq -r .buttons.continue_setup.show <<<"$output")" false
   assert_equal "$(jq -r .buttons.skip_snapshot.show <<<"$output")" true
   assert_equal "$(jq -r .buttons.setup_snapshot.show <<<"$output")" true
+  assert_equal "$(jq -c '[.buttons.setup_snapshot.label,.buttons.setup_snapshot.save_label]' <<<"$output")" '["Take a snapshot","Save snapshot"]'
   assert_equal "$(jq -r .result.setup <<<"$output")" 'Lanai could not save the snapshot choice. Check that your home folder has free space, then click Continue without a snapshot or take a snapshot again.'
   run panel_words setup '{"ok":false,"step":"3"}'
   assert_output ''

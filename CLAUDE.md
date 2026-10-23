@@ -19,7 +19,8 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   `$RUN/step6-checks.json` check outcomes and `$RUN/step6-scale-limit` worker
   timeout for each attempt, `pins.sh`
   the pinned downloads, `ui.sh` the settings command, per-group result records
-  and session-unit panel jobs, `snapshot.sh` snapshot and restore, `copy.sh` the
+  and session-unit panel jobs, `snapshot.sh` snapshot and restore,
+  `snapshot-label.py` the snapshot label validator and reader, `copy.sh` the
   reflink copy helpers, `ficlone.py` the in-place clone, `image-proof.py` the
   one-read image hash, FIEMAP proof and progress record),
   `systemd/` (the VM unit template), `guest/` (what runs in
