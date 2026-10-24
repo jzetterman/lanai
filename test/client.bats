@@ -309,7 +309,8 @@ EOF
 $RUN/ivshmem
 spice:host=$RUN/spice.sock
 spice:port=0
-win:setGuestRes=yes"
+win:setGuestRes=yes
+wayland:warpSupport=no"
   # A fresh log: Lanai's start line, then the client's own output.
   run cat "$RUN/client.log"
   assert_line --index 0 --regexp '^lanai: client started at [0-9]+$'

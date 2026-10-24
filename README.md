@@ -271,9 +271,31 @@ Unsaved work is lost on a forced stop. If the display fails or builds mismatch,
 read the panel's cause, next step and named logs. Stop Lanai before using
 `omarchy-windows-vm` through RDP or its web console as the fallback.
 
-Omarchy's Super shortcuts and Ctrl+Alt+Del do **not** reach Windows; use Windows'
-onscreen menus. The shared folder is `~/Windows` on Linux and the virtiofs drive in
-Windows Explorer.
+Outside capture mode (below), Omarchy's Super shortcuts do **not** reach Windows;
+use Windows' onscreen menus. Outside capture, Ctrl+Alt+Del is Omarchy's shortcut to
+close all windows: it closes the Windows window too, though Windows keeps running.
+The shared folder is `~/Windows` on Linux and the virtiofs drive in Windows Explorer.
+
+Capture mode gives the mouse and keyboard to Windows; Omarchy's shortcuts go to
+Windows instead. Press Scroll Lock to enter it and Scroll Lock again to leave (many
+laptops reach Scroll Lock with Fn and another key);
+Looking Glass shows Capture Enabled or Capture Disabled. Scroll Lock with another key
+runs one of Looking Glass's own commands, such as Scroll Lock+F for fullscreen. Hold
+Scroll Lock to list them.
+
+Over the Windows window, Looking Glass hides your Linux pointer and shows the
+Windows cursor in its place. Lanai stops the Looking Glass client from moving your
+hidden pointer, so the window's edge follows the mouse when you drag it. That has
+two costs:
+
+- Outside capture, after the window changes size without the mouse, such as a
+  resize from the keyboard, the Windows cursor can show away from the hidden
+  pointer. A click lands at the hidden pointer, so move the
+  mouse before you click.
+- In capture, the hidden pointer stays at the point in the window where capture
+  began. When capture ends, the Windows cursor jumps back to that point. A change of
+  window size during capture, such as Scroll Lock+F or a monitor or scale change,
+  also moves it there.
 
 Windows' resolution follows the Windows window. When the window opens, resizes,
 tiles, goes fullscreen or moves to a monitor with another scale, Windows matches it

@@ -515,7 +515,8 @@ Where the code differs from the text above, the code and this list win:
   loop, after every backend exists (tested 2026-09-28, recorded in `proofs.md`). So the
   client never opens a stale `ivshmem` left by an earlier run; proof 4 hit that race,
   when the client found the old file and the new VM then replaced it. The client runs
-  with `-f $RUN/ivshmem spice:host=$RUN/spice.sock spice:port=0 win:setGuestRes=yes`.
+  with `-f $RUN/ivshmem spice:host=$RUN/spice.sock spice:port=0 win:setGuestRes=yes
+  wayland:warpSupport=no` (the last flag since 2026-10-23, from phase 7's resize check).
   Closing it does not stop the VM.
 - `version_check` (tests first, with trimmed fixtures from the spike's
   `spike/work/client-*.log`): parse `Version  :` after `Guest Information:`; normalize
@@ -900,9 +901,10 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   true` and a guest version behind the pin resumes at step 5. Existing fixtures that
   write `{"done": true}` (`test/lifecycle.bats`) gain `location`. The panel's buttons
   are QML, so phase 8 checks them.
-- Host keys never reach Windows (proof 5): Hyprland takes Super shortcuts, and
-  Omarchy's Ctrl+Alt+Del closes every host window. Setup and the README never ask the
-  user to press either. Where Windows needs one, they give a click path inside Windows
+- Outside the client's capture mode, host keys never reach Windows (proof 5;
+  capture is in `docs/plugin/client-warp/plan.md`): Hyprland takes Super
+  shortcuts, and Omarchy's Ctrl+Alt+Del closes every host window. Setup and the
+  README never ask the user to press either. Where Windows needs one, they give a click path inside Windows
   or a Lanai route (QMP `send-key`, or the client's own key binding, checked on the
   pinned build first).
 - `lanai setup` is a resumable state machine; each step's state lives in
@@ -1105,7 +1107,9 @@ reviews look hard at the panel's wording, layout and states.
     `input:captureOnly=yes`, then `win:setGuestRes=no` (to rule out a resize feedback
     loop). On the pinned client, `input:captureOnFocus` is already off and
     `input:rawMouse` applies only in capture mode. A fix changes phase 5's client flags;
-    if nothing fixes it, add a README note.
+    if nothing fixes it, add a README note. Ran on October 23, 2026, on John's install:
+    `wayland:warpSupport=no` fixed it, and the later options were not needed
+    (`docs/plugin/client-warp/plan.md`; `proofs.md`, "Resize drag (2026-10-23)").
   - Scale timing: dockur signs in automatically at boot, possibly before the client
     attaches and sizes the display, so the logon task may see the IDD's default
     resolution and cap the scale (proof 1: 125% at about 1024x768). On a test copy that
@@ -2121,10 +2125,12 @@ The orchestrator runs the gate; delegates run no review stage.
   paused-QEMU and compose-reading tests were excluded by the task constraints.
   Scratch stayed in the repository and was removed. No VM, real units, Omarchy
   shell, plugin installation, review stage or commit ran.
-- **Deferred acceptance:** resize-drag and scale timing still require a person
-  and a running Windows test copy. No client flags changed. The proof records do
-  not establish an exact supported Omarchy release; README keeps that and reboot
-  timing/spike measurements as phase 8 items. The custom glyph remains because
+- **Deferred acceptance:** scale timing still requires a person and a running
+  Windows test copy, and no client flags changed then. (The resize drag was
+  settled on 2026-10-23 by `docs/plugin/client-warp/plan.md`, which adds
+  `wayland:warpSupport=no`.) The proof records do not establish an exact
+  supported Omarchy release; README keeps that and reboot timing/spike
+  measurements as phase 8 items. The custom glyph remains because
   marketplace Windows plugins are not installed here.
 
 ## Follow-ons after v0.1.0

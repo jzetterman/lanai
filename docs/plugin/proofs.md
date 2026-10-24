@@ -180,7 +180,7 @@ where Windows caps DPI by resolution, and record what happens. Fallback to recor
 - Notes for later phases:
   - Bug: the script prints `current %` blank in some states (at 100%, and once at 125%); it printed `current 125%` correctly in another. Cosmetic; fix the current-scale lookup.
   - Windows caps the scale by resolution. Lanai applies the scale at sign-in at the window's size then; enlarging the window later does not raise it. Acceptable for v1 (the window normally opens fullscreen or tiled).
-  - UX: resizing the Looking Glass window with Shift + right-drag accelerates instead of tracking the mouse. Likely the client's pointer warping or confinement confusing Hyprland's drag. Investigate client pointer options before phase 7.
+  - UX: resizing the Looking Glass window with Shift + right-drag accelerates instead of tracking the mouse. Likely the client's pointer warping or confinement confusing Hyprland's drag. Investigate client pointer options before phase 7. (Omarchy's resize binding is Super and the right mouse button, not Shift. Settled by `wayland:warpSupport=no`: see [Resize drag (2026-10-23)](#resize-drag-2026-10-23).)
   - Kit: `proof-vm client` has no wait for the VM's shared-memory file (the harness's `client` does), so starting it right after `run` can fail with "Invalid path to the shared memory file". Start it once the VM is up.
 
 ## Proof 2: virtiofs file sharing
@@ -780,7 +780,8 @@ warning. Step 5.1 printed `QEMU exited` within 120 s of `sent system_powerdown`.
   - Host key combinations do not reach Windows: Omarchy takes Super shortcuts, and its
     Ctrl+Alt+Del closes all host windows. Anything Lanai or its README asks the user to
     press with those keys needs another route (QMP send-key, or the client's own key
-    menu).
+    menu). (This holds outside the client's capture mode; see
+    `docs/plugin/client-warp/plan.md`, requirement 3.)
   - The Looking Glass window closed on its own several times during the run while QEMU
     kept running; `proof-vm client` reopened it each time. Watch for this in phase 8.
   - Proof sessions ran the VM with dockur's 16 GiB and caused host memory pressure on
@@ -1516,6 +1517,39 @@ checkout); Claude read the setup record, the panel and `$RUN`. All times EDT.
 - By test only, as the plan says: the IDD mismatch, a guest agent without its
   allow-list, the `idd-missing`, SPICE agent and `qmp` time-outs, a drive that
   appears but cannot be listed, and Run setup again after a scale-task stop.
+
+## Resize drag (2026-10-23)
+
+Phase 7's resize check, on John's install, not on the phase 6 test copy. The
+pinned client (B7-826-236efcb1) moved the host pointer to the Windows cursor
+after every resize, and Hyprland sized the window from that pointer, so a drag
+outran or lagged the mouse (docs/plugin/client-warp/plan.md). The trace is
+`client.log` with `mouseTrace=yes`, and a pointer sampler ran beside it. John
+dragged the window. Times are EDT.
+
+- Warping on, client session started at 20:43: 790 resize events
+  (`app.resize`) and 763 pointer moves (`core.warp send`), counted with `grep`
+  while the session ran. The client's restart overwrote that log, so these
+  counts cannot be checked again.
+- `wayland:warpSupport=no` set by hand in `client.ini`, client session started
+  at 21:04: 482 resize events, no `core.warp send` line and 463
+  `core.warp drop=support` lines (warps the setting refused) at the first read.
+  John: the drag felt right at once.
+- The sampler polled `hyprctl cursorpos` and `hyprctl -j activewindow` about
+  28 times a second. Its gap is the distance from the pointer to the window's
+  right edge (window x + width - pointer x), which stays fixed when a window
+  follows a bottom-right drag. A drag is a run of size changes at one window
+  position with no pause over 0.3 s. The gap's range in each floating drag:
+  warping on, Looking Glass, four drags: 8, 150, 175 and 195 pixels; Ghostty,
+  one drag: 3 pixels; warping off, Looking Glass, two drags: 25 and 87 pixels.
+  The sampler reads the pointer and the window some 15 ms apart, so a fast
+  drag adds error of its own. It supports the trace; the trace and John's
+  check decide.
+- Pass. Lanai now passes `wayland:warpSupport=no` (`lib/client.sh`,
+  `client_args`). The later options in phase 7's list,
+  `input:captureOnly=yes` and `win:setGuestRes=no`, were not needed.
+- Still to run: John's hand check on the shipped build (the client-warp doc's
+  Acceptance section).
 
 ## After the proofs
 
