@@ -93,8 +93,9 @@ spike's own client with the flags they were proved with. They stay as they are.
 - John's hand check on his install after the change ships. It needs no rehearsal on
   a reflink copy first: the flag changes only how the client handles the pointer and
   writes nothing to the Windows disk.
-  - Set up: `~/.config/looking-glass/client.ini` holds `[input]` `mouseTrace=yes` and
-    no `warpSupport` line, so the flag under test is the one Lanai passes. Close and
+  - Set up: `~/.config/looking-glass/client.ini` holds `[input]` `mouseTrace=yes`.
+    Delete the `[wayland]` and `warpSupport=no` lines added there on 2026-10-23, so
+    the flag under test is the one Lanai passes. Close and
     reopen the window, so the client starts with both.
   - A floating drag with Super and the right mouse button, a drag on the window's
     border, and a drag of a tiled split with the Looking Glass window focused all
@@ -108,15 +109,19 @@ spike's own client with the flags they were proved with. They stay as they are.
     When the window goes fullscreen, the Windows cursor jumps to the point in the
     window where capture began. Press Scroll Lock+F again, then Scroll Lock to leave
     capture.
-  - Shortcuts in capture: press Scroll Lock, then press Super. Windows' Start menu
-    opens and Omarchy does nothing. Press Scroll Lock to leave capture.
+  - Shortcuts in capture: outside capture, press Super+S; Omarchy's scratchpad
+    opens (press Super+S again to close it). Then press Scroll Lock and press
+    Super+S: Windows' Search opens and the scratchpad does not. Press Scroll Lock to
+    leave capture.
   - Click after a resize: make the Looking Glass window float (Super+T). Outside
-    capture, rest the pointer on a distinct target in Windows (an icon) and take your
-    hand off the mouse. Press Super+minus, and check that the window's size changed.
-    The drawn Windows cursor moves off the target with the picture. Click without
-    moving the mouse: the Windows cursor jumps back to the target and the click acts
-    there. If the size changed and the cursor did not drift, record it: the README's
-    outside-capture cost would then overstate.
+    capture, rest the pointer on a distinct target in Windows away from the
+    window's top-left corner (an icon) and take your hand off the mouse. Press
+    Super+minus, and check that the window's size changed. If Windows' Start menu
+    opens, press Escape, not the mouse. Within a second or two, before Windows
+    matches the new size, look: the drawn Windows cursor has moved off the target
+    with the picture. Click without moving the mouse: the Windows cursor jumps back to
+    the target and the click acts there. If the size changed and the cursor did not
+    drift, record it: the README's outside-capture cost would then overstate.
   - `$XDG_RUNTIME_DIR/lanai/client.log` shows the trace was on and the flag took
     effect: its `Loading config from:` lines name only
     `/home/john/.config/looking-glass/client.ini` (no `/etc/looking-glass-client.ini`,
@@ -174,3 +179,4 @@ Diff gate (the branch against `main`):
 | a (gpt-6.1-sol) | 1 | 0 | 0 | 0 | Clean. |
 | b panel (opus-5.5), 3 lenses | 1 | 10 | 0 | 0 | Three should-fix and seven nits confirmed, after merging one comment nit three lenses found: the README's Ctrl+Alt+Del line (Omarchy's shortcut closes all windows), the hidden Linux pointer in the README's wording, and a click hand check John can see; plus the drag sentence's place, monitor or scale, a key for keyboards with no Scroll Lock, the `configFile` case in the comment, the edge-exit sentence, the SPICE fallback, and a self-contradicting `plan.md` sentence. Integrated. |
 | b panel (opus-5.5), 3 lenses | 2 | 13 | 0 | 0 | Four should-fix and nine nits confirmed, after merging the Ctrl+Alt+Del qualifier two lenses found: the `escapeKey` example hid that the chosen key stops reaching Windows (cut), `plan.md` still said host keys never reach Windows, and the click hand check broke under focus-follows-mouse and on a tiled window; plus the capture alerts and command list, paragraph order, the comment's tense and ini scope, a shortcuts-in-capture check, which drag proves the flag, and expanded log paths. Integrated. |
+| b panel (opus-5.5), 3 lenses | 3 | 9 | 0 | 0 | Two should-fix and seven nits confirmed, after merging two nits two lenses found: the shortcuts-in-capture check passed either way (Omarchy binds no lone Super; it now uses Super+S both ways), and the click check needed a way out if Super opens Start; plus timing and target for the click check, the explicit `client.ini` clean-up, the README's wider outside-capture cost, a Scroll Lock hint for laptops, the `proofs.md` link and a long line. Integrated, with nothing left open at the cap. |

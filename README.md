@@ -277,7 +277,8 @@ close all windows: it closes the Windows window too, though Windows keeps runnin
 The shared folder is `~/Windows` on Linux and the virtiofs drive in Windows Explorer.
 
 Capture mode gives the mouse and keyboard to Windows; Omarchy's shortcuts go to
-Windows instead. Press Scroll Lock to enter it and Scroll Lock again to leave;
+Windows instead. Press Scroll Lock to enter it and Scroll Lock again to leave (many
+laptops reach Scroll Lock with Fn and another key);
 Looking Glass shows Capture Enabled or Capture Disabled. Scroll Lock with another key
 runs one of Looking Glass's own commands, such as Scroll Lock+F for fullscreen. Hold
 Scroll Lock to list them.
@@ -287,8 +288,9 @@ Windows cursor in its place. Lanai stops the Looking Glass client from moving yo
 hidden pointer, so the window's edge follows the mouse when you drag it. That has
 two costs:
 
-- Outside capture, after a resize from the keyboard, the Windows cursor can show
-  away from the hidden pointer. A click lands at the hidden pointer, so move the
+- Outside capture, after the window changes size without the mouse, such as a
+  resize from the keyboard, the Windows cursor can show away from the hidden
+  pointer. A click lands at the hidden pointer, so move the
   mouse before you click.
 - In capture, the hidden pointer stays at the point in the window where capture
   began. When capture ends, the Windows cursor jumps back to that point. A change of

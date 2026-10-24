@@ -781,7 +781,7 @@ warning. Step 5.1 printed `QEMU exited` within 120 s of `sent system_powerdown`.
     Ctrl+Alt+Del closes all host windows. Anything Lanai or its README asks the user to
     press with those keys needs another route (QMP send-key, or the client's own key
     menu). (This holds outside the client's capture mode; see
-    [Resize drag (2026-10-23)](#resize-drag-2026-10-23).)
+    `docs/plugin/client-warp/plan.md`, requirement 3.)
   - The Looking Glass window closed on its own several times during the run while QEMU
     kept running; `proof-vm client` reopened it each time. Watch for this in phase 8.
   - Proof sessions ran the VM with dockur's 16 GiB and caused host memory pressure on

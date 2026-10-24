@@ -903,8 +903,8 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   are QML, so phase 8 checks them.
 - Outside the client's capture mode, host keys never reach Windows (proof 5;
   capture is in `docs/plugin/client-warp/plan.md`): Hyprland takes Super
-  shortcuts, and Omarchy's Ctrl+Alt+Del closes every host window. Setup and the README never ask the
-  user to press either. Where Windows needs one, they give a click path inside Windows
+  shortcuts, and Omarchy's Ctrl+Alt+Del closes every host window. Setup and the
+  README never ask the user to press either. Where Windows needs one, they give a click path inside Windows
   or a Lanai route (QMP `send-key`, or the client's own key binding, checked on the
   pinned build first).
 - `lanai setup` is a resumable state machine; each step's state lives in
