@@ -922,7 +922,7 @@ status_facts() {
 # its stop timed out, and the next start will report it), warning (helpers
 # that stopped, a client that gave up waiting for QEMU, or a guest driver
 # that is not the pinned build), force_stop (true once a shutdown from the
-# bar has run 2 minutes, spec 16), active (the unit runs, starts or stops:
+# bar has run 15 seconds, spec 16), active (the unit runs, starts or stops:
 # an active VM before setup is done also reads setup-needed, so the panel
 # needs it during the setup boot), setup_done (LanaiSetup is done),
 # window (the running VM shows QEMU's
@@ -946,10 +946,10 @@ status_map() {
   case $active in
     active | reloading)
       if [[ -n ${f[LanaiStopAge]:-} || $qmp == shutdown ]]; then
-        state=stopping message="Windows is shutting down." next="wait up to 2 minutes"
-        if ((${f[LanaiStopAge]:-0} >= 120)); then
+        state=stopping message="Windows is shutting down." next="wait up to 15 seconds"
+        if ((${f[LanaiStopAge]:-0} >= 15)); then
           force=true
-          message="Windows has not shut down after 2 minutes. It may be installing updates, or a Windows security screen may be open."
+          message="Windows has not shut down after 15 seconds. It may be installing updates, or a Windows security screen may be open."
           next="wait, or use Force stop below"
         fi
       elif [[ $qmp == internal-error || $qmp == guest-panicked || $qmp == io-error ]]; then
@@ -1278,7 +1278,7 @@ cmd_start() {
 # stop: ask Windows to shut down cleanly (spec 16). Sends system_powerdown
 # on qmp-cli.sock and records when, for this run; never uses systemctl stop.
 # The unit stays active until QEMU exits by itself. A repeated stop keeps
-# the first request's time, so the panel's 2 minutes run on.
+# the first request's time, so the panel's 15 seconds run on.
 cmd_stop() {
   local st inv run s reply rinv="" at=""
   st=$(unit_state) || st=""
@@ -1299,7 +1299,7 @@ cmd_stop() {
   if [[ $rinv != "$inv" || ! $at =~ ^[0-9]+$ ]]; then
     printf '%s %s\n' "$inv" "$EPOCHSECONDS" >"$s/stop-requested"
   fi
-  emit true stopping "Windows is shutting down." "wait up to 2 minutes"
+  emit true stopping "Windows is shutting down." "wait up to 15 seconds"
 }
 
 # open: open the Windows window (spec 11, 17). Focuses the client's window

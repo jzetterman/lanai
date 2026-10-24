@@ -956,10 +956,10 @@ assert_plan_agreement() {
 @test "panel: stopping keeps Shut down enabled and only force_stop enables Force stop" {
   status_facts() { printf 'ActiveState=active\nLanaiStopAge=%s\n' "$age"; }
   local age
-  for age in 1 120; do
+  for age in 14 15; do
     run cmd_panel
     assert_equal "$(jq -r .buttons.stop.enable <<<"$output")" true
-    assert_equal "$(jq -r .buttons.force_stop.show <<<"$output")" "$([[ $age == 120 ]] && echo true || echo false)"
+    assert_equal "$(jq -r .buttons.force_stop.show <<<"$output")" "$([[ $age == 15 ]] && echo true || echo false)"
   done
 }
 
