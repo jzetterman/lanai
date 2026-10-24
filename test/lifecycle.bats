@@ -172,12 +172,12 @@ map() {
   assert_output --partial "the Windows scale does not follow saves or monitors"
 }
 
-@test "status_map: a stop request is stopping, and after 2 minutes offers the forced stop" {
+@test "status_map: a stop request is stopping, and after 15 seconds offers the forced stop" {
   unit_show active
-  map LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running LanaiQga=open LanaiStopAge=30
+  map LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running LanaiQga=open LanaiStopAge=14
   assert_equal "$(field state)" stopping
   assert_equal "$(field force_stop)" false
-  map LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running LanaiQga=open LanaiStopAge=120
+  map LanaiInstall=present LanaiSetup=done LanaiContainer=none LanaiQmp=running LanaiQga=open LanaiStopAge=15
   assert_equal "$(field state)" stopping
   assert_equal "$(field force_stop)" true
   run field next
@@ -691,7 +691,7 @@ assert_both_refuse() {
   ((EPOCHSECONDS - at <= 5)) || fail "request time $at is not now"
   # It never stops the unit through systemd (spec 16).
   ! grep -qE -- '--user (stop|kill)' "$T/systemctl.calls" || fail "used systemctl to stop"
-  # A second stop keeps the first request's time, so the 2 minutes run on.
+  # A second stop keeps the first request's time, so the 15 seconds run on.
   echo "0123456789abcdef0123456789abcdef 1000" >"$S/stop-requested"
   lanai_run stop
   assert_success

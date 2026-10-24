@@ -386,8 +386,8 @@ Neither needs GPU acceleration.
     requirement is in v1. It may still move to v2 only if that mechanism fails its
     checks (John, 2026-09-28). Clipboard transfer (requirement 13) stays in v1.
 16. Shutting down from the bar is a clean Windows shutdown. If it has not finished
-    within 2 minutes (for example, Windows is installing updates), the panel offers the
-    forced stop. The forced stop needs a confirmation and is never the default.
+    within 15 seconds (for example, Windows is installing updates or has hung), the
+    panel offers the forced stop (John, 2026-10-23; was 2 minutes). The forced stop needs a confirmation and is never the default.
 17. Closing the Windows window does not stop the VM. The bar reopens it.
 
 ### VM lifetime

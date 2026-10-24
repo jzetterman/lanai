@@ -265,7 +265,7 @@ Windows runs. Recovery and failures keep their priority.
 
 Shut down is available while Windows starts and shuts down. It asks Windows to
 shut down cleanly and returns immediately. If Windows ignores the request while
-starting, click Shut down again. After two minutes from
+starting, click Shut down again. After 15 seconds from
 the first request, the panel offers Force stop, followed by a separate confirming click.
 Unsaved work is lost on a forced stop. If the display fails or builds mismatch,
 read the panel's cause, next step and named logs. Stop Lanai before using
