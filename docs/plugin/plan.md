@@ -2124,8 +2124,8 @@ The orchestrator runs the gate; delegates run no review stage.
   paused-QEMU and compose-reading tests were excluded by the task constraints.
   Scratch stayed in the repository and was removed. No VM, real units, Omarchy
   shell, plugin installation, review stage or commit ran.
-- **Deferred acceptance:** resize-drag and scale timing still require a person
-  and a running Windows test copy. No client flags changed. (The resize drag was
+- **Deferred acceptance:** scale timing still requires a person and a running
+  Windows test copy, and no client flags changed then. (The resize drag was
   settled on 2026-10-23 by `docs/plugin/client-warp/plan.md`, which adds
   `wayland:warpSupport=no`.) The proof records do not establish an exact
   supported Omarchy release; README keeps that and reboot timing/spike

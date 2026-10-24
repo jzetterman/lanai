@@ -44,7 +44,7 @@ LANAI_HOST_PACKAGES=(qemu-system-x86 qemu-img virtiofsd python qemu-ui-spice-cor
 # the Windows cursor, and Hyprland sized the window from that pointer, so a
 # drag outran or lagged the mouse (docs/plugin/client-warp/plan.md). The
 # command line overrides client.ini, so a warpSupport line there cannot undo
-# it.
+# it (an app:configFile it names could; Lanai sets none).
 client_args() {
   printf '%s\n' -f "$1/ivshmem" "spice:host=$1/spice.sock" spice:port=0 win:setGuestRes=yes \
     wayland:warpSupport=no

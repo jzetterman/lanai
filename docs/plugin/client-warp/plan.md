@@ -24,9 +24,9 @@ the client restarted, so these counts cannot be checked again.
 Lanai's mouse input is absolute while the client's LGMP input runs (it starts
 within half a second of the client, after a moment of SPICE input, and can fall back
 to SPICE mid-session): the client sends Windows the pointer's position, so the
-Windows cursor follows the host pointer. SPICE input is relative only; then warping
-off also drops the move that lets the pointer leave the picture at its edge, which
-on Wayland only matters in capture. A resize rescales the picture, so the Windows
+Windows cursor follows the host pointer. SPICE input is relative only; with it, the
+client's edge-exit move never arises on Wayland, because relative motion arrives
+only in capture, where the client does not test for an exit. A resize rescales the picture, so the Windows
 cursor's spot on screen shifts away from the host pointer, and the move chases that
 shift. With warping off, the drawn Windows cursor can sit off the host pointer after
 a resize until the pointer next moves. A click is still safe: the client sends the
@@ -72,8 +72,11 @@ simpler and needs no new patch, so it is chosen; its cost is in requirement 3.
      scale change, or a resize by script. (A new window that takes focus ends capture
      first, so it does not do this.)
    - Outside capture, after a keyboard resize, the Windows cursor can show away from
-     where the hidden host pointer is, until the mouse next moves. A click still lands
-     under the pointer.
+     where the hidden host pointer is, until the mouse next moves. A click lands at
+     the hidden pointer, so the README says to move the mouse before clicking.
+   - Under the SPICE fallback (relative input), capture end sends no position, so the
+     Windows cursor stays where capture moved it. This is rare; the README does not
+     cover it.
    - The README also says that Scroll Lock enters and leaves capture, and that
      Omarchy's shortcuts reach Windows while captured.
 
@@ -102,9 +105,12 @@ spike's own client with the flags they were proved with. They stay as they are.
     When the window goes fullscreen, the Windows cursor jumps to the point in the
     window where capture began. Press Scroll Lock+F again, then Scroll Lock to leave
     capture.
-  - Click after a resize: with the pointer over the window and outside capture, resize
-    the window with the keyboard (Super+minus), then click without moving the mouse.
-    The click lands under the pointer.
+  - Click after a resize: outside capture, rest the pointer on a distinct target in
+    Windows (an icon) and note the spot with `hyprctl cursorpos`. Resize the window
+    with the keyboard (Super+minus). The drawn Windows cursor moves off the target
+    with the picture. Click without moving the mouse: the Windows cursor jumps back to
+    the noted spot and the click acts there. If the cursor does not drift, record it:
+    the README's outside-capture cost would then overstate.
   - `$XDG_RUNTIME_DIR/lanai/client.log` shows the trace was on and the flag took
     effect: its `Loading config from:` lines name only
     `~/.config/looking-glass/client.ini` (no `/etc/looking-glass-client.ini`, no
@@ -153,3 +159,10 @@ One phase, test first.
 On October 23, 2026, John accepted advancing to code after stage (b)'s third round,
 with every finding integrated. The diff gate reviews the doc text again where it lands
 in the README, `proofs.md` and `plan.md`.
+
+Diff gate (the branch against `main`):
+
+| Stage | Round | Findings | Refuted | Downgraded to nit | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| a (gpt-6.1-sol) | 1 | 0 | 0 | 0 | Clean. |
+| b panel (opus-5.5), 3 lenses | 1 | 10 | 0 | 0 | Three should-fix and seven nits confirmed, after merging one comment nit three lenses found: the README's Ctrl+Alt+Del line (Omarchy's shortcut closes all windows), the hidden Linux pointer in the README's wording, and a click hand check John can see; plus the drag sentence's place, monitor or scale, a key for keyboards with no Scroll Lock, the `configFile` case in the comment, the edge-exit sentence, the SPICE fallback, and a self-contradicting `plan.md` sentence. Integrated. |
