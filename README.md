@@ -271,9 +271,19 @@ Unsaved work is lost on a forced stop. If the display fails or builds mismatch,
 read the panel's cause, next step and named logs. Stop Lanai before using
 `omarchy-windows-vm` through RDP or its web console as the fallback.
 
-Omarchy's Super shortcuts and Ctrl+Alt+Del do **not** reach Windows; use Windows'
-onscreen menus. The shared folder is `~/Windows` on Linux and the virtiofs drive in
-Windows Explorer.
+Outside capture mode (below), Omarchy's Super shortcuts do **not** reach Windows.
+Ctrl+Alt+Del does not reach Windows either; use Windows' onscreen menus. The shared
+folder is `~/Windows` on Linux and the virtiofs drive in Windows Explorer.
+
+Capture mode gives the mouse and keyboard to Windows. Press Scroll Lock to enter it
+and Scroll Lock again to leave. While captured, Omarchy's shortcuts reach Windows,
+and your pointer stays at the spot in the window where capture began. Lanai stops
+the Looking Glass client from moving your pointer, so a window drag follows the
+mouse. That has costs. When capture ends, the Windows cursor jumps back to where
+capture began. A change of window size during capture, such as fullscreen with
+Scroll Lock+F or a monitor change, also moves it there. Outside capture, after a
+resize from the keyboard, the Windows cursor can show away from your pointer until
+you move the mouse. A click still lands under your pointer.
 
 Windows' resolution follows the Windows window. When the window opens, resizes,
 tiles, goes fullscreen or moves to a monitor with another scale, Windows matches it
