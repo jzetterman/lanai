@@ -77,8 +77,9 @@ simpler and needs no new patch, so it is chosen; its cost is in requirement 3.
    - Under the SPICE fallback (relative input), capture end sends no position, so the
      Windows cursor stays where capture moved it. This is rare; the README does not
      cover it.
-   - The README also says that Scroll Lock enters and leaves capture, and that
-     Omarchy's shortcuts reach Windows while captured.
+   - The README also says that Scroll Lock enters and leaves capture, that
+     Omarchy's shortcuts reach Windows while captured, and that Scroll Lock with
+     another key runs the client's own commands (hold Scroll Lock to list them).
 
 The spike's proof kit (`docs/plugin/proof-kit/proof-vm`) and `spike/lgtest` run the
 spike's own client with the flags they were proved with. They stay as they are.
@@ -97,7 +98,9 @@ spike's own client with the flags they were proved with. They stay as they are.
     reopen the window, so the client starts with both.
   - A floating drag with Super and the right mouse button, a drag on the window's
     border, and a drag of a tiled split with the Looking Glass window focused all
-    follow the pointer.
+    follow the pointer. Only the first tells the two settings apart: in the other
+    two the pointer is off the client's surface, so the client drops its moves
+    either way. The log's `drop=support` lines come from the first.
   - Capture end: note where the Windows cursor is, press Scroll Lock, move the mouse,
     press Scroll Lock again. The Windows cursor jumps back to where it was when
     capture began.
@@ -105,16 +108,20 @@ spike's own client with the flags they were proved with. They stay as they are.
     When the window goes fullscreen, the Windows cursor jumps to the point in the
     window where capture began. Press Scroll Lock+F again, then Scroll Lock to leave
     capture.
-  - Click after a resize: outside capture, rest the pointer on a distinct target in
-    Windows (an icon) and note the spot with `hyprctl cursorpos`. Resize the window
-    with the keyboard (Super+minus). The drawn Windows cursor moves off the target
-    with the picture. Click without moving the mouse: the Windows cursor jumps back to
-    the noted spot and the click acts there. If the cursor does not drift, record it:
-    the README's outside-capture cost would then overstate.
+  - Shortcuts in capture: press Scroll Lock, then press Super. Windows' Start menu
+    opens and Omarchy does nothing. Press Scroll Lock to leave capture.
+  - Click after a resize: make the Looking Glass window float (Super+T). Outside
+    capture, rest the pointer on a distinct target in Windows (an icon) and take your
+    hand off the mouse. Press Super+minus, and check that the window's size changed.
+    The drawn Windows cursor moves off the target with the picture. Click without
+    moving the mouse: the Windows cursor jumps back to the target and the click acts
+    there. If the size changed and the cursor did not drift, record it: the README's
+    outside-capture cost would then overstate.
   - `$XDG_RUNTIME_DIR/lanai/client.log` shows the trace was on and the flag took
     effect: its `Loading config from:` lines name only
-    `~/.config/looking-glass/client.ini` (no `/etc/looking-glass-client.ini`, no
-    `~/.looking-glass-client.ini`, no `configFile`), and it has `app.resize` lines
+    `/home/john/.config/looking-glass/client.ini` (no `/etc/looking-glass-client.ini`,
+    no `/home/john/.looking-glass-client.ini`, no `configFile`), and it has
+    `app.resize` lines
     for the drags, at least one `core.warp drop=support` line, and no
     `core.warp send` line.
   - Afterwards, remove the trace lines from `client.ini`; the trace logs every mouse
@@ -166,3 +173,4 @@ Diff gate (the branch against `main`):
 | --- | ---: | ---: | ---: | ---: | --- |
 | a (gpt-6.1-sol) | 1 | 0 | 0 | 0 | Clean. |
 | b panel (opus-5.5), 3 lenses | 1 | 10 | 0 | 0 | Three should-fix and seven nits confirmed, after merging one comment nit three lenses found: the README's Ctrl+Alt+Del line (Omarchy's shortcut closes all windows), the hidden Linux pointer in the README's wording, and a click hand check John can see; plus the drag sentence's place, monitor or scale, a key for keyboards with no Scroll Lock, the `configFile` case in the comment, the edge-exit sentence, the SPICE fallback, and a self-contradicting `plan.md` sentence. Integrated. |
+| b panel (opus-5.5), 3 lenses | 2 | 13 | 0 | 0 | Four should-fix and nine nits confirmed, after merging the Ctrl+Alt+Del qualifier two lenses found: the `escapeKey` example hid that the chosen key stops reaching Windows (cut), `plan.md` still said host keys never reach Windows, and the click hand check broke under focus-follows-mouse and on a tiled window; plus the capture alerts and command list, paragraph order, the comment's tense and ini scope, a shortcuts-in-capture check, which drag proves the flag, and expanded log paths. Integrated. |

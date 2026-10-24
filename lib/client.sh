@@ -40,11 +40,12 @@ LANAI_HOST_PACKAGES=(qemu-system-x86 qemu-img virtiofsd python qemu-ui-spice-cor
 
 # Print the Looking Glass client's arguments for runtime folder <run>, one
 # per line. The one place the flags live. wayland:warpSupport=no stops the
-# client moving the host pointer: after each resize it moved the pointer to
-# the Windows cursor, and Hyprland sized the window from that pointer, so a
-# drag outran or lagged the mouse (docs/plugin/client-warp/plan.md). The
-# command line overrides client.ini, so a warpSupport line there cannot undo
-# it (an app:configFile it names could; Lanai sets none).
+# client moving the host pointer: without it, after each resize the client
+# moves the pointer to the Windows cursor, and Hyprland sizes the window from
+# that pointer, so a drag outruns or lags the mouse
+# (docs/plugin/client-warp/plan.md). The command line overrides the client's
+# ini files, so a warpSupport line in one cannot undo it (an app:configFile set
+# in any of them could; Lanai sets none).
 client_args() {
   printf '%s\n' -f "$1/ivshmem" "spice:host=$1/spice.sock" spice:port=0 win:setGuestRes=yes \
     wayland:warpSupport=no

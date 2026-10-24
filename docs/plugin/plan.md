@@ -901,8 +901,9 @@ in `lib/client.sh`; the commands are in `lib/lanai.sh`.
   true` and a guest version behind the pin resumes at step 5. Existing fixtures that
   write `{"done": true}` (`test/lifecycle.bats`) gain `location`. The panel's buttons
   are QML, so phase 8 checks them.
-- Host keys never reach Windows (proof 5): Hyprland takes Super shortcuts, and
-  Omarchy's Ctrl+Alt+Del closes every host window. Setup and the README never ask the
+- Outside the client's capture mode, host keys never reach Windows (proof 5;
+  capture is in `docs/plugin/client-warp/plan.md`): Hyprland takes Super
+  shortcuts, and Omarchy's Ctrl+Alt+Del closes every host window. Setup and the README never ask the
   user to press either. Where Windows needs one, they give a click path inside Windows
   or a Lanai route (QMP `send-key`, or the client's own key binding, checked on the
   pinned build first).
