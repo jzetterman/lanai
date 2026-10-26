@@ -348,17 +348,20 @@ Neither needs GPU acceleration.
       repository and applied exactly to the pinned source when Lanai builds the client;
       a patch that does not apply exactly stops the build. A client built this way
       counts as the pinned build for requirement 8. The patches add no message and
-      change no message's format; they change only when the client sends the window-size
-      message it already sends, and what it logs. The IDD stays the pinned build. The
-      patches carry Looking Glass's license (GPL-2.0-or-later): its full text ships
+      change no message's format. They change only three things: when the client sends
+      the window-size message it already sends, that the pointer scale stays as it was
+      across a restart of the Looking Glass host in Windows (the frame size and the
+      window set the scale, and a restart changes neither), and what the client logs.
+      The IDD stays the pinned build. The patches carry Looking Glass's license (GPL-2.0-or-later): its full text ships
       beside them, and the README and, where its format allows, the manifest say that
       Lanai is MIT except those patches. Lanai can
       tell whether the installed client was built with the current patches, including a
       patch whose content changed.
     - An install whose client was built without the current patches keeps working with
-      that client. The panel says that Windows may start at, or change to, the wrong
-      size until the user runs the one step that builds the fixed client, and names the
-      step. That build step changes nothing in Windows: no administrator prompt, no
+      that client. The panel says that after the computer wakes from sleep, the mouse
+      may reach only part of Windows, and that Windows may start at, or change to, the
+      wrong size, until the user runs the one step that builds the fixed client, and
+      names the step. That build step changes nothing in Windows: no administrator prompt, no
       Windows restart and no change to the Windows lock. The fixed client takes over
       the next time the window opens, and the build step's last message says to close
       and reopen the Windows window. When the scale task is also old, "Run setup again"
@@ -372,7 +375,7 @@ Neither needs GPU acceleration.
       and names "Run setup again" as the one step, which turns the Windows lock off
       again (requirement 7). "Run setup again" also builds the fixed client, so when
       the client is old too, it replaces the build step, and the panel says what both
-      fix. When the live-scale upgrade message also applies (a scale task from a setup
+      fix, the mouse after a wake included. When the live-scale upgrade message also applies (a scale task from a setup
       run before live scale, above), the panel shows one message that names "Run setup
       again" and what it fixes. Requirement 8's update message takes the place of this
       message and the build step's when it applies.
@@ -648,3 +651,4 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | setup-checks amendment review b single (opus-5.5) | 2026-10-17 | Round 3 (full, cap): 0 blockers, 2 should-fix, 5 nits, 0 refuted; all integrated, not reviewed again: a guest agent missing its allow-list stops with Run setup again as the way on, and row 7's wrong-answer cases end with Run setup again finishing; requirement 27 lists the IDD's build the client reports, used only to compare with the pin and name it (a gap from requirement 8 that the amendment states outright); the time-out message also says to follow Windows' setup window first if setup.cmd stopped there, and names the Windows user who ran setup in the sign-in hint; the share must be visible to the user's non-elevated session; row 7's one-prompt and one-restart counts hold for a setup that does not stop; a Continue setup case with Windows stopped |
 | spec | John | 2026-10-17 | Setup-checks amendment: accepted the gate at stage b's cap, with round 3's edits integrated and not reviewed again |
 | spec | John | 2026-10-18 | Setup checks, from the diff gate: a Windows restart during setup's final checks resets no time limit (one limit from the check boot or the Continue, then the scale task's from when the other checks passed); and since the setup drive is not attached at that point, a setup.cmd stop is answered by repeating the guest install, not by following setup.cmd first |
+| spec | John | 2026-10-25 | Pointer scale amendment, from `client-restart-scale/plan.md` (its requirement 4; reviewed in that plan's gate, which John accepted): after the computer wakes from sleep, the Looking Glass host in Windows restarts and the client reset the pointer scale to 1.0, so on a display at scale 2 the mouse reached only the top-left quarter of Windows (`proofs.md`, "Pointer scale after a host restart"). Requirement 12 now lets the patches keep the pointer scale across a host restart, and both upgrade messages for an old client name the mouse fix |
