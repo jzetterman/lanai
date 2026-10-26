@@ -132,10 +132,10 @@ its own `g_state`.
      ops, as other absolute cases do);
    - sets a 1576x950 window and a 3152x1900 frame with `haveSrcSize` true, runs
      `core_updatePositionInfo`, and checks that a move to (700,400) sends 1400,800;
-   - runs `core_resetSession()`, and checks that the same move sends 1400,800 again
+   - runs `core_resetPointerScale()`, and checks that the same move sends 1400,800 again
      and that `useScale` is still true;
    - then, keeping that state (scale 2, `useScale` true), sets only `haveSrcSize`
-     to false, runs `core_resetSession()`, and checks that the scale is 1.0 and
+     to false, runs `core_resetPointerScale()`, and checks that the scale is 1.0 and
      `useScale` is false. (`reset()` already sets those values, so this part must not
      start from `reset()`.)
 
@@ -146,9 +146,9 @@ its own `g_state`.
    signatures; the `inputMousePosition` stub extended to count calls and record x and
    y; and `posInfoValid` left true from `reset()`, since the test display-server stub
    has no `realignPointer`.
-2. Add `core_resetSession()` to `core.c` and `core.h` in two moves, so the test
+2. Add `core_resetPointerScale()` to `core.c` and `core.h` in two moves, so the test
    goes red on an assertion before it goes green:
-   - Move the writes at `main.c:183-185` into `core_resetSession()` unchanged, with
+   - Move the writes at `main.c:183-185` into `core_resetPointerScale()` unchanged, with
      no condition, and have `lgInit` call it in their place. Everything else in
      `lgInit` stays there, in its current order. Build and run the case, and see it
      fail at the second move's assertion. That red is the negative control.
@@ -212,3 +212,10 @@ its own `g_state`.
 On October 25, 2026 (EDT), John accepted advancing to code after stage (b)'s third
 round, with every finding integrated. The diff gate reviews the code and every doc and
 panel text change again.
+
+Diff gate (the branch against `main`):
+
+| Stage | Round | Findings | Refuted | Downgraded to nit | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| a (gpt-6.1-sol) | 1 | 0 | 0 | 0 | Clean. |
+| b single (opus-5.5) | 1 | 8 | 1 | 0 | Eight nits, a nits-only stop. Seven integrated: the README's repeated mouse sentence and its one-fix "with the mouse fix", the spec's dangling phrase and long lines, "a restart by itself changes neither" in the spec and the patch, the proofs heading's timezone and wording, and `core_resetSession` renamed `core_resetPointerScale`. Refuted: the test's order of `lgInput_setFallback` and `reset()` matches upstream's own auto-capture case (`mouse_test.c:609-611`). |

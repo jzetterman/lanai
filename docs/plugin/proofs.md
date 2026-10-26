@@ -1551,13 +1551,14 @@ dragged the window. Times are EDT.
 - Still to run: John's hand check on the shipped build (the client-warp doc's
   Acceptance section).
 
-## Pointer scale after a host restart (2026-10-25)
+## Pointer scale after a host restart (2026-10-25, EDT)
 
-A trace on John's XPS, with `mouseTrace=yes` in `client.ini`, on the pinned
-client (B7-826-236efcb1) with patches 0001 and 0002. After the laptop woke from
-sleep, the mouse reached only the top-left quarter of Windows until a resize
+John took a trace on his XPS, with `mouseTrace=yes` in `client.ini`, on the
+pinned client (B7-826-236efcb1) with patches 0001 and 0002. After the laptop woke
+from sleep, the mouse reached only the top-left quarter of Windows until a resize
 (docs/plugin/client-restart-scale/plan.md). The XPS panel is eDP-1, 3200x2000
-at scale 2, and the window is 1576x950. Times are client time.
+at scale 2, and the window is 1576x950. Times count from the client's start, as
+`client.log` shows them.
 
 - Before the sleep, the client logged
   `core.geometry src=3152x1900 dst=0,0,1576,950 win=1576x950 scale=2.0000,2.0000`.

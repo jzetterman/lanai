@@ -351,34 +351,34 @@ Neither needs GPU acceleration.
       change no message's format. They change only three things: when the client sends
       the window-size message it already sends, that the pointer scale stays as it was
       across a restart of the Looking Glass host in Windows (the frame size and the
-      window set the scale, and a restart changes neither), and what the client logs.
-      The IDD stays the pinned build. The patches carry Looking Glass's license (GPL-2.0-or-later): its full text ships
+      window set the scale; a restart by itself changes neither, and a frame of a new
+      size recomputes it), and what the client logs. The IDD stays the pinned build. The
+      patches carry Looking Glass's license (GPL-2.0-or-later): its full text ships
       beside them, and the README and, where its format allows, the manifest say that
-      Lanai is MIT except those patches. Lanai can
-      tell whether the installed client was built with the current patches, including a
-      patch whose content changed.
+      Lanai is MIT except those patches. Lanai can tell whether the installed client was
+      built with the current patches, including a patch whose content changed.
     - An install whose client was built without the current patches keeps working with
       that client. The panel says that after the computer wakes from sleep, the mouse
       may reach only part of Windows, and that Windows may start at, or change to, the
       wrong size, until the user runs the one step that builds the fixed client, and
-      names the step. That build step changes nothing in Windows: no administrator prompt, no
-      Windows restart and no change to the Windows lock. The fixed client takes over
-      the next time the window opens, and the build step's last message says to close
-      and reopen the Windows window. When the scale task is also old, "Run setup again"
-      is the one step instead: it builds the client too, and its own restart of Windows
-      brings up the fixed client. Until then the bar and the panel start and show
-      Windows as before. When the client in use is an older pin's build (requirement 8),
-      requirement 8's update message is the one next step instead.
+      names the step. That build step changes nothing in Windows: no administrator
+      prompt, no Windows restart and no change to the Windows lock. The fixed client
+      takes over the next time the window opens, and the build step's last message says
+      to close and reopen the Windows window. When the scale task is also old, "Run
+      setup again" is the one step instead: it builds the client too, and its own
+      restart of Windows brings up the fixed client. Until then the bar and the panel
+      start and show Windows as before. When the client in use is an older pin's build
+      (requirement 8), requirement 8's update message is the one next step instead.
     - An install whose scale task was set up by a Lanai without the sign-in step above
-      (Lanai's setup record lacks its current mark) keeps working. The panel says that after
-      Windows starts, Windows may stay at its old size until the window is resized,
-      and names "Run setup again" as the one step, which turns the Windows lock off
-      again (requirement 7). "Run setup again" also builds the fixed client, so when
-      the client is old too, it replaces the build step, and the panel says what both
-      fix, the mouse after a wake included. When the live-scale upgrade message also applies (a scale task from a setup
-      run before live scale, above), the panel shows one message that names "Run setup
-      again" and what it fixes. Requirement 8's update message takes the place of this
-      message and the build step's when it applies.
+      (Lanai's setup record lacks its current mark) keeps working. The panel says that
+      after Windows starts, Windows may stay at its old size until the window is
+      resized, and names "Run setup again" as the one step, which turns the Windows lock
+      off again (requirement 7). "Run setup again" also builds the fixed client, so when
+      the client is old too, it replaces the build step, and the panel names what it
+      fixes, including the mouse after a wake. When the live-scale upgrade message also
+      applies (a scale task from a setup run before live scale, above), the panel shows
+      one message that names "Run setup again" and what it fixes. Requirement 8's update
+      message takes the place of this message and the build step's when it applies.
 13. Keyboard, mouse, clipboard (both ways) and audio output work in the Windows window.
 14. When Windows asks for a password (dockur normally signs in automatically), the user
     types the one they chose when `omarchy-windows-vm` installed Windows. Lanai never

@@ -8,13 +8,13 @@ the same size kept the scale at 1.0, so on a display at scale 2 the
 window mapped onto the top-left quarter of the guest until the next
 resize.
 
-The scale comes from the frame size and the window, and a restart
-changes neither. So the reset now runs only before the client has seen
-any frame.
+The scale comes from the frame size and the window. A restart by itself
+changes neither, and a frame of a new size recomputes the scale. So the
+reset now runs only before the client has seen any frame.
 
-- core.c: core_resetSession resets the scale only while haveSrcSize is
+- core.c: core_resetPointerScale resets the scale only while haveSrcSize is
   false. The first frame sets haveSrcSize, and nothing clears it.
-- main.c: lgInit calls core_resetSession in place of the three writes.
+- main.c: lgInit calls core_resetPointerScale in place of the three writes.
 - mouse_test.c: the restart-scale case sets a frame twice the window,
   then checks that a pointer move sends the right position before and
   after the reset, and that a reset before any frame still sets 1.0. It
@@ -29,17 +29,18 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 diff -Naur lg-pristine/client/src/core.c lg-working/client/src/core.c
 --- lg-pristine/client/src/core.c	2026-10-26 00:57:14.339499137 +0000
-+++ lg-working/client/src/core.c	2026-10-26 00:59:19.675717865 +0000
-@@ -556,6 +556,21 @@
++++ lg-working/client/src/core.c	2026-10-26 01:26:33.418990752 +0000
+@@ -556,6 +556,22 @@
    resize_window(&l_resize.state, width, height);
  }
  
 +/* Called by lgInit at the start of each session. The pointer scale comes
-+ * from the frame size and the window (core_updatePositionInfo), and a host
-+ * restart changes neither. A new session at the same frame size does not
-+ * recompute the scale, so a reset here would leave it at 1.0 and map the
-+ * window onto part of the guest. Reset it only before the first frame. */
-+void core_resetSession(void)
++ * from the frame size and the window (core_updatePositionInfo). A host
++ * restart by itself changes neither, and a frame of a new size recomputes
++ * the scale. A new session at the same frame size does not, so a reset here
++ * would leave it at 1.0 and map the window onto part of the guest. Reset it
++ * only before the first frame. */
++void core_resetPointerScale(void)
 +{
 +  if (!g_state.haveSrcSize)
 +  {
@@ -54,18 +55,18 @@ diff -Naur lg-pristine/client/src/core.c lg-working/client/src/core.c
    g_cursor.motionValid = false;
 diff -Naur lg-pristine/client/src/core.h lg-working/client/src/core.h
 --- lg-pristine/client/src/core.h	2026-10-26 00:57:14.339546476 +0000
-+++ lg-working/client/src/core.h	2026-10-26 00:58:58.695330681 +0000
++++ lg-working/client/src/core.h	2026-10-26 01:26:08.712445627 +0000
 @@ -37,6 +37,7 @@
  void core_resizeSession(void);
  void core_resizeFrame(unsigned width, unsigned height);
  void core_resizeUpdate(void);
-+void core_resetSession(void);
++void core_resetPointerScale(void);
  void core_updatePositionInfo(void);
  void core_alignToGuest(void);
  bool core_isValidPointerPos(int x, int y);
 diff -Naur lg-pristine/client/src/main.c lg-working/client/src/main.c
 --- lg-pristine/client/src/main.c	2026-10-26 00:57:14.339637606 +0000
-+++ lg-working/client/src/main.c	2026-10-26 00:58:58.695208953 +0000
++++ lg-working/client/src/main.c	2026-10-26 01:26:08.712492114 +0000
 @@ -180,9 +180,7 @@
    if (g_cursor.grab)
      core_setGrab(false);
@@ -73,7 +74,7 @@ diff -Naur lg-pristine/client/src/main.c lg-working/client/src/main.c
 -  g_cursor.useScale      = false;
 -  g_cursor.scale.x       = 1.0;
 -  g_cursor.scale.y       = 1.0;
-+  core_resetSession();
++  core_resetPointerScale();
    g_cursor.draw          = false;
    g_cursor.inView        = false;
    g_cursor.viewReq       = false;
@@ -90,7 +91,7 @@ diff -Naur lg-pristine/client/tests/CMakeLists.txt lg-working/client/tests/CMake
    add_test(NAME mouse-${name}
 diff -Naur lg-pristine/client/tests/mouse_test.c lg-working/client/tests/mouse_test.c
 --- lg-pristine/client/tests/mouse_test.c	2026-09-01 11:49:36.000000000 +0000
-+++ lg-working/client/tests/mouse_test.c	2026-10-26 00:59:08.131085619 +0000
++++ lg-working/client/tests/mouse_test.c	2026-10-26 01:26:08.712989815 +0000
 @@ -22,6 +22,7 @@
  #include "core.h"
  #include "input.h"
@@ -178,12 +179,12 @@ diff -Naur lg-pristine/client/tests/mouse_test.c lg-working/client/tests/mouse_t
 +  CHECK(g_cursor.useScale);
 +  checkScaledMove();
 +
-+  core_resetSession();
++  core_resetPointerScale();
 +  checkScaledMove();
 +  CHECK(g_cursor.useScale);
 +
 +  g_state.haveSrcSize = false;
-+  core_resetSession();
++  core_resetPointerScale();
 +  CHECK(!g_cursor.useScale);
 +  CHECK(near(g_cursor.scale.x, 1.0));
 +  CHECK(near(g_cursor.scale.y, 1.0));
