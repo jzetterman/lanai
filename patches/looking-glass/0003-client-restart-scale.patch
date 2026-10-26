@@ -1,0 +1,204 @@
+Subject: client: keep the pointer scale when the host restarts
+
+The Looking Glass host in the guest restarts, for example each time the
+computer wakes from sleep. On a restart, lgInit set the pointer scale
+back to 1.0. Only core_updatePositionInfo sets it again, and the frame
+path calls it only for a new frame size or rotation. A new session at
+the same size kept the scale at 1.0, so on a display at scale 2 the
+window mapped onto the top-left quarter of the guest until the next
+resize.
+
+The scale comes from the frame size and the window, and a restart
+changes neither. So the reset now runs only before the client has seen
+any frame.
+
+- core.c: core_resetSession resets the scale only while haveSrcSize is
+  false. The first frame sets haveSrcSize, and nothing clears it.
+- main.c: lgInit calls core_resetSession in place of the three writes.
+- mouse_test.c: the restart-scale case sets a frame twice the window,
+  then checks that a pointer move sends the right position before and
+  after the reset, and that a reset before any frame still sets 1.0. It
+  stubs the three calls that core_updatePositionInfo needs to link.
+- tests/CMakeLists.txt: registers the case.
+
+No message is added and no message's format changes.
+
+From Lanai, https://github.com/jzetterman/lanai
+Copyright (C) 2026 John Zetterman
+SPDX-License-Identifier: GPL-2.0-or-later
+
+diff -Naur lg-pristine/client/src/core.c lg-working/client/src/core.c
+--- lg-pristine/client/src/core.c	2026-10-26 00:57:14.339499137 +0000
++++ lg-working/client/src/core.c	2026-10-26 00:59:19.675717865 +0000
+@@ -556,6 +556,21 @@
+   resize_window(&l_resize.state, width, height);
+ }
+ 
++/* Called by lgInit at the start of each session. The pointer scale comes
++ * from the frame size and the window (core_updatePositionInfo), and a host
++ * restart changes neither. A new session at the same frame size does not
++ * recompute the scale, so a reset here would leave it at 1.0 and map the
++ * window onto part of the guest. Reset it only before the first frame. */
++void core_resetSession(void)
++{
++  if (!g_state.haveSrcSize)
++  {
++    g_cursor.useScale      = false;
++    g_cursor.scale.x       = 1.0;
++    g_cursor.scale.y       = 1.0;
++  }
++}
++
+ void core_updatePositionInfo(void)
+ {
+   g_cursor.motionValid = false;
+diff -Naur lg-pristine/client/src/core.h lg-working/client/src/core.h
+--- lg-pristine/client/src/core.h	2026-10-26 00:57:14.339546476 +0000
++++ lg-working/client/src/core.h	2026-10-26 00:58:58.695330681 +0000
+@@ -37,6 +37,7 @@
+ void core_resizeSession(void);
+ void core_resizeFrame(unsigned width, unsigned height);
+ void core_resizeUpdate(void);
++void core_resetSession(void);
+ void core_updatePositionInfo(void);
+ void core_alignToGuest(void);
+ bool core_isValidPointerPos(int x, int y);
+diff -Naur lg-pristine/client/src/main.c lg-working/client/src/main.c
+--- lg-pristine/client/src/main.c	2026-10-26 00:57:14.339637606 +0000
++++ lg-working/client/src/main.c	2026-10-26 00:58:58.695208953 +0000
+@@ -180,9 +180,7 @@
+   if (g_cursor.grab)
+     core_setGrab(false);
+ 
+-  g_cursor.useScale      = false;
+-  g_cursor.scale.x       = 1.0;
+-  g_cursor.scale.y       = 1.0;
++  core_resetSession();
+   g_cursor.draw          = false;
+   g_cursor.inView        = false;
+   g_cursor.viewReq       = false;
+diff -Naur lg-pristine/client/tests/CMakeLists.txt lg-working/client/tests/CMakeLists.txt
+--- lg-pristine/client/tests/CMakeLists.txt	2026-10-26 00:57:14.339745278 +0000
++++ lg-working/client/tests/CMakeLists.txt	2026-10-26 00:58:32.203529902 +0000
+@@ -364,6 +364,7 @@
+   edges
+   scales
+   border-exit
++  restart-scale
+ )
+ foreach(name IN LISTS MOUSE_CASES)
+   add_test(NAME mouse-${name}
+diff -Naur lg-pristine/client/tests/mouse_test.c lg-working/client/tests/mouse_test.c
+--- lg-pristine/client/tests/mouse_test.c	2026-09-01 11:49:36.000000000 +0000
++++ lg-working/client/tests/mouse_test.c	2026-10-26 00:59:08.131085619 +0000
+@@ -22,6 +22,7 @@
+ #include "core.h"
+ #include "input.h"
+ #include "main.h"
++#include "message.h"
+ #include "test.h"
+ #include "util.h"
+ 
+@@ -73,6 +74,9 @@
+   bool                  keyboardGrabbed;
+   struct Ev             ev[256];
+   unsigned int          count;
++  unsigned int          positions;
++  uint32_t              posX;
++  uint32_t              posY;
+ }
+ m;
+ 
+@@ -293,6 +297,24 @@
+   return false;
+ }
+ 
++void lgMessage_post(const LGMsg * msg)
++{
++  (void)msg;
++}
++
++void app_handleMouseRelative(double normx, double normy,
++    double rawx, double rawy)
++{
++  (void)normx;
++  (void)normy;
++  (void)rawx;
++  (void)rawy;
++}
++
++void app_updateMouseState(void)
++{
++}
++
+ static bool inputSupports(void * opaque, LG_InputSupport support)
+ {
+   return support == LG_INPUT_SUPPORT_MOUSE_ABSOLUTE &&
+@@ -317,10 +339,11 @@
+     uint32_t width, uint32_t height)
+ {
+   (void)opaque;
+-  (void)x;
+-  (void)y;
+   (void)width;
+   (void)height;
++  ++m.positions;
++  m.posX = x;
++  m.posY = y;
+   return true;
+ }
+ 
+@@ -1080,6 +1103,45 @@
+   }
+ }
+ 
++// Moves the local pointer to (700,400) and checks that the guest gets the
++// position at twice that: the frame is twice the window in each direction.
++static void checkScaledMove(void)
++{
++  m.positions = 0;
++  core_handleMousePosition(700, 400);
++  CHECK(m.positions == 1);
++  CHECK(m.posX == 1400);
++  CHECK(m.posY == 800);
++}
++
++// A host restart keeps the pointer scale that the frame size and the window
++// set; only a reset before the first frame goes back to 1.0.
++static void testRestartScale(void)
++{
++  bool absolute = true;
++  lgInput_setFallback(&inputOps, &absolute);
++  reset();
++  g_state.windowW = 1576;
++  g_state.windowH = 950;
++  g_state.srcSize = (struct Point) { 3152, 1900 };
++
++  core_updatePositionInfo();
++  CHECK(g_cursor.useScale);
++  checkScaledMove();
++
++  core_resetSession();
++  checkScaledMove();
++  CHECK(g_cursor.useScale);
++
++  g_state.haveSrcSize = false;
++  core_resetSession();
++  CHECK(!g_cursor.useScale);
++  CHECK(near(g_cursor.scale.x, 1.0));
++  CHECK(near(g_cursor.scale.y, 1.0));
++
++  lgInput_setFallback(&inputOps, NULL);
++}
++
+ struct Test
+ {
+   const char * name;
+@@ -1106,6 +1168,7 @@
+   { "edges"           , testEdges        },
+   { "scales"          , testScales       },
+   { "border-exit"     , testBorderExit   },
++  { "restart-scale"   , testRestartScale },
+ };
+ 
+ int main(int argc, char ** argv)
