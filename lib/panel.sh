@@ -251,8 +251,8 @@ cmd_panel() {
     [[ $stop_inv == "$inv" && $stop_at =~ ^[0-9]+$ ]]; then stop_requested=true; fi
   # A finished install whose client is the pinned build without Lanai's
   # current patches (req 12): it keeps working, and the panel names the one
-  # step that brings the resize fix. An older pin's build in use is req 8's
-  # driver update instead, so it never counts here.
+  # step that brings the mouse and resize fixes. An older pin's build in use
+  # is req 8's driver update instead, so it never counts here.
   if jq -e '.finished' <<<"$plan" >/dev/null && build_stamp_current && ! build_patches_current &&
     [[ -z $(guest_version_behind) ]]; then client_old=true; fi
   # A finished install whose scale task lacks the sign-in step (req 12):
@@ -517,19 +517,21 @@ cmd_panel() {
          else "Check the Windows window log, then shut down and continue setup." end) else empty end,
       if $st.state != "version-mismatch" and ($facts | contains("LanaiDriverOld=")) then "The Windows display driver needs an update. Shut down and continue setup." else empty end,
       # The resize warning (req 12): with the sign-in step present, an old
-      # client gets the update button. Without the step, Run setup again
-      # is the one step: one message says what it fixes (the size, from
-      # the missing step and an old client, and scale saves with the old
-      # task) and the lock.
+      # client gets the update button, and its message names the mouse and
+      # size fixes. Without the step, Run setup again is the one step: one
+      # message says what it fixes (the mouse after a wake, from an old
+      # client; the size, from the missing step or an old client; scale
+      # saves, with the old task) and the lock.
       if $signinMissing then
-        ([if $clientOld then "Windows may start at the wrong size and stay there until you resize the window, and it may change to the wrong size while it runs."
+        ([if $clientOld then "After the computer wakes from sleep, the mouse may reach only part of Windows.",
+            "Windows may start at the wrong size and stay there until you resize the window, and it may change to the wrong size while it runs."
           else "After Windows starts, it may stay at its old size until you resize the window." end,
           if $task == "old" then "Scale saves apply only the next time Windows starts." else empty end]) as $fixes |
-        ($fixes + ["To fix " + ({"1":"this","2":"both"}[$fixes | length | tostring]) + ", " +
+        ($fixes + ["To fix " + ({"1":"this","2":"both","3":"all three"}[$fixes | length | tostring]) + ", " +
           (if $off then "click Run setup again in More actions." else "shut Windows down and click Run setup again in More actions." end),
           "Running setup again also turns the Windows lock off again."] | join(" "))
       elif $updateShown then
-        "Windows may start at, or change to, the wrong size until you click Update the Windows window in More actions. Updating changes nothing in Windows."
+        "After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size. To fix both, click Update the Windows window in More actions. Updating changes nothing in Windows."
       else empty end
     ] | join(" ")) |
     # Presentation follows the existing decisions and never widens an offer.
