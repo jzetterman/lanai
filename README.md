@@ -315,18 +315,18 @@ monitor. Lanai asks a few times, so the screen may flicker or Windows may show a
 notice, and then stops. In both cases Windows keeps its last size and the picture
 is scaled to fit the window. Resize the window or leave fullscreen to fix it.
 
-Installs set up with an earlier version of Lanai keep working, but Windows may
-not match the window. The panel says what may go wrong and names one step. When
-only the Windows window needs an update, Windows may start at, or change to, the
-wrong size until you click **Update the Windows window**. It takes several
-minutes, works whether Windows runs or not, and changes nothing in Windows. When
-it finishes, close the Windows window and open it again. If the update fails, the
-panel points to the Windows window build log. When the scale task in Windows was
-set up without the sign-in step, Windows may stay at its old size after it
-starts, until you resize the window. Then the panel names **Run setup again**
-instead. It updates the Windows window too, turns the Windows lock off again, and
-restarts Windows as setup always does. If setup cannot update the window, the
-panel points to the same build log.
+Installs set up with an earlier version of Lanai keep working, but Windows may not
+match the window, and after the computer wakes from sleep, the mouse may reach
+only part of Windows. The panel says what may go wrong and names one step. When
+only the Windows window needs an update, these last until you click **Update the
+Windows window**. It takes several minutes, works whether Windows runs or not, and
+changes nothing in Windows. When it finishes, close the Windows window and open it
+again. If the update fails, the panel points to the Windows window build log. When
+the scale task in Windows was set up without the sign-in step, Windows may stay at
+its old size after it starts, until you resize the window. Then the panel names
+**Run setup again** instead. It updates the Windows window too, turns the Windows
+lock off again, and restarts Windows as setup always does. If setup cannot update
+the window, the panel points to the same build log.
 
 Windows' display scale changes while Windows runs, without a restart or sign-out.
 “Match my monitor” uses the Windows step nearest the scale of the monitor the

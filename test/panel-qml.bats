@@ -2165,7 +2165,7 @@ TestCase {
   function test_update_button_runs_build_client_as_a_long_job_with_its_result_and_log() {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)
-    var warning = 'Windows may start at, or change to, the wrong size until you click Update the Windows window. Updating changes nothing in Windows.'
+    var warning = 'After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size. To fix both, click Update the Windows window in More actions. Updating changes nothing in Windows.'
     var done = 'The Windows window is updated. If the Windows window is open, close it and open it again.'
     function view(enable) {
       return {warning:warning,buttons:{update_client:{show:true,enable:enable,label:'Update the Windows window'}},

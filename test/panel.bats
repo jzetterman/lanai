@@ -2582,7 +2582,8 @@ exec /usr/bin/python3 "$@"'
 # --- the resize upgrade: a client built without the current patches, or a
 # scale task without the sign-in step (req 12) ---
 
-RESIZE_NEW='Windows may start at, or change to, the wrong size until you click Update the Windows window in More actions. Updating changes nothing in Windows.'
+RESIZE_NEW='After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size. To fix both, click Update the Windows window in More actions. Updating changes nothing in Windows.'
+MOUSE='After the computer wakes from sleep, the mouse may reach only part of Windows.'
 BOTH='Windows may start at the wrong size and stay there until you resize the window, and it may change to the wrong size while it runs.'
 SIGNIN='After Windows starts, it may stay at its old size until you resize the window.'
 SCALE='Scale saves apply only the next time Windows starts.'
@@ -2639,11 +2640,11 @@ assert_rerun_warning() {
     "$SIGNIN To fix this, shut Windows down and click Run setup again in More actions. $LOCK"
 }
 
-@test "panel resize: an old client without the sign-in step names only Run setup again, in one sentence for both" {
+@test "panel resize: an old client without the sign-in step names only Run setup again, for the mouse and the size" {
   state '{"done":true,"scale_task":2}'
   build_patches_current() { return 1; }
-  assert_rerun_warning "$BOTH To fix this, click Run setup again in More actions. $LOCK" \
-    "$BOTH To fix this, shut Windows down and click Run setup again in More actions. $LOCK"
+  assert_rerun_warning "$MOUSE $BOTH To fix both, click Run setup again in More actions. $LOCK" \
+    "$MOUSE $BOTH To fix both, shut Windows down and click Run setup again in More actions. $LOCK"
 }
 
 @test "panel resize: the old scale task names Run setup again once, with the scale fix, and keeps the save words" {
@@ -2658,8 +2659,8 @@ assert_rerun_warning() {
   assert_equal "$(jq -r .result.settings <<<"$output")" "Saved. Windows uses the saved scale the next time it starts. $oldtask"
   # With an old client too: one message.
   build_patches_current() { return 1; }
-  assert_rerun_warning "$BOTH $SCALE To fix both, click Run setup again in More actions. $LOCK" \
-    "$BOTH $SCALE To fix both, shut Windows down and click Run setup again in More actions. $LOCK"
+  assert_rerun_warning "$MOUSE $BOTH $SCALE To fix all three, click Run setup again in More actions. $LOCK" \
+    "$MOUSE $BOTH $SCALE To fix all three, shut Windows down and click Run setup again in More actions. $LOCK"
 }
 
 @test "panel resize: the live task's save words are the same with and without the sign-in step" {
