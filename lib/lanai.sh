@@ -8,7 +8,7 @@
 # shellcheck shell=bash
 
 # Keep in step with manifest.json (a test checks).
-LANAI_VERSION=0.3.1
+LANAI_VERSION=0.3.2
 
 # This file's folder. The VM and copy helpers live beside it.
 LANAI_LIB=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
