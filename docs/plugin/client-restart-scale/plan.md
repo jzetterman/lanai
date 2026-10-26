@@ -219,3 +219,4 @@ Diff gate (the branch against `main`):
 | --- | ---: | ---: | ---: | ---: | --- |
 | a (gpt-6.1-sol) | 1 | 0 | 0 | 0 | Clean. |
 | b single (opus-5.5) | 1 | 8 | 1 | 0 | Eight nits, a nits-only stop. Seven integrated: the README's repeated mouse sentence and its one-fix "with the mouse fix", the spec's dangling phrase and long lines, "a restart by itself changes neither" in the spec and the patch, the proofs heading's timezone and wording, and `core_resetSession` renamed `core_resetPointerScale`. Refuted: the test's order of `lgInput_setFallback` and `reset()` matches upstream's own auto-capture case (`mouse_test.c:609-611`). |
+| a (gpt-6.1-sol) | 2 | 0 | 0 | 0 | Clean on the final diff. The diff gate is closed. |
