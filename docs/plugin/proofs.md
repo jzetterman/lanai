@@ -1551,6 +1551,29 @@ dragged the window. Times are EDT.
 - Still to run: John's hand check on the shipped build (the client-warp doc's
   Acceptance section).
 
+## Pointer scale after a host restart (2026-10-25)
+
+A trace on John's XPS, with `mouseTrace=yes` in `client.ini`, on the pinned
+client (B7-826-236efcb1) with patches 0001 and 0002. After the laptop woke from
+sleep, the mouse reached only the top-left quarter of Windows until a resize
+(docs/plugin/client-restart-scale/plan.md). The XPS panel is eDP-1, 3200x2000
+at scale 2, and the window is 1576x950. Times are client time.
+
+- Before the sleep, the client logged
+  `core.geometry src=3152x1900 dst=0,0,1576,950 win=1576x950 scale=2.0000,2.0000`.
+- The wake restarted the Looking Glass host in Windows at 00:00:23: the client
+  logged `Waiting for the host to restart...`, then a new `Starting session`.
+  The new session's frames were 3152x1900 again, and no `core.geometry` line
+  followed.
+- After it, the client logged `core.absolute local=1314.816,588.609
+  guest=1315,589 size=3152x1900`. It sent the window position unscaled; at
+  scale 2 the right position was 2630,1177.
+- Cause: on a host restart, `lgInit` set the pointer scale to 1.0, and only a
+  new frame size, rotation or window size sets it again. Patch 0003 keeps the
+  scale across a restart.
+- Still to run: John's hand check on the shipped build (the client-restart-scale
+  doc's Acceptance section).
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with
