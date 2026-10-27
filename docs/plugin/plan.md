@@ -2182,6 +2182,24 @@ spec, plan and review gates before it is built.
   appears and the scale change seconds later. John's call (2026-10-17): on
   hold, not a major issue.
 
+- **Rebuild the client by itself after a plugin update.** John's calls
+  (2026-10-25): `omarchy plugin update` runs no plugin step (it pulls, validates
+  and rescans), so Lanai acts when the panel reloads. It sees that the client's
+  patch hash no longer matches and starts the rebuild in the background, with no
+  click. When the Windows window is open, the panel says to close and open it
+  again; Lanai never reopens it by itself. Patch 0003 shipped first, with the
+  update button (v0.3.2).
+- **Show VM updates in Windows, and cut the panel's status text.** John's call
+  (2026-10-26): when Lanai updates something for Windows, show it the way Windows
+  does, with an installer-style window in Windows that says what is happening.
+  In the panel, replace the wall of status messages: it is hard to tell which are
+  new and which were always there. At most, the panel shows an action button when
+  Windows needs an update, or a status with a spinner while something happens to
+  the VM. Open design questions for its spec: which work can show in Windows (the
+  client rebuild runs on Linux, and Windows may be off), how Lanai would drive a
+  window in Windows (requirement 27's trust limits apply), and which panel
+  messages still need words.
+
 ## Follow-on: live scale (John, 2026-10-10)
 
 This implements the spec amendment of 2026-10-10: reqs 2, 4, 6, 7, 9, 12 and 27,

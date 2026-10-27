@@ -1572,8 +1572,15 @@ at scale 2, and the window is 1576x950. Times count from the client's start, as
 - Cause: on a host restart, `lgInit` set the pointer scale to 1.0, and only a
   new frame size, rotation or window size sets it again. Patch 0003 keeps the
   scale across a restart.
-- Still to run: John's hand check on the shipped build (the client-restart-scale
-  doc's Acceptance section).
+- John's hand check passed on v0.3.2 (2026-10-25, EDT), on the XPS with the
+  updated client and the trace on. He opened the window, the laptop slept, and it
+  woke. Windows did not restart. The client logged the wake's host restart
+  (`Waiting for the host to restart...` at 00:00:09.9, a new `Starting session` at
+  00:00:10.25). Its times stop while the computer sleeps (`CLOCK_MONOTONIC`), so
+  the wake shows 10 seconds after the window opened. At 00:01:04 it logged
+  `core.absolute local=1206.242,553.242 guest=2412,1106 size=3152x1900`: the scale
+  stayed 2 across the restart. No `core.geometry` line came between the restart
+  and those lines (the first is at 00:01:18), so no resize did the work.
 
 ## After the proofs
 
