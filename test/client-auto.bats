@@ -823,6 +823,12 @@ touch "$1"; exec sleep 30' _ "$T/held-cli" "$S/image-progress.json" 3>&- &
   run cmd_panel
   assert_equal "$(view .auto_update.key)" "$(patches_id):1"
   assert_equal "$(view .warning)" "$W_WAIT"
+  # Another automatic unit runs (a second bar item's worker waiting): the
+  # dead try still reads as a stop, since liveness is per token.
+  echo auto-new >"$T/units-list"
+  run cmd_panel
+  assert_equal "$(view .auto_update.key)" "$(patches_id):1"
+  assert_equal "$(view .warning)" "$W_WAIT"
 }
 
 @test "view: a stop with a try left shows no failure and asks again" {
