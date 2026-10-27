@@ -768,6 +768,22 @@ patch_fixture() {
   assert_equal "$(patches_id)" "$second"
 }
 
+@test "client_exe: names the running binary's file and path, also once it is deleted" {
+  local bin=$T/looking-glass-client id pid
+  cp /usr/bin/sleep "$bin"
+  "$bin" 30 3>&- &
+  pid=$!
+  BG_PIDS+=("$pid")
+  id=$(stat -c %d:%i "$bin")
+  run client_exe "$pid"
+  assert_success
+  assert_output "$id $bin"
+  rm "$bin"
+  run client_exe "$pid"
+  assert_success
+  assert_output "$id $bin (deleted)"
+}
+
 @test "build_patches_current: requires a binary and a current patch id file" {
   LANAI_PATCHES=$T/patches
   mkdir -p "$LANAI_PATCHES"
