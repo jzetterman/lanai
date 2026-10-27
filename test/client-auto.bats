@@ -125,6 +125,13 @@ auto_stubs() {
     setsid bash -c '"$@"; echo "$?" >"$T/rc-$0"' "$token" "${cmd[@]}" \
       </dev/null >"$T/out-$token" 2>"$T/err-$token" 3>&- &
     echo "$!" >"$T/units/$token"
+    # Return once setsid has made the group, as systemd-run returns once
+    # the unit runs; before that, a wait on the group would end at once.
+    local i
+    for ((i = 0; i < 100; i++)); do
+      kill -0 -- "-$!" 2>/dev/null && break
+      sleep 0.05
+    done
   }
 }
 
