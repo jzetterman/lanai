@@ -500,3 +500,443 @@ touch "$1"; exec sleep 2' _ "$T/held" "$S/image-progress.json" 3>&- & ;;
   assert_output --regexp '^auto-[ab]$'
   assert_equal "$(jq -r .reply.ok "$S/panel-result-client.json")" true
 }
+
+# --- Phase C: the view ---
+
+W_WAIT='After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size. When the current job ends, Lanai updates the Windows window to fix both. Updating changes nothing in Windows.'
+W_RUN='Lanai is updating the Windows window. This can take several minutes. It changes nothing in Windows. You can start and use Windows while it runs.'
+W_REOPEN='The Windows window is updated. To use the update, close the Windows window and open it again.'
+RESIZE_NEW='After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size. To fix both, click Update the Windows window in More actions. Updating changes nothing in Windows.'
+AUTO_FAILED='Lanai could not update the Windows window by itself. The Windows window build log (build-client.log) or the Jobs log says why.'
+AUTO_LAUNCH='Lanai could not start its update of the Windows window. The Jobs log says why.'
+AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it finished, for example at a logout or restart."
+
+# The view's tests list the automatic units from $T/units-list.
+view_setup() { auto_units() { cat "$T/units-list" 2>/dev/null || true; }; }
+
+# Print field <filter> of the last view.
+view() { jq -r "$1" <<<"$output"; }
+
+# Every text a person reads in the view, except hidden buttons' labels.
+view_words() { jq -r '[.warning, .busy.line, .cause, .next, .headline, (.result | .[]), (.setup.lines[]?)] | join("\n")' <<<"$output"; }
+
+# Hold lock <name> in the background: hold <name> [exclusive|shared].
+hold() {
+  local mode=()
+  [[ ${2:-exclusive} == exclusive ]] || mode=(-s)
+  rm -f "$T/held-$1"
+  flock "${mode[@]}" "$S/$1" bash -c 'touch "$1"; exec sleep 30' _ "$T/held-$1" 3>&- &
+  BG_PIDS+=("$!")
+  wait_for_file "$T/held-$1"
+}
+
+# A command-line snapshot: the operation lock held, its progress written.
+cli_snapshot() {
+  rm -f "$T/held-cli"
+  flock "$S/lock" bash -c 'jq -nc --argjson p "$$" '\''{operation:"snapshot",phase:"cloning",done:0,total:0,pid:$p}'\'' >"$2"
+touch "$1"; exec sleep 30' _ "$T/held-cli" "$S/image-progress.json" 3>&- &
+  BG_PIDS+=("$!")
+  wait_for_file "$T/held-cli"
+}
+
+@test "view: an old client asks for an update, with Windows stopped and running" {
+  local st
+  view_setup
+  for st in inactive active; do
+    echo "$st" >"$T/st"
+    run cmd_panel
+    assert_success
+    assert_equal "$(view .auto_update.launch)" true
+    assert_equal "$(view .auto_update.key)" "$(patches_id):0"
+    assert_equal "$(view .warning)" "$W_RUN"
+    assert_equal "$(view .bar.mode)" busy
+    assert_equal "$(view .busy.line)" ''
+    assert_equal "$(view .result.client)" ''
+    assert_equal "$(view .buttons.update_client.show)" false
+    run view_words
+    refute_output --partial 'Update the Windows window'
+    refute_output --partial 'when it finishes'
+  done
+}
+
+@test "view: no ask in each case of requirement 2" {
+  local case
+  view_setup
+  for case in signin old-task unfinished no-client pin-change behind current over session; do
+    state "$CURRENT"
+    rm -f "$T/current" "$T/no-stamp" "$T/behind" "$T/session" "$S/client-auto.json"
+    case $case in
+      signin) state '{"done":true,"scale_task":2}' ;;
+      old-task) state '{"done":true}' ;;
+      unfinished) state '{"snapshot":"declined"}' ;;
+      no-client | pin-change) state '{"snapshot":"declined"}'; touch "$T/no-stamp" ;;
+      behind) echo B7-801-g1a2b3c4d5e >"$T/behind" ;;
+      current) touch "$T/current" ;;
+      over) record "$(patches_id)" '[{"token":"auto-old","at":1,"outcome":"failed"}]' ;;
+      session) echo inactive >"$T/session" ;;
+    esac
+    run cmd_panel
+    assert_success
+    assert_equal "$(view .auto_update.launch)" false
+    case $case in
+      signin | old-task)
+        run view .warning
+        assert_output --partial 'Run setup again'
+        ;;
+    esac
+  done
+}
+
+@test "view: a job, a client build or a command-line snapshot makes it wait" {
+  view_setup
+  panel_result_write snapshots '{"token":"t","command":"snapshot","args":[],"started":5}'
+  hold panel-job.lock
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view .warning)" "$W_WAIT"
+  run view_words
+  refute_output --partial 'Update the Windows window'
+  stop_bg
+  rm "$S/panel-result-snapshots.json"
+  hold build.lock
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view .warning)" "$W_WAIT"
+  stop_bg
+  cli_snapshot
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view .warning)" "$W_WAIT"
+  assert_equal "$(view .progress.operation)" snapshot
+  stop_bg
+  run cmd_panel --pending panel-x "$EPOCHSECONDS"
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view .warning)" "$W_WAIT"
+  # The hold ends: the view asks.
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" true
+  assert_equal "$(view .warning)" "$W_RUN"
+}
+
+@test "view: a launch in flight is not launched again" {
+  view_setup
+  echo auto-x >"$T/units-list"
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view .warning)" "$W_RUN"
+  assert_equal "$(view .bar.mode)" busy
+  # Its unit ended before it counted a try: ask again, with the same key.
+  : >"$T/units-list"
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" true
+  assert_equal "$(view .auto_update.key)" "$(patches_id):0"
+  assert_equal "$(view .bar.mode)" busy
+}
+
+@test "view: a running update shows busy, W_RUN, and Start and Open" {
+  view_setup
+  record "$(patches_id)" '[{"token":"auto-r","at":1,"outcome":null}]'
+  echo auto-r >"$T/units-list"
+  panel_result_write client '{"token":"auto-r","command":"build-client","args":["--auto"],"invocation":"inv","started":2}'
+  hold panel-job.lock
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_RUN"
+  assert_equal "$(view .bar.mode)" busy
+  assert_equal "$(view .busy.line)" ''
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view '.buttons.start.show and .buttons.start.enable')" true
+  assert_equal "$(view .right_click)" start
+  assert_equal "$(view .buttons.update_client.show)" false
+  # Windows running, with no window open.
+  eval "$(declare -f status_facts | sed '1s/status_facts/real_status_facts/')"
+  status_facts() {
+    if [[ $(<"$T/st") == active ]]; then printf 'ActiveState=active\nLanaiSetup=done\nLanaiQmp=running\nLanaiQga=open\n'
+    else real_status_facts "$@"; fi
+  }
+  echo active >"$T/st"
+  run cmd_panel
+  assert_equal "$(view .state)" running
+  assert_equal "$(view '.buttons.open.show and .buttons.open.enable')" true
+  assert_equal "$(view .right_click)" open
+  # With a command-line snapshot's progress too: both show.
+  cli_snapshot
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_RUN"
+  assert_equal "$(view .progress.operation)" snapshot
+  stop_bg
+  # The launching check: nothing held, no entry.
+  echo inactive >"$T/st"
+  rm "$S/client-auto.json" "$S/panel-result-client.json"
+  : >"$T/units-list"
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_RUN"
+  assert_equal "$(view .bar.mode)" busy
+  assert_equal "$(view '.buttons.start.show and .buttons.start.enable')" true
+  assert_equal "$(view .right_click)" start
+  # A hand update after the tries end.
+  record "$(patches_id)" '[{"token":"auto-old","at":1,"outcome":"failed"}]'
+  panel_result_write client '{"token":"panel-h","command":"build-client","args":[],"invocation":"inv","started":2}'
+  hold panel-job.lock
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_RUN"
+  assert_equal "$(view '.buttons.start.show and .buttons.start.enable')" true
+  assert_equal "$(view .right_click)" start
+  assert_equal "$(view '[.buttons.update_client.show, .buttons.update_client.enable] | tostring')" '[true,false]'
+}
+
+@test "view: a worker that decides counts as launching" {
+  view_setup
+  hold panel-job.lock
+  hold build.lock
+  echo auto-new >"$T/units-list"
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_RUN"
+  assert_equal "$(view .busy.line)" ''
+  assert_equal "$(view '.buttons.start.show and .buttons.start.enable')" true
+  # The start of a second try: the first try's client record is stale.
+  record "$(patches_id)" '[{"token":"auto-old","at":1,"outcome":null}]'
+  panel_result_write client '{"token":"auto-old","command":"build-client","args":["--auto"],"invocation":"inv","started":2}'
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_RUN"
+  assert_equal "$(view .busy.line)" ''
+  assert_equal "$(view '.buttons.start.show and .buttons.start.enable')" true
+  # The same locks with no automatic unit: a hold.
+  : >"$T/units-list"
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_WAIT"
+}
+
+@test "view: a terminal build after the tries end counts as an update by hand" {
+  view_setup
+  record "$(patches_id)" '[{"token":"auto-old","at":1,"outcome":"failed"}]'
+  hold build.lock
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_RUN"
+  assert_equal "$(view .bar.mode)" busy
+  assert_equal "$(view .busy.line)" ''
+  assert_equal "$(view .result.client)" ''
+}
+
+@test "view: a terminal build is a hold while tries are left, and nothing outside the update case" {
+  view_setup
+  hold build.lock
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_WAIT"
+  # A quick-path lanai build-client on a current client, or a command-line
+  # setup at step 4.
+  touch "$T/current"
+  run cmd_panel
+  assert_equal "$(view .warning)" ''
+  [[ $(view .bar.mode) != busy ]] || fail "a quick-path build shows busy"
+  rm "$T/current"
+  state '{"snapshot":"declined"}'
+  run cmd_panel
+  [[ $(view .bar.mode) != busy ]] || fail "a command-line setup's build shows busy"
+  run view_words
+  refute_output --partial "$W_RUN"
+  refute_output --partial "$W_WAIT"
+}
+
+@test "view: a successful second try never shows stopped" {
+  view_setup
+  record "$(patches_id)" '[{"token":"auto-a","at":1,"outcome":null}]'
+  # The try ends right after the view lists its unit.
+  auto_units() {
+    echo auto-a
+    record "$(patches_id)" '[{"token":"auto-a","at":1,"outcome":"ok"}]'
+    touch "$T/current"
+  }
+  run cmd_panel
+  assert_equal "$(view .layout)" daily
+  [[ $(view .bar.mode) != failed ]] || fail "the view shows a failure"
+  assert_equal "$(view .result.client)" ''
+  run view_words
+  refute_output --partial 'Windows window'
+  # An ok last try while the client is still old, with the tries over: the
+  # failed kind.
+  view_setup
+  rm "$T/current"
+  record "$(patches_id)" '[{"token":"auto-a","at":1,"outcome":null},{"token":"auto-b","at":2,"outcome":"ok"}]'
+  run cmd_panel
+  assert_equal "$(view .result.client)" "$AUTO_FAILED"
+}
+
+@test "view: another job's lock never makes a dead try look running" {
+  view_setup
+  record "$(patches_id)" '[{"token":"auto-a","at":1,"outcome":null}]'
+  panel_result_write snapshots '{"token":"t","command":"snapshot","args":[],"started":5}'
+  hold panel-job.lock
+  run cmd_panel
+  assert_equal "$(view .auto_update.key)" "$(patches_id):1"
+  assert_equal "$(view .warning)" "$W_WAIT"
+}
+
+@test "view: a stop with a try left shows no failure and asks again" {
+  view_setup
+  record "$(patches_id)" '[{"token":"auto-a","at":1,"outcome":null}]'
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" true
+  assert_equal "$(view .auto_update.key)" "$(patches_id):1"
+  assert_equal "$(view .warning)" "$W_RUN"
+  assert_equal "$(view .result.client)" ''
+  assert_equal "$(view .bar.mode)" busy
+  assert_equal "$(view .layout)" daily
+}
+
+# Check the failed state after the tries end, with words <words>.
+assert_auto_failed() {
+  run cmd_panel
+  assert_success
+  assert_equal "$(view .bar.mode)" failed
+  assert_equal "$(view .layout)" failed
+  assert_equal "$(view .result.client)" "$1"
+  assert_equal "$(view .warning)" "$RESIZE_NEW"
+  assert_equal "$(view '[.buttons.update_client.show, .buttons.update_client.enable] | tostring')" '[true,true]'
+  assert_equal "$(view .auto_update.launch)" false
+}
+
+@test "view: after the tries end, every bar item fails until a hand update or a current client" {
+  local tries words
+  view_setup
+  for tries in '[{"token":"auto-a","at":1,"outcome":"failed"}]' \
+    '[{"token":"auto-a","at":1,"outcome":"launch"}]' \
+    '[{"token":"auto-a","at":1,"outcome":null},{"token":"auto-b","at":2,"outcome":null}]'; do
+    case $tries in
+      *failed*) words=$AUTO_FAILED ;;
+      *launch*) words=$AUTO_LAUNCH ;;
+      *) words=$AUTO_STOPPED ;;
+    esac
+    echo inactive >"$T/st"
+    echo inv >"$T/inv"
+    record "$(patches_id)" "$tries"
+    panel_result_write client '{"token":"auto-a","command":"build-client","args":["--auto"],"invocation":"inv","started":1.5,"ended":3,"reply":{"ok":false}}'
+    assert_auto_failed "$words"
+    # A reload, Windows started, a reboot, and no client record.
+    assert_auto_failed "$words"
+    echo active >"$T/st"
+    echo inv2 >"$T/inv"
+    assert_auto_failed "$words"
+    rm -rf "$RUN"
+    mkdir -m 700 "$RUN"
+    assert_auto_failed "$words"
+    rm "$S/panel-result-client.json"
+    assert_auto_failed "$words"
+  done
+  # A hand update started after the last try, running: no failure.
+  echo inactive >"$T/st"
+  panel_result_write client '{"token":"panel-h","command":"build-client","args":[],"invocation":"inv2","started":5}'
+  hold panel-job.lock
+  run cmd_panel
+  [[ $(view .bar.mode) != failed ]] || fail "a hand update still shows the failure"
+  assert_equal "$(view .warning)" "$W_RUN"
+  stop_bg
+  # The same record failed: today's hand words.
+  panel_result_write client '{"token":"panel-h","command":"build-client","args":[],"invocation":"inv2","started":5,"ended":6,"reply":{"ok":false}}'
+  run cmd_panel
+  assert_equal "$(view .result.client)" 'The Windows window could not be updated. Check the Windows window build log (build-client.log), then try again.'
+  # A hand record from before the tries does not end the failure state.
+  panel_result_write client '{"token":"panel-h","command":"build-client","args":[],"invocation":"inv2","started":0.5,"ended":0.7,"reply":{"ok":false}}'
+  assert_auto_failed "$AUTO_STOPPED"
+  # A current client ends it.
+  touch "$T/current"
+  run cmd_panel
+  [[ $(view .bar.mode) != failed ]] || fail "a current client still shows the failure"
+  assert_equal "$(view .buttons.update_client.show)" false
+  assert_equal "$(view .result.client)" ''
+  assert_equal "$(view .warning)" ''
+}
+
+@test "view: a failed try stopped at its end shows failed, not stopped" {
+  view_setup
+  record "$(patches_id)" '[{"token":"auto-a","at":1,"outcome":"failed"}]'
+  panel_result_write client '{"token":"auto-a","command":"build-client","args":["--auto"],"invocation":"inv","started":2}'
+  run cmd_panel
+  assert_equal "$(view .result.client)" "$AUTO_FAILED"
+}
+
+@test "view: the button starts an update by hand after the tries end" {
+  view_setup
+  record "$(patches_id)" '[{"token":"auto-a","at":1,"outcome":"failed"}]'
+  run cmd_panel
+  assert_equal "$(view .buttons.update_client.enable)" true
+}
+
+@test "view: a cut-off try that installed the client shows neither failure nor button" {
+  view_setup
+  record "$(patches_id)" '[{"token":"auto-a","at":1,"outcome":null}]'
+  touch "$T/current"
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  [[ $(view .bar.mode) != failed ]] || fail "the view shows a failure"
+  assert_equal "$(view .buttons.update_client.show)" false
+  assert_equal "$(view .result.client)" ''
+}
+
+@test "view: a changed patch set asks again" {
+  view_setup
+  record older '[{"token":"auto-a","at":1,"outcome":"failed"}]'
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" true
+  assert_equal "$(view .auto_update.key)" "$(patches_id):0"
+  [[ $(view .bar.mode) != failed ]] || fail "the view shows a failure"
+}
+
+@test "view: two bar items' launches show no failure" {
+  touch "$T/slow"
+  run cmd_ui_job auto-a build-client --auto
+  run cmd_ui_job auto-b build-client --auto
+  auto_wait auto-a
+  auto_wait auto-b
+  view_setup
+  run cmd_panel
+  assert_success
+  [[ $(view .bar.mode) != failed ]] || fail "the view shows a failure"
+  assert_equal "$(view .result.client)" ''
+  assert_equal "$(view .result.launch)" ''
+}
+
+@test "view: close and reopen only for a window older than the install" {
+  local id bin args
+  view_setup
+  # The real client checks, on an installed client with current stamps.
+  # shellcheck source-path=SCRIPTDIR source=../lib/client.sh
+  source "$REPO/lib/client.sh"
+  fake_build "$LG_BUILD"
+  write_client_stamps
+  bin=$(client_builds)/$LG_BUILD/bin/looking-glass-client
+  id=$(stat -c %d:%i "$bin")
+  echo active >"$T/st"
+  client_active() { return 0; }
+  client_main_pid() { echo 4242; }
+  client_exe() { echo "0:1 /old/lanai/looking-glass/B7/bin/looking-glass-client"; }
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_REOPEN"
+  [[ $(view .bar.mode) != failed && $(view .bar.mode) != busy ]] || fail "the reopen words change the bar"
+  assert_equal "$(view .auto_update.launch)" false
+  client_exe() { echo "$id $bin"; }
+  run cmd_panel
+  assert_equal "$(view .warning)" ''
+  client_exe() { echo "$id $bin (deleted)"; }
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_REOPEN"
+  # A window that is still opening runs lanai-client-exec, a bash script.
+  client_exe() { echo "0:1 /usr/bin/bash"; }
+  run cmd_panel
+  assert_equal "$(view .warning)" ''
+  client_exe() { echo "0:1 /old/bin/looking-glass-client"; }
+  client_active() { return 1; }
+  run cmd_panel
+  assert_equal "$(view .warning)" ''
+  client_active() { return 0; }
+  echo inactive >"$T/st"
+  run cmd_panel
+  assert_equal "$(view .warning)" ''
+  # A successful update with no window shows nothing.
+  client_active() { return 1; }
+  for args in '[]' '["--auto"]'; do
+    panel_result_write client "$(jq -nc --argjson a "$args" '{token:"t",command:"build-client",args:$a,invocation:"inv",started:1,ended:2,reply:{ok:true}}')"
+    run cmd_panel
+    assert_equal "$(view .warning)" ''
+    assert_equal "$(view .result.client)" ''
+  done
+}

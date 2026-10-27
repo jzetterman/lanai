@@ -200,6 +200,40 @@ client_active() {
   [[ $st == active || $st == activating || $st == reloading ]]
 }
 
+# Print the main pid of lanai-client.service, or nothing.
+client_main_pid() {
+  systemctl --user show -p MainPID --value "$LANAI_CLIENT_UNIT" 2>/dev/null || true
+}
+
+# client_exe <pid>: print "<dev>:<inode> <link text>" for the binary that
+# process <pid> runs. The kernel adds " (deleted)" to the link text when the
+# file is gone.
+client_exe() {
+  local id link
+  id=$(stat -L -c %d:%i -- "/proc/$1/exe" 2>/dev/null) || return 1
+  link=$(readlink -- "/proc/$1/exe" 2>/dev/null) || return 1
+  printf '%s %s\n' "$id" "$link"
+}
+
+# Succeed when the open Windows window runs a client binary that is not the
+# installed pinned build: a window that opened before an update installed
+# the new client (docs/plugin/client-auto-update/spec.md, req 7). Before
+# the client starts, the unit's main process is lanai-client-exec (bash),
+# so a window that is still opening never counts. Closing the window, or
+# shutting Windows down, stops the unit, so the answer goes by itself.
+client_window_stale() {
+  local pid exe link installed
+  client_active || return 1
+  pid=$(client_main_pid)
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+  exe=$(client_exe "$pid") || return 1
+  link=${exe#* }
+  [[ ${link% (deleted)} == */bin/looking-glass-client ]] || return 1
+  [[ $link != *" (deleted)" ]] || return 0
+  installed=$(stat -c %d:%i -- "$(client_builds)/$LG_BUILD/bin/looking-glass-client" 2>/dev/null) || return 1
+  [[ ${exe%% *} != "$installed" ]]
+}
+
 # Print the folder that holds Lanai's client builds, one folder per build.
 client_builds() {
   printf '%s\n' "$(data_dir)/looking-glass"

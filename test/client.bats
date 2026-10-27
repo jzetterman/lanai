@@ -56,16 +56,6 @@ unit_is() {
     "InvocationID=0123456789abcdef0123456789abcdef" "ExecMainStatus=0" "$@" >"$T/show-$unit"
 }
 
-# Install a fake client build <name> that reports version <version> (default
-# <name>) on --help, as the real one does on its first log line.
-fake_build() {
-  local bin=$LGDIR/$1/bin/looking-glass-client
-  mkdir -p "${bin%/*}"
-  printf '#!/usr/bin/env bash\necho "00:00:00.000 [I]              main.c:4303 | main                           | Looking Glass (%s)" >&2\n' \
-    "${2:-$1}" >"$bin"
-  chmod +x "$bin"
-}
-
 # Print client log <file> as lanai-client-exec leaves it: its start line
 # (<age> seconds ago, default 5), then the client's output.
 started_log() {

@@ -27,6 +27,8 @@ panel_fixture_setup() {
   helper_alive() { return 0; }
   build_stamp_current() { return 0; }
   build_patches_current() { return 0; }
+  # No automatic client update unit runs.
+  auto_units() { :; }
   expected_base() { echo fixture.iso; }
   settings_seed() { echo '{"memory_gib":8,"cores":4}'; }
   # A finished setup with the live scale task and the current sign-in mark.

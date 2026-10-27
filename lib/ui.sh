@@ -44,8 +44,9 @@ signin_step_missing() {
   setup_done && [[ $(setup_get round) != true && $(setup_get signin_step) != "$LANAI_SIGNIN_STEP" ]]
 }
 
-# client_update_case <finished true|false>: print which step brings the
-# client up to date (spec 12). "none": the plan is not finished, the client
+# client_update_case <finished true|false> [<patches id>]: print which step
+# brings the client up to date (spec 12). The id, when given, saves hashing
+# the patches again. "none": the plan is not finished, the client
 # is current, its stamp is not the pin's, or the guest's driver is behind
 # (req 8's case). "update": the client was built without the current
 # patches, and the live scale task has the sign-in step, so Update the
@@ -54,7 +55,7 @@ signin_step_missing() {
 # Run setup again is the one step. The panel view and Lanai's own update
 # worker both decide from it.
 client_update_case() {
-  if [[ $1 != true ]] || ! build_stamp_current || build_patches_current ||
+  if [[ $1 != true ]] || ! build_stamp_current || build_patches_current "${2:-}" ||
     [[ -n $(guest_version_behind) ]]; then
     echo none
   elif [[ $(scale_task_kind) == new ]] && ! signin_step_missing; then
@@ -149,7 +150,7 @@ auto_launch_failed() (
   mkdir -p -- "$(state_dir)" || return 1
   exec {fd}>>"$(state_dir)/panel-job.lock" || return 1
   flock "$fd" || return 1
-  systemctl --user is-active --quiet graphical-session.target || return 0
+  systemctl --user is-active --quiet graphical-session.target >/dev/null 2>&1 || return 0
   # degraded exits 1 but still runs units.
   manager=$(systemctl --user is-system-running 2>/dev/null) || true
   [[ $manager == running || $manager == degraded ]] || return 0
@@ -218,7 +219,7 @@ auto_update_worker() {
     break
   done
   # 2. Check. A logout or reboot that queued this start spends nothing.
-  if ! systemctl --user is-active --quiet graphical-session.target; then
+  if ! systemctl --user is-active --quiet graphical-session.target >/dev/null 2>&1; then
     emit true "" "No update is due: the desktop session is not active." ""
     return 0
   fi
