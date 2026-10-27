@@ -1825,7 +1825,7 @@ assert_plan_agreement() {
 
 # Durable steps, with a running worker supplied without a service or process.
 setup_worker() {
-  panel_records() { echo '{"held":true,"records":{"setup":{"command":"setup","started":1}}}'; }
+  panel_records() { echo '{"held":true,"records":{"setup":{"command":"setup","started":1}},"job":{"command":"setup","started":1}}'; }
 }
 
 @test "panel: first-time setup hides Start and Open at every step and keeps settings" {
@@ -1897,7 +1897,7 @@ setup_worker() {
   run cmd_panel
   assert_equal "$(jq -r .setup.attention <<<"$output")" false
   rm "$RUN/step6-checked"
-  panel_records() { echo '{"held":false,"records":{"setup":{"command":"setup","started":1,"ended":2,"reply":{"ok":false,"step":"6","stop":"timeout","reason":"scale-task"}}}}'; }
+  panel_records() { echo '{"held":false,"job":{},"records":{"setup":{"command":"setup","started":1,"ended":2,"reply":{"ok":false,"step":"6","stop":"timeout","reason":"scale-task"}}}}'; }
   run cmd_panel
   assert_equal "$(jq -r .setup.attention <<<"$output")" true
   setup_worker
@@ -1906,7 +1906,7 @@ setup_worker() {
   assert_equal "$(jq -r .setup.attention <<<"$output")" true
   assert_equal "$(jq -r .buttons.reopen_window.show <<<"$output")" true
   client_active() { return 0; }
-  panel_records() { echo '{"held":false,"records":{}}'; }
+  panel_records() { echo '{"held":false,"records":{},"job":{}}'; }
   run cmd_panel
   assert_equal "$(jq -r .setup.attention <<<"$output")" true
   state '{"snapshot":"declined","step5":false}'
@@ -1923,7 +1923,7 @@ setup_worker() {
   setup_worker
   run cmd_panel
   assert_equal "$(jq -r .setup.attention <<<"$output")" false
-  panel_records() { echo '{"held":true,"records":{"setup":{"command":"setup","started":1,"reply":{"ok":false,"step":"6","reason":"client"}}}}'; }
+  panel_records() { echo '{"held":true,"records":{"setup":{"command":"setup","started":1,"reply":{"ok":false,"step":"6","reason":"client"}}},"job":{"command":"setup","started":1,"reply":{"ok":false,"step":"6","reason":"client"}}}'; }
   run cmd_panel
   assert_equal "$(jq -r .setup.attention <<<"$output")" true
   source "$REPO/lib/panel.sh"

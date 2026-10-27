@@ -77,10 +77,11 @@ client_update_case() {
 auto_record_file() { printf '%s\n' "$(state_dir)/client-auto.json"; }
 
 # auto_record_read <patches id>: print the record for patch set <id>. A
-# missing, unreadable or foreign record (another patch set) counts as an
-# empty one, so a new patch set gets new tries.
+# missing, unreadable or foreign record (another patch set), or a file that
+# holds more than one JSON value, counts as an empty one, so a new patch set
+# gets new tries.
 auto_record_read() {
-  jq -ce --arg p "$1" 'select(type == "object" and .patches == $p and
+  jq -cse --arg p "$1" 'select(length == 1) | .[0] | select(type == "object" and .patches == $p and
     (.tries | type == "array" and all(.[]; type == "object")))' "$(auto_record_file)" 2>/dev/null ||
     jq -nc --arg p "$1" '{patches:$p,tries:[]}'
 }
@@ -150,7 +151,7 @@ auto_launch_failed() (
   mkdir -p -- "$(state_dir)" || return 1
   exec {fd}>>"$(state_dir)/panel-job.lock" || return 1
   flock "$fd" || return 1
-  systemctl --user is-active --quiet graphical-session.target >/dev/null 2>&1 || return 0
+  session_active || return 0
   # degraded exits 1 but still runs units.
   manager=$(systemctl --user is-system-running 2>/dev/null) || true
   [[ $manager == running || $manager == degraded ]] || return 0
@@ -219,7 +220,7 @@ auto_update_worker() {
     break
   done
   # 2. Check. A logout or reboot that queued this start spends nothing.
-  if ! systemctl --user is-active --quiet graphical-session.target >/dev/null 2>&1; then
+  if ! session_active; then
     emit true "" "No update is due: the desktop session is not active." ""
     return 0
   fi
@@ -384,6 +385,8 @@ panel_group() {
 ui_timestamp() { local LC_ALL=C; printf '%s\n' "$EPOCHREALTIME"; }
 ui_now() { printf '%s\n' "$EPOCHSECONDS"; }
 ui_sleep() { sleep "$1"; }
+# Succeed while the user's graphical session is active. It prints nothing.
+session_active() { systemctl --user is-active --quiet graphical-session.target >/dev/null 2>&1; }
 unit_invocation() { systemctl --user show -p InvocationID --value "$LANAI_UNIT" 2>/dev/null || true; }
 
 # Run a literal command and validate its one JSON reply, logging only stderr.
@@ -439,7 +442,7 @@ ui_job_auto() {
       *) return 1 ;;
     esac
   fi
-  if [[ $token == auto-* ]]; then [[ $auto == true ]] || return 1
+  if [[ $token == auto-* ]]; then [[ $auto == true && $token =~ ^auto-[A-Za-z0-9-]+$ ]] || return 1
   else [[ $auto == false ]] || return 1; fi
   echo "$auto"
 }
@@ -485,7 +488,7 @@ ui_setup_next() {
   s=$(state_dir)
   while :; do
     ui_sleep 2
-    systemctl --user is-active --quiet graphical-session.target || return 1
+    session_active || return 1
     st=$(unit_state) || return 1
     case $(jq -r .step <<<"$reply") in
       5)
@@ -541,7 +544,7 @@ cmd_ui_job_worker() {
   while :; do
     # Lingering keeps the user manager alive after logout. Never let an old
     # setup worker enter a call that could boot Windows outside its session.
-    if [[ $command == setup ]] && ! systemctl --user is-active --quiet graphical-session.target; then
+    if [[ $command == setup ]] && ! session_active; then
       out=${out:-'{"ok":false,"reason":"session"}'}
       break
     fi

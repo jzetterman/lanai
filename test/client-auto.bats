@@ -270,6 +270,11 @@ record() { jq -nc --arg p "$1" --argjson t "$2" '{patches:$p,tries:$t}' >"$S/cli
   assert_failure 2
   run cmd_ui_job_worker panel-a build-client --auto
   assert_failure 2
+  # The prefix alone is not a token.
+  run cmd_ui_job auto- build-client --auto
+  assert_failure 2
+  run cmd_ui_job_worker auto- build-client --auto
+  assert_failure 2
   assert [ ! -e "$T/launch" ]
   assert [ ! -e "$S/client-auto.json" ]
   assert_equal "$(builds)" 0
@@ -520,6 +525,15 @@ exec /usr/bin/sync "$@"'
   record older '[{"token":"auto-old","at":1,"outcome":"failed"}]'
   auto_run auto-a
   assert_equal "$(jq -r .patches "$S/client-auto.json")" "$(patches_id)"
+  assert_equal "$(jq -c '[.tries[] | [.token, .outcome]]' "$S/client-auto.json")" '[["auto-a","ok"]]'
+  assert_equal "$(builds)" 1
+}
+
+@test "auto worker: a record file with two JSON values counts as empty" {
+  record "$(patches_id)" '[{"token":"auto-old","at":1,"outcome":"failed"}]'
+  cat "$S/client-auto.json" "$S/client-auto.json" >"$T/two"
+  mv "$T/two" "$S/client-auto.json"
+  auto_run auto-a
   assert_equal "$(jq -c '[.tries[] | [.token, .outcome]]' "$S/client-auto.json")" '[["auto-a","ok"]]'
   assert_equal "$(builds)" 1
 }

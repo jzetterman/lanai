@@ -120,6 +120,8 @@ panel_words() {
 
 # Read group records only after probing the worker lock. The probe writes nothing
 # and remains held for all reads, so launch/end cannot race the final-state read.
+# job is the running job: the newest unended record, only while a job holds
+# the lock. Unheld, that record is an interrupted job, not the one running.
 panel_records() {
   local s fd held=false group doc records='{}'
   s=$(state_dir)
@@ -132,7 +134,9 @@ panel_records() {
     records=$(jq -nc --arg g "$group" --argjson d "$doc" --argjson r "$records" '$r + {($g):$d}')
   done
   [[ -z ${fd:-} ]] || exec {fd}>&-
-  jq -nc --argjson r "$records" --argjson h "$held" '{held:$h,records:$r}'
+  jq -nc --argjson r "$records" --argjson h "$held" '{held:$h,records:$r,
+    job:(if $h then [$r[] | select(. != null and has("started") and (has("ended") | not))] | max_by(.started) // {}
+      else {} end)}'
 }
 
 # The words of Lanai's own client update (docs/plugin/client-auto-update/):
@@ -146,23 +150,25 @@ LANAI_AUTO_FAILED="Lanai could not update the Windows window by itself. The Wind
 LANAI_AUTO_LAUNCH="Lanai could not start its update of the Windows window. The Jobs log says why."
 LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it finished, for example at a logout or restart."
 
-# auto_view <finished true|false> <progress> <records> <pending true|false>:
-# print the state of Lanai's own client update as one JSON object, from the
-# try record, the locks and the automatic units (plan, "The view's update
-# states"). It writes nothing. It reads in a fixed order: the units, then
-# the record, then the client's patches. A try writes its outcome before
-# its unit ends, so a try that ends between the reads never reads as
-# stopped. <records> is panel_records' output, <progress> the image
-# activity, and <pending> whether a click's job has not started yet. The
-# fields cmd_panel uses: case (client_update_case), current (the client has
-# the current patches), launch and key (the bar model's ask), wait,
-# launching, hand (an update by hand after the tries), updating, shown (the
-# update button), failed and kind, and deciding (an automatic worker in its
-# wait and check, which holds the locks and counts as launching).
+# auto_view <finished true|false> <progress> <records> <pending true|false>
+# <build held true|false>: print the state of Lanai's own client update as
+# one JSON object, from the try record, the locks and the automatic units
+# (plan, "The view's update states"). It writes nothing. <records> is
+# panel_records' output, <progress> the image activity, <pending> whether a
+# click's job has not started yet, and <build held> lock_held of build.lock,
+# which cmd_panel probes before panel_records: a worker takes panel-job.lock
+# before build.lock, so a held build lock read first is never a worker
+# that the records then miss. The reads here go in a fixed order: the units,
+# then the record, then the client's patches. A try writes its outcome
+# before its unit ends, so a try that ends between the reads never reads as
+# stopped. The fields: case (client_update_case), current (the client has
+# the current patches), launch and key (the bar model's ask), launching,
+# wait, hand (an update by hand after the tries), updating, deciding (an
+# automatic worker in its wait and check, which holds the locks and counts
+# as launching), shown (the update button), and failed and its kind.
 auto_view() {
-  local finished=$1 progress=$2 records=$3 click_pending=$4 s units='' id='' doc='{"tries":[]}' ucase patched=false
-  local build_held=false session=false
-  s=$(state_dir)
+  local finished=$1 progress=$2 records=$3 click_pending=$4 build_held=$5 units='' id='' doc='{"tries":[]}'
+  local ucase patched=false session=false
   # The record matters only for a finished setup with the pin's client.
   if [[ $finished == true ]] && build_stamp_current; then
     units=$(auto_units)
@@ -171,22 +177,19 @@ auto_view() {
   fi
   ucase=$(client_update_case "$finished" "$id")
   [[ -z $id ]] || ! build_patches_current "$id" || patched=true
-  ! lock_held "$s/build.lock" || build_held=true
-  ! systemctl --user is-active --quiet graphical-session.target >/dev/null 2>&1 || session=true
+  ! session_active || session=true
   jq -nc --argjson doc "$doc" --arg units "$units" --argjson rec "$records" --argjson progress "$progress" \
     --argjson pending "$click_pending" --argjson bh "$build_held" --argjson session "$session" --arg case "$ucase" \
     --argjson current "$patched" --arg id "$id" '
     ($units | split("\n") | map(select(. != ""))) as $u |
-    $doc.tries as $tries | ($tries | last) as $last | $rec.held as $ph |
+    $doc.tries as $tries | ($tries | last) as $last | $rec.held as $ph | $rec.job as $job |
     ($last != null and $last.outcome == null and any($u[]; . == $last.token)) as $running |
     ($u | length > 0) as $inflight |
     (($running | not) and (($tries | length) >= 2 or any($tries[]; .outcome == "failed" or .outcome == "launch"))) as $over |
     ($case == "update" and ($over | not) and ($running | not) and $session) as $want |
-    ([$rec.records[] | select(. != null and has("started") and (has("ended") | not))] | max_by(.started)) as $unended |
-    ($ph and $inflight and ($unended == null or
-      (any($unended.args[]?; . == "--auto") and (any($u[]; . == $unended.token) | not)))) as $deciding |
+    ($ph and $inflight and ($job == {} or
+      (any($job.args[]?; . == "--auto") and (any($u[]; . == $job.token) | not)))) as $deciding |
     ((($deciding | not) and ($ph or $bh)) or $progress != null or $pending) as $heldBack |
-    (if $ph then $unended // {} else {} end) as $job |
     ($case == "update" and $over) as $shown |
     ($shown and (($ph and $job.command == "build-client" and (any($job.args[]?; . == "--auto") | not)) or
       ($bh and ($ph | not)))) as $hand |
@@ -196,12 +199,11 @@ auto_view() {
     ($c != null and (any($c.args[]?; . == "--auto") | not) and $last != null and
       (($c.started // 0) > $last.at)) as $handAfter |
     ($shown and ($updating | not) and ($handAfter | not)) as $failed |
-    {case:$case,current:$current,running:$running,inflight:$inflight,over:$over,want:$want,deciding:$deciding,
-     held_back:$heldBack,launching:$launching,launch:($launching and ($inflight | not)),wait:($want and $heldBack),
-     hand:$hand,updating:$updating,shown:$shown,hand_after:$handAfter,failed:$failed,
+    {case:$case,current:$current,launch:($launching and ($inflight | not)),key:($id + ":" + ($tries | length | tostring)),
+     launching:$launching,wait:($want and $heldBack),hand:$hand,updating:$updating,deciding:$deciding,
+     shown:$shown,failed:$failed,
      kind:(if $failed | not then "" elif $last.outcome == "launch" then "launch"
-       elif $last.outcome == null then "stopped" else "failed" end),
-     key:($id + ":" + ($tries | length | tostring))}'
+       elif $last.outcome == null then "stopped" else "failed" end)}'
 }
 
 # panel_snapshot_item <name> [<user label>] [seconds true|false]: one row.
@@ -240,8 +242,7 @@ panel_restore() {
   local progress=$1 records=$2 paths=$3 items=$4 storage=$5 marker=$6
   local job active=false pending=false name='' target='' snap='' source='' item=null use_marker=true
   [[ ! -e $marker ]] || pending=true
-  job=$(jq -c 'if .held then [.records[] | select(. != null and has("started") and (has("ended")|not))] |
-    max_by(.started) // {} else {} end' <<<"$records")
+  job=$(jq -c '.job' <<<"$records")
   if [[ $(jq -r '.operation' <<<"$progress") == restore || $(jq -r .command <<<"$job") == restore ]]; then
     active=true
     target=$(jq -r '.target // ""' <<<"$progress")
@@ -277,6 +278,7 @@ cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
   local client_old=false signin_missing=false task button auto client_case click_pending=false window_stale=false
+  local build_held=false
   local snapshot_paths='[]' items='[]' name restore log_rows path display label seconds
   local check_since=null checks_stopped=false since vm_status
   if (($#)); then
@@ -292,14 +294,16 @@ cmd_panel() {
   # Reuse the gathered facts without setup masking the VM's runtime state.
   vm_status=$(status_map <<<"$status_details"$'\nLanaiSetup=done')
   plan=$(setup_plan "$facts")
+  # build.lock before the records: see auto_view.
+  ! lock_held "$(state_dir)/build.lock" || build_held=true
   records=$(panel_records)
-  # A click whose job has not written its record yet ($pending in the final
-  # read) holds Lanai's own client update back too.
+  # A click whose job has not written its record yet: busy, and it holds
+  # Lanai's own client update back too.
   if [[ -n $token ]] && ((EPOCHSECONDS - at < 10)) &&
     ! jq -e --arg t "$token" 'any(.records[]; . != null and .token == $t)' <<<"$records" >/dev/null; then
     click_pending=true
   fi
-  auto=$(auto_view "$(jq -r .finished <<<"$plan")" "$progress" "$records" "$click_pending")
+  auto=$(auto_view "$(jq -r .finished <<<"$plan")" "$progress" "$records" "$click_pending" "$build_held")
   client_case=$(jq -r .case <<<"$auto")
   problem_line=''
   if [[ $(jq -r .reason <<<"$plan") != '' ]]; then
@@ -463,7 +467,7 @@ cmd_panel() {
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
     --argjson clientOld "$client_old" --argjson signinMissing "$signin_missing" --arg task "$task" \
-    --argjson auto "$auto" --arg clientCase "$client_case" --argjson windowStale "$window_stale" \
+    --argjson auto "$auto" --argjson pending "$click_pending" --argjson windowStale "$window_stale" \
     --arg wWait "$LANAI_AUTO_WAIT" --arg wRun "$LANAI_AUTO_RUN" --arg wReopen "$LANAI_AUTO_REOPEN" \
     --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" \
     --arg invocation "$inv" --argjson checkSince "$check_since" --argjson checksStopped "$checks_stopped" '
@@ -478,12 +482,9 @@ cmd_panel() {
       "version-mismatch":["Display driver needs an update","The Windows display needs an update","The client and Windows display driver have different versions.","Shut down and continue setup, or use Omarchy\u0027s Windows connection."],
       failed:["Failed","Windows is unavailable","Windows stopped with an error, or Lanai could not reach it.","Check the logs below. You can also use Omarchy\u0027s Windows connection after shutting Lanai down."]}) as $states |
     $states[$st.state] as $w |
-    # The running job: the newest unended record, only while a job holds the
-    # lock. Unheld, that record is an interrupted job, not the one running.
-    (if $rec.held then [$rec.records[] | select(. != null and has("started") and (has("ended")|not))] |
-      max_by(.started) // {} else {} end) as $job |
+    # The running job (panel_records).
+    $rec.job as $job |
     ([$rec.records[] | select(.token == $token)] | length > 0) as $seen |
-    ($token != "" and ($seen|not) and $now - $at < 10) as $pending |
     # The automatic client update is busy from the check that asks for it
     # (launching) and during an update by hand after its tries (auto_view).
     ($rec.held or $pending or $progress != null or $auto.launching or $auto.hand) as $busy |
@@ -633,7 +634,7 @@ cmd_panel() {
       ($d.invocation == null or $d.invocation == $invocation) and
       # Run setup again can fail at the client build while the plan stays finished.
       ($d.reply.step == null or $d.reply.step == $p.step or
-        ($d.reply.step == "4" and $clientCase == "setup" and
+        ($d.reply.step == "4" and $auto.case == "setup" and
           any($d.args[]?; . == "--window" or . == "--no-window"))) and
       ($p.step != "6" or $checkSince == null or ($d.ended // $now) >= $checkSince);
     ($p.finished == false and $p.step == "6" and currentSetup and
