@@ -13,6 +13,8 @@ setup() {
   isolate_home
   panel_fixture_setup
   export REPO
+  # $RUN as Lanai makes it (run_dir_check).
+  chmod 700 "$RUN"
   mkdir -p "$T/bin" "$T/units"
   echo inactive >"$T/st"
   echo success >"$T/result"
@@ -36,7 +38,8 @@ teardown() {
 # $T, since the worker is its own process: st, result and inv (the VM unit),
 # session and manager (the user manager), current (the client is current),
 # no-stamp (no pinned client), behind (the guest's older driver), slow and
-# fails (the build), plan-fails, stop-at and false-at (the worker's seams).
+# fails (the build), plan-fails, write-fails (the try record), stop-at and
+# false-at (the worker's seams).
 auto_stubs() {
   LANAI_BIN=$T/bin
   systemctl() {
@@ -83,6 +86,14 @@ auto_stubs() {
   setup_plan() {
     [[ ! -e $T/plan-fails ]] || return 1
     real_setup_plan "$@"
+  }
+  # A full disk: every write of the try record fails.
+  if ! declare -F real_auto_record_write >/dev/null; then
+    eval "$(declare -f auto_record_write | sed '1s/auto_record_write/real_auto_record_write/')"
+  fi
+  auto_record_write() {
+    [[ ! -e $T/write-fails ]] || return 1
+    real_auto_record_write "$@"
   }
   # A stop at <step> marks it and waits to be signalled; a false at <step>
   # is an error under set -e.
@@ -929,6 +940,57 @@ assert_auto_failed() {
   assert_equal "$(view .buttons.update_client.show)" false
   assert_equal "$(view .result.client)" ''
   assert_equal "$(view .warning)" ''
+}
+
+@test "view: a worker that fails before it counts a try ends the tries until a reboot" {
+  view_setup
+  # A full disk: the worker cannot count its try, and exits with an error.
+  touch "$T/write-fails"
+  auto_run auto-a
+  [[ $(<"$T/rc-auto-a") != 0 ]] || fail "the worker exited 0"
+  assert [ ! -e "$S/client-auto.json" ]
+  assert_equal "$(builds)" 0
+  rm "$T/write-fails"
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view .result.client)" "$AUTO_LAUNCH"
+  assert_equal "$(view .warning)" "$RESIZE_NEW"
+  assert_equal "$(view '[.buttons.update_client.show, .buttons.update_client.enable] | tostring')" '[true,true]'
+  # Nothing stays busy: snapshots and Run setup again are available.
+  assert_equal "$(view .busy.active)" false
+  assert_equal "$(view .buttons.take_snapshot.enable)" true
+  assert_equal "$(view .bar.mode)" failed
+  # A hand update after it ends the failure state.
+  panel_result_write client "$(jq -nc --argjson s "$(ui_timestamp)" '{token:"panel-h",command:"build-client",args:[],invocation:"inv",started:$s}')"
+  hold panel-job.lock
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_RUN"
+  [[ $(view .bar.mode) != failed ]] || fail "a hand update still shows the failure"
+  stop_bg
+  rm "$S/panel-result-client.json"
+  # A changed patch set asks again.
+  printf 'older 1\n' >"$RUN/client-auto-gave-up"
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" true
+  # A reboot empties the runtime folder.
+  printf '%s 1\n' "$(patches_id)" >"$RUN/client-auto-gave-up"
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  rm -rf "$RUN"
+  mkdir -m 700 "$RUN"
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" true
+}
+
+@test "auto worker: a stop by a signal before the count marks nothing" {
+  hold panel-job.lock
+  run cmd_ui_job auto-a build-client --auto
+  assert_success
+  sleep 0.5
+  kill -TERM -- "-$(<"$T/units/auto-a")"
+  auto_wait auto-a
+  assert [ ! -e "$RUN/client-auto-gave-up" ]
+  assert [ ! -e "$S/client-auto.json" ]
 }
 
 @test "view: a failed try stopped at its end shows failed, not stopped" {

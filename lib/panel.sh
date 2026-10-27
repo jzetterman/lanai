@@ -152,40 +152,49 @@ LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it
 
 # auto_view <finished true|false> <progress> <records> <pending true|false>
 # <build held true|false>: print the state of Lanai's own client update as
-# one JSON object, from the try record, the locks and the automatic units
-# (plan, "The view's update states"). It writes nothing. <records> is
-# panel_records' output, <progress> the image activity, <pending> whether a
-# click's job has not started yet, and <build held> lock_held of build.lock,
-# which cmd_panel probes before panel_records: a worker takes panel-job.lock
-# before build.lock, so a held build lock read first is never a worker
-# that the records then miss. The reads here go in a fixed order: the units,
-# then the record, then the client's patches. A try writes its outcome
-# before its unit ends, so a try that ends between the reads never reads as
-# stopped. The fields: case (client_update_case), current (the client has
-# the current patches), launch and key (the bar model's ask), launching,
-# wait, hand (an update by hand after the tries), updating, deciding (an
-# automatic worker in its wait and check, which holds the locks and counts
-# as launching), shown (the update button), and failed and its kind.
+# one JSON object, from the try record, the gave-up marker, the locks and
+# the automatic units (plan, "The view's update states"). It writes
+# nothing. <records> is panel_records' output, <progress> the image
+# activity, <pending> whether a click's job has not started yet, and <build
+# held> lock_held of build.lock, which cmd_panel probes before
+# panel_records: a worker takes panel-job.lock before build.lock, so a held
+# build lock read first is never a worker that the records then miss. The
+# reads here go in a fixed order: the units, then the record and the
+# marker, then the client's patches. A try writes its outcome before its
+# unit ends, so a try that ends between the reads never reads as stopped.
+# The tries are over when the record allows no more (auto_try_due) or a
+# worker gave up before it could count one (auto_on_exit's marker for this
+# patch set), until a reboot. The fields: case (client_update_case), current
+# (the client has the current patches), launch and key (the bar model's
+# ask), launching, wait, hand (an update by hand after the tries), updating,
+# deciding (an automatic worker in its wait and check, which holds the locks
+# and counts as launching), shown (the update button), and failed and its
+# kind.
 auto_view() {
   local finished=$1 progress=$2 records=$3 click_pending=$4 build_held=$5 units='' id='' doc='{"tries":[]}'
-  local ucase patched=false session=false
+  local ucase patched=false session=false due=true gave_up=null gid gat
   # The record matters only for a finished setup with the pin's client.
   if [[ $finished == true ]] && build_stamp_current; then
     units=$(auto_units)
     id=$(patches_id) || id=''
     doc=$(auto_record_read "$id")
+    auto_try_due "$doc" || due=false
+    if run_dir >/dev/null 2>&1 && read -r gid gat 2>/dev/null <"$(auto_gave_up_file)" &&
+      [[ $gid == "$id" && $gat =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+      gave_up=$gat
+    fi
   fi
   ucase=$(client_update_case "$finished" "$id")
   [[ -z $id ]] || ! build_patches_current "$id" || patched=true
   ! session_active || session=true
   jq -nc --argjson doc "$doc" --arg units "$units" --argjson rec "$records" --argjson progress "$progress" \
     --argjson pending "$click_pending" --argjson bh "$build_held" --argjson session "$session" --arg case "$ucase" \
-    --argjson current "$patched" --arg id "$id" '
+    --argjson current "$patched" --arg id "$id" --argjson due "$due" --argjson gaveUp "$gave_up" '
     ($units | split("\n") | map(select(. != ""))) as $u |
     $doc.tries as $tries | ($tries | last) as $last | $rec.held as $ph | $rec.job as $job |
     ($last != null and $last.outcome == null and any($u[]; . == $last.token)) as $running |
     ($u | length > 0) as $inflight |
-    (($running | not) and (($tries | length) >= 2 or any($tries[]; .outcome == "failed" or .outcome == "launch"))) as $over |
+    (($running | not) and (($due | not) or $gaveUp != null)) as $over |
     ($case == "update" and ($over | not) and ($running | not) and $session) as $want |
     ($ph and $inflight and ($job == {} or
       (any($job.args[]?; . == "--auto") and (any($u[]; . == $job.token) | not)))) as $deciding |
@@ -196,13 +205,14 @@ auto_view() {
     ($want and ($heldBack | not)) as $launching |
     ($running or $hand or $launching) as $updating |
     $rec.records.client as $c |
-    ($c != null and (any($c.args[]?; . == "--auto") | not) and $last != null and
-      (($c.started // 0) > $last.at)) as $handAfter |
+    ([$last.at, $gaveUp] | map(numbers) | max) as $since |
+    ($c != null and (any($c.args[]?; . == "--auto") | not) and $since != null and
+      (($c.started // 0) > $since)) as $handAfter |
     ($shown and ($updating | not) and ($handAfter | not)) as $failed |
     {case:$case,current:$current,launch:($launching and ($inflight | not)),key:($id + ":" + ($tries | length | tostring)),
      launching:$launching,wait:($want and $heldBack),hand:$hand,updating:$updating,deciding:$deciding,
      shown:$shown,failed:$failed,
-     kind:(if $failed | not then "" elif $last.outcome == "launch" then "launch"
+     kind:(if $failed | not then "" elif $gaveUp != null or $last.outcome == "launch" then "launch"
        elif $last.outcome == null then "stopped" else "failed" end)}'
 }
 

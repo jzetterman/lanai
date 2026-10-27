@@ -21,13 +21,10 @@ Item {
   property string clickNotice: ""
   property double clickNoticeAt: 0
   // The last key of Lanai's own client update this model launched, and when
-  // (ms); the key it counts launches for, and how many. See autoUpdate().
+  // (ms). See autoUpdate().
   property string autoKey: ""
   property double autoAt: 0
   property int autoRearmMs: 30000
-  property string autoCountKey: ""
-  property int autoLaunches: 0
-  property int autoMaxLaunches: 3
   property var copyResults: ({})
   property string copyingId: ""
   property string copyingText: ""
@@ -72,12 +69,10 @@ Item {
   // launches again after a view says launch false (its unit was seen and
   // ended), or after autoRearmMs (longer than the slowest poll plus a
   // launch), since the view asks only while no automatic unit runs. An
-  // unreadable poll has no ask and changes nothing. One key launches at most
-  // autoMaxLaunches times per model: a worker that exits before it counts a
-  // try (a full disk) would otherwise relaunch at every check, and the
-  // launching state would keep the panel busy. A new key, or a reload,
-  // starts the count again. It never touches the click state (pendingToken,
-  // clickNotice), so the user's clicks never wait on it.
+  // unreadable poll has no ask and changes nothing. A worker that fails
+  // before it counts a try (a full disk) marks that, and the view then stops
+  // asking, so no launch repeats at every check. It never touches the click
+  // state (pendingToken, clickNotice), so the user's clicks never wait on it.
   function autoUpdate() {
     var ask = view.auto_update
     if (!ask) return
@@ -87,12 +82,6 @@ Item {
     }
     var now = Date.now()
     if (ask.key === autoKey && now - autoAt < autoRearmMs) return
-    if (ask.key !== autoCountKey) {
-      autoCountKey = ask.key
-      autoLaunches = 0
-    }
-    if (autoLaunches >= autoMaxLaunches) return
-    autoLaunches++
     autoKey = ask.key
     autoAt = now
     Quickshell.execDetached([cli, "ui-job", token("auto"), "build-client", "--auto"])

@@ -166,14 +166,29 @@ auto_launch_failed() (
 # (built) and records the outcome (recorded). Tests override it.
 auto_step() { :; }
 
-# The worker's EXIT trap: after the try is counted, an exit with an error
-# that no signal caused writes "failed", if the try has no outcome yet. A
-# stop by a signal leaves the try without one. Then lanai_main's trap runs,
-# so a worker that printed nothing still prints its JSON object.
+# The marker of a worker that failed before it could count its try, in
+# $RUN: "<patches id> <time>". $RUN is a tmpfs, so a full home disk cannot
+# stop the write, and a reboot clears it.
+auto_gave_up_file() { printf '%s\n' "$(run_dir)/client-auto-gave-up"; }
+
+# The worker's EXIT trap, for an exit with an error that no signal caused.
+# After the try is counted, it writes "failed", if the try has no outcome
+# yet. Before, it writes the gave-up marker for the current patch set (the
+# id is empty when the patches cannot be read), so the view ends the tries
+# rather than ask for a launch at every check (a full disk). A stop by a
+# signal writes neither. Then lanai_main's trap runs, so a worker that
+# printed nothing still prints its JSON object.
 auto_on_exit() {
-  local rc=$1
-  if [[ ${AUTO_COUNTED:-false} == true ]] && ((rc != 0 && ${AUTO_SIGNAL:-0} == 0)); then
-    auto_outcome_set "$AUTO_TOKEN" failed || true
+  local rc=$1 id
+  if ((rc != 0 && ${AUTO_SIGNAL:-0} == 0)); then
+    if [[ ${AUTO_COUNTED:-false} == true ]]; then
+      auto_outcome_set "$AUTO_TOKEN" failed || true
+    else
+      id=$(patches_id 2>/dev/null) || id=''
+      if run_dir_check >/dev/null 2>&1; then
+        printf '%s %s\n' "$id" "$(ui_timestamp)" >"$(auto_gave_up_file)" 2>/dev/null || true
+      fi
+    fi
   fi
   lanai_on_exit "$rc"
 }
