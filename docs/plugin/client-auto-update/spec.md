@@ -40,11 +40,12 @@ bar (one per monitor), which keeps checking while the panel is closed.
    warning says the Windows window will update when the current job ends, and names
    no button.
 3. **Tries per patch set.** The patch set is the identity spec requirement 12
-   already uses: the patches' names and contents. A launch that is refused only because
-   another panel job or another client build holds it back counts for nothing and
-   shows no failure; Lanai waits, as in requirement 2. Every other automatic launch
-   counts as a try, including one that cannot start at all. For a given patch set,
-   Lanai makes at most two automatic tries:
+   already uses: the patches' names and contents. A try counts once Lanai's update
+   job records it, which it does before it builds anything. A launch that waits
+   because another job holds it back, or that is cut off before its job records the
+   try, counts for nothing and shows no failure; the next check launches again. A
+   launch that Lanai cannot start at all counts as a failed try. For a given patch
+   set, Lanai makes at most two automatic tries:
    - A try that succeeds installs the current client, so no other try follows.
    - A try that fails, or a launch that cannot start, ends automatic tries for that
      patch set.
@@ -199,3 +200,9 @@ bar (one per monitor), which keeps checking while the panel is closed.
 
 On October 27, 2026 (EDT), John accepted advancing to the plan after stage (b)'s
 third round, with every finding integrated.
+
+On October 27, 2026 (EDT), from the plan gate (stage (a), round 2), John changed
+requirement 3: a try counts once the update job records it, not at launch, so the
+plan needs no handshake between a launcher and the job. A launch cut off before its
+job records the try is launched again at the next check. This change is reviewed in
+the plan gate.
