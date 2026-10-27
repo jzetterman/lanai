@@ -21,10 +21,13 @@ Item {
   property string clickNotice: ""
   property double clickNoticeAt: 0
   // The last key of Lanai's own client update this model launched, and when
-  // (ms). See autoUpdate().
+  // (ms); the key it counts launches for, and how many. See autoUpdate().
   property string autoKey: ""
-  property real autoAt: 0
+  property double autoAt: 0
   property int autoRearmMs: 30000
+  property string autoCountKey: ""
+  property int autoLaunches: 0
+  property int autoMaxLaunches: 3
   property var copyResults: ({})
   property string copyingId: ""
   property string copyingText: ""
@@ -36,7 +39,9 @@ Item {
   readonly property string tooltip: ["Lanai", view.bar && view.bar.label, view.label, view.headline, view.cause, view.next, view.notice, view.warning, view.right_click_tooltip].filter(function(s, i, words) { return !!s && words.indexOf(s) === i }).join("\n")
 
   function control(name) { return view.buttons[name] || {show: false, enable: false, label: ""} }
-  function token() { return "panel-" + Date.now() + "-" + Math.floor(Math.random() * 1000000) }
+  // A launch token: <prefix>-<ms>-<random>. "panel" for a click, "auto" for
+  // Lanai's own client update (the unit name tells them apart).
+  function token(prefix) { return prefix + "-" + Date.now() + "-" + Math.floor(Math.random() * 1000000) }
 
   function logRow(id) {
     return (view.logs.rows || []).find(function(row) { return row.id === id })
@@ -67,9 +72,12 @@ Item {
   // launches again after a view says launch false (its unit was seen and
   // ended), or after autoRearmMs (longer than the slowest poll plus a
   // launch), since the view asks only while no automatic unit runs. An
-  // unreadable poll has no ask and changes nothing. It never touches the
-  // click state (pendingToken, clickNotice), so the user's clicks never wait
-  // on it.
+  // unreadable poll has no ask and changes nothing. One key launches at most
+  // autoMaxLaunches times per model: a worker that exits before it counts a
+  // try (a full disk) would otherwise relaunch at every check, and the
+  // launching state would keep the panel busy. A new key, or a reload,
+  // starts the count again. It never touches the click state (pendingToken,
+  // clickNotice), so the user's clicks never wait on it.
   function autoUpdate() {
     var ask = view.auto_update
     if (!ask) return
@@ -79,9 +87,15 @@ Item {
     }
     var now = Date.now()
     if (ask.key === autoKey && now - autoAt < autoRearmMs) return
+    if (ask.key !== autoCountKey) {
+      autoCountKey = ask.key
+      autoLaunches = 0
+    }
+    if (autoLaunches >= autoMaxLaunches) return
+    autoLaunches++
     autoKey = ask.key
     autoAt = now
-    Quickshell.execDetached([cli, "ui-job", "auto-" + now + "-" + Math.floor(Math.random() * 1000000), "build-client", "--auto"])
+    Quickshell.execDetached([cli, "ui-job", token("auto"), "build-client", "--auto"])
   }
   function copyFinished(success) {
     if (!copyingId) return
@@ -147,7 +161,7 @@ Item {
       clickNoticeTimer.restart()
       return ""
     }
-    var clickToken = token()
+    var clickToken = token("panel")
     if (longJob) {
       pendingToken = clickToken
       pendingAt = now

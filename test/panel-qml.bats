@@ -1890,6 +1890,26 @@ TestCase {
     second.view = autoView(true, 'a:0')
     compare(Quickshell.launchCount, count + 1)
   }
+  // A worker that exits before it counts a try (a full disk) gets three
+  // launches of one key, then none until the key changes.
+  function test_auto_update_stops_after_three_launches_of_one_key() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    var count = Quickshell.launchCount
+    for (var i = 1; i <= 3; i++) {
+      model.view = autoView(true, 'c:0')
+      compare(Quickshell.launchCount, count + i)
+      model.view = autoView(false, 'c:0')
+    }
+    model.view = autoView(true, 'c:0')
+    compare(Quickshell.launchCount, count + 3)
+    model.autoAt = Date.now() - 30000
+    model.view = autoView(true, 'c:0')
+    compare(Quickshell.launchCount, count + 3)
+    model.view = autoView(true, 'c:1')
+    compare(Quickshell.launchCount, count + 4)
+    compareAutoLaunch(model)
+  }
   function test_auto_update_has_no_pending_notice_or_blocked_click() {
     var model = createTemporaryObject(modelComponent, tests)
     wait(1); ready(model)
