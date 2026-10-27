@@ -46,8 +46,8 @@ signin_step_missing() {
 
 # client_update_case <finished true|false> [<patches id>]: print which step
 # brings the client up to date (spec 12). The id, when given, saves hashing
-# the patches again. "none": the plan is not finished, the client
-# is current, its stamp is not the pin's, or the guest's driver is behind
+# the patches again. "none": the plan is not finished, the client is
+# current, its stamp is not the pin's, or the guest's driver is behind
 # (req 8's case). "update": the client was built without the current
 # patches, and the live scale task has the sign-in step, so Update the
 # Windows window is the one step, and Lanai runs it by itself
