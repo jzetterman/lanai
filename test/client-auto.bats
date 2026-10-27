@@ -646,7 +646,7 @@ W_REOPEN='The Windows window is updated. To use the update, close the Windows wi
 RESIZE_NEW='After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size. To fix both, click Update the Windows window in More actions. Updating changes nothing in Windows.'
 AUTO_FAILED='Lanai could not update the Windows window by itself. The Windows window build log (build-client.log) or the Jobs log says why.'
 AUTO_LAUNCH='Lanai could not start its update of the Windows window. The Jobs log says why.'
-AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it finished, for example at a logout or restart."
+AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it finished, for example when you logged out or restarted the computer."
 
 # The view's tests list the automatic units from $T/units-list.
 view_setup() { auto_units() { cat "$T/units-list" 2>/dev/null || true; }; }

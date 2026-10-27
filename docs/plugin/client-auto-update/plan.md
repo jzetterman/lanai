@@ -165,6 +165,12 @@ outcome:
 - `SIGKILL` (systemd's final kill) and a power loss run no trap, so the entry
   stays null.
 
+Before the count, an exit with an error that no signal caused (a full disk at
+the count's write, a patch file that cannot be read) writes the gave-up marker,
+`$RUN/client-auto-gave-up`: `<patches id> <time>`. `$RUN` is a tmpfs, so the
+write works on a full home disk, and a reboot clears it. A stop by a signal
+writes no marker.
+
 A null entry reads as a stop once its own unit has ended (next section).
 
 ### Liveness, per try
@@ -210,12 +216,12 @@ check after it is cut off, or within 30 seconds when no poll saw its unit (spec
 requirement 3), with no view of `launch` false needed. The key changes whenever a
 try is counted.
 
-A worker that ends with no entry after a poll saw its unit is launched again at
-the next check. The worker's planned exits with no entry are the ones the view
-tests too (the session, the case, the record), so the view stops asking in the
-same state and they cannot loop. Only an unplanned error before the count (a
-broken install, such as a lock file the worker cannot open) can relaunch: at the
-next check when a poll saw the unit, else at most every 30 seconds.
+The worker's planned exits with no entry are the ones the view tests too (the
+session, the case, the record), so the view stops asking in the same state and
+they cannot loop. An error before the count writes the gave-up marker (the exit
+trap), and the view counts the tries as over for that patch set, so it stops
+asking. The model keeps no count of its own launches: the marker is the one
+rule.
 
 ### The view's update states
 
@@ -249,22 +255,26 @@ last read see a current client. A try that ends between the reads never reads as
 | `tries` | The record's entries for this patch set, else none. `last` is the last one. |
 | `running` | `last` has no outcome and its token is in `auto_units`. |
 | `inflight` | `auto_units` lists any token. |
-| `over` | Not `running`, and two entries, or any entry with `failed` or `launch`. |
+| `due` | `auto_try_due` of the record: fewer than two entries, none with `failed` or `launch`. The worker uses the same test. |
+| `gave_up` | The gave-up marker names this patch set: a worker failed before it counted a try. |
+| `over` | Not `running`, and not `due` or `gave_up`. |
 | `want` | Case `update`, not `over`, not `running`, and the graphical session is active (the worker's step 2 test). |
 | `deciding` | `panel-job.lock` held, `inflight`, and the newest unended record is missing or is an `--auto` record whose token is not in `auto_units` (a stale record from a stopped try): an automatic worker in its steps 1 to 3. |
 | `held_back` | `panel-job.lock` held, `build.lock` held, progress not null, or a pending click token. While `deciding`, neither lock counts: the worker holds both from step 1. |
 | `launch` | `want`, not `held_back`, not `inflight`. The view's `auto_update.launch`. |
 | `wait` | `want` and `held_back`. |
-| `hand` | `shown`, and either the running job (the newest unended record, under a held lock) is a `build-client` record without `--auto`, or `build.lock` is held while `panel-job.lock` is not (a terminal `lanai build-client`). While tries are left, a terminal build is a hold (`held_back`, W_WAIT), not `hand`. Outside case `update` (a CLI setup's step 4, a quick-path build on a current client) it is neither. |
+| `hand` | `shown`, and either the running job (the newest unended record, under a held lock) is a `build-client` record without `--auto`, or `build.lock` is held while `panel-job.lock` is not and no automatic unit is in flight (a terminal `lanai build-client`). While tries are left, a terminal build is a hold (`held_back`, W_WAIT), not `hand`. Outside case `update` (a CLI setup's step 4, a quick-path build on a current client) it is neither. |
 | `updating` | `running`, `hand`, or `want` and not `held_back` (launching). |
 | `shown` | Case `update` and `over`. The update button shows. |
-| `hand_after` | The client record has no `--auto` and started after `last.at`: the user started an update by hand after the tries. |
-| `failed` | `shown`, not `updating`, not `hand_after`. Its kind comes from `last.outcome`: `failed`, `launch`, or (no outcome) stopped. Any other `last.outcome` (an `ok` try while the client is still old) gives the `failed` kind. |
+| `hand_after` | The client record has no `--auto` and started after `last.at` and the marker's time: the user started an update by hand after the tries. |
+| `failed` | `shown`, not `updating`, not `hand_after`. Its kind is `launch` for `gave_up`, else it comes from `last.outcome`: `failed`, `launch`, or (no outcome) stopped. Any other `last.outcome` (an `ok` try while the client is still old) gives the `failed` kind. |
 | `key` | `<patch id>:<number of entries>`. |
 
 So the failure state lasts "until the client is current or the user starts an
-update by hand". It comes from the durable record alone, so a stop between the
-outcome write and the client record's end, or a power loss, keeps the right words.
+update by hand". It comes from the durable record (and, before any count, the
+marker), so a stop between the outcome write and the client record's end, or a
+power loss, keeps the right words. A gave-up marker lasts until a reboot; a new
+patch set ignores it.
 
 ### What each state shows
 
@@ -293,11 +303,11 @@ The words:
 - AUTO_FAILED (`last.outcome` is `failed`, or the fallback kind): "Lanai could
   not update the Windows window by itself. The Windows window build log
   (build-client.log) or the Jobs log says why."
-- AUTO_LAUNCH (`launch`): "Lanai could not start its update of the Windows
-  window. The Jobs log says why."
+- AUTO_LAUNCH (`launch`, or the gave-up marker): "Lanai could not start its
+  update of the Windows window. The Jobs log says why."
 - AUTO_STOPPED (two entries, the last with no outcome): "Lanai's update of the
-  Windows window stopped twice before it finished, for example at a logout or
-  restart."
+  Windows window stopped twice before it finished, for example when you logged
+  out or restarted the computer."
 
 With the failure words, RESIZE_NEW names the button ("To fix both, click Update
 the Windows window in More actions."), so the panel needs no earlier click to make
@@ -793,17 +803,21 @@ Routing: the Opus implementer (opus-5.5) in a worktree. It is user-facing words
 
 Files: `LanaiModel.qml`, `test/panel-qml.bats`.
 
-1. `LanaiModel.qml`: add `property string autoKey: ""`, `property real autoAt: 0`,
+1. `LanaiModel.qml`: add `property string autoKey: ""`, `property double autoAt: 0`,
    `property int autoRearmMs: 30000` and `function autoUpdate()`, called from
    `onViewChanged`. When `view.auto_update` is missing (the unreadable-poll
    fallback), do nothing. When `launch` is not true, set `autoKey` to "". When
    `launch` is true and the key is new, or the key is the same and `Date.now() -
    autoAt >= autoRearmMs` (the view says `launch` true only while no automatic unit
-   is in flight), set `autoKey` and `autoAt` and call `Quickshell.execDetached([cli, "ui-job", "auto-" + Date.now() + "-" +
-   Math.floor(Math.random() * 1000000), "build-client", "--auto"])`. It never
-   touches `pendingToken`, `pendingAt` or `clickNotice`, and never calls `run()`.
-   A comment above it says why: the backend decides and waits out holds, a key
-   launches once, and the user's clicks never wait on it.
+   is in flight), set `autoKey` and `autoAt` and call `Quickshell.execDetached([cli, "ui-job",
+   token("auto"), "build-client", "--auto"])` (`token(prefix)` gives
+   `<prefix>-<ms>-<random>`; clicks use `token("panel")`). It never touches
+   `pendingToken`, `pendingAt` or `clickNotice`, and never calls `run()`. It keeps
+   no count of its launches: a worker that fails before it counts writes the
+   gave-up marker, and the view stops asking. A comment above it says why: the
+   backend decides and waits out holds, a key launches once (again after a
+   `launch` false view, or after the 30-second re-arm), and the user's clicks
+   never wait on it.
 2. `LanaiPanel.qml` and `Widget.qml` need no change: the warning, the result, the
    busy line and the right-click already come from the view. Confirm that while
    testing.
@@ -966,13 +980,14 @@ step 6), and Phase F.
 - Accepted by the spec: a launch cut off before its job records the try counts for
   nothing and is launched again: at the next check, or within 30 seconds when its
   unit ended before any poll saw it (the model's re-arm).
-- A worker that ends before it records anything, every time, from an unplanned
-  error (for example, a lock file it cannot open), shows the update as launching
-  until the state changes. It is launched again at the next check when a poll saw
-  its unit, else at most every 30 seconds. Each such launch exits at once and
-  builds nothing. Only a broken install gets here. The worker's planned exits
-  with no entry (the session, the case, the record) cannot loop: the view tests
-  the same facts.
+- A worker that fails before it records anything (a full disk, a patch file it
+  cannot read, a lock file it cannot open) writes the gave-up marker in `$RUN`.
+  The view then shows the failure (AUTO_LAUNCH) and the button, and nothing stays
+  busy, until a reboot, a hand update or a new patch set. If even `$RUN` cannot
+  be written, the update shows as launching and is launched again at the next
+  check, at most every 30 seconds; each launch exits at once and builds nothing.
+  The worker's planned exits with no entry (the session, the case, the record)
+  cannot loop: the view tests the same facts.
 - Waiting workers: during a long job, each bar item that launched has a worker
   waiting in step 1. When the job ends, the first one runs the try and the others
   check and exit.

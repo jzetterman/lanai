@@ -152,7 +152,7 @@ LANAI_AUTO_RUN="Lanai is updating the Windows window. This can take several minu
 LANAI_AUTO_REOPEN="The Windows window is updated. To use the update, close the Windows window and open it again."
 LANAI_AUTO_FAILED="Lanai could not update the Windows window by itself. The Windows window build log (build-client.log) or the Jobs log says why."
 LANAI_AUTO_LAUNCH="Lanai could not start its update of the Windows window. The Jobs log says why."
-LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it finished, for example at a logout or restart."
+LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it finished, for example when you logged out or restarted the computer."
 
 # auto_view <finished true|false> <progress> <records> <pending true|false>:
 # print the state of Lanai's own client update as one JSON object, from the
