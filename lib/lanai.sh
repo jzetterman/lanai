@@ -1374,10 +1374,7 @@ lock_held() (
 # Lanai's patches (spec 7, 12, 26). It takes several minutes and changes
 # nothing in Windows. The panel runs it as a panel job (Update the Windows
 # window, the client group); Lanai's own update runs build_client in its
-# worker instead (auto_update_worker). A running client keeps its open
-# binary, so the message always ends by saying to reopen the window. Another build holding
-# build.lock replies with reason build-busy. Missing patches mean a broken
-# install, so the next step is to reinstall Lanai.
+# worker instead (auto_update_worker). build_client_emit gives the reply.
 cmd_build_client() {
   local out rc=0
   out=$(build_client_locked) || rc=$?
@@ -1386,8 +1383,11 @@ cmd_build_client() {
 
 # build_client_emit <rc> <out>: print lanai build-client's reply for a build
 # that ended with status <rc> and printed <out> (build_client_locked's codes:
-# 3 is another build). cmd_build_client and Lanai's own update worker
-# (auto_update_worker, lib/ui.sh) both use it.
+# 3 is another build). A running client keeps its open binary, so the
+# success message always ends by saying to reopen the window. Another build
+# holding build.lock replies with reason build-busy. Missing patches mean a
+# broken install, so the next step is to reinstall Lanai. cmd_build_client
+# and Lanai's own update worker (auto_update_worker, lib/ui.sh) both use it.
 build_client_emit() {
   local rc=$1 out=$2 next
   if ((rc == 3)); then

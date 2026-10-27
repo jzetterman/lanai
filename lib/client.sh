@@ -492,10 +492,11 @@ build_step() { :; }
 # old build or the new one, complete. The installed binary must report the
 # pinned build. The quick path removes a .partial left by a stop after the
 # swap. Keeps other builds until the guest's IDD matches the pin. Build
-# output goes to <state>/build-client.log, which each build starts empty. Every failure prints one line that says
-# why and adds it to that log, so the log never shows an older build's
-# output and always ends with the reason. Only when the log itself cannot
-# be written does the reason go to stdout alone.
+# output goes to <state>/build-client.log, which each build starts empty.
+# Every failure prints one line that says why and adds it to that log, so
+# the log never shows an older build's output and always ends with the
+# reason. Only when the log itself cannot be written does the reason go to
+# stdout alone.
 # Prints the client binary; on failure prints why. Does nothing when the
 # pinned build is already installed with the current patches.
 build_client() {
