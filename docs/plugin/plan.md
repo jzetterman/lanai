@@ -2934,6 +2934,9 @@ bar's tooltip, which `LanaiModel.qml` builds from `view.warning`.
   panel's logs block; `panel-job.log` holds nothing useful for it.
   `build_client_locked`'s rc 3 (another build running) replies with its own
   reason, `build-busy`, and its own panel words.
+  (Superseded: Lanai now starts this update by itself, Start Windows stays
+  available during it, and the done words are gone; see
+  `client-auto-update/plan.md`, "What each state shows".)
 - Old scale task: the resize warning names Run setup again only, and no update button
   shows. `setup_plan`'s step 4 check becomes `! build_stamp_current || !
   build_patches_current`. The "done" check above it stays pin-only, so only a

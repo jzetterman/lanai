@@ -324,14 +324,14 @@ nothing in Windows. You can start and use Windows during the update, and the upd
 gets less CPU than Windows. If a Windows window that opened before the update
 finished is still open, the panel and the bar's tooltip say to close it and open it
 again. If the update fails, cannot start, or stops twice before it finishes (for
-example at a logout), the panel says what may go wrong, names **Update the Windows
-window** in More actions, and points to the Windows window build log or the Jobs
-log. When the scale task in Windows was set up without the sign-in step, Windows may
-stay at its old size after it starts, until you resize the window. Lanai then does
-not update the window by itself, and the panel names **Run setup again**. It updates
-the Windows window too, turns the Windows lock off again, and restarts Windows as
-setup always does. If setup cannot update the window, the panel points to the same
-build log.
+example at a logout), the panel says what may go wrong and names **Update the
+Windows window** in More actions. After a failure, or when the update cannot start,
+it also points to the Windows window build log or the Jobs log. When the scale task
+in Windows was set up without the sign-in step, Windows may stay at its old size
+after it starts, until you resize the window. Lanai then does not update the window
+by itself, and the panel names **Run setup again**. It updates the Windows window
+too, turns the Windows lock off again, and restarts Windows as setup always does. If
+setup cannot update the window, the panel points to the same build log.
 
 Windows' display scale changes while Windows runs, without a restart or sign-out.
 “Match my monitor” uses the Windows step nearest the scale of the monitor the
