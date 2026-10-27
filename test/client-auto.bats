@@ -214,7 +214,7 @@ record() { jq -nc --arg p "$1" --argjson t "$2" '{patches:$p,tries:$t}' >"$S/cli
 
 @test "auto worker: nothing is due in each case of requirement 2" {
   local case n=0
-  for case in signin old-task unfinished no-client pin-change behind current over session; do
+  for case in signin old-task unfinished no-stamp behind current over session; do
     n=$((n + 1))
     state "$CURRENT"
     rm -f "$T/current" "$T/no-stamp" "$T/behind" "$T/session" "$S/client-auto.json"
@@ -222,7 +222,7 @@ record() { jq -nc --arg p "$1" --argjson t "$2" '{patches:$p,tries:$t}' >"$S/cli
       signin) state '{"done":true,"scale_task":2}' ;;
       old-task) state '{"done":true}' ;;
       unfinished) state '{"snapshot":"declined"}' ;;
-      no-client | pin-change) state '{"snapshot":"declined"}'; touch "$T/no-stamp" ;;
+      no-stamp) touch "$T/no-stamp" ;;
       behind) echo B7-801-g1a2b3c4d5e >"$T/behind" ;;
       current) touch "$T/current" ;;
       over) record "$(patches_id)" '[{"token":"auto-old","at":1,"outcome":"failed"}]' ;;
@@ -598,6 +598,16 @@ hold() {
   wait_for_file "$T/held-$1"
 }
 
+# Let Windows read as running, with no window open, while $T/st says active.
+running_facts() {
+  declare -F real_status_facts >/dev/null ||
+    eval "$(declare -f status_facts | sed '1s/status_facts/real_status_facts/')"
+  status_facts() {
+    if [[ $(<"$T/st") == active ]]; then printf 'ActiveState=active\nLanaiSetup=done\nLanaiQmp=running\nLanaiQga=open\n'
+    else real_status_facts "$@"; fi
+  }
+}
+
 # A command-line snapshot: the operation lock held, its progress written.
 cli_snapshot() {
   rm -f "$T/held-cli"
@@ -610,10 +620,12 @@ touch "$1"; exec sleep 30' _ "$T/held-cli" "$S/image-progress.json" 3>&- &
 @test "view: an old client asks for an update, with Windows stopped and running" {
   local st
   view_setup
+  running_facts
   for st in inactive active; do
     echo "$st" >"$T/st"
     run cmd_panel
     assert_success
+    assert_equal "$(view .state)" "$([[ $st == active ]] && echo running || echo stopped)"
     assert_equal "$(view .auto_update.launch)" true
     assert_equal "$(view .auto_update.key)" "$(patches_id):0"
     assert_equal "$(view .warning)" "$W_RUN"
@@ -630,14 +642,14 @@ touch "$1"; exec sleep 30' _ "$T/held-cli" "$S/image-progress.json" 3>&- &
 @test "view: no ask in each case of requirement 2" {
   local case
   view_setup
-  for case in signin old-task unfinished no-client pin-change behind current over session; do
+  for case in signin old-task unfinished no-stamp behind current over session; do
     state "$CURRENT"
     rm -f "$T/current" "$T/no-stamp" "$T/behind" "$T/session" "$S/client-auto.json"
     case $case in
       signin) state '{"done":true,"scale_task":2}' ;;
       old-task) state '{"done":true}' ;;
       unfinished) state '{"snapshot":"declined"}' ;;
-      no-client | pin-change) state '{"snapshot":"declined"}'; touch "$T/no-stamp" ;;
+      no-stamp) touch "$T/no-stamp" ;;
       behind) echo B7-801-g1a2b3c4d5e >"$T/behind" ;;
       current) touch "$T/current" ;;
       over) record "$(patches_id)" '[{"token":"auto-old","at":1,"outcome":"failed"}]' ;;
@@ -716,11 +728,7 @@ touch "$1"; exec sleep 30' _ "$T/held-cli" "$S/image-progress.json" 3>&- &
   assert_equal "$(view .right_click)" start
   assert_equal "$(view .buttons.update_client.show)" false
   # Windows running, with no window open.
-  eval "$(declare -f status_facts | sed '1s/status_facts/real_status_facts/')"
-  status_facts() {
-    if [[ $(<"$T/st") == active ]]; then printf 'ActiveState=active\nLanaiSetup=done\nLanaiQmp=running\nLanaiQga=open\n'
-    else real_status_facts "$@"; fi
-  }
+  running_facts
   echo active >"$T/st"
   run cmd_panel
   assert_equal "$(view .state)" running
@@ -777,6 +785,7 @@ touch "$1"; exec sleep 30' _ "$T/held-cli" "$S/image-progress.json" 3>&- &
 @test "view: a terminal build after the tries end counts as an update by hand" {
   view_setup
   record "$(patches_id)" '[{"token":"auto-old","at":1,"outcome":"failed"}]'
+  panel_result_write client '{"token":"auto-old","command":"build-client","args":["--auto"],"invocation":"inv","started":1.5,"ended":3,"reply":{"ok":false}}'
   hold build.lock
   run cmd_panel
   assert_equal "$(view .warning)" "$W_RUN"
@@ -872,6 +881,7 @@ assert_auto_failed() {
 @test "view: after the tries end, every bar item fails until a hand update or a current client" {
   local tries words
   view_setup
+  running_facts
   for tries in '[{"token":"auto-a","at":1,"outcome":"failed"}]' \
     '[{"token":"auto-a","at":1,"outcome":"launch"}]' \
     '[{"token":"auto-a","at":1,"outcome":null},{"token":"auto-b","at":2,"outcome":null}]'; do
@@ -890,6 +900,7 @@ assert_auto_failed() {
     echo active >"$T/st"
     echo inv2 >"$T/inv"
     assert_auto_failed "$words"
+    assert_equal "$(view .state)" running
     rm -rf "$RUN"
     mkdir -m 700 "$RUN"
     assert_auto_failed "$words"
@@ -1005,6 +1016,14 @@ assert_auto_failed() {
   echo inactive >"$T/st"
   run cmd_panel
   assert_equal "$(view .warning)" ''
+  # The plan unfinished for another reason, and the patches not current.
+  echo active >"$T/st"
+  state '{"snapshot":"declined"}'
+  echo stale >"$(client_builds)/$LG_BUILD/build-patches"
+  run cmd_panel
+  [[ $(view .warning) != *"$W_REOPEN"* ]] || fail "an unfinished plan shows the reopen words"
+  state "$CURRENT"
+  write_client_stamps
   # A successful update with no window shows nothing.
   client_active() { return 1; }
   for args in '[]' '["--auto"]'; do
