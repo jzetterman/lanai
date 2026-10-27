@@ -443,6 +443,30 @@ touch "$1"; exec sleep 2' _ "$T/held" "$S/image-progress.json" 3>&- & ;;
   assert_equal "$(jq -c '[.tries[] | [.token, .outcome]]' "$S/client-auto.json")" '[["auto-b1",null]]'
 }
 
+@test "auto worker: a stop while a command fails is a stop, not a failure" {
+  local case
+  # mv and sync block, then fail at the stop: without the TERM trap, the
+  # failed command would read as an error and write "failed".
+  shim mv 'if [[ -e $T/mv-block && ${!#} == */panel-result-client.json ]]; then rm "$T/mv-block"; touch "$T/at-mv"; exec sleep 30; fi
+exec /usr/bin/mv "$@"'
+  shim sync 'if [[ -e $T/sync-block && -e $T/current && ${!#} == */client-auto.json.* ]]; then rm "$T/sync-block"; touch "$T/at-sync"; exec sleep 30; fi
+exec /usr/bin/sync "$@"'
+  export PATH=$T/shims:$PATH
+  for case in mv sync; do
+    rm -f "$T/current" "$T/builds" "$S/client-auto.json" "$T/at-$case"
+    touch "$T/$case-block"
+    run cmd_ui_job "auto-$case" build-client --auto
+    assert_success
+    auto_file "$T/at-$case"
+    kill -TERM -- "-$(<"$T/units/auto-$case")"
+    auto_wait "auto-$case"
+    assert_equal "$(jq -c '[.tries[] | [.token, .outcome]]' "$S/client-auto.json")" "[[\"auto-$case\",null]]"
+    # mv blocks at the client record, before the build; sync blocks at the
+    # ok outcome's write, after it.
+    if [[ $case == mv ]]; then assert_equal "$(builds)" 0; else assert_equal "$(builds)" 1; fi
+  done
+}
+
 @test "auto worker: a failure keeps its outcome after a stop at the end" {
   touch "$T/fails"
   echo recorded >"$T/stop-at"
