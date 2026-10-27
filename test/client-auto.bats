@@ -313,6 +313,11 @@ touch "$1"; exec sleep 2' _ "$T/held" "$S/image-progress.json" 3>&- & ;;
     sleep 1
     assert [ ! -e "$S/client-auto.json" ]
     assert_equal "$(builds)" 0
+    # It holds no lock while it waits: a panel job could start.
+    if [[ $hold != panel-job ]]; then
+      run flock -n "$S/panel-job.lock" true
+      assert_success
+    fi
     auto_wait "auto-$hold"
     assert_equal "$(jq -c '[.tries[] | [.token, .outcome]]' "$S/client-auto.json")" "[[\"auto-$hold\",\"ok\"]]"
     assert_equal "$(builds)" 1
@@ -418,6 +423,11 @@ touch "$1"; exec sleep 2' _ "$T/held" "$S/image-progress.json" 3>&- & ;;
       run cmd_ui_job "auto-$signal-$step" build-client --auto
       assert_success
       auto_file "$T/at-$step"
+      # Published: the client record names Lanai's own update, with no
+      # reply yet.
+      if [[ $step == published ]]; then
+        assert_equal "$(jq -c '[.args, has("reply")]' "$S/panel-result-client.json")" '[["--auto"],false]'
+      fi
       kill "-$signal" -- "-$(<"$T/units/auto-$signal-$step")"
       for ((i = 0; i < 20; i++)); do
         kill -0 -- "-$(<"$T/units/auto-$signal-$step")" 2>/dev/null || break
@@ -573,7 +583,41 @@ exec /usr/bin/sync "$@"'
   assert_equal "$(jq -r .reply.ok "$S/panel-result-client.json")" true
   run cmd_build_client
   assert_success
+  # A hand launch that systemd-run refuses.
+  echo fail >"$T/run-mode"
+  run cmd_ui_job panel-h build-client
+  assert_failure 1
   assert_equal "$(sha256sum <"$S/client-auto.json")" "$sum"
+}
+
+@test "auto worker: an error after the outcome keeps the outcome" {
+  echo recorded >"$T/false-at"
+  auto_run auto-a
+  [[ $(<"$T/rc-auto-a") != 0 ]] || fail "the error exited 0"
+  assert_equal "$(jq -c '[.tries[] | [.token, .outcome]]' "$S/client-auto.json")" '[["auto-a","ok"]]'
+}
+
+@test "auto worker: a try entry that is not an object counts as an empty record" {
+  record "$(patches_id)" '["x","y"]'
+  auto_run auto-a
+  assert_equal "$(jq -c '[.tries[] | [.token, .outcome]]' "$S/client-auto.json")" '[["auto-a","ok"]]'
+}
+
+@test "auto worker: removes a temporary record file a stop left" {
+  : >"$S/client-auto.json.Ab12Cd"
+  auto_run auto-a
+  assert [ ! -e "$S/client-auto.json.Ab12Cd" ]
+}
+
+@test "auto_record_write: the folder is synced after the move" {
+  shim sync 'echo "sync $*" >>"$T/order"; exec /usr/bin/sync "$@"'
+  shim mv 'echo "mv $*" >>"$T/order"; exec /usr/bin/mv "$@"'
+  export PATH=$T/shims:$PATH
+  auto_record_write '{"patches":"p","tries":[]}'
+  run cat "$T/order"
+  assert_line --index 0 --regexp "^sync -- $S/client-auto.json\..{6}$"
+  assert_line --index 1 --regexp "^mv -f -- $S/client-auto.json\..{6} $S/client-auto.json$"
+  assert_line --index 2 "sync -- $S"
 }
 
 @test "auto worker: two launches at once record one try" {
@@ -817,6 +861,11 @@ touch "$1"; exec sleep 30' _ "$T/held-cli" "$S/image-progress.json" 3>&- &
   assert_equal "$(view .bar.mode)" busy
   assert_equal "$(view .busy.line)" ''
   assert_equal "$(view .result.client)" ''
+  # With an automatic unit in flight, the build lock may be that worker's:
+  # not an update by hand.
+  echo auto-new >"$T/units-list"
+  run cmd_panel
+  assert_equal "$(view .warning)" "$RESIZE_NEW"
 }
 
 @test "view: a terminal build is a hold while tries are left, and nothing outside the update case" {
