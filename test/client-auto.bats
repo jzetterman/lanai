@@ -343,14 +343,28 @@ touch "$1"; exec sleep 2' _ "$T/held" "$S/image-progress.json" 3>&- & ;;
   run cmd_ui_job auto-b build-client --auto
   assert_failure 1
   assert_equal "$(jq -c '[.tries[] | .token]' "$S/client-auto.json")" '["auto-a"]'
-  # It waits out a read probe of the panel view.
+  # It waits for panel-job.lock, as long as another holds it.
   rm "$S/client-auto.json"
-  flock -s "$S/panel-job.lock" bash -c 'touch "$1"; exec sleep 0.5' _ "$T/held" 3>&- &
+  flock "$S/panel-job.lock" bash -c 'touch "$1"; while [[ ! -e $2 ]]; do sleep 0.05; done' _ "$T/held" "$T/release" 3>&- &
   BG_PIDS+=("$!")
   wait_for_file "$T/held"
-  run cmd_ui_job auto-c build-client --auto
-  assert_failure 1
+  (cmd_ui_job auto-c build-client --auto >/dev/null) 3>&- &
+  local launch=$!
+  sleep 0.5
+  assert [ ! -e "$S/client-auto.json" ]
+  touch "$T/release"
+  wait "$launch" || true
   assert_equal "$(jq -c '[.tries[] | [.token, .outcome]]' "$S/client-auto.json")" '[["auto-c","launch"]]'
+}
+
+@test "auto worker: holds build.lock while it builds" {
+  echo built >"$T/stop-at"
+  run cmd_ui_job auto-a build-client --auto
+  assert_success
+  auto_file "$T/at-built"
+  # A terminal lanai build-client is refused meanwhile.
+  run build_client_locked
+  assert_failure 3
 }
 
 @test "auto launch: a launch whose worker never runs records nothing" {
