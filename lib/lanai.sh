@@ -1347,16 +1347,28 @@ cmd_open() {
 }
 
 # Build the pinned client under build.lock; release the lock on return.
+# It waits up to 1 s, so the panel view's shared probe (lock_held) never
+# refuses a build.
 build_client_locked() (
   local s
   s=$(state_dir)
   mkdir -p -- "$s" && exec {LANAI_BUILD_FD}>>"$s/build.lock" || return 1
-  flock -n "$LANAI_BUILD_FD" || {
+  flock -w 1 "$LANAI_BUILD_FD" || {
     echo "another Looking Glass client build is running"
     return 3
   }
   build_client
 )
+
+# lock_held <file>: succeed only while another process holds lock <file>
+# exclusively. It opens the file read-only, never creates it, and tries a
+# shared lock, so two probes never see each other.
+lock_held() (
+  local fd
+  [[ -f $1 ]] || return 1
+  exec {fd}<"$1" || return 1
+  ! flock -s -n "$fd"
+) 2>/dev/null
 
 # build-client: build and install the pinned Looking Glass client with
 # Lanai's patches (spec 7, 12, 26). It takes several minutes and changes
@@ -1366,8 +1378,17 @@ build_client_locked() (
 # build.lock replies with reason build-busy. Missing patches mean a broken
 # install, so the next step is to reinstall Lanai.
 cmd_build_client() {
-  local out rc=0 next
+  local out rc=0
   out=$(build_client_locked) || rc=$?
+  build_client_emit "$rc" "$out"
+}
+
+# build_client_emit <rc> <out>: print lanai build-client's reply for a build
+# that ended with status <rc> and printed <out> (build_client_locked's codes:
+# 3 is another build). cmd_build_client and Lanai's own update worker
+# (auto_update_worker, lib/ui.sh) both use it.
+build_client_emit() {
+  local rc=$1 out=$2 next
   if ((rc == 3)); then
     emit false "" "Another build of the Windows window is running." "wait for it to finish" '{"reason":"build-busy"}'
     return 1
