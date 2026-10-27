@@ -1337,7 +1337,7 @@ cmd_open() {
       return 1
     fi
   fi
-  pid=$(systemctl --user show -p MainPID --value "$LANAI_CLIENT_UNIT" 2>/dev/null) || pid=""
+  pid=$(client_main_pid)
   if [[ $pid =~ ^[1-9][0-9]*$ ]] && out=$(timeout 5 hyprctl dispatch focuswindow "pid:$pid" 2>/dev/null) &&
     [[ $out == ok ]]; then
     emit true "" "Focused the Windows window." ""

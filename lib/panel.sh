@@ -122,9 +122,13 @@ panel_words() {
 # and remains held for all reads, so launch/end cannot race the final-state read.
 # job is the running job: the newest unended record, only while a job holds
 # the lock. Unheld, that record is an interrupted job, not the one running.
+# build_held says whether a client build holds build.lock, probed first: a
+# job takes panel-job.lock before build.lock, so a held build lock read
+# first is never a job that the records then miss.
 panel_records() {
-  local s fd held=false group doc records='{}'
+  local s fd held=false build_held=false group doc records='{}'
   s=$(state_dir)
+  ! lock_held "$s/build.lock" || build_held=true
   if [[ -f $s/panel-job.lock ]]; then
     exec {fd}<"$s/panel-job.lock"
     if ! flock -s -n "$fd"; then held=true; fi
@@ -134,7 +138,7 @@ panel_records() {
     records=$(jq -nc --arg g "$group" --argjson d "$doc" --argjson r "$records" '$r + {($g):$d}')
   done
   [[ -z ${fd:-} ]] || exec {fd}>&-
-  jq -nc --argjson r "$records" --argjson h "$held" '{held:$h,records:$r,
+  jq -nc --argjson r "$records" --argjson h "$held" --argjson b "$build_held" '{held:$h,build_held:$b,records:$r,
     job:(if $h then [$r[] | select(. != null and has("started") and (has("ended") | not))] | max_by(.started) // {}
       else {} end)}'
 }
@@ -150,16 +154,13 @@ LANAI_AUTO_FAILED="Lanai could not update the Windows window by itself. The Wind
 LANAI_AUTO_LAUNCH="Lanai could not start its update of the Windows window. The Jobs log says why."
 LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it finished, for example at a logout or restart."
 
-# auto_view <finished true|false> <progress> <records> <pending true|false>
-# <build held true|false>: print the state of Lanai's own client update as
-# one JSON object, from the try record, the gave-up marker, the locks and
-# the automatic units (plan, "The view's update states"). It writes
-# nothing. <records> is panel_records' output, <progress> the image
-# activity, <pending> whether a click's job has not started yet, and <build
-# held> lock_held of build.lock, which cmd_panel probes before
-# panel_records: a worker takes panel-job.lock before build.lock, so a held
-# build lock read first is never a worker that the records then miss. The
-# reads here go in a fixed order: the units, then the record and the
+# auto_view <finished true|false> <progress> <records> <pending true|false>:
+# print the state of Lanai's own client update as one JSON object, from the
+# try record, the gave-up marker, the locks and the automatic units (plan,
+# "The view's update states"). It writes nothing. <records> is
+# panel_records' output (with both locks), <progress> the image activity,
+# and <pending> whether a click's job has not started yet. The reads here go
+# in a fixed order: the units, then the record and the
 # marker, then the client's patches. A try writes its outcome before its
 # unit ends, so a try that ends between the reads never reads as stopped.
 # The tries are over when the record allows no more (auto_try_due) or a
@@ -171,7 +172,7 @@ LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it
 # and counts as launching), shown (the update button), and failed and its
 # kind.
 auto_view() {
-  local finished=$1 progress=$2 records=$3 click_pending=$4 build_held=$5 units='' id='' doc='{"tries":[]}'
+  local finished=$1 progress=$2 records=$3 click_pending=$4 units='' id='' doc='{"tries":[]}'
   local ucase patched=false session=false due=true gave_up=null gid gat
   # The record matters only for a finished setup with the pin's client.
   if [[ $finished == true ]] && build_stamp_current; then
@@ -188,10 +189,10 @@ auto_view() {
   [[ -z $id ]] || ! build_patches_current "$id" || patched=true
   ! session_active || session=true
   jq -nc --argjson doc "$doc" --arg units "$units" --argjson rec "$records" --argjson progress "$progress" \
-    --argjson pending "$click_pending" --argjson bh "$build_held" --argjson session "$session" --arg case "$ucase" \
+    --argjson pending "$click_pending" --argjson session "$session" --arg case "$ucase" \
     --argjson current "$patched" --arg id "$id" --argjson due "$due" --argjson gaveUp "$gave_up" '
     ($units | split("\n") | map(select(. != ""))) as $u |
-    $doc.tries as $tries | ($tries | last) as $last | $rec.held as $ph | $rec.job as $job |
+    $doc.tries as $tries | ($tries | last) as $last | $rec.held as $ph | $rec.build_held as $bh | $rec.job as $job |
     ($last != null and $last.outcome == null and any($u[]; . == $last.token)) as $running |
     ($u | length > 0) as $inflight |
     (($running | not) and (($due | not) or $gaveUp != null)) as $over |
@@ -201,7 +202,7 @@ auto_view() {
     ((($deciding | not) and ($ph or $bh)) or $progress != null or $pending) as $heldBack |
     ($case == "update" and $over) as $shown |
     ($shown and (($ph and $job.command == "build-client" and (any($job.args[]?; . == "--auto") | not)) or
-      ($bh and ($ph | not)))) as $hand |
+      ($bh and ($ph | not) and ($inflight | not)))) as $hand |
     ($want and ($heldBack | not)) as $launching |
     ($running or $hand or $launching) as $updating |
     $rec.records.client as $c |
@@ -288,7 +289,7 @@ cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
   local client_old=false signin_missing=false task button auto client_case click_pending=false window_stale=false
-  local build_held=false
+  local seen=false
   local snapshot_paths='[]' items='[]' name restore log_rows path display label seconds
   local check_since=null checks_stopped=false since vm_status
   if (($#)); then
@@ -297,23 +298,22 @@ cmd_panel() {
     fi
     token=$2 at=$3
   fi
-  progress=$(python3 "$LANAI_LIB/image-proof.py" activity "$(state_dir)/lock" "$(state_dir)/image-progress.json")
+  progress=$(image_activity)
   facts=$(shared_facts "$progress")
   status_details=$(status_facts "$facts")
   status=$(status_map <<<"$status_details")
   # Reuse the gathered facts without setup masking the VM's runtime state.
   vm_status=$(status_map <<<"$status_details"$'\nLanaiSetup=done')
   plan=$(setup_plan "$facts")
-  # build.lock before the records: see auto_view.
-  ! lock_held "$(state_dir)/build.lock" || build_held=true
   records=$(panel_records)
-  # A click whose job has not written its record yet: busy, and it holds
-  # Lanai's own client update back too.
-  if [[ -n $token ]] && ((EPOCHSECONDS - at < 10)) &&
-    ! jq -e --arg t "$token" 'any(.records[]; . != null and .token == $t)' <<<"$records" >/dev/null; then
-    click_pending=true
+  # A click's job has written its record (seen), or it has not yet and was
+  # launched under 10 s ago (pending): busy, and it holds Lanai's own client
+  # update back too.
+  if [[ -n $token ]] && jq -e --arg t "$token" 'any(.records[]; . != null and .token == $t)' <<<"$records" >/dev/null; then
+    seen=true
   fi
-  auto=$(auto_view "$(jq -r .finished <<<"$plan")" "$progress" "$records" "$click_pending" "$build_held")
+  if [[ -n $token ]] && ! $seen && ((EPOCHSECONDS - at < 10)); then click_pending=true; fi
+  auto=$(auto_view "$(jq -r .finished <<<"$plan")" "$progress" "$records" "$click_pending")
   client_case=$(jq -r .case <<<"$auto")
   problem_line=''
   if [[ $(jq -r .reason <<<"$plan") != '' ]]; then
@@ -354,7 +354,7 @@ cmd_panel() {
   task=$(scale_task_kind)
   # An open Windows window that started before an update installed the
   # current client: it says to close and reopen it.
-  if jq -e '.current and .case == "none"' <<<"$auto" >/dev/null && jq -e '.active' <<<"$status" >/dev/null &&
+  if jq -e '.current' <<<"$auto" >/dev/null && jq -e '.active' <<<"$status" >/dev/null &&
     client_window_stale; then window_stale=true; fi
   for group in vm setup settings snapshots client; do
     doc=$(jq -c --arg g "$group" '.records[$g] // {}' <<<"$records")
@@ -477,7 +477,7 @@ cmd_panel() {
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
     --argjson clientOld "$client_old" --argjson signinMissing "$signin_missing" --arg task "$task" \
-    --argjson auto "$auto" --argjson pending "$click_pending" --argjson windowStale "$window_stale" \
+    --argjson auto "$auto" --argjson pending "$click_pending" --argjson seen "$seen" --argjson windowStale "$window_stale" \
     --arg wWait "$LANAI_AUTO_WAIT" --arg wRun "$LANAI_AUTO_RUN" --arg wReopen "$LANAI_AUTO_REOPEN" \
     --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" \
     --arg invocation "$inv" --argjson checkSince "$check_since" --argjson checksStopped "$checks_stopped" '
@@ -494,12 +494,11 @@ cmd_panel() {
     $states[$st.state] as $w |
     # The running job (panel_records).
     $rec.job as $job |
-    ([$rec.records[] | select(.token == $token)] | length > 0) as $seen |
     # The automatic client update is busy from the check that asks for it
     # (launching) and during an update by hand after its tries (auto_view).
     ($rec.held or $pending or $progress != null or $auto.launching or $auto.hand) as $busy |
-    # Start Windows waits only for jobs that need Windows off: not for a
-    # client build, nor for an automatic worker in its wait and check.
+    # Start Windows waits for every job except a client build and an
+    # automatic worker in its wait and check.
     ($pending or $progress != null or
       ($rec.held and $job.command != "build-client" and ($auto.deciding | not))) as $startBusy |
     ($job.command == "setup") as $setupJob |
@@ -537,7 +536,7 @@ cmd_panel() {
      pending_ack:(if $seen then $token else "" end),
      progress:$progress,restore:($restore + {active:$restoring}),notice:($st.notice // ""),warning:"",logs:$logs,settings:$settings,snapshots:($snaps + {show:$snapshotsShow}),
      # Progress, or the target and warning of a running restore, says what
-     # runs. So does the warning while a client update runs (W_RUN).
+     # runs. So does the warning while a client update runs ($wRun).
      busy:{active:$busy,line:(if $progress != null or $restoring or $auto.updating then ""
        elif $rec.held and $job.reply and $job.command == "setup" then (if $job.reply.step == "5" then "Waiting for Windows to finish setup." else "Checking Windows." end)
        elif $busy then ({setup:"Working on setup.",snapshot:"Taking a snapshot.","delete-snapshot":"Deleting a snapshot.",
@@ -619,10 +618,10 @@ cmd_panel() {
       # again is the one step: one message says what it fixes (the mouse
       # after a wake, from an old client; the size, from the missing step or
       # an old client; scale saves, with the old task) and the lock. With
-      # the step, Lanai updates an old client by itself: W_RUN while it
-      # runs (or launches, or a hand update runs), W_WAIT while a job holds
+      # the step, Lanai updates an old client by itself: $wRun while it
+      # runs (or launches, or a hand update runs), $wWait while a job holds
       # it back, and the words of the update button once its tries end. After
-      # an update, an open window that started before it says W_REOPEN.
+      # an update, an open window that started before it says $wReopen.
       if $signinMissing then
         ([if $clientOld then "After the computer wakes from sleep, the mouse may reach only part of Windows.",
             "Windows may start at the wrong size and stay there until you resize the window, and it may change to the wrong size while it runs."

@@ -131,12 +131,16 @@ auto_units() {
       u = $1; sub(/^lanai-panel-/, "", u); sub(/\.service$/, "", u); print u }' || true
 }
 
-# Succeed while a command-line snapshot or restore shows progress: its
-# operation lock is held and its progress record is live.
+# Print the live progress of a snapshot or restore as JSON, or null: its
+# operation lock is held and its progress record is live (image-proof.py).
+image_activity() {
+  python3 "$LANAI_LIB/image-proof.py" activity "$(state_dir)/lock" "$(state_dir)/image-progress.json"
+}
+
+# Succeed while a command-line snapshot or restore shows progress.
 auto_progress_active() {
-  local s p
-  s=$(state_dir)
-  p=$(python3 "$LANAI_LIB/image-proof.py" activity "$s/lock" "$s/image-progress.json" 2>/dev/null) || return 1
+  local p
+  p=$(image_activity 2>/dev/null) || return 1
   [[ -n $p && $p != null ]]
 }
 
@@ -158,7 +162,8 @@ auto_launch_failed() (
   id=$(patches_id) || return 1
   doc=$(auto_record_read "$id")
   auto_try_due "$doc" || return 0
-  auto_record_write "$(auto_try_add "$doc" "$1" '"launch"')"
+  doc=$(auto_try_add "$doc" "$1" '"launch"') || return 1
+  auto_record_write "$doc"
 )
 
 # auto_step <name>: a no-op seam that auto_update_worker calls after it
@@ -203,7 +208,7 @@ auto_on_exit() {
 # panel-job.lock before build.lock, as every job does, and runs build_client
 # itself under build.lock.
 auto_update_worker() {
-  local s fd bfd plan="" plan_ok=true id doc started inv rc=0 out reply
+  local s fd bfd plan="" plan_ok=true id doc started inv rc=0 out reply record
   AUTO_TOKEN=$1 AUTO_COUNTED=false AUTO_SIGNAL=0
   # Bash runs the trap when the running command ends; systemd signals the
   # build's processes too, so the trap runs before the outcome is written.
@@ -214,26 +219,21 @@ auto_update_worker() {
   mkdir -p -- "$s"
   exec {fd}>>"$s/panel-job.lock"
   exec {bfd}>>"$s/build.lock"
-  # 1. Wait.
+  # 1. Wait: when no build or image work holds it back, take both locks,
+  # check the image work once more, and go on; else release and sleep.
   while :; do
-    if lock_held "$s/build.lock" || auto_progress_active; then
-      ui_sleep 2
-      continue
-    fi
-    flock "$fd"
-    if ! flock -w 1 "$bfd"; then
+    if ! lock_held "$s/build.lock" && ! auto_progress_active; then
+      flock "$fd"
+      if flock -w 1 "$bfd"; then
+        auto_progress_active || break
+        flock -u "$bfd"
+      fi
       flock -u "$fd"
-      ui_sleep 2
-      continue
     fi
-    if auto_progress_active; then
-      flock -u "$bfd"
-      flock -u "$fd"
-      ui_sleep 2
-      continue
-    fi
-    break
+    ui_sleep 2
   done
+  # A temporary record file left by a stop or a full disk.
+  rm -f -- "$(auto_record_file)".*
   # 2. Check. A logout or reboot that queued this start spends nothing.
   if ! session_active; then
     emit true "" "No update is due: the desktop session is not active." ""
@@ -251,7 +251,8 @@ auto_update_worker() {
     return 0
   fi
   # 3. Count. From here every error is in the Jobs log.
-  auto_record_write "$(auto_try_add "$doc" "$AUTO_TOKEN" null)"
+  doc=$(auto_try_add "$doc" "$AUTO_TOKEN" null)
+  auto_record_write "$doc"
   AUTO_COUNTED=true
   : >"$s/panel-job.log"
   exec 2>>"$s/panel-job.log"
@@ -263,7 +264,8 @@ auto_update_worker() {
   # 4. The panel's client record, as for every panel job.
   started=$(ui_timestamp)
   inv=$(unit_invocation)
-  panel_result_write client "$(ui_record "$AUTO_TOKEN" build-client '["--auto"]' "$started" "$inv" null null)"
+  record=$(ui_record "$AUTO_TOKEN" build-client '["--auto"]' "$started" "$inv" null null)
+  panel_result_write client "$record"
   auto_step published
   # 5. Build, and turn the result into lanai build-client's reply.
   out=$(build_client) || rc=$?
@@ -273,7 +275,8 @@ auto_update_worker() {
   if ((rc == 0)); then auto_outcome_set "$AUTO_TOKEN" ok; else auto_outcome_set "$AUTO_TOKEN" failed; fi
   auto_step recorded
   # 7. End the client record, then release.
-  panel_result_write client "$(ui_record "$AUTO_TOKEN" build-client '["--auto"]' "$started" "$inv" "$reply" "$(ui_timestamp)")"
+  record=$(ui_record "$AUTO_TOKEN" build-client '["--auto"]' "$started" "$inv" "$reply" "$(ui_timestamp)")
+  panel_result_write client "$record"
   exec {bfd}>&- {fd}>&-
   emit true "" "Panel job finished." ""
 }
@@ -442,13 +445,17 @@ cmd_ui_run() {
   LANAI_EMITTED=1
 }
 
-# ui_job_auto <token> <command> [<arg>...]: print true for Lanai's own
+# ui_job_auto <token> <command> [<arg>...]: check a panel job's launch, as
+# cmd_ui_job and cmd_ui_job_worker take it. Print true for Lanai's own
 # update (build-client --auto, with an auto- token), false for any other
-# panel job, and fail for any other mix: build-client takes no argument or
-# exactly --auto, and the auto- prefix goes with --auto only. The prefix
-# names the unit lanai-panel-auto-*, which the view finds (auto_units).
+# panel job, and fail for anything else: a token that is not letters,
+# digits and dashes, a command the panel does not run as a job, a
+# build-client argument other than none or exactly --auto, or the auto-
+# prefix without --auto. The prefix names the unit lanai-panel-auto-*,
+# which the view finds (auto_units).
 ui_job_auto() {
-  local token=$1 command=$2 auto=false
+  local token=${1:-} command=${2:-} auto=false
+  [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore|delete-snapshot|build-client)$ ]] || return 1
   shift 2
   if [[ $command == build-client ]]; then
     case $# in
@@ -474,8 +481,7 @@ ui_job_auto() {
 cmd_ui_job() {
   local token=${1:-} command=${2:-} v s auto
   local -a env=() props=(--service-type=exec)
-  if [[ ! $token =~ ^[A-Za-z0-9-]+$ || ! $command =~ ^(setup|snapshot|restore|delete-snapshot|build-client)$ ]] ||
-    ! auto=$(ui_job_auto "$@"); then
+  if ! auto=$(ui_job_auto "$@"); then
     emit false "" "Invalid panel job." ""; return 2
   fi
   [[ $command != build-client ]] || props+=(-p CPUWeight=idle -p OOMScoreAdjust=1000 -p OOMPolicy=continue)
@@ -535,8 +541,7 @@ ui_setup_next() {
 # (auto_update_worker), with the same token and argument rules as cmd_ui_job.
 cmd_ui_job_worker() {
   local token=${1:-} command=${2:-} group args s fd out started inv at reply auto
-  if [[ ! $token =~ ^[A-Za-z0-9-]+$ || ! $command =~ ^(setup|snapshot|restore|delete-snapshot|build-client)$ ]] ||
-    ! auto=$(ui_job_auto "$@"); then
+  if ! auto=$(ui_job_auto "$@"); then
     emit false "" "Invalid panel job." ""; return 2
   fi
   if [[ $auto == true ]]; then
