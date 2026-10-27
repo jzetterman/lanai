@@ -1011,3 +1011,9 @@ step 6), and Phase F.
 On October 27, 2026 (EDT), John accepted advancing to code after stage (b)'s third
 round, with every finding integrated. The diff gate reviews the code against this
 plan and the spec.
+
+Diff gate (the branch against `main`):
+
+| Stage | Round | Findings | Refuted | Downgraded to nit | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| a (gpt-6.1-sol) | 1 | 1 | 0 | 0 | One P2 confirmed: a failed sync of the parent folder after the swap was ignored, and the old build was removed before the swap was on disk. Fixed test first: the build now fails and keeps the old build in `.partial`. |

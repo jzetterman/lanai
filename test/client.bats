@@ -1022,6 +1022,24 @@ exec /usr/bin/mv "$@"'
   assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
 }
 
+@test "build_client: a failed sync after the swap keeps the old client beside the new one" {
+  lg_source
+  run build_client
+  assert_success
+  echo stale >"$LGDIR/$LG_BUILD/build-patches"
+  echo old >"$LGDIR/$LG_BUILD/marker"
+  # Only the sync of the parent folder, after the swap, fails.
+  shim sync "[[ \"\$*\" != \"-- $LGDIR\" ]] || { echo 'sync: I/O error' >&2; exit 1; }
+exec /usr/bin/sync \"\$@\""
+  run build_client
+  assert_failure
+  # The swap took place, and the old tree stays until the swap is on disk.
+  assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
+  assert_equal "$(<"$LGDIR/$LG_BUILD.partial/marker")" old
+  run cat "$(state_dir)/build-client.log"
+  assert_output --partial "cannot write the swap to disk"
+}
+
 @test "build_client: a filesystem that refuses the exchange keeps the old client" {
   local sum bin=$LGDIR/$LG_BUILD/bin/looking-glass-client
   lg_source

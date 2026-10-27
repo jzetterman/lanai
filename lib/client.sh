@@ -625,7 +625,12 @@ build_client() {
       exit 1
     }
     build_step swapped
-    sync -- "${dest%/*}" 2>>"$log" || true
+    # The swap is on disk only after this sync. Until then the old build in
+    # .partial is the fallback, so a failed sync keeps it and fails.
+    sync -- "${dest%/*}" 2>>"$log" || {
+      build_fail "$log" "cannot write the swap to disk in ${dest%/*}"
+      exit 1
+    }
     build_step committed
     # After the exchange, .partial holds the old build.
     rm -rf -- "$part"
