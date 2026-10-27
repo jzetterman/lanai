@@ -2590,7 +2590,7 @@ SCALE='Scale saves apply only the next time Windows starts.'
 LOCK='Running setup again also turns the Windows lock off again.'
 CLIENT_DONE='The Windows window is updated. If the Windows window is open, close it and open it again.'
 CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window in More actions again.'
-W_RUN='Lanai is updating the Windows window. This can take several minutes. It changes nothing in Windows. You can start and use Windows while it runs.'
+W_RUN='Lanai is updating the Windows window. This can take several minutes and changes nothing in Windows. You can start and use Windows during the update.'
 
 # End Lanai's own update tries for the current patches with one failed try
 # at time 0, so the update button shows (docs/plugin/client-auto-update/).

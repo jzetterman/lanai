@@ -284,12 +284,10 @@ progress at the same time, the progress shows beside the warning.
 
 The words:
 
-- W_WAIT: "After the computer wakes from sleep, the mouse may reach only part of
-  Windows. Windows may also start at, or change to, the wrong size. When the
-  current job ends, Lanai updates the Windows window to fix both. Updating changes
-  nothing in Windows."
-- W_RUN: "Lanai is updating the Windows window. This can take several minutes. It
-  changes nothing in Windows. You can start and use Windows while it runs."
+- W_WAIT: "When the current job ends, Lanai updates the Windows window. Updating
+  changes nothing in Windows."
+- W_RUN: "Lanai is updating the Windows window. This can take several minutes and
+  changes nothing in Windows. You can start and use Windows during the update."
 - W_REOPEN: "The Windows window is updated. To use the update, close the Windows
   window and open it again."
 - AUTO_FAILED (`last.outcome` is `failed`, or the fallback kind): "Lanai could

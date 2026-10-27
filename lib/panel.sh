@@ -143,8 +143,8 @@ panel_records() {
 # the warning while it waits for a job, while it runs, and after it while
 # an older window is open; and the client result once its tries end, by how
 # the last try ended.
-LANAI_AUTO_WAIT="After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size. When the current job ends, Lanai updates the Windows window to fix both. Updating changes nothing in Windows."
-LANAI_AUTO_RUN="Lanai is updating the Windows window. This can take several minutes. It changes nothing in Windows. You can start and use Windows while it runs."
+LANAI_AUTO_WAIT="When the current job ends, Lanai updates the Windows window. Updating changes nothing in Windows."
+LANAI_AUTO_RUN="Lanai is updating the Windows window. This can take several minutes and changes nothing in Windows. You can start and use Windows during the update."
 LANAI_AUTO_REOPEN="The Windows window is updated. To use the update, close the Windows window and open it again."
 LANAI_AUTO_FAILED="Lanai could not update the Windows window by itself. The Windows window build log (build-client.log) or the Jobs log says why."
 LANAI_AUTO_LAUNCH="Lanai could not start its update of the Windows window. The Jobs log says why."
