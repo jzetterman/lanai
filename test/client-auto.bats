@@ -467,6 +467,29 @@ exec /usr/bin/sync "$@"'
   done
 }
 
+@test "auto_units: lists the tokens of running automatic units only" {
+  # The real auto_units, with systemctl answering list-units.
+  # shellcheck source-path=SCRIPTDIR source=../lib/ui.sh
+  source "$REPO/lib/ui.sh"
+  systemctl() {
+    printf '%s\n' "$@" >"$T/list-args"
+    printf '%s\n' \
+      'lanai-panel-auto-1-2.service loaded active running Lanai panel operation' \
+      'lanai-panel-auto-3-4.service loaded deactivating stop-sigterm Lanai panel operation' \
+      'lanai-panel-panel-x.service loaded active running Lanai panel operation' \
+      'lanai-panel-auto-x.service.bak loaded active running Lanai panel operation' \
+      'lanai-panel-auto-x.socket loaded active listening Lanai panel operation'
+  }
+  run auto_units
+  assert_success
+  assert_output $'auto-1-2\nauto-3-4'
+  run cat "$T/list-args"
+  assert_line -- --user
+  assert_line list-units
+  assert_line -- --state=activating,active,reloading,deactivating
+  assert_line 'lanai-panel-auto-*'
+}
+
 @test "auto worker: a failure keeps its outcome after a stop at the end" {
   touch "$T/fails"
   echo recorded >"$T/stop-at"
