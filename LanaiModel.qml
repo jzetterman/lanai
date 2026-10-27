@@ -20,6 +20,11 @@ Item {
   // for at least 2 s (clickNoticeAt, ms) and at most 5 s.
   property string clickNotice: ""
   property double clickNoticeAt: 0
+  // The last key of Lanai's own client update this model launched, and when
+  // (ms). See autoUpdate().
+  property string autoKey: ""
+  property real autoAt: 0
+  property int autoRearmMs: 30000
   property var copyResults: ({})
   property string copyingId: ""
   property string copyingText: ""
@@ -52,6 +57,31 @@ Item {
       if (root.copyTarget(id) && root.copyTarget(id) === root.copyResults[id].target) kept[id] = root.copyResults[id]
     })
     copyResults = kept
+    autoUpdate()
+  }
+
+  // Lanai's own update of the Windows window (docs/plugin/client-auto-update/).
+  // When the view asks (auto_update.launch), start its panel job once per
+  // key. The backend decides: the job waits out other jobs, checks again and
+  // counts the try, so a launch with nothing to do costs nothing. A key
+  // launches again after a view says launch false (its unit was seen and
+  // ended), or after autoRearmMs (longer than the slowest poll plus a
+  // launch), since the view asks only while no automatic unit runs. An
+  // unreadable poll has no ask and changes nothing. It never touches the
+  // click state (pendingToken, clickNotice), so the user's clicks never wait
+  // on it.
+  function autoUpdate() {
+    var ask = view.auto_update
+    if (!ask) return
+    if (ask.launch !== true) {
+      autoKey = ""
+      return
+    }
+    var now = Date.now()
+    if (ask.key === autoKey && now - autoAt < autoRearmMs) return
+    autoKey = ask.key
+    autoAt = now
+    Quickshell.execDetached([cli, "ui-job", "auto-" + now + "-" + Math.floor(Math.random() * 1000000), "build-client", "--auto"])
   }
   function copyFinished(success) {
     if (!copyingId) return
