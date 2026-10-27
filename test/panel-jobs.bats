@@ -63,6 +63,7 @@ SH
   assert_output --partial -- '--user'
   assert_output --partial -- '--collect'
   assert_output --partial -- '--slice=session.slice'
+  assert_line -- '--service-type=exec'
   assert_output --partial $'-p\nPartOf=graphical-session.target'
   assert_output --partial $'-p\nAfter=graphical-session.target'
   assert_output --partial $'ui-job-worker\nlaunch\nsetup\n--window'
@@ -388,11 +389,20 @@ SH
 }
 
 @test "ui job: the launcher and worker refuse commands the panel does not run as jobs" {
-  local command
+  local command args
   for command in start stop open settings setup-host build-clients 'build-client;x'; do
     run cmd_ui_job launch "$command"
     assert_failure 2
     run cmd_ui_job_worker token "$command"
+    assert_failure 2
+  done
+  # build-client takes no argument, or exactly --auto with an auto- token.
+  for args in '--x' '--auto --auto'; do
+    # shellcheck disable=SC2086 # Each case is a word list.
+    run cmd_ui_job auto-x build-client $args
+    assert_failure 2
+    # shellcheck disable=SC2086
+    run cmd_ui_job_worker auto-x build-client $args
     assert_failure 2
   done
   assert [ ! -e "$T/launch" ]
@@ -400,4 +410,38 @@ SH
   # Direct actions stay short: ui-run does not take the build.
   run cmd_ui_run token build-client
   assert_failure 2
+}
+
+@test "ui job: an update's unit yields CPU and memory to the VM and the window" {
+  local token args
+  for token in launch auto-x; do
+    args=()
+    [[ $token != auto-x ]] || args=(--auto)
+    rm -f "$T/launch"
+    run cmd_ui_job "$token" build-client "${args[@]}"
+    assert_success
+    run cat "$T/launch"
+    assert_line -- '--service-type=exec'
+    assert_output --partial $'-p\nCPUWeight=idle'
+    assert_output --partial $'-p\nOOMScoreAdjust=1000'
+    assert_output --partial $'-p\nOOMPolicy=continue'
+  done
+  rm -f "$T/launch"
+  run cmd_ui_job launch setup
+  assert_success
+  run cat "$T/launch"
+  assert_line -- '--service-type=exec'
+  refute_output --partial CPUWeight
+  refute_output --partial OOMScoreAdjust
+  refute_output --partial OOMPolicy
+  # The VM's and the window's units keep the default weight of 100 and the
+  # manager's OOM adjustment, so the update gets less CPU and goes first.
+  run grep -E '^(CPUWeight|OOMScoreAdjust)=' "$REPO/systemd/lanai-vm.service"
+  assert_failure
+  rm -f "$T/launch"
+  run client_start /x
+  run cat "$T/launch"
+  assert_output --partial lanai-client-exec
+  refute_output --partial CPUWeight
+  refute_output --partial OOMScoreAdjust
 }
