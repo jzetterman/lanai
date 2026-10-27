@@ -2188,7 +2188,8 @@ spec, plan and review gates before it is built.
   patch hash no longer matches and starts the rebuild in the background, with no
   click. When the Windows window is open, the panel says to close and open it
   again; Lanai never reopens it by itself. Patch 0003 shipped first, with the
-  update button (v0.3.2).
+  update button (v0.3.2). The spec, plan and review logs are in
+  `docs/plugin/client-auto-update/`.
 - **Show VM updates in Windows, and cut the panel's status text.** John's call
   (2026-10-26): when Lanai updates something for Windows, show it the way Windows
   does, with an installer-style window in Windows that says what is happening.

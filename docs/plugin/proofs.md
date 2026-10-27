@@ -1582,6 +1582,35 @@ at scale 2, and the window is 1576x950. Times count from the client's start, as
   stayed 2 across the restart. No `core.geometry` line came between the restart
   and those lines (the first is at 00:01:18), so no resize did the work.
 
+## Update unit settings (2026-10-27, EDT)
+
+Claude ran these on John's machine at about 17:30 EDT, with no VM, for
+docs/plugin/client-auto-update/plan.md (Phase E, step 6). systemd 262 (262.1-1-arch).
+The units were named `impl-*`, outside `lanai-*`, so no live bar saw them, and
+each was stopped and gone at the end. The plan named them `lanai-props-check` and
+`lanai-trapcheck-<n>`; the implementer's rules forbid `lanai-*` names.
+
+- `systemd-run --user --collect --quiet --unit=impl-props-check
+  --slice=session.slice --service-type=exec -p CPUWeight=idle -p
+  OOMScoreAdjust=1000 sleep 30`: the unit's cgroup under `session.slice` had
+  `cpu.idle` 1 (and `cpu.weight` 1). `cgroup.subtree_control` of `session.slice`
+  was `cpu memory pids`. The sleep's `/proc/<pid>/oom_score_adj` was 1000. The
+  stop left it inactive.
+- A non-executable `ExecStart`: `systemd-run` exited 0 with the default type and 1
+  with `--service-type=exec`, as when the plan was written.
+- The TERM trap under a real `systemctl --user stop`: a temporary
+  `XDG_STATE_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_CONFIG_HOME` under
+  the scratchpad (passed with `--setenv`), a fixture setup record there, and a
+  `lanai` wrapper that stubbed `shared_facts`, `setup_plan` (`{"finished":true}`),
+  `client_update_case` (`update`), `unit_invocation`, the build (it touches a file)
+  and the `built` seam (it waits). The unit `impl-trapcheck-1` ran `lanai
+  ui-job-worker auto-trapcheck build-client --auto`. At the `built` seam the record
+  held one entry with no outcome. After `systemctl --user stop impl-trapcheck-1`
+  (exit 0), the entry's outcome was still null: a stop, not a failure. The client
+  record had no reply and no end. The temporary folders were removed.
+
+Phase F's results go here too.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

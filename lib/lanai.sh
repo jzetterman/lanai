@@ -1373,8 +1373,9 @@ lock_held() (
 # build-client: build and install the pinned Looking Glass client with
 # Lanai's patches (spec 7, 12, 26). It takes several minutes and changes
 # nothing in Windows. The panel runs it as a panel job (Update the Windows
-# window, the client group). A running client keeps its open binary, so the
-# message always ends by saying to reopen the window. Another build holding
+# window, the client group); Lanai's own update runs build_client in its
+# worker instead (auto_update_worker). A running client keeps its open
+# binary, so the message always ends by saying to reopen the window. Another build holding
 # build.lock replies with reason build-busy. Missing patches mean a broken
 # install, so the next step is to reinstall Lanai.
 cmd_build_client() {
