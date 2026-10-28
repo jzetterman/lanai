@@ -1046,3 +1046,4 @@ Diff gate (the branch against `main`):
 | a (gpt-6.1-sol) | 2 | 3 | 0 | 0 | Rerun on the final diff. Three P2 confirmed: a failed launch that cannot record its outcome left no failure state, a waiting second worker ignored the gave-up marker, and a try counted between the view's reads showed the update with Delete and Snapshot enabled. Fixed test first by the implementer. |
 
 On October 27, 2026 (EDT), John accepted stage (b) after the Codex rerun's fixes (c831f7e) without a fourth round; stage (a) reviews the final diff once more.
+| a (gpt-6.1-sol) | 3 | 2 | 0 | 0 | Final rerun at the cap. Two P2 confirmed: a second try created between the units read and the record read read as stopped twice for one poll, and a launch that failed before it could open its lock in a read-only state folder left no failure state. John (2026-10-27): fix both test first, with no further review round; the diff gate is closed after that. |
