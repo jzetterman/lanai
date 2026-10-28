@@ -207,11 +207,11 @@ client_main_pid() {
 
 # client_exe <pid>: print "<dev>:<inode> <link text>" for the binary that
 # process <pid> runs. The kernel adds " (deleted)" to the link text when the
-# file is gone.
+# file is gone. LANAI_PROC swaps /proc.
 client_exe() {
-  local id link
-  id=$(stat -L -c %d:%i -- "/proc/$1/exe" 2>/dev/null) || return 1
-  link=$(readlink -- "/proc/$1/exe" 2>/dev/null) || return 1
+  local id link exe=${LANAI_PROC:-/proc}/$1/exe
+  id=$(stat -L -c %d:%i -- "$exe" 2>/dev/null) || return 1
+  link=$(readlink -- "$exe" 2>/dev/null) || return 1
   printf '%s %s\n' "$id" "$link"
 }
 

@@ -770,6 +770,8 @@ patch_fixture() {
 
 @test "client_exe: names the running binary's file and path, also once it is deleted" {
   local bin=$T/looking-glass-client id pid
+  # The real /proc, for a real process.
+  unset LANAI_PROC
   cp /usr/bin/sleep "$bin"
   "$bin" 30 3>&- &
   pid=$!

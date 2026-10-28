@@ -502,7 +502,7 @@ cmd_panel() {
     # (launching) and during an update by hand after its tries (auto_view).
     ($rec.held or $pending or $progress != null or $auto.launching or $auto.hand) as $busy |
     # Start Windows waits for every job except a client build and an
-    # automatic worker in its wait and check.
+    # automatic worker that holds the locks to check and count (steps 2-3).
     ($pending or $progress != null or
       ($rec.held and $job.command != "build-client" and ($auto.deciding | not))) as $startBusy |
     ($job.command == "setup") as $setupJob |

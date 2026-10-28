@@ -455,7 +455,7 @@ cmd_ui_run() {
   LANAI_EMITTED=1
 }
 
-# ui_job_auto <token> <command> [<arg>...]: check a panel job's launch, as
+# ui_job_check <token> <command> [<arg>...]: check a panel job's launch, as
 # cmd_ui_job and cmd_ui_job_worker take it. Print true for Lanai's own
 # update (build-client --auto, with an auto- token), false for any other
 # panel job, and fail for anything else: a token that is not letters,
@@ -463,7 +463,7 @@ cmd_ui_run() {
 # build-client argument other than none or exactly --auto, or the auto-
 # prefix without --auto. The prefix names the unit lanai-panel-auto-*,
 # which the view finds (auto_units).
-ui_job_auto() {
+ui_job_check() {
   local token=${1:-} command=${2:-} auto=false
   [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore|delete-snapshot|build-client)$ ]] || return 1
   shift 2
@@ -491,7 +491,7 @@ ui_job_auto() {
 cmd_ui_job() {
   local token=${1:-} command=${2:-} v s auto
   local -a env=() props=(--service-type=exec)
-  if ! auto=$(ui_job_auto "$@"); then
+  if ! auto=$(ui_job_check "$@"); then
     emit false "" "Invalid panel job." ""; return 2
   fi
   [[ $command != build-client ]] || props+=(-p CPUWeight=idle -p OOMScoreAdjust=1000 -p OOMPolicy=continue)
@@ -551,7 +551,7 @@ ui_setup_next() {
 # (auto_update_worker), with the same token and argument rules as cmd_ui_job.
 cmd_ui_job_worker() {
   local token=${1:-} command=${2:-} group args s fd out started inv at reply auto
-  if ! auto=$(ui_job_auto "$@"); then
+  if ! auto=$(ui_job_check "$@"); then
     emit false "" "Invalid panel job." ""; return 2
   fi
   if [[ $auto == true ]]; then
