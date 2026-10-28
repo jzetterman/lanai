@@ -1587,8 +1587,8 @@ at scale 2, and the window is 1576x950. Times count from the client's start, as
 Claude ran these on John's machine at about 17:30 EDT, with no VM, for
 docs/plugin/client-auto-update/plan.md (Phase E, step 6). systemd 262 (262.1-1-arch).
 The units were named `impl-*`, and each was stopped and gone at the end. The plan
-named them `lanai-props-check` and `lanai-trapcheck-<n>`. Names outside `lanai-*`
-keep every live bar from seeing them.
+named them `lanai-props-check` and `lanai-trapcheck-<n>`. A bar lists only
+`lanai-panel-auto-*` units, so neither name reaches a live bar.
 
 - `systemd-run --user --collect --quiet --unit=impl-props-check
   --slice=session.slice --service-type=exec -p CPUWeight=idle -p

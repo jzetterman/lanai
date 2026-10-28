@@ -167,7 +167,8 @@ outcome:
 
 Before the count, an exit with an error that no signal caused (a full disk at
 the count's write, a patch file that cannot be read) writes the gave-up marker,
-`$RUN/client-auto-gave-up`: `<patches id> <time>`. `$RUN` is a tmpfs, so the
+`$RUN/client-auto-gave-up`: `<time> <patches id>`, the id last, since it is
+empty when the patches cannot be read (`auto_gave_up_read` reads it). `$RUN` is a tmpfs, so the
 write works on a full home disk, and a reboot clears it. A stop by a signal
 writes no marker.
 
@@ -240,7 +241,7 @@ This is today's `client_old` and `update_shown` test, moved into one function.
 `auto_view` (new, `lib/panel.sh`) reads the record, the progress, the pending
 token, `panel_records`' `held` flag, `lock_held build.lock` and `auto_units`, and
 computes the case itself, once, last. It prints the case in its output, and
-`cmd_panel` reads `clientCase` from there, so nothing hashes the patches twice
+`cmd_panel` reads `$auto.case` from there, so nothing hashes the patches twice
 and the read-order argument covers that value too. It reads in a fixed order: `auto_units` first, then the try
 record, then `build_patches_current` (through `client_update_case`) last. A try
 writes its outcome before its unit ends. So if the unit is gone at the first
@@ -287,7 +288,7 @@ progress at the same time, the progress shows beside the warning.
 | `wait` | W_WAIT | "" | as the holding job makes it | hidden |
 | launching (first check, after a stop with a try left, or a unit in flight) | W_RUN | "" | busy | hidden |
 | `running` or `hand` | W_RUN | "" | busy | hidden while tries are left; shown and disabled after they end |
-| `failed` | RESIZE_NEW (today's, names the button) | AUTO_FAILED, AUTO_LAUNCH or AUTO_STOPPED | failed, also after a reload and with Windows started | shown, enabled when not busy |
+| `failed` | RESIZE_NEW (today's, names the button) | AUTO_FAILED, AUTO_LAUNCH, AUTO_GAVE_UP or AUTO_STOPPED | failed, also after a reload and with Windows started | shown, enabled when not busy |
 | Client current, an older window open | W_REOPEN | "" | unchanged | hidden |
 | Client current, no older window | none | "" | unchanged | hidden |
 | Case `setup` | today's Run setup again words, unchanged | today's | today's | hidden |
@@ -303,8 +304,12 @@ The words:
 - AUTO_FAILED (`last.outcome` is `failed`, or the fallback kind): "Lanai could
   not update the Windows window by itself. The Windows window build log
   (build-client.log) or the Jobs log says why."
-- AUTO_LAUNCH (`launch`, or the gave-up marker): "Lanai could not start its
-  update of the Windows window. The Jobs log says why."
+- AUTO_LAUNCH (`launch`, a failed `systemd-run`, whose output goes to the Jobs
+  log): "Lanai could not start its update of the Windows window. The Jobs log
+  says why."
+- AUTO_GAVE_UP (the gave-up marker; a worker that failed before it counted may
+  have written nothing to a log, so these words name none): "Lanai could not
+  start its update of the Windows window."
 - AUTO_STOPPED (two entries, the last with no outcome): "Lanai's update of the
   Windows window stopped twice before it finished, for example when you logged
   out or restarted the computer."
@@ -648,10 +653,10 @@ and the counting rules are where a mistake costs a second build or a lost try.
 Files: `lib/panel.sh`, `lib/client.sh` (`client_main_pid`,
 `client_window_stale`), `test/client-auto.bats`, `test/panel.bats`.
 
-1. `cmd_panel` (lib/panel.sh:252-266): take `clientCase` from `auto_view`'s
+1. `cmd_panel` (lib/panel.sh:252-266): take the case (`client_case`) from `auto_view`'s
    output (step 2), which computes `client_update_case "$(jq -r .finished
    <<<"$plan")"` once, after its record and unit reads. `client_old` is
-   `clientCase != none`. Keep
+   `client_case != none`. Keep
    `signin_missing` and `task` for the other warnings and the settings note.
 2. Add `auto_view` (see "The view's update states") and call it after
    `panel_records`. Keep its read order: `auto_units`, then the try record, then
@@ -665,12 +670,12 @@ Files: `lib/panel.sh`, `lib/client.sh` (`client_main_pid`,
      `/proc/stat` read (lines 267-272), which only fed the old done words.
    - A hand record that failed or was interrupted: today's words, shown only while
      `auto.shown`.
-   - When `auto.failed`, `result.client` is AUTO_FAILED, AUTO_LAUNCH or
+   - When `auto.failed`, `result.client` is AUTO_FAILED, AUTO_LAUNCH, AUTO_GAVE_UP or
      AUTO_STOPPED by its kind.
 4. The setup group's exception (lines 295-300 and 541-544) tests "old client and
-   the button hidden". Replace that test with `$clientCase == "setup"`, which is
+   the button hidden". Replace that test with the case `setup` (`$auto.case` in the final `jq`), which is
    the same set of cases, so the try record cannot change setup's words.
-5. In the final `jq`: `--argjson auto` and `--arg clientCase`. `$busy` adds
+5. In the final `jq`: `--argjson auto`, and `$auto.case` for the case. `$busy` adds
    launching and `$auto.hand`. Add `$startBusy` and use it for `buttons.start` and `right_click`.
    The busy line gives "" for a `build-client` job and while launching.
    `update_client` shows on `$auto.shown`. `$failed` adds `$auto.failed`. Add
@@ -982,7 +987,7 @@ step 6), and Phase F.
   unit ended before any poll saw it (the model's re-arm).
 - A worker that fails before it records anything (a full disk, a patch file it
   cannot read, a lock file it cannot open) writes the gave-up marker in `$RUN`.
-  The view then shows the failure (AUTO_LAUNCH) and the button, and nothing stays
+  The view then shows the failure (AUTO_GAVE_UP) and the button, and nothing stays
   busy, until a reboot, a hand update or a new patch set. If even `$RUN` cannot
   be written, the update shows as launching and is launched again at the next
   check, at most every 30 seconds; each launch exits at once and builds nothing.
