@@ -147,9 +147,12 @@ auto_progress_active() {
 # auto_launch_failed <token>: systemd-run could not start the update's unit,
 # so record a "launch" try, which ends the tries. Not while the session or
 # the user manager stops (a logout or reboot): that refusal spends no try.
-# The one write a launch makes. It waits for panel-job.lock with no time
-# limit, which also waits out the view's read probe. A subshell, so the
-# lock goes when it returns.
+# The one write a launch makes. When the record cannot be written (a full or
+# read-only state folder) or the patches cannot be read, it writes the
+# gave-up marker instead: no worker runs to write it, and the views would
+# ask again at every check. It waits for panel-job.lock with no time limit,
+# which also waits out the view's read probe. A subshell, so the lock goes
+# when it returns.
 auto_launch_failed() (
   local fd manager id doc
   mkdir -p -- "$(state_dir)" || return 1
@@ -159,11 +162,16 @@ auto_launch_failed() (
   # degraded exits 1 but still runs units.
   manager=$(systemctl --user is-system-running 2>/dev/null) || true
   [[ $manager == running || $manager == degraded ]] || return 0
-  id=$(patches_id) || return 1
+  if ! id=$(patches_id 2>/dev/null); then
+    auto_gave_up_write
+    return 1
+  fi
   doc=$(auto_record_read "$id")
   auto_try_due "$doc" || return 0
-  doc=$(auto_try_add "$doc" "$1" '"launch"') || return 1
-  auto_record_write "$doc"
+  if ! doc=$(auto_try_add "$doc" "$1" '"launch"') || ! auto_record_write "$doc"; then
+    auto_gave_up_write
+    return 1
+  fi
 )
 
 # auto_step <name>: a no-op seam that auto_update_worker calls after it
@@ -194,18 +202,24 @@ auto_gave_up_read() {
 # signal writes neither. Then lanai_main's trap runs, so a worker that
 # printed nothing still prints its JSON object.
 auto_on_exit() {
-  local rc=$1 id
+  local rc=$1
   if ((rc != 0 && ${AUTO_SIGNAL:-0} == 0)); then
     if [[ ${AUTO_COUNTED:-false} == true ]]; then
       auto_outcome_set "$AUTO_TOKEN" failed || true
     else
-      id=$(patches_id 2>/dev/null) || id=''
-      if run_dir_check >/dev/null 2>&1; then
-        printf '%s %s\n' "$(ui_timestamp)" "$id" >"$(auto_gave_up_file)" 2>/dev/null || true
-      fi
+      auto_gave_up_write || true
     fi
   fi
   lanai_on_exit "$rc"
+}
+
+# Write the gave-up marker for the current patch set (an empty id when the
+# patches cannot be read). It never writes through a bad $RUN.
+auto_gave_up_write() {
+  local id
+  id=$(patches_id 2>/dev/null) || id=''
+  run_dir_check >/dev/null 2>&1 || return 1
+  printf '%s %s\n' "$(ui_timestamp)" "$id" >"$(auto_gave_up_file)" 2>/dev/null
 }
 
 # auto_update_worker <token>: Lanai's own update of the Windows window, in
@@ -256,7 +270,8 @@ auto_update_worker() {
   fi
   id=$(patches_id)
   doc=$(auto_record_read "$id")
-  if ! auto_try_due "$doc"; then
+  # Another worker or a failed launch may have given up meanwhile.
+  if ! auto_try_due "$doc" || [[ -n $(auto_gave_up_read "$id") ]]; then
     emit true "" "No update is due: Lanai's tries for these patches are over." ""
     return 0
   fi

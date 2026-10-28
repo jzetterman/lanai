@@ -93,6 +93,10 @@ auto_stubs() {
   fi
   auto_record_write() {
     [[ ! -e $T/write-fails ]] || return 1
+    if [[ -e $T/write-fails-once ]]; then
+      rm "$T/write-fails-once"
+      return 1
+    fi
     real_auto_record_write "$@"
   }
   # The worker's wait between its checks marks that it waits.
@@ -1086,6 +1090,49 @@ assert_auto_failed() {
   assert_equal "$(view .auto_update.launch)" false
   assert_equal "$(view .result.client)" "$AUTO_GAVE_UP"
   assert_equal "$(view '[.buttons.update_client.show, .buttons.update_client.enable] | tostring')" '[true,true]'
+}
+
+@test "view: a failed launch that cannot record its try gives up" {
+  view_setup
+  echo fail >"$T/run-mode"
+  touch "$T/write-fails"
+  run cmd_ui_job auto-a build-client --auto
+  assert_failure 1
+  rm "$T/write-fails"
+  assert [ ! -e "$S/client-auto.json" ]
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view .result.client)" "$AUTO_GAVE_UP"
+  assert_equal "$(view '[.buttons.update_client.show, .buttons.update_client.enable] | tostring')" '[true,true]'
+}
+
+@test "auto worker: a waiting worker counts nothing after another gave up" {
+  # The first worker to get the locks cannot write its count, and gives up;
+  # the other, waiting, must not count or build.
+  touch "$T/write-fails-once"
+  run cmd_ui_job auto-a build-client --auto
+  assert_success
+  run cmd_ui_job auto-b build-client --auto
+  assert_success
+  auto_wait auto-a
+  auto_wait auto-b
+  assert [ -e "$RUN/client-auto-gave-up" ]
+  assert [ ! -e "$S/client-auto.json" ]
+  assert_equal "$(builds)" 0
+}
+
+@test "view: a counted try read without its lock still keeps the panel busy" {
+  view_setup
+  # The worker counted after panel_records read the locks free.
+  record "$(patches_id)" '[{"token":"auto-r","at":1,"outcome":null}]'
+  echo auto-r >"$T/units-list"
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_RUN"
+  assert_equal "$(view .busy.active)" true
+  assert_equal "$(view .bar.mode)" busy
+  assert_equal "$(view .buttons.take_snapshot.enable)" false
+  assert_equal "$(view .buttons.continue_setup.enable)" false
+  assert_equal "$(view '.buttons.start.show and .buttons.start.enable')" true
 }
 
 @test "auto worker: a stop by a signal before the count marks nothing" {

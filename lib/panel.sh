@@ -498,9 +498,11 @@ cmd_panel() {
     $states[$st.state] as $w |
     # The running job (panel_records).
     $rec.job as $job |
-    # The automatic client update is busy from the check that asks for it
-    # (launching) and during an update by hand after its tries (auto_view).
-    ($rec.held or $pending or $progress != null or $auto.launching or $auto.hand) as $busy |
+    # The automatic client update is busy whenever the warning says it runs
+    # (auto_view: launching, a counted try whose unit runs, or an update by
+    # hand after the tries), also when the records were read before a
+    # worker took its lock.
+    ($rec.held or $pending or $progress != null or $auto.updating) as $busy |
     # Start Windows waits for every job except a client build and an
     # automatic worker that holds the locks to check and count (steps 2-3).
     ($pending or $progress != null or

@@ -93,7 +93,10 @@ When `systemd-run` fails for `--auto`, the launch takes `panel-job.lock` (with
   on this machine);
 - the record still allows a try for this patch set.
 
-That is the only write the launch makes. The first two tests keep a logout or
+That is the only write the launch makes, unless the record cannot be written
+(a full or read-only state folder) or the patches cannot be read: then it
+writes the gave-up marker ("The exit trap") instead, since no worker runs to
+write it. The first two tests keep a logout or
 reboot from spending a try. During a logout with Windows running,
 `graphical-session.target` stays active while `lanai-vm.service` shuts Windows
 down (`TimeoutStopSec=2min`). A bar poll in that time can launch, and
@@ -119,8 +122,10 @@ installs both traps of "The exit trap" first, with the `counted` flag clear.
 2. Check, from fresh state. First `systemctl --user is-active --quiet
    graphical-session.target`: if the session is not active (a logout or reboot
    that queued this start), release and exit 0 with no entry. Then `setup_plan
-   "$(shared_facts)"`, then `client_update_case`, then the record. If no try is
-   due, release and exit 0. A second bar item's worker ends here. If the setup
+   "$(shared_facts)"`, then `client_update_case`, then the record and the
+   gave-up marker. If no try is due, or the marker names this patch set,
+   release and exit 0. A second bar item's worker ends here, also when the
+   first gave up before it counted. If the setup
    plan cannot be read, go on to step 3; right after its count and redirect, the
    worker prints its own line, "Lanai could not read the setup plan", to the Jobs
    log and exits 1, so the failure shows and ends the tries. The hand path keeps working without a session, as today
