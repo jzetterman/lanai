@@ -146,12 +146,15 @@ panel_records() {
 # The words of Lanai's own client update (docs/plugin/client-auto-update/):
 # the warning while it waits for a job, while it runs, and after it while
 # an older window is open; and the client result once its tries end, by how
-# the last try ended.
+# the last try ended. They name a log only where it holds the reason: a
+# failed systemd-run writes to the Jobs log; a worker that gave up before it
+# counted a try may have failed to write anything.
 LANAI_AUTO_WAIT="When the current job ends, Lanai updates the Windows window. Updating changes nothing in Windows."
 LANAI_AUTO_RUN="Lanai is updating the Windows window. This can take several minutes and changes nothing in Windows. You can start and use Windows during the update."
 LANAI_AUTO_REOPEN="The Windows window is updated. To use the update, close the Windows window and open it again."
 LANAI_AUTO_FAILED="Lanai could not update the Windows window by itself. The Windows window build log (build-client.log) or the Jobs log says why."
 LANAI_AUTO_LAUNCH="Lanai could not start its update of the Windows window. The Jobs log says why."
+LANAI_AUTO_GAVE_UP="Lanai could not start its update of the Windows window."
 LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it finished, for example when you logged out or restarted the computer."
 
 # auto_view <finished true|false> <progress> <records> <pending true|false>:
@@ -160,60 +163,60 @@ LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it
 # "The view's update states"). It writes nothing. <records> is
 # panel_records' output (with both locks), <progress> the image activity,
 # and <pending> whether a click's job has not started yet. The reads here go
-# in a fixed order: the units, then the record and the
-# marker, then the client's patches. A try writes its outcome before its
-# unit ends, so a try that ends between the reads never reads as stopped.
-# The tries are over when the record allows no more (auto_try_due) or a
-# worker gave up before it could count one (auto_on_exit's marker for this
-# patch set), until a reboot. The fields: case (client_update_case), current
-# (the client has the current patches), launch and key (the bar model's
-# ask), launching, wait, hand (an update by hand after the tries), updating,
-# deciding (an automatic worker in its wait and check, which holds the locks
-# and counts as launching), shown (the update button), and failed and its
-# kind.
+# in a fixed order: the units, then the record and the marker, then the
+# client's patches. A try writes its outcome before its unit ends, so a try
+# that ends between the reads never reads as stopped. A terminal build
+# counts as an update by hand only while build.lock is still held after the
+# units are read. The tries are over when the record allows no more
+# (auto_try_due) or a worker gave up before it could count one (auto_on_exit's
+# marker for this patch set), until a reboot. The fields: case
+# (client_update_case), current (the client has the current patches),
+# launch and key (the bar model's ask), launching, wait, hand (an update by
+# hand after the tries), updating, deciding (an automatic worker that holds
+# the locks to check and count, steps 2-3, which counts as launching), shown
+# (the update button), and failed and its kind.
 auto_view() {
   local finished=$1 progress=$2 records=$3 click_pending=$4 units='' id='' doc='{"tries":[]}'
-  local ucase patched=false session=false due=true gave_up=null gid gat
+  local ucase patched=false session=false due=true gave_up build_now=false
   # The record matters only for a finished setup with the pin's client.
   if [[ $finished == true ]] && build_stamp_current; then
     units=$(auto_units)
-    id=$(patches_id) || id=''
+    ! lock_held "$(state_dir)/build.lock" || build_now=true
+    id=$(patches_id 2>/dev/null) || id=''
     doc=$(auto_record_read "$id")
     auto_try_due "$doc" || due=false
-    if run_dir >/dev/null 2>&1 && read -r gid gat 2>/dev/null <"$(auto_gave_up_file)" &&
-      [[ $gid == "$id" && $gat =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-      gave_up=$gat
-    fi
+    gave_up=$(auto_gave_up_read "$id")
   fi
   ucase=$(client_update_case "$finished" "$id")
   [[ -z $id ]] || ! build_patches_current "$id" || patched=true
   ! session_active || session=true
   jq -nc --argjson doc "$doc" --arg units "$units" --argjson rec "$records" --argjson progress "$progress" \
     --argjson pending "$click_pending" --argjson session "$session" --arg case "$ucase" \
-    --argjson current "$patched" --arg id "$id" --argjson due "$due" --argjson gaveUp "$gave_up" '
+    --argjson current "$patched" --arg id "$id" --argjson due "$due" --argjson gaveUp "${gave_up:-null}" \
+    --argjson buildNow "$build_now" '
+    def auto: any(.args[]?; . == "--auto");
     ($units | split("\n") | map(select(. != ""))) as $u |
+    def listed($t): any($u[]; . == $t);
     $doc.tries as $tries | ($tries | last) as $last | $rec.held as $ph | $rec.build_held as $bh | $rec.job as $job |
-    ($last != null and $last.outcome == null and any($u[]; . == $last.token)) as $running |
+    ($last != null and $last.outcome == null and listed($last.token)) as $running |
     ($u | length > 0) as $inflight |
     (($running | not) and (($due | not) or $gaveUp != null)) as $over |
     ($case == "update" and ($over | not) and ($running | not) and $session) as $want |
-    ($ph and $inflight and ($job == {} or
-      (any($job.args[]?; . == "--auto") and (any($u[]; . == $job.token) | not)))) as $deciding |
+    ($ph and $inflight and ($job == {} or (($job | auto) and (listed($job.token) | not)))) as $deciding |
     ((($deciding | not) and ($ph or $bh)) or $progress != null or $pending) as $heldBack |
     ($case == "update" and $over) as $shown |
-    ($shown and (($ph and $job.command == "build-client" and (any($job.args[]?; . == "--auto") | not)) or
-      ($bh and ($ph | not) and ($inflight | not)))) as $hand |
+    ($shown and (($ph and $job.command == "build-client" and ($job | auto | not)) or
+      ($bh and $buildNow and ($ph | not) and ($inflight | not)))) as $hand |
     ($want and ($heldBack | not)) as $launching |
     ($running or $hand or $launching) as $updating |
     $rec.records.client as $c |
     ([$last.at, $gaveUp] | map(numbers) | max) as $since |
-    ($c != null and (any($c.args[]?; . == "--auto") | not) and $since != null and
-      (($c.started // 0) > $since)) as $handAfter |
+    ($c != null and ($c | auto | not) and $since != null and (($c.started // 0) > $since)) as $handAfter |
     ($shown and ($updating | not) and ($handAfter | not)) as $failed |
     {case:$case,current:$current,launch:($launching and ($inflight | not)),key:($id + ":" + ($tries | length | tostring)),
      launching:$launching,wait:($want and $heldBack),hand:$hand,updating:$updating,deciding:$deciding,
      shown:$shown,failed:$failed,
-     kind:(if $failed | not then "" elif $gaveUp != null or $last.outcome == "launch" then "launch"
+     kind:(if $failed | not then "" elif $gaveUp != null then "gave-up" elif $last.outcome == "launch" then "launch"
        elif $last.outcome == null then "stopped" else "failed" end)}'
 }
 
@@ -412,6 +415,7 @@ cmd_panel() {
       if jq -e '.failed' <<<"$auto" >/dev/null; then
         case $(jq -r .kind <<<"$auto") in
           launch) words=$LANAI_AUTO_LAUNCH ;;
+          gave-up) words=$LANAI_AUTO_GAVE_UP ;;
           stopped) words=$LANAI_AUTO_STOPPED ;;
           *) words=$LANAI_AUTO_FAILED ;;
         esac

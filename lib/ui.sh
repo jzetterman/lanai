@@ -172,9 +172,19 @@ auto_launch_failed() (
 auto_step() { :; }
 
 # The marker of a worker that failed before it could count its try, in
-# $RUN: "<patches id> <time>". $RUN is a tmpfs, so a full home disk cannot
-# stop the write, and a reboot clears it.
+# $RUN: "<time> <patches id>", the id last, since it is empty when the
+# patches cannot be read. $RUN is a tmpfs, so a full home disk cannot stop
+# the write, and a reboot clears it.
 auto_gave_up_file() { printf '%s\n' "$(run_dir)/client-auto-gave-up"; }
+
+# auto_gave_up_read <patches id>: print the time of the gave-up marker for
+# patch set <id> (empty for patches that cannot be read), or nothing.
+auto_gave_up_read() {
+  local at="" id=""
+  run_dir >/dev/null 2>&1 || return 0
+  read -r at id 2>/dev/null <"$(auto_gave_up_file)" || return 0
+  [[ $id != "$1" || ! $at =~ ^[0-9]+(\.[0-9]+)?$ ]] || printf '%s\n' "$at"
+}
 
 # The worker's EXIT trap, for an exit with an error that no signal caused.
 # After the try is counted, it writes "failed", if the try has no outcome
@@ -191,7 +201,7 @@ auto_on_exit() {
     else
       id=$(patches_id 2>/dev/null) || id=''
       if run_dir_check >/dev/null 2>&1; then
-        printf '%s %s\n' "$id" "$(ui_timestamp)" >"$(auto_gave_up_file)" 2>/dev/null || true
+        printf '%s %s\n' "$(ui_timestamp)" "$id" >"$(auto_gave_up_file)" 2>/dev/null || true
       fi
     fi
   fi

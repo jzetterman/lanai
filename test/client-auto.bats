@@ -95,6 +95,11 @@ auto_stubs() {
     [[ ! -e $T/write-fails ]] || return 1
     real_auto_record_write "$@"
   }
+  # The worker's wait between its checks marks that it waits.
+  ui_sleep() {
+    touch "$T/waiting"
+    sleep "$1"
+  }
   # A stop at <step> marks it and waits to be signalled; a false at <step>
   # is an error under set -e.
   auto_step() {
@@ -249,6 +254,8 @@ record() { jq -nc --arg p "$1" --argjson t "$2" '{patches:$p,tries:$t}' >"$S/cli
       assert [ ! -e "$S/client-auto.json" ]
     fi
     assert [ ! -e "$S/panel-result-client.json" ]
+    # A planned exit gives nothing up.
+    assert [ ! -e "$RUN/client-auto-gave-up" ]
   done
 }
 
@@ -294,17 +301,18 @@ record() { jq -nc --arg p "$1" --argjson t "$2" '{patches:$p,tries:$t}' >"$S/cli
 @test "auto worker: a hold that falls between two polls is waited out" {
   local hold
   for hold in panel-job build progress; do
-    rm -f "$T/current" "$T/builds" "$S/client-auto.json" "$T/held" "$S/image-progress.json"
+    rm -f "$T/current" "$T/builds" "$S/client-auto.json" "$T/held" "$T/release" "$S/image-progress.json"
+    # Each holder keeps its lock until $T/release appears.
     case $hold in
       panel-job)
-        flock "$S/panel-job.lock" bash -c 'touch "$1"; exec sleep 2' _ "$T/held" 3>&- & ;;
+        flock "$S/panel-job.lock" bash -c 'touch "$1"; while [[ ! -e $2 ]]; do sleep 0.05; done' _ "$T/held" "$T/release" 3>&- & ;;
       build)
-        flock "$S/build.lock" bash -c 'touch "$1"; exec sleep 2' _ "$T/held" 3>&- & ;;
+        flock "$S/build.lock" bash -c 'touch "$1"; while [[ ! -e $2 ]]; do sleep 0.05; done' _ "$T/held" "$T/release" 3>&- & ;;
       progress)
         # A command-line snapshot: the operation lock held, its progress
         # written by the holder.
         flock "$S/lock" bash -c 'jq -nc --argjson p "$$" '\''{operation:"snapshot",phase:"cloning",done:0,total:0,pid:$p}'\'' >"$2"
-touch "$1"; exec sleep 2' _ "$T/held" "$S/image-progress.json" 3>&- & ;;
+touch "$1"; while [[ ! -e $3 ]]; do sleep 0.05; done' _ "$T/held" "$S/image-progress.json" "$T/release" 3>&- & ;;
     esac
     BG_PIDS+=("$!")
     wait_for_file "$T/held"
@@ -318,6 +326,7 @@ touch "$1"; exec sleep 2' _ "$T/held" "$S/image-progress.json" 3>&- & ;;
       run flock -n "$S/panel-job.lock" true
       assert_success
     fi
+    touch "$T/release"
     auto_wait "auto-$hold"
     assert_equal "$(jq -c '[.tries[] | [.token, .outcome]]' "$S/client-auto.json")" "[[\"auto-$hold\",\"ok\"]]"
     assert_equal "$(builds)" 1
@@ -394,6 +403,8 @@ touch "$1"; exec sleep 2' _ "$T/held" "$S/image-progress.json" 3>&- & ;;
     esac
     auto_run "auto-$case"
     assert_equal "$(jq -c '[.tries[] | [.token, .outcome]]' "$S/client-auto.json")" "[[\"auto-$case\",\"failed\"]]"
+    # An error after the count is a failed try, not a give-up.
+    assert [ ! -e "$RUN/client-auto-gave-up" ]
     case $case in
       build) assert_equal "$(<"$T/rc-auto-$case")" 0 ;;
       *)
@@ -646,6 +657,7 @@ W_REOPEN='The Windows window is updated. To use the update, close the Windows wi
 RESIZE_NEW='After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size. To fix both, click Update the Windows window in More actions. Updating changes nothing in Windows.'
 AUTO_FAILED='Lanai could not update the Windows window by itself. The Windows window build log (build-client.log) or the Jobs log says why.'
 AUTO_LAUNCH='Lanai could not start its update of the Windows window. The Jobs log says why.'
+AUTO_GAVE_UP='Lanai could not start its update of the Windows window.'
 AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it finished, for example when you logged out or restarted the computer."
 
 # The view's tests list the automatic units from $T/units-list.
@@ -866,6 +878,17 @@ touch "$1"; exec sleep 30' _ "$T/held-cli" "$S/image-progress.json" 3>&- &
   echo auto-new >"$T/units-list"
   run cmd_panel
   assert_equal "$(view .warning)" "$RESIZE_NEW"
+  # The build ends between the records' probe and the units' read: not an
+  # update by hand.
+  stop_bg
+  : >"$T/units-list"
+  touch "$T/probe-once"
+  lock_held() {
+    [[ $1 == */build.lock && -e $T/probe-once ]] || return 1
+    rm "$T/probe-once"
+  }
+  run cmd_panel
+  assert_equal "$(view .warning)" "$RESIZE_NEW"
 }
 
 @test "view: a terminal build is a hold while tries are left, and nothing outside the update case" {
@@ -1016,7 +1039,7 @@ assert_auto_failed() {
   rm "$T/write-fails"
   run cmd_panel
   assert_equal "$(view .auto_update.launch)" false
-  assert_equal "$(view .result.client)" "$AUTO_LAUNCH"
+  assert_equal "$(view .result.client)" "$AUTO_GAVE_UP"
   assert_equal "$(view .warning)" "$RESIZE_NEW"
   assert_equal "$(view '[.buttons.update_client.show, .buttons.update_client.enable] | tostring')" '[true,true]'
   # Nothing stays busy: snapshots and Run setup again are available.
@@ -1030,13 +1053,18 @@ assert_auto_failed() {
   assert_equal "$(view .warning)" "$W_RUN"
   [[ $(view .bar.mode) != failed ]] || fail "a hand update still shows the failure"
   stop_bg
+  # The same hand update failed: its own words, not the gave-up words.
+  jq -c '. + {ended:(.started + 1),reply:{ok:false}}' "$S/panel-result-client.json" >"$T/hand"
+  panel_result_write client "$(<"$T/hand")"
+  run cmd_panel
+  assert_equal "$(view .result.client)" "The Windows window could not be updated. Check the Windows window build log (build-client.log), then try again."
   rm "$S/panel-result-client.json"
   # A changed patch set asks again.
-  printf 'older 1\n' >"$RUN/client-auto-gave-up"
+  printf '1 older\n' >"$RUN/client-auto-gave-up"
   run cmd_panel
   assert_equal "$(view .auto_update.launch)" true
   # A reboot empties the runtime folder.
-  printf '%s 1\n' "$(patches_id)" >"$RUN/client-auto-gave-up"
+  printf '1 %s\n' "$(patches_id)" >"$RUN/client-auto-gave-up"
   run cmd_panel
   assert_equal "$(view .auto_update.launch)" false
   rm -rf "$RUN"
@@ -1045,11 +1073,27 @@ assert_auto_failed() {
   assert_equal "$(view .auto_update.launch)" true
 }
 
+@test "view: a worker that cannot read the patches gives up, and the view stops asking" {
+  view_setup
+  mkdir "$T/patches"
+  cp "$LANAI_PATCHES"/* "$T/patches/"
+  export LANAI_PATCHES=$T/patches
+  chmod 000 "$(find "$T/patches" -name '*.patch' -print -quit)"
+  auto_run auto-a
+  [[ $(<"$T/rc-auto-a") != 0 ]] || fail "the worker exited 0"
+  assert [ -e "$RUN/client-auto-gave-up" ]
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view .result.client)" "$AUTO_GAVE_UP"
+  assert_equal "$(view '[.buttons.update_client.show, .buttons.update_client.enable] | tostring')" '[true,true]'
+}
+
 @test "auto worker: a stop by a signal before the count marks nothing" {
-  hold panel-job.lock
+  # The worker waits for a client build, sleeping between its checks.
+  hold build.lock
   run cmd_ui_job auto-a build-client --auto
   assert_success
-  sleep 0.5
+  auto_file "$T/waiting"
   kill -TERM -- "-$(<"$T/units/auto-a")"
   auto_wait auto-a
   assert [ ! -e "$RUN/client-auto-gave-up" ]
