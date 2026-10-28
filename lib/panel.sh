@@ -165,7 +165,9 @@ LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it
 # and <pending> whether a click's job has not started yet. The reads here go
 # in a fixed order: the units, then the record and the marker, then the
 # client's patches. A try writes its outcome before its unit ends, so a try
-# that ends between the reads never reads as stopped. A terminal build
+# that ends between the reads never reads as stopped. When the record's
+# newest try has no outcome and its unit was not in the first read (a try
+# counted between the reads), the units are read again and added. A terminal build
 # counts as an update by hand only while build.lock is still held after the
 # units are read. The tries are over when the record allows no more
 # (auto_try_due) or a worker gave up before it could count one (auto_on_exit's
@@ -177,13 +179,19 @@ LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it
 # (the update button), and failed and its kind.
 auto_view() {
   local finished=$1 progress=$2 records=$3 click_pending=$4 units='' id='' doc='{"tries":[]}'
-  local ucase patched=false session=false due=true gave_up build_now=false
+  local ucase patched=false session=false due=true gave_up build_now=false newest
   # The record matters only for a finished setup with the pin's client.
   if [[ $finished == true ]] && build_stamp_current; then
     units=$(auto_units)
     ! lock_held "$(state_dir)/build.lock" || build_now=true
     id=$(patches_id 2>/dev/null) || id=''
     doc=$(auto_record_read "$id")
+    # A try counted after the first read of the units: read them again, so
+    # its unit counts as running, not as a stop.
+    newest=$(jq -r '.tries | last | select(. != null and .outcome == null) | .token' <<<"$doc")
+    if [[ -n $newest ]] && ! grep -qxF -- "$newest" <<<"$units"; then
+      units+=$'\n'$(auto_units)
+    fi
     auto_try_due "$doc" || due=false
     gave_up=$(auto_gave_up_read "$id")
   fi

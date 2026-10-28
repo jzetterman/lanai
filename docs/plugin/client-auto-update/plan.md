@@ -93,10 +93,12 @@ When `systemd-run` fails for `--auto`, the launch takes `panel-job.lock` (with
   on this machine);
 - the record still allows a try for this patch set.
 
-That is the only write the launch makes, unless the record cannot be written
-(a full or read-only state folder) or the patches cannot be read: then it
-writes the gave-up marker ("The exit trap") instead, since no worker runs to
-write it. The first two tests keep a logout or
+The first two tests come before the lock. That is the only write the launch
+makes, unless the lock cannot be opened or the record cannot be written (a
+full or read-only state folder: there the launch's own `panel-job.log` cannot
+open either, so `systemd-run` never runs), or the patches cannot be read: then
+it writes the gave-up marker ("The exit trap") instead, since no worker runs
+to write it. The first two tests keep a logout or
 reboot from spending a try. During a logout with Windows running,
 `graphical-session.target` stays active while `lanai-vm.service` shuts Windows
 down (`TimeoutStopSec=2min`). A bar poll in that time can launch, and
@@ -253,7 +255,11 @@ writes its outcome before its unit ends. So if the unit is gone at the first
 read, the record already holds the outcome; if the try ends after the first read,
 it reads as running, or the record shows its outcome. A success also makes the
 last read see a current client. A try that ends between the reads never reads as
-"stopped". It prints one JSON object that
+"stopped". A try counted between the reads (another bar item's worker) is in
+the record but not in the first list of units: when the record's newest try has
+no outcome and its token was not listed, `auto_view` reads the units again and
+adds them, so that try reads as running, not as a second stop. It prints one
+JSON object that
 `cmd_panel` passes on. Its terms:
 
 | Term | Meaning |

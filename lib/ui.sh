@@ -147,21 +147,24 @@ auto_progress_active() {
 # auto_launch_failed <token>: systemd-run could not start the update's unit,
 # so record a "launch" try, which ends the tries. Not while the session or
 # the user manager stops (a logout or reboot): that refusal spends no try.
-# The one write a launch makes. When the record cannot be written (a full or
-# read-only state folder) or the patches cannot be read, it writes the
+# The one write a launch makes. When the lock cannot be opened or the record
+# cannot be written (a full or read-only state folder, where the launch's
+# log could not open either), or the patches cannot be read, it writes the
 # gave-up marker instead: no worker runs to write it, and the views would
 # ask again at every check. It waits for panel-job.lock with no time limit,
 # which also waits out the view's read probe. A subshell, so the lock goes
 # when it returns.
 auto_launch_failed() (
   local fd manager id doc
-  mkdir -p -- "$(state_dir)" || return 1
-  exec {fd}>>"$(state_dir)/panel-job.lock" || return 1
-  flock "$fd" || return 1
   session_active || return 0
   # degraded exits 1 but still runs units.
   manager=$(systemctl --user is-system-running 2>/dev/null) || true
   [[ $manager == running || $manager == degraded ]] || return 0
+  if ! mkdir -p -- "$(state_dir)" 2>/dev/null || ! { exec {fd}>>"$(state_dir)/panel-job.lock"; } 2>/dev/null ||
+    ! flock "$fd"; then
+    auto_gave_up_write
+    return 1
+  fi
   if ! id=$(patches_id 2>/dev/null); then
     auto_gave_up_write
     return 1
@@ -511,7 +514,9 @@ cmd_ui_job() {
   fi
   [[ $command != build-client ]] || props+=(-p CPUWeight=idle -p OOMScoreAdjust=1000 -p OOMPolicy=continue)
   umask 077
-  s=$(state_dir); mkdir -p -- "$s"
+  # A state folder that cannot be made fails the launch's log below, so the
+  # launch fails as for any systemd-run refusal.
+  s=$(state_dir); mkdir -p -- "$s" 2>/dev/null || true
   # The session's display and Hyprland instance: setup's boot_vm records
   # them for QEMU's window and the scale feed (the user manager may lack them).
   for v in WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME XDG_CACHE_HOME; do

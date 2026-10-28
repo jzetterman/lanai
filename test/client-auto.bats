@@ -1121,6 +1121,35 @@ assert_auto_failed() {
   assert_equal "$(builds)" 0
 }
 
+@test "view: a second try counted between the unit read and the record read runs" {
+  view_setup
+  record "$(patches_id)" '[{"token":"auto-a","at":1,"outcome":null},{"token":"auto-b","at":2,"outcome":null}]'
+  # The first read misses the new unit; a later read lists it.
+  auto_units() {
+    if [[ -e $T/units-read ]]; then echo auto-b; else touch "$T/units-read"; fi
+  }
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_RUN"
+  assert_equal "$(view .busy.active)" true
+  assert_equal "$(view .result.client)" ''
+  assert_equal "$(view .buttons.update_client.show)" false
+  assert_equal "$(view .buttons.take_snapshot.enable)" false
+}
+
+@test "view: a launch that cannot open its lock or log in a read-only state folder gives up" {
+  view_setup
+  rm -f "$S/panel-job.lock" "$S/panel-job.log"
+  chmod 555 "$S"
+  run cmd_ui_job auto-a build-client --auto
+  chmod 755 "$S"
+  assert_failure 1
+  assert [ ! -e "$S/client-auto.json" ]
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view .result.client)" "$AUTO_GAVE_UP"
+  assert_equal "$(view '[.buttons.update_client.show, .buttons.update_client.enable] | tostring')" '[true,true]'
+}
+
 @test "view: a counted try read without its lock still keeps the panel busy" {
   view_setup
   # The worker counted after panel_records read the locks free.
