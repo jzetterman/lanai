@@ -131,7 +131,9 @@ Item {
       if (afterAction === true) refreshAgain = true
       return
     }
-    var args = ["timeout", "--signal=KILL", "10", cli, "panel"]
+    // LANAI_AUTO_LAUNCHER: this model launches Lanai's own client update
+    // (autoUpdate), so the view may ask for it (auto_view).
+    var args = ["timeout", "--signal=KILL", "10", "env", "LANAI_AUTO_LAUNCHER=1", cli, "panel"]
     if (pendingToken) args = args.concat(["--pending", pendingToken, String(pendingAt)])
     panelProcess.command = args
     panelProcess.running = true

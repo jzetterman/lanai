@@ -319,6 +319,9 @@ Installs set up with an earlier version of Lanai keep working, but Windows may n
 match the window, and after the computer wakes from sleep, the mouse may reach only
 part of Windows. When only the Windows window needs an update, Lanai updates it by
 itself, with no click, after `omarchy plugin update`, a shell restart or a sign-in.
+The first plugin update to this version starts it only at the next shell restart
+(`omarchy-restart-shell`) or sign-in; until then the panel names **Update the
+Windows window** in More actions.
 The update takes several minutes, works whether Windows runs or not, and changes
 nothing in Windows. You can start and use Windows during the update, and the update
 gets less CPU than Windows. If a Windows window that opened before the update

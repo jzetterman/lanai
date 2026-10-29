@@ -89,6 +89,9 @@ isolate_home() {
   # The desktop session's display and Hyprland instance, which a boot
   # reads; tests that need one set their own.
   unset WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+  # The bar model's poll says it launches Lanai's own client update
+  # (LanaiModel.qml); a test of an older bar model unsets it.
+  export LANAI_AUTO_LAUNCHER=1
   export HOME=$BATS_TEST_TMPDIR/home
   export XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share
   export XDG_STATE_HOME=$HOME/.local/state XDG_CACHE_HOME=$HOME/.cache

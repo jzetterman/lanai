@@ -359,8 +359,9 @@ Neither needs GPU acceleration.
       built with the current patches, including a patch whose content changed.
     - An install whose client was built without the current patches keeps working with
       that client. Lanai runs the build step that builds the fixed client by itself,
-      with no click, whether Windows runs or not
-      ([client-auto-update/spec.md](client-auto-update/spec.md)). That build step
+      with no click, whether Windows runs or not, once the bar item has that code
+      (until a shell restart, an older bar item shows the button as before;
+      [client-auto-update/spec.md](client-auto-update/spec.md)). That build step
       changes nothing in Windows: no administrator prompt, no Windows restart and no
       change to the Windows lock. While it runs, the panel says the Windows window is
       updating. The fixed client takes over the next time the window opens. The panel

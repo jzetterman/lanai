@@ -177,9 +177,16 @@ LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it
 # hand after the tries), updating, deciding (an automatic worker that holds
 # the locks to check and count, steps 2-3, which counts as launching), shown
 # (the update button), and failed and its kind.
+# Only a poll with LANAI_AUTO_LAUNCHER=1 comes from a bar model that launches
+# the update (LanaiModel.qml). A plugin update reloads the bash code but can
+# leave an older model running until the shell restarts; for its polls, and
+# for `lanai panel` by hand, the view asks for no launch and claims no update
+# that only a launch would start, and shows the button at once, as before
+# Lanai updated the client by itself.
 auto_view() {
   local finished=$1 progress=$2 records=$3 click_pending=$4 units='' id='' doc='{"tries":[]}'
-  local ucase patched=false session=false due=true gave_up build_now=false newest
+  local ucase patched=false session=false due=true gave_up build_now=false newest launcher=false
+  [[ ${LANAI_AUTO_LAUNCHER:-} != 1 ]] || launcher=true
   # The record matters only for a finished setup with the pin's client.
   if [[ $finished == true ]] && build_stamp_current; then
     units=$(auto_units)
@@ -201,7 +208,7 @@ auto_view() {
   jq -nc --argjson doc "$doc" --arg units "$units" --argjson rec "$records" --argjson progress "$progress" \
     --argjson pending "$click_pending" --argjson session "$session" --arg case "$ucase" \
     --argjson current "$patched" --arg id "$id" --argjson due "$due" --argjson gaveUp "${gave_up:-null}" \
-    --argjson buildNow "$build_now" '
+    --argjson buildNow "$build_now" --argjson launcher "$launcher" '
     def auto: any(.args[]?; . == "--auto");
     ($units | split("\n") | map(select(. != ""))) as $u |
     def listed($t): any($u[]; . == $t);
@@ -209,10 +216,10 @@ auto_view() {
     ($last != null and $last.outcome == null and listed($last.token)) as $running |
     ($u | length > 0) as $inflight |
     (($running | not) and (($due | not) or $gaveUp != null)) as $over |
-    ($case == "update" and ($over | not) and ($running | not) and $session) as $want |
+    ($case == "update" and ($over | not) and ($running | not) and $session and $launcher) as $want |
     ($ph and $inflight and ($job == {} or (($job | auto) and (listed($job.token) | not)))) as $deciding |
     ((($deciding | not) and ($ph or $bh)) or $progress != null or $pending) as $heldBack |
-    ($case == "update" and $over) as $shown |
+    ($case == "update" and ($over or ($launcher | not))) as $shown |
     ($shown and (($ph and $job.command == "build-client" and ($job | auto | not)) or
       ($bh and $buildNow and ($ph | not) and ($inflight | not)))) as $hand |
     ($want and ($heldBack | not)) as $launching |
@@ -220,7 +227,7 @@ auto_view() {
     $rec.records.client as $c |
     ([$last.at, $gaveUp] | map(numbers) | max) as $since |
     ($c != null and ($c | auto | not) and $since != null and (($c.started // 0) > $since)) as $handAfter |
-    ($shown and ($updating | not) and ($handAfter | not)) as $failed |
+    ($case == "update" and $over and ($updating | not) and ($handAfter | not)) as $failed |
     {case:$case,current:$current,launch:($launching and ($inflight | not)),key:($id + ":" + ($tries | length | tostring)),
      launching:$launching,wait:($want and $heldBack),hand:$hand,updating:$updating,deciding:$deciding,
      shown:$shown,failed:$failed,

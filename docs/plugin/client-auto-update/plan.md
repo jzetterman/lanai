@@ -231,6 +231,26 @@ trap), and the view counts the tries as over for that patch set, so it stops
 asking. The model keeps no count of its own launches: the marker is the one
 rule.
 
+### An older bar item (spec requirement 9)
+
+`omarchy-shell shell rescanPlugins` reloads `lib/*.sh` at once but keeps the
+QML the shell loaded at its start (its reload calls `Qt.clearComponentCache`
+only when it exists, and Qt's QML has no such function). After a plugin update,
+an older `LanaiModel.qml` can poll the new `lanai panel` until the shell
+restarts. So the model's poll runs `timeout --signal=KILL 10 env
+LANAI_AUTO_LAUNCHER=1 <cli> panel`, and `auto_view` sets `$launcher` only when
+`LANAI_AUTO_LAUNCHER` is exactly 1. An environment variable, not an argument:
+`cmd_panel` before this feature rejects any argument but `--pending`, so a new
+model polling an older script (going back to `main` in phase F) would break,
+while an older script ignores the variable.
+
+Without `$launcher`, `$want` is false (no `launch`, `launching` or `wait`), and
+`shown` is true for the update case at once, so the panel shows the button and
+RESIZE_NEW, as before this feature. `failed` needs the tries to be over, not
+only `shown`, so an older model never shows a failure. A running automatic
+unit and an update by hand still show as running. `lanai panel` by hand has no
+flag either and shows the same.
+
 ### The view's update states
 
 `client_update_case <finished>` (new, `lib/ui.sh`, beside `scale_task_kind`)
@@ -952,7 +972,9 @@ the swap, the locks and the CPU and memory settings without a VM.
 1. Make a throwaway commit on top of the feature branch that changes one patch's
    header text, so its patch set differs and it still applies. In the installed
    plugin's folder, `git fetch` the local repo's branch with that commit, check it
-   out, and run `omarchy-shell shell rescanPlugins`.
+   out, and run `omarchy-shell shell rescanPlugins`. When the shell started
+   before the checkout, the panel shows the button and RESIZE_NEW, not W_RUN
+   (spec requirement 9). Then run `omarchy-restart-shell`.
 2. Part one, Windows running and the window open: the bar item shows busy without
    a click, the panel says W_RUN, and Windows stays responsive. When it finishes,
    the panel and the tooltip say W_REOPEN. Close and reopen the window: the
@@ -972,6 +994,7 @@ the swap, the locks and the CPU and memory settings without a VM.
 | Req 2, only that case, and the wait | B, C | "nothing is due in each case"; "view: no ask in each case"; "a hold that falls between two polls is waited out"; "short read probes are waited out"; "view: ... makes it wait", then asks after the hold |
 | Req 3, tries | B, C, D | errors after the count, signal stops and their reboot, the failure kept across a stop at the end, a failed `systemd-run`, a worker that never runs (counts nothing, launched again), changed patch set, hand builds leave the record; "view: a launch in flight ..."; "view: another job's lock ..."; "view: after the tries end ..."; "view: the button starts an update by hand"; QML relaunch after `launch` false and second model |
 | Req 4, always a working client | A, B | "a stop at each install step"; "on disk before the swap"; "refuses the exchange"; "a cut-off try that installed the client" (worker and view) |
+| Req 9, an older bar item | C, D | "view: a poll from an older bar model offers the button and claims no update"; `test_cadence_and_refresh` (the poll carries `LANAI_AUTO_LAUNCHER=1`) |
 | Req 5, one update at a time | B, C | "two launches at once record one try"; "view: two bar items' launches show no failure" |
 | Req 6, Windows keeps working | A, B, C | "an update's unit yields CPU and memory"; "view: a running update shows ... Start and Open"; the atomic swap |
 | Req 7, what the user sees | C, D | the view tests per state; the reopen test; `test_auto_update_has_no_pending_notice_or_blocked_click` |
@@ -1054,3 +1077,9 @@ Diff gate (the branch against `main`):
 On October 27, 2026 (EDT), John accepted stage (b) after the Codex rerun's fixes (c831f7e) without a fourth round; stage (a) reviews the final diff once more.
 | a (gpt-6.1-sol) | 3 | 2 | 0 | 0 | Final rerun at the cap. Two P2 confirmed: a second try created between the units read and the record read read as stopped twice for one poll, and a launch that failed before it could open its lock in a read-only state folder left no failure state. John (2026-10-27): fix both test first, with no further review round; the diff gate is closed after that. |
 The two fixes landed test first in 244e517; the full suite passed 1023 of 1023 with the btrfs tests. The diff gate is closed.
+
+On October 29, 2026 (EDT), the phase F hand check found that a plugin rescan keeps
+the bar item's older QML, so the scripts asked for an update that nothing
+launched and said it ran (spec requirement 9). John's call: fix it in this PR.
+The fix (the `LANAI_AUTO_LAUNCHER` flag) landed test first after the gate closed,
+so the gate reopens for it.

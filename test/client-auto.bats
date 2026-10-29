@@ -724,6 +724,29 @@ touch "$1"; exec sleep 30' _ "$T/held-cli" "$S/image-progress.json" 3>&- &
   done
 }
 
+@test "view: a poll from an older bar model offers the button and claims no update" {
+  local st
+  view_setup
+  running_facts
+  unset LANAI_AUTO_LAUNCHER
+  for st in inactive active; do
+    echo "$st" >"$T/st"
+    run cmd_panel
+    assert_success
+    assert_equal "$(view .auto_update.launch)" false
+    assert_equal "$(view .bar.mode)" "$([[ $st == active ]] && echo active || echo stopped)"
+    assert_equal "$(view .result.client)" ''
+    assert_equal "$(view '.buttons.update_client | .show and .enable')" true
+    assert_equal "$(view '.buttons.start.show and .buttons.start.enable')" "$([[ $st == active ]] && echo false || echo true)"
+    run view_words
+    refute_output --partial "$W_RUN"
+    assert_output --partial 'click Update the Windows window in More actions'
+  done
+  # A value other than 1 is no flag.
+  LANAI_AUTO_LAUNCHER=yes run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+}
+
 @test "view: no ask in each case of requirement 2" {
   local case
   view_setup

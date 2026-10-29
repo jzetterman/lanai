@@ -13,10 +13,17 @@ before the mouse fix reached the window.
 
 John's call (2026-10-25): `omarchy plugin update` should bring both the panel and
 the client up to date. Omarchy's update command runs no plugin step: it pulls,
-validates the manifest and rescans the plugins (`omarchy-plugin-update`). The
-rescan reloads Lanai's bar item, which checks Lanai's state every few seconds
-whether the panel is open or not. So Lanai acts when that check finds the client
-out of date.
+validates the manifest and rescans the plugins (`omarchy-plugin-update`). Lanai's
+bar item checks Lanai's state every few seconds whether the panel is open or not.
+So Lanai acts when that check finds the client out of date.
+
+The rescan reloads Lanai's shell scripts at once, but not the bar item's own
+code. The shell clears Qt's file cache only when `Qt.clearComponentCache` exists,
+and Qt's QML has no such function, so the bar item keeps the code it loaded when
+the shell started. The phase F hand check found this on 2026-10-29 (EDT): the
+scripts asked for an update and the panel said it ran, but the bar item had no
+update code, so nothing started. A shell restart or a sign-in loads the new bar
+item.
 
 In this spec, "the panel" is the popup, and "the bar item" is Lanai's icon in the
 bar (one per monitor), which keeps checking while the panel is closed.
@@ -112,6 +119,11 @@ bar (one per monitor), which keeps checking while the panel is closed.
    window by itself, when the reopen words show, and when the button still appears.
    Spec requirement 12 keeps the rule that the build step changes nothing in
    Windows.
+9. **An older bar item.** A state check from a bar item without the update code
+   (after a plugin update, until the shell restarts) and `lanai panel` run by hand
+   start nothing and show the update as before this feature: the button and its
+   words at once, with no words or busy state that say an update runs or waits.
+   Once a bar item with the update code checks, requirements 1 to 7 apply.
 
 ## Acceptance
 
@@ -146,6 +158,9 @@ bar (one per monitor), which keeps checking while the panel is closed.
   hand or a current client).
 - Tests show that Start Windows and Open window, in the panel and on the bar item's
   right-click, stay available while the update runs.
+- Tests show requirement 9: a state check without the bar item's mark shows the
+  button and its words, no launch ask and no busy state, with Windows stopped and
+  running; and the bar item's check carries the mark.
 - A test shows that an update's unit is set to get less CPU than the VM's unit and
   the window's unit when they compete, and to be stopped before them when memory
   runs short.
@@ -155,7 +170,9 @@ bar (one per monitor), which keeps checking while the panel is closed.
 - John's hand check before merge, on his install. `omarchy plugin update` only
   fast-forwards to the remote's default branch, so in the installed plugin's folder
   `git fetch` the local repo's branch, check it out, and run `omarchy-shell shell
-  rescanPlugins`, the step plugin update runs after it pulls.
+  rescanPlugins`, the step plugin update runs after it pulls. When the running
+  shell loaded its bar item before this feature, first see the button and its
+  words (requirement 9), then run `omarchy-restart-shell`.
   - Part one, on a throwaway commit on top of the feature branch that edits one
     patch's header text (so its patch set differs from the installed client's and
     it still applies; row 12b's repeatable pre-fix fixture): with Windows running

@@ -1600,6 +1600,10 @@ TestCase {
     verify(poll.running)
     compare(model.refreshAgain, false)
     compare(poll.command.slice(0, 3).join(' '), 'timeout --signal=KILL 10')
+    // The poll says this model launches Lanai's own client update; an
+    // older model's poll has no flag, and the backend offers the button.
+    compare(poll.command.slice(3, 5).join(' '), 'env LANAI_AUTO_LAUNCHER=1')
+    compare(poll.command.slice(5).join(' '), model.cli + ' panel')
     ready(model)
     model.run(['settings', '8', '4'], false)
     var action = objects(model, function(o) { return o.command && o.command[1] === 'ui-run' })[0]
