@@ -40,8 +40,8 @@ license.
       is not a command, the release is too old), stated as today's README
       states it: Lanai targets the 4.0.0.alpha shell API, and no exact tested
       build is recorded (the desktop it was built on runs an Omarchy dev
-      build); a UEFI Windows install from `omarchy-windows-vm`, finished to
-      the Windows desktop; `/dev/kvm` access as your user; enough memory for
+      build); a UEFI Windows install from `omarchy-windows-vm install`,
+      finished to the Windows desktop; `/dev/kvm` access as your user; enough memory for
       Windows and Linux, with a note that Lanai starts with the container's
       memory size when it can read the container's settings (otherwise half
       the host's memory, at most 16 GiB) and Settings can change it; about
@@ -50,18 +50,22 @@ license.
       installs Arch packages with `sudo pacman` in a terminal it opens, with
       the packages named in one line of prose and `LANAI_HOST_PACKAGES` linked
       as the exact list, and builds the Looking Glass client.
-   3. **Install:** the two `omarchy plugin` commands, and
+   3. **Install:** one command,
+      `omarchy plugin add https://github.com/jzetterman/lanai.git --enable`
+      (it asks once where in the bar to put the glyph), and
       `omarchy-windows-vm stop` before setup.
    4. **First setup:** how to start it (left-click Lanai's bar glyph to open
       the panel, then click **Continue setup**), and that **Continue setup**
-      moves on after each step. Then a numbered list of the six steps, each
+      moves on after most steps. Then a numbered list of the six steps, each
       with what the user does or waits for:
       1. Check: Lanai checks the container's install; wait.
-      2. Packages: click **Install in a terminal** and type your password.
-      3. Snapshot: take one, or confirm you have a backup.
-      4. Prepare: wait while Lanai downloads the drivers and builds the
-         client, several minutes.
-      5. Drivers: Windows opens in a basic window; there, run `setup.cmd` from
+      2. Packages: click **Install in a terminal**, type your password, accept
+         pacman's prompts, and press Enter when it ends.
+      3. Snapshot: click **Take a snapshot**, or **Continue without a
+         snapshot** if you have a backup.
+      4. Prepare: wait while Lanai builds the Windows window, several minutes.
+      5. Drivers: Lanai downloads the drivers (about 900 MB), then Windows
+         opens in a basic window; there, run `setup.cmd` from
          Lanai's setup drive and approve the administrator prompt as the same
          user. Windows then shuts down by itself and Lanai starts it again, so
          do not click Shut down.
@@ -106,24 +110,32 @@ license.
    - headings;
    - links that change with the move;
    - sentences that the README's new text makes repeat;
+   - a reference the move breaks, repaired with the fewest words (for
+     example "that setting" once its antecedent moves to the development
+     doc);
+   - a short "Logs" subheading under Daily use that states the log names
+     and places from README 611-618 (the Actions and Jobs logs, the Windows
+     window build log `build-client.log`, the VM log in the user journal
+     under lanai-vm), since their sentences mix in panel internals;
    - commands corrected so that they run as written: `lanai` and `bin/lanai`
      get the full path of requirement 7, and a bare `omarchy-windows-vm` that
      means "start it" becomes `omarchy-windows-vm launch`.
 4. `docs/development.md` holds the developer content: the background (Why and
    Plan, the spike), the plugin's file layout, the Tests section's test and
-   panel-internals text (README 569-599), and the rehearsal note of
-   requirement 5. The Tests section's log locations (README 600-618: the
-   Actions and Jobs logs, `build-client.log`, the VM log in the user journal)
-   are user facts and go to the guide; its License paragraph (620-623) goes
-   to the README.
+   panel-internals text (README 569-618, including `lanai panel`, the poll
+   times, `lanai ui-run` and `lanai ui-job`), and the rehearsal note of
+   requirement 5. The log names in that text are also stated in the guide's
+   Logs subheading (requirement 3). The Tests section's License paragraph
+   (620-623) goes to the README.
 5. Nothing is lost: every sentence of today's README is in the new README, the
    guide or the development doc, or is a stale status line that the new status
-   replaces. The stale status lines are README lines 7-9, 29-30, 40-41, 49 and
-   51 (as of main c72a2e6). The sentence at line 59 ("Before enabling it for
-   a rehearsal, set `storage` ... to the copy's absolute path.") is a
-   rehearsal step no user needs, since `omarchy-windows-vm` and Lanai both use
+   replaces. The stale status lines are README lines 7-9, 29-30, 40-41 and 51
+   (as of main c72a2e6). The marketplace sentence at 48-49 is still true and
+   goes to the guide. The sentence at lines 59-60 ("Before enabling it for a
+   rehearsal, set `storage` ... to the copy's absolute path.") is a rehearsal
+   step no user needs, since `omarchy-windows-vm` and Lanai both use
    `~/.windows`; it moves to `docs/development.md` as a rehearsal note, and
-   the default and seeding sentences after it (60-63) go to the guide. Lines
+   the default and seeding sentences after it (61-63) go to the guide. Lines
    that say phase 8 is pending (397-398, 461-471) are still true and move to
    the guide unchanged. Where the guide drops a sentence that the new README
    now states (requirement 3), the README keeps the fact and the guide links to
@@ -165,8 +177,8 @@ license.
 - Every relative link in the three files resolves to a file in the repo, and
   every `#anchor` in them resolves to a heading in its target file.
 - A grep of the README and the guide finds no `lanai ` or `bin/lanai` command
-  without the full path, and no bare `omarchy-windows-vm` given as a command
-  to run.
+  without the full path. Each `omarchy-windows-vm` hit is read by hand: a
+  command to run names its subcommand; a mention of the tool may stand bare.
 - The README states everything requirement 31 asks for; `docs/plugin/spec.md`
   has requirement 6's paragraph and `CLAUDE.md` its edits.
 - `bats test spike/test` passes, as a no-regression run (no test reads the
@@ -197,3 +209,4 @@ One phase.
 | Doc | a (gpt-6.1-sol) | 2 | 0, clean |
 | Doc | b single (opus-5.5) | 1 | 4 should-fix, 4 nits, 0 refuted; all confirmed and integrated |
 | Doc | b single (opus-5.5) | 2 | 5 should-fix, 7 nits, 0 refuted; all confirmed and integrated |
+| Doc | b single (opus-5.5) | 3 (cap) | 3 should-fix, 7 nits, 0 refuted; all confirmed; 2 should-fix and the nits integrated; the removal-steps exception goes to John |
