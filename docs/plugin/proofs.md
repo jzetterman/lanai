@@ -1644,6 +1644,19 @@ record (`client-auto.json`).
   `lanai panel` then showed no warning, no update button and the bar active: the
   client is current, with no click.
 
+## Bar tooltip hand check (2026-10-29, EDT)
+
+John's check on his desktop, with `bar-tooltip` (c356777) checked out in the
+installed plugin's folder at 11:52:18 and the shell restarted, so the new QML
+loaded. With Windows running, the hover text read "Lanai: Running" and
+"Right-click: Open the Windows window.". A header edit to
+`0003-client-restart-scale.patch` started an update by itself (11:53:30 to
+11:53:48), and during it the hover text read "Lanai: Running (busy)", "Open the
+panel for details." and "Right-click: Open the Windows window.". Undoing the
+edit started one more update (11:54:22 to 11:54:39, outcome `ok`). The folder
+went back to `main` at 11:55:03, and `main`'s view showed no warning and no
+update button. John reports every check as expected.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with
