@@ -1345,3 +1345,28 @@ assert_auto_failed() {
     assert_equal "$(view .result.client)" ''
   done
 }
+
+@test "view: the reopen words point the hover text to the panel" {
+  local id bin
+  view_setup
+  running_facts
+  # shellcheck source-path=SCRIPTDIR source=../lib/client.sh
+  source "$REPO/lib/client.sh"
+  fake_build "$LG_BUILD"
+  write_client_stamps
+  bin=$(client_builds)/$LG_BUILD/bin/looking-glass-client
+  id=$(stat -c %d:%i "$bin")
+  echo active >"$T/st"
+  # The Windows window open, started before the update.
+  client_active() { return 0; }
+  client_main_pid() { echo 4242; }
+  client_exe() { echo "0:1 /old/lanai/looking-glass/B7/bin/looking-glass-client"; }
+  run cmd_panel
+  assert_equal "$(view .warning)" "$W_REOPEN"
+  assert_equal "$(view .bar.mode)" active
+  assert_equal "$(view .tooltip)" $'Lanai: Running\nOpen the panel for details.\nRight-click: Open the Windows window.'
+  # The current window: no pointer.
+  client_exe() { echo "$id $bin"; }
+  run cmd_panel
+  assert_equal "$(view .tooltip)" $'Lanai: Running\nRight-click: Open the Windows window.'
+}

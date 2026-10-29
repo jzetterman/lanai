@@ -8,6 +8,7 @@ Item {
   property bool panelOpen: false
   readonly property string cli: decodeURIComponent(Qt.resolvedUrl("bin/lanai").toString().replace(/^file:\/\//, ""))
   property var view: ({label: "Checking", headline: "Checking Windows", layout: "daily",
+    tooltip: "Lanai: Checking\nRight-click: Open the panel.",
     header: {title: "Windows", meta: "", badge: "Checking"},
     sections: {settings: "Settings", snapshots: "Snapshots", logs: "Logs", more: "More actions", dismiss_click_notice: "Dismiss busy notice", default: ""},
     primary_action: null, bar: {mode: "stopped", percent: null}, restore: {label: "", warning: ""},
@@ -33,7 +34,10 @@ Item {
   property int copyingGeneration: 0
   signal panelRequested()
   signal settingsSaved(int memoryGib, int cores, var windowsScale)
-  readonly property string tooltip: ["Lanai", view.bar && view.bar.label, view.label, view.headline, view.cause, view.next, view.notice, view.warning, view.right_click_tooltip].filter(function(s, i, words) { return !!s && words.indexOf(s) === i }).join("\n")
+  // The bar's hover text and accessible name. lanai panel builds it (the
+  // state, a pointer to the panel, the right-click words); the long words
+  // stay in the panel.
+  readonly property string tooltip: view.tooltip || "Lanai"
 
   function control(name) { return view.buttons[name] || {show: false, enable: false, label: ""} }
   // A launch token: <prefix>-<ms>-<random>. "panel" for a click, "auto" for
@@ -218,6 +222,7 @@ Item {
           sections: {settings: "Settings", snapshots: "Snapshots", logs: "Logs", more: "More actions", dismiss_click_notice: "Dismiss busy notice", default: "logs"},
           primary_action: null, bar: {mode: "failed", percent: null, label: "Failed"}, restore: {label: "", warning: ""},
           label: "Unavailable", headline: "Lanai could not check Windows",
+          tooltip: "Lanai: Unavailable\nRight-click: Open the panel for details.",
           cause: "The status check did not finish or its reply could not be read.",
           next: "Try again in a few seconds, then check the logs if it continues.",
           progress: null, buttons: {}, setup: {steps: [], checks: [], countdown: null}, result: {},

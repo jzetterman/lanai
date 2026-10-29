@@ -771,7 +771,19 @@ cmd_panel() {
       elif $p.action == "setup-wait" and $st.active then "active"
       elif $attention then "attention" elif $busy then "busy" elif $st.active then "active" else "stopped" end),
       percent:(if $progress.total > 0 then $progress.percent else null end)} |
-    .bar.label = ({stopped:"Stopped",active:"Active",busy:"Busy",attention:"Your turn",failed:"Failed"}[.bar.mode])'
+    .bar.label = ({stopped:"Stopped",active:"Active",busy:"Busy",attention:"Your turn",failed:"Failed"}[.bar.mode]) |
+    # The bar hover text: the state, a pointer when the panel holds more
+    # than the state, and the right-click words. The long words stay in the
+    # panel; a result line in the daily layout is not a reason to point there.
+    (.bar.label | ascii_downcase) as $barWord |
+    (.notice != "" or .warning != "" or .layout != "daily" or .bar.mode == "attention" or
+      .bar.mode == "failed" or $st.force_stop) as $more |
+    .tooltip = ([("Lanai: " + .label +
+        (if (.bar.mode == "busy" or .bar.mode == "attention" or .bar.mode == "failed") and
+          $barWord != (.label | ascii_downcase) then " (" + $barWord + ")" else "" end))] +
+      (if $more and $rightClick == "panel" then ["Right-click: Open the panel for details."]
+       elif $more then ["Open the panel for details.",.right_click_tooltip]
+       else [.right_click_tooltip] end) | join("\n"))'
   # shellcheck disable=SC2034
   LANAI_EMITTED=1
 }
