@@ -173,3 +173,13 @@ window. So with the Looking Glass window open, right-click still opens (raises)
 the Windows window, and the reopen and auto-update cases have three lines, not
 the folded line the doc first expected. The rules were right; the expected text
 was wrong, and is corrected above.
+
+Diff gate (`bar-tooltip` against `client-auto-update`):
+
+| Stage | Round | Findings | Refuted | Downgraded to nit | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| a (gpt-6.1-sol) | 1 | 0 | 0 | 0 | Sound; the focused backend tests and the QML tests passed. |
+| b single (opus-5.5) | 1 | 2 | 0 | 0 | Two nits, left as they are: the failed-bar term in the pointer rule is already covered by the layout term, and three doc lines run past the wrap width. Three mutations of the pointer rule each failed the bats test. The gate closed on a nits-only round. |
+
+The full suite passed 1028 of 1028 with the btrfs tests on the rebased branch.
+
