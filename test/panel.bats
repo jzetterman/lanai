@@ -2508,6 +2508,91 @@ assert_right_click() {
   exec {fd}>&-
 }
 
+# Assert the bar's whole hover text, one argument per line.
+assert_tooltip() {
+  local IFS=$'\n'
+  assert_equal "$(jq -r .tooltip <<<"$output")" "$*"
+}
+
+@test "panel tooltip: the state, a pointer when the panel holds more, and the right-click words" {
+  local fd pid=$BASHPID
+  local details='Open the panel for details.' folded='Right-click: Open the panel for details.'
+  eval "$(declare -f status_facts | sed '1s/status_facts/real_status_facts/')"
+  state "$CURRENT"
+  run cmd_panel
+  assert_success
+  assert_tooltip 'Lanai: Stopped' 'Right-click: Start Windows.'
+  # Lanai's own client update, Windows running with its window closed, then open.
+  build_patches_current() { return 1; }
+  ST=active
+  status_facts() { printf 'ActiveState=active\nLanaiSetup=done\nLanaiQmp=running\nLanaiQga=open\n'; }
+  run cmd_panel
+  assert_tooltip 'Lanai: Running (busy)' "$details" 'Right-click: Open the Windows window.'
+  status_facts() { printf 'ActiveState=active\nLanaiSetup=done\nLanaiQmp=running\nLanaiQga=open\nLanaiWindow=true\n'; }
+  run cmd_panel
+  assert_tooltip 'Lanai: Running (busy)' "$folded"
+  build_patches_current() { return 0; }
+  ST=inactive
+  status_facts() { real_status_facts "$@"; }
+  # A forced stop's notice, and nothing else.
+  echo forced >"$S/last-run"
+  run cmd_panel
+  assert_equal "$(jq -r '.layout + .warning' <<<"$output")" daily
+  assert_tooltip 'Lanai: Stopped' "$details" 'Right-click: Start Windows.'
+  rm "$S/last-run"
+  status_facts() { printf 'ActiveState=inactive\nLanaiContainer=running\n'; }
+  run cmd_panel
+  assert_tooltip 'Lanai: In use (your turn)' "$folded"
+  status_facts() { printf 'ActiveState=active\nLanaiStopAge=15\n'; }
+  run cmd_panel
+  assert_equal "$(jq -r .buttons.force_stop.show <<<"$output")" true
+  assert_tooltip 'Lanai: Shutting down' "$folded"
+  status_facts() { printf 'ActiveState=failed\nResult=exit-code\n'; }
+  run cmd_panel
+  assert_tooltip 'Lanai: Failed' "$folded"
+  status_facts() { real_status_facts "$@"; }
+  # A failed start keeps right-click on Start (spec requirement 11).
+  panel_result_write vm '{"command":"start","invocation":"inv","started":1,"ended":2,"reply":{"ok":false}}'
+  run cmd_panel
+  assert_tooltip 'Lanai: Stopped (failed)' "$details" 'Right-click: Start Windows.'
+  rm "$S/panel-result-vm.json"
+  : >"$S/restore-in-progress"
+  run cmd_panel
+  assert_tooltip 'Lanai: Stopped (failed)' "$folded"
+  rm "$S/restore-in-progress"
+  # Panel jobs: a restore is its own layout; a snapshot stays daily.
+  exec {fd}>"$S/panel-job.lock"; flock -n "$fd"
+  panel_result_write snapshots '{"command":"restore","started":1}'
+  run cmd_panel
+  assert_tooltip 'Lanai: Stopped (busy)' "$folded"
+  panel_result_write snapshots '{"command":"snapshot","started":1}'
+  run cmd_panel
+  assert_tooltip 'Lanai: Stopped (busy)' 'Right-click: Open the panel.'
+  exec {fd}>&-
+  rm "$S/panel-result-snapshots.json"
+  # A restore with progress names no percent.
+  exec {fd}>"$S/lock"; flock -n "$fd"
+  jq -nc --argjson p "$pid" '{operation:"restore",phase:"hashing",done:50,total:100,pid:$p}' >"$S/image-progress.json"
+  run cmd_panel
+  assert_equal "$(jq -r .bar.percent <<<"$output")" 49
+  assert_tooltip 'Lanai: Stopped (busy)' "$folded"
+  exec {fd}>&-
+  rm "$S/image-progress.json"
+  # Setup step 5 with Windows running: a first setup, then Run setup again.
+  qmp_call() { printf '{"return":{"status":"running"}}\n{"return":[{"label":"qga0","frontend-open":true}]}\n'; }
+  ST=active
+  state '{"snapshot":"declined","step5":true}'
+  echo '{"setup":true}' >"$S/boot.json"
+  run cmd_panel
+  assert_equal "$(jq -r '.setup.step + .bar.mode' <<<"$output")" 5active
+  assert_tooltip 'Lanai: Setup needed' "$folded"
+  state '{"snapshot":"declined","done":true,"round":true,"step5":true}'
+  echo '{"setup":true,"window":false}' >"$S/boot.json"
+  run cmd_panel
+  assert_equal "$(jq -r .setup.step <<<"$output")" 5
+  assert_tooltip 'Lanai: Running' "$folded"
+}
+
 @test "panel restore refusal: explains unsupported storage and how to continue" {
   local words reply
   reply='{"ok":false,"reason":"restore-unsupported"}'
@@ -2637,7 +2722,7 @@ assert_rerun_warning() {
   for ST in inactive active; do
     run cmd_panel
     assert_success
-    # The warning is the bar tooltip's source too (LanaiModel.qml).
+    # The warning shows in the panel; the hover text points there.
     assert_equal "$(jq -r .warning <<<"$output")" "$RESIZE_NEW"
     assert_equal "$(jq -c '.buttons.update_client | [.show,.enable,.label]' <<<"$output")" '[true,true,"Update the Windows window"]'
   done

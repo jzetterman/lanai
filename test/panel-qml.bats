@@ -347,7 +347,6 @@ TestCase {
           compare(badge.color, mode === 'failed' ? Commons.Color.urgent : Commons.Color.accent)
           compare(badge.radius > 0, mode === 'attention')
         }
-        verify(p.button.tooltipText.indexOf(p.model.view.bar.label) !== -1)
         compare(p.button.Accessible.name, p.button.tooltipText)
         compare(p.button.Accessible.role, Accessible.Button)
       })
@@ -383,7 +382,6 @@ TestCase {
       verify(!animation.running)
       compare(underline.x, 0)
     })
-    verify(!/\d+%/.test(p.button.tooltipText))
     p.model.view = barView('busy', null, true)
     Style.reduceMotion = true
     verify(!animation.running)
@@ -395,11 +393,7 @@ TestCase {
     var p = widgetParts(), keys = [Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Menu]
     ;['stopped','active','busy','attention','failed'].forEach(function(mode) {
       var v = barView(mode, null, true)
-      v.warning = 'Backend warning'; v.notice = 'Backend notice'
       p.model.view = v
-      verify(p.button.tooltipText.indexOf(v.warning) !== -1)
-      verify(p.button.tooltipText.indexOf(v.notice) !== -1)
-      verify(p.button.tooltipText.indexOf(v.right_click_tooltip) !== -1)
       p.widget.close()
       mouseClick(p.button, 12, 12, Qt.LeftButton)
       verify(p.widget.opened)
@@ -1572,12 +1566,21 @@ TestCase {
     }
     p.widget.destroy(); wait(1)
   }
-  function test_widget_tooltip_includes_backend_right_click_words_and_error_fallback() {
+  function test_widget_tooltip_is_the_view_tooltip_with_default_and_error_views() {
     var p = widgetParts()
-    p.model.view = {label:'Stopped',headline:'Windows is stopped',right_click:'start',right_click_tooltip:'Right-click: Start Windows.',buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
-    compare(p.button.tooltipText, 'Lanai\nStopped\nWindows is stopped\nRight-click: Start Windows.')
+    // The view before the first poll's reply.
+    var first = createTemporaryObject(modelComponent, tests)
+    compare(first.tooltip, 'Lanai: Checking\nRight-click: Open the panel.')
+    // lanai panel builds the words; the bar shows them as they are.
+    var words = 'Lanai: Stopped\nOpen the panel for details.\nRight-click: Start Windows.'
+    p.model.view = {label:'Stopped',headline:'Windows is stopped',notice:'Backend notice',warning:'Backend warning',right_click:'start',
+      right_click_tooltip:'Right-click: Start Windows.',tooltip:words,buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{}}
+    compare(p.button.tooltipText, words)
+    compare(p.button.Accessible.name, words)
     p.model.refresh(); var poll = process(p.model, 'timeout')
     poll.complete('invalid', 1)
+    compare(p.button.tooltipText, 'Lanai: Unavailable\nRight-click: Open the panel for details.')
+    compare(p.button.Accessible.name, p.button.tooltipText)
     p.button.pressed(Qt.RightButton)
     compare(p.widget.opened, true)
     verify(!process(p.model, p.model.cli))
@@ -2265,7 +2268,6 @@ TestCase {
     model.view = view(true)
     var panel = createTemporaryObject(panelComponent, tests, {model:model, opened:true})
     wait(1)
-    verify(model.tooltip.indexOf(warning) !== -1)
     named(panel, 'moreActionsToggle').clicked()
     named(panel, 'logsToggle').clicked()
     var update = objects(panel, function(o) { return o.control === 'update_client' })[0]
@@ -3663,7 +3665,9 @@ panel_board_view() {
         compare(w.model.view.bar.percent, 0); compare(underline.width, 0)
         verify(!named(w.widget, 'barBusyAnimation').running)
       }
-      verify(w.button.tooltipText.indexOf(w.model.view.right_click_tooltip) !== -1)
+      compare(w.button.tooltipText, w.model.view.tooltip, row[0])
+      var title = {'Bar-not-installed':'Not installed','Bar-version-mismatch':'Display driver needs an update','Bar-in-use':'In use'}[row[0]]
+      if (title) compare(w.button.tooltipText, 'Lanai: ' + title + ' (your turn)\nRight-click: Open the panel for details.', row[0])
     })
     compare(Quickshell.launchCount, count)
     verify(!process(w.model, w.model.cli))

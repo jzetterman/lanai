@@ -218,8 +218,9 @@ operation or unfinished restore. It opens the Windows window when running with
 setup finished and the window closed; otherwise it opens the panel. A pending
 display driver update opens the panel, where **Start Windows** remains available
 for a working install. Closing the Looking Glass window leaves Windows running;
-right-click to reopen it. The tooltip names the right-click action and includes
-warnings and forced-stop notices. The panel keeps **Start Windows**, **Open window**
+right-click to reopen it. The tooltip names the state and the right-click action.
+When the panel holds more, such as a warning or a forced-stop notice, the tooltip
+says to open the panel for details. The panel keeps **Start Windows**, **Open window**
 and **Shut down** controls. Panel controls support Tab, Shift+Tab, Enter and Space;
 Escape closes it.
 If starting or opening fails, the glyph opens the panel to explain why. It also
@@ -325,8 +326,8 @@ Windows window** in More actions.
 The update takes several minutes, works whether Windows runs or not, and changes
 nothing in Windows. You can start and use Windows during the update, and the update
 gets less CPU than Windows. If a Windows window that opened before the update
-finished is still open, the panel and the bar's tooltip say to close it and open it
-again. If the update fails, cannot start, or stops twice before it finishes (for
+finished is still open, the panel says to close it and open it again, and the bar's
+tooltip points to the panel. If the update fails, cannot start, or stops twice before it finishes (for
 example at a logout), the panel says what may go wrong and names **Update the
 Windows window** in More actions. When a log holds the reason, the panel also names
 that log: the Windows window build log or the Jobs log. When the scale task in
