@@ -115,7 +115,8 @@ shut Windows down, open **More actions** and click **Run setup again**.
 These are the short steps. The [user guide](docs/guide.md#removal) has the full
 steps.
 
-1. Let any snapshot, restore or update in the panel finish. Then stop Lanai's VM:
+1. Let any setup, snapshot, restore or update in the panel finish. Then stop
+   Lanai's VM:
 
    ```sh
    systemctl --user stop lanai-vm.service
