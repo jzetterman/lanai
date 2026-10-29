@@ -194,10 +194,13 @@ auto_view() {
     id=$(patches_id 2>/dev/null) || id=''
     doc=$(auto_record_read "$id")
     # A try counted after the first read of the units: read them again, so
-    # its unit counts as running, not as a stop.
+    # its unit counts as running, not as a stop. A try writes its outcome
+    # before its unit ends, so when this read misses it too, read the record
+    # again for that outcome.
     newest=$(jq -r '.tries | last | select(. != null and .outcome == null) | .token' <<<"$doc")
     if [[ -n $newest ]] && ! grep -qxF -- "$newest" <<<"$units"; then
       units+=$'\n'$(auto_units)
+      grep -qxF -- "$newest" <<<"$units" || doc=$(auto_record_read "$id")
     fi
     auto_try_due "$doc" || due=false
     gave_up=$(auto_gave_up_read "$id")

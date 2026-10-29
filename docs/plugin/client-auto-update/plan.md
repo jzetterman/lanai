@@ -164,7 +164,9 @@ outcome:
   so the trap runs before step 6 can write `failed`.
 - The `EXIT` trap: when `counted` is set, the exit status is not 0, the signal
   flag is not set, and the entry's outcome is still null, it writes `failed`
-  (durable). So every ordinary
+  (durable). When that write fails too (the state folder filled or turned
+  read-only after the count), it writes the gave-up marker instead, since a try
+  with no outcome would read as a stop and allow another. So every ordinary
   error after the count ends the tries: a build failure, a setup plan that cannot
   be read, a record or log that cannot be written, an error under `set -e`. Then
   it calls `lanai_on_exit` with the status, because `lanai_main` already owns the
@@ -278,7 +280,9 @@ last read see a current client. A try that ends between the reads never reads as
 "stopped". A try counted between the reads (another bar item's worker) is in
 the record but not in the first list of units: when the record's newest try has
 no outcome and its token was not listed, `auto_view` reads the units again and
-adds them, so that try reads as running, not as a second stop. It prints one
+adds them, so that try reads as running, not as a second stop. When the second
+read misses it too, the try ended between the reads with its outcome written,
+so `auto_view` reads the record again. It prints one
 JSON object that
 `cmd_panel` passes on. Its terms:
 
@@ -1083,3 +1087,7 @@ the bar item's older QML, so the scripts asked for an update that nothing
 launched and said it ran (spec requirement 9). John's call: fix it in this PR.
 The fix (the `LANAI_AUTO_LAUNCHER` flag) landed test first after the gate closed,
 so the gate reopens for it.
+
+| Stage | Round | Findings | Refuted | Downgraded to nit | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| a (gpt-6.1-sol) | 4 | 2 | 0 | 0 | John allowed one more round each for stages (a) and (b). One P2 and one P3 confirmed, fixed test first. P2: when the "failed" outcome could not be written after the count (a state folder that filled or turned read-only), the try read as a stop and allowed another; the exit trap now writes the gave-up marker then. P3: a second try that ended between the two unit reads kept the record read before its outcome, so one poll showed "stopped twice"; `auto_view` now reads the record again. |

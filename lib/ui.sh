@@ -199,16 +199,18 @@ auto_gave_up_read() {
 
 # The worker's EXIT trap, for an exit with an error that no signal caused.
 # After the try is counted, it writes "failed", if the try has no outcome
-# yet. Before, it writes the gave-up marker for the current patch set (the
-# id is empty when the patches cannot be read), so the view ends the tries
-# rather than ask for a launch at every check (a full disk). A stop by a
-# signal writes neither. Then lanai_main's trap runs, so a worker that
+# yet. Before, or when that write fails too (the state folder filled or
+# turned read-only after the count, so the try would read as a stop and
+# allow another), it writes the gave-up marker for the current patch set
+# (the id is empty when the patches cannot be read), so the view ends the
+# tries rather than ask for a launch at every check. A stop by a signal
+# writes neither. Then lanai_main's trap runs, so a worker that
 # printed nothing still prints its JSON object.
 auto_on_exit() {
   local rc=$1
   if ((rc != 0 && ${AUTO_SIGNAL:-0} == 0)); then
     if [[ ${AUTO_COUNTED:-false} == true ]]; then
-      auto_outcome_set "$AUTO_TOKEN" failed || true
+      auto_outcome_set "$AUTO_TOKEN" failed || auto_gave_up_write || true
     else
       auto_gave_up_write || true
     fi

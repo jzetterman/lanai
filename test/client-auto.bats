@@ -115,6 +115,8 @@ auto_stubs() {
       echo "an error at $1" >&2
       false
     fi
+    # A read-only state folder from <step> on: the next write fails.
+    [[ $(cat "$T/readonly-at" 2>/dev/null) != "$1" ]] || chmod 555 "$(state_dir)"
   }
   # Each token whose unit (its process group) still runs.
   auto_units() {
@@ -427,6 +429,21 @@ touch "$1"; while [[ ! -e $3 ]]; do sleep 0.05; done' _ "$T/held" "$S/image-prog
     assert_equal "$(builds)" 0
     assert_equal "$(jq -r '.tries | length' "$S/client-auto.json")" 1
   done
+}
+
+@test "auto worker: a counted try whose outcome cannot be saved gives up" {
+  echo counted >"$T/readonly-at"
+  auto_run auto-ro
+  chmod 755 "$S"
+  [[ $(<"$T/rc-auto-ro") != 0 ]] || fail "the worker exited 0"
+  # The try has no outcome, which alone reads as a stop and would allow
+  # another try; the marker ends the tries instead.
+  assert_equal "$(jq -c '[.tries[] | [.token, .outcome]]' "$S/client-auto.json")" '[["auto-ro",null]]'
+  assert [ -e "$RUN/client-auto-gave-up" ]
+  view_setup
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view .result.client)" "$AUTO_GAVE_UP"
 }
 
 @test "auto worker: a stop by a signal leaves a stop" {
@@ -1157,6 +1174,19 @@ assert_auto_failed() {
   assert_equal "$(view .result.client)" ''
   assert_equal "$(view .buttons.update_client.show)" false
   assert_equal "$(view .buttons.take_snapshot.enable)" false
+}
+
+@test "view: a second try that ends before the second unit read shows its outcome" {
+  view_setup
+  record "$(patches_id)" '[{"token":"auto-a","at":1,"outcome":null},{"token":"auto-b","at":2,"outcome":null}]'
+  # Neither read lists auto-b: it ends, with its outcome written, between them.
+  auto_units() {
+    if [[ -e $T/units-read ]]; then
+      record "$(patches_id)" '[{"token":"auto-a","at":1,"outcome":null},{"token":"auto-b","at":2,"outcome":"failed"}]'
+    else touch "$T/units-read"; fi
+  }
+  run cmd_panel
+  assert_equal "$(view .result.client)" "$AUTO_FAILED"
 }
 
 @test "view: a launch that cannot open its lock or log in a read-only state folder gives up" {
