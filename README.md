@@ -46,7 +46,7 @@ omarchy-windows-vm stop
 
 ## First setup
 
-Left-click Lanai's glyph in the bar to open the panel, then click **Continue setup**.
+Left-click Lanai's glyph in the bar (an L in a monitor) to open the panel, then click **Continue setup**.
 Setup has six steps. After most steps, click **Continue setup** to move on.
 
 1. **Check.** Lanai checks the Windows install. Wait.
@@ -59,13 +59,18 @@ Setup has six steps. After most steps, click **Continue setup** to move on.
    minutes.
 5. **Drivers.** Lanai downloads the drivers (about 900 MB). Then Windows opens in a
    basic window. In Windows, open Lanai's setup drive in Explorer and run
-   `setup.cmd`. Approve the administrator prompt as the same Windows user. Windows
-   then shuts down by itself, and Lanai starts it again. Do not click **Shut down**.
+   `setup.cmd`. Approve the administrator prompt as the signed-in Windows user;
+   approval from another account is refused. Windows then shuts down by itself,
+   and Lanai starts it again. Do not click **Shut down** unless `setup.cmd` or the
+   panel tells you to.
 6. **Verify.** Wait while Lanai checks Windows. If Windows waits at its sign-in
    screen, sign in as the user who ran setup.
 
+When setup finishes, the panel returns to its daily view and Windows runs in the
+Windows window.
+
 Setup turns off the Windows lock, trusts the Looking Glass driver's publisher and
-installs Lanai's services, and Windows can read what you copy on Linux: the
+installs Lanai's services. Windows can also read what you copy on Linux. The
 [user guide](docs/guide.md#windows-lock-and-trust-exposure) explains each change.
 
 ## Daily use
@@ -110,7 +115,7 @@ shut Windows down, open **More actions** and click **Run setup again**.
 These are the short steps. The [user guide](docs/guide.md#removal) has the full
 steps.
 
-1. Stop Lanai's VM:
+1. Let any snapshot, restore or update in the panel finish. Then stop Lanai's VM:
 
    ```sh
    systemctl --user stop lanai-vm.service
