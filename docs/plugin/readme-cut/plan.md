@@ -15,8 +15,9 @@ rehearse on a copy with a tool that is not on PATH, while v0.3.3 is released).
 
 An onboarding audit on 2026-10-29 (EDT) found the README's other gaps for a new
 user: it never says to finish the `omarchy-windows-vm` install first, how to stop
-the container (`omarchy-windows-vm stop`), which Omarchy release it was tested on
-(only under Networking), how much setup downloads (the virtio-win ISO alone is
+the container (`omarchy-windows-vm stop`), which Omarchy version it needs (only
+under Networking, which says the tested build was never recorded and names
+4.0.0.alpha as the shell API it targets), how much setup downloads (the virtio-win ISO alone is
 877 MB) or how long setup takes; it names a `lanai` command that is not on PATH;
 and it discloses setup's Windows changes (the lock turned off, a trusted
 publisher added) only deep in the security section. Panel and setup fixes from
@@ -34,18 +35,23 @@ license.
    sentences:
    1. The wordmark, the one-line description, and a short status: an early 0.x
       release, take a backup or a snapshot before setup.
-   2. **Requirements:** Omarchy with its plugin API and the release Lanai was
-      tested on; a UEFI Windows install from `omarchy-windows-vm`, finished to
+   2. **Requirements:** Omarchy 4.0 with its plugin API, stated as today's
+      README states it: Lanai targets the 4.0.0.alpha shell API, and no exact
+      tested build is recorded (the desktop it was built on runs an Omarchy dev
+      build); a UEFI Windows install from `omarchy-windows-vm`, finished to
       the Windows desktop; `/dev/kvm` access as your user; enough memory for
       Windows and Linux, with a note that Lanai starts with the container's
-      memory size and Settings can lower it; about 1 GB of downloads during
+      memory size when it can read the container's settings (otherwise half the
+      host's memory, at most 16 GiB) and Settings can change it; about 1 GB of downloads during
       setup; what Lanai does not do (install Windows, TPM, Secure Boot, legacy
       layouts); that setup installs Arch packages with `sudo pacman` in a
       terminal it opens (the package list stays linked), and builds the Looking
       Glass client.
    3. **Install:** the two `omarchy plugin` commands, and
       `omarchy-windows-vm stop` before setup.
-   4. **First setup:** a numbered list of the six steps (Check, Packages,
+   4. **First setup:** how to start it (left-click Lanai's bar glyph to open
+      the panel, then click **Continue setup**), then a numbered list of the six
+      steps (Check, Packages,
       Snapshot, Prepare, Drivers, Verify), each with what the user does or waits
       for: Packages (Install in a terminal, password), Snapshot (take one, or
       confirm a backup), Prepare (wait while Lanai builds the client, several
@@ -55,7 +61,8 @@ license.
       lock turned off, a trusted publisher added, Lanai's services) and links
       the guide's section on it.
    5. **Daily use:** left-click opens the panel, right-click starts or opens
-      Windows; Shut down and Force stop; capture mode with Scroll Lock (on a
+      Windows; closing the Windows window leaves Windows running (right-click
+      reopens it); Shut down and Force stop; capture mode with Scroll Lock (on a
       laptop, often Fn with another key); the shared folder `~/Windows`;
       Settings for memory, cores and Windows scale; snapshots in one or two
       sentences.
@@ -120,3 +127,4 @@ One phase.
 
 | Gate | Stage | Round | Findings |
 |---|---|---|---|
+| Doc | a (gpt-6.1-sol) | 1 | 4 P2, all confirmed and fixed |
