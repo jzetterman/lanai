@@ -1609,7 +1609,40 @@ named them `lanai-props-check` and `lanai-trapcheck-<n>`. A bar lists only
   (exit 0), the entry's outcome was still null: a stop, not a failure. The client
   record had no reply and no end. The temporary folders were removed.
 
-Phase F's results go here too.
+## Client auto-update, phase F (2026-10-29, EDT)
+
+John's hand check on his desktop, in the installed plugin's folder, with the
+feature branch (3c97768) checked out as `auto-check`. A header edit to
+`0003-client-restart-scale.patch` (working tree only) made the patch set differ,
+as the throwaway commit would. Times are from the user journal and the try
+record (`client-auto.json`).
+
+- First try, 10:43:56: the folder moved to the branch and the plugins were
+  rescanned. The panel said W_RUN and the bar showed busy, but nothing started:
+  no `lanai-panel-*` unit in the journal, no try record. The shell had started
+  on 2026-10-28 at 14:43, before the checkout, and the rescan keeps the QML it
+  loaded then (its reload calls `Qt.clearComponentCache` only when it exists,
+  and Qt's QML returns `undefined` for it). So the 0.3.2 bar model, which has no
+  update code, polled the branch's scripts. This led to spec requirement 9 and
+  the `LANAI_AUTO_LAUNCHER` flag. During this wait John found Windows
+  unresponsive and force-stopped it at 10:47:09. No build ran then. The host had
+  3.1 GiB of memory available and 22 GiB in zram swap, and the stopped VM
+  reported an 8 GiB swap peak over its 5.5 days; that may explain the stall,
+  but it is not proven.
+- Part one, after `omarchy-restart-shell` at 10:52:50, Windows running and the
+  window open: the update unit started by itself at 10:52:52 and ended at
+  10:53:10 (18 seconds), with the try's outcome `ok`. The panel then said
+  W_REOPEN. John closed the window at 10:55:37 and reopened it at 10:55:40, and
+  the words went away.
+- Part two, with Windows shut down at 10:56:26: undoing the header edit made
+  the patch set differ again. A second update started by itself at 10:56:55 and
+  ended at 10:57:13. The VM unit started at 10:57:14, one second after the
+  update ended, and John reports that the start worked. The 18-second build left
+  little time, so this run does not show a start that overlapped the update.
+- Afterwards: a third update for the restored patch ran 10:57:52 to 10:58:11,
+  with outcome `ok`. The folder went back to `main` at 10:58:49. `main`'s
+  `lanai panel` then showed no warning, no update button and the bar active: the
+  client is current, with no click.
 
 ## After the proofs
 
