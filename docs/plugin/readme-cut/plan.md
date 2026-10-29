@@ -93,15 +93,19 @@ license.
    7. **Removal:** these short steps, in this order, with a link to the full
       steps in the guide (today's Removal section):
       1. Stop Lanai's VM with `systemctl --user stop lanai-vm.service`.
-      2. Run `omarchy-windows-vm launch` to start Windows and connect over RDP,
-         and undo setup's Windows changes by the guide (the lock, the apps,
-         the scale task and service, the publisher certificate).
+      2. Run `omarchy-windows-vm launch` to start Windows and connect over RDP.
+         There, as the Windows user who ran setup, in an administrator Command
+         Prompt, run today's three `reg delete` lines that restore Windows'
+         default lock settings (shown in the README as a code block), then
+         undo the other changes by the guide (the apps, the scale task and
+         service, the publisher certificate).
       3. Shut Windows down from the Start menu.
       4. Run `omarchy plugin remove io.github.jzetterman.lanai`.
    8. **More:** links to `docs/guide.md`, `docs/development.md` and the specs.
    9. **License:** MIT, except the Looking Glass patches (GPL-2.0-or-later),
       from today's License paragraph (README 620-623).
-2. The README fits on about two screens: at most 150 lines.
+2. The README fits on about two screens: at most 160 lines (the lock
+   commands in Removal cost about 10).
 3. `docs/guide.md` (the user guide) holds every user-facing paragraph cut from
    the README, under today's README section names (Install and setup, Daily
    use, Windows lock and trust exposure, Networking and coexistence, Removal),
@@ -148,7 +152,10 @@ license.
      "names", "says", "tells", "notes", "lists", "written in the README", "the
      README's words", "the README's restore steps" and "removal steps from the
      README"; the list is not complete. Two exceptions: requirement 31's
-     install and removal steps, license and dependencies stay in the README,
+     install steps, license and dependencies stay in the README, and so do the
+     removal steps in order, with the commands that restore Windows' lock
+     (requirement 32's first step); the other Windows undo commands may sit in
+     the guide;
      and row 7's "a user who follows the README" means the README alone. The
      rule also governs the plans' open work, such as `docs/plugin/plan.md`'s
      phase 8 notes that write to "the README".
@@ -164,7 +171,7 @@ license.
 
 ## Acceptance criteria
 
-- `README.md` has the sections of requirement 1, in order, and at most 150
+- `README.md` has the sections of requirement 1, in order, and at most 160
   lines.
 - A check script (run once, not kept) splits today's README into sentences
   (lines rejoined, code blocks and list items each counted as one unit) and
@@ -210,3 +217,4 @@ One phase.
 | Doc | b single (opus-5.5) | 1 | 4 should-fix, 4 nits, 0 refuted; all confirmed and integrated |
 | Doc | b single (opus-5.5) | 2 | 5 should-fix, 7 nits, 0 refuted; all confirmed and integrated |
 | Doc | b single (opus-5.5) | 3 (cap) | 3 should-fix, 7 nits, 0 refuted; all confirmed; 2 should-fix and the nits integrated; the removal-steps exception goes to John |
+| Doc | John | - | Removal: the README keeps the lock's `reg delete` lines (cap raised to 160 lines). Gate closed at the cap; advance to code (2026-10-29, EDT) |
