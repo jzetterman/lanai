@@ -178,7 +178,10 @@ LANAI_AUTO_STOPPED="Lanai's update of the Windows window stopped twice before it
 # the locks to check and count, steps 2-3, which counts as launching), shown
 # (the update button), and failed and its kind.
 # Only a poll with LANAI_AUTO_LAUNCHER=1 comes from a bar model that launches
-# the update (LanaiModel.qml). A plugin update reloads the bash code but can
+# the update (LanaiModel.qml). The 1 is the version of the launch contract
+# (the auto_update ask and `ui-job auto-* build-client --auto`): change it
+# with either, so an older model's poll gets the button, not an ask it
+# cannot launch. A plugin update reloads the bash code but can
 # leave an older model running until the shell restarts; for its polls, and
 # for `lanai panel` by hand, the view asks for no launch and claims no update
 # that only a launch would start, and shows the button at once, as before

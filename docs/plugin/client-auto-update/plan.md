@@ -303,7 +303,7 @@ JSON object that
 | `updating` | `running`, `hand`, or `want` and not `held_back` (launching). |
 | `shown` | Case `update` and `over`. The update button shows. |
 | `hand_after` | The client record has no `--auto` and started after `last.at` and the marker's time: the user started an update by hand after the tries. |
-| `failed` | `shown`, not `updating`, not `hand_after`. Its kind is `launch` for `gave_up`, else it comes from `last.outcome`: `failed`, `launch`, or (no outcome) stopped. Any other `last.outcome` (an `ok` try while the client is still old) gives the `failed` kind. |
+| `failed` | `shown`, not `updating`, not `hand_after`. Its kind is `gave-up` for `gave_up`, else it comes from `last.outcome`: `failed`, `launch`, or (no outcome) stopped. Any other `last.outcome` (an `ok` try while the client is still old) gives the `failed` kind. |
 | `key` | `<patch id>:<number of entries>`. |
 
 So the failure state lasts "until the client is current or the user starts an
@@ -403,8 +403,10 @@ a client binary that is not the installed pinned build:
    printed `<dev>:<inode>` differs from `stat -c %d:%i` of
    `$(client_builds)/$LG_BUILD/bin/looking-glass-client`.
 
-`cmd_panel` runs it only when the plan is finished, Windows is active, the stamp
-and patches are current and the guest is not behind. Closing the window stops
+`cmd_panel` runs it only when Windows is active and the client has the current
+patches (`auto_view`'s `current`, which needs the stamp and the patches). A
+behind guest leaves the plan unfinished, so the reopen words cannot stick for an
+older pin's build. Closing the window stops
 `lanai-client.service`, and Windows' shutdown stops it too (`PartOf=`), so the
 words go away by themselves. The check needs no time stamps and works for any
 build, `lanai build-client` included.
@@ -1091,3 +1093,4 @@ so the gate reopens for it.
 | Stage | Round | Findings | Refuted | Downgraded to nit | Result |
 | --- | ---: | ---: | ---: | ---: | --- |
 | a (gpt-6.1-sol) | 4 | 2 | 0 | 0 | John allowed one more round each for stages (a) and (b). One P2 and one P3 confirmed, fixed test first. P2: when the "failed" outcome could not be written after the count (a state folder that filled or turned read-only), the try read as a stop and allowed another; the exit trap now writes the gave-up marker then. P3: a second try that ended between the two unit reads kept the record read before its outcome, so one poll showed "stopped twice"; `auto_view` now reads the record again. |
+| b panel (opus-5.5), 4 lenses | 4 | 15 | 0 | 0 | Two should-fix and 13 nits confirmed; every lens found the design sound. Should-fix: (1) the older bar model's test held no job, so a wait shown to it would slip through: the test now holds a job and refutes W_WAIT and W_RUN, and it fails when the wait ignores the flag; (2) after the tries end, the bar's hover text says how to fix the window but not that Lanai's update failed: the stacked tooltip change (`docs/plugin/bar-tooltip/plan.md`) replaces that hover text with "Lanai: <state> (failed)" and a pointer to the panel, so it is left to that change. Nits fixed: the read-only test restores the folder before any assert; comments say the flag's 1 is the launch contract's version and that the worker's quiet exits must match the view's tests; the plan's gave-up kind and stale-window condition; CLAUDE.md's `LanaiModel.qml` entry. Nits left: a launch failure recorded after a long lock wait without a fresh session check, gave-up words after a counted try whose outcome could not be saved, the Jobs log emptied by a later job, W_RUN beside a command-line restore, W_WAIT for a terminal build, the sign-in branch hiding the reopen words, the unused `launching` and `hand` output fields, two QML and test-name nits. |

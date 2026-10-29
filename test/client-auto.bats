@@ -433,8 +433,11 @@ touch "$1"; while [[ ! -e $3 ]]; do sleep 0.05; done' _ "$T/held" "$S/image-prog
 
 @test "auto worker: a counted try whose outcome cannot be saved gives up" {
   echo counted >"$T/readonly-at"
-  auto_run auto-ro
+  run cmd_ui_job auto-ro build-client --auto
+  auto_wait auto-ro || true
+  # Writable again before any assert, so a failure leaves a folder bats can remove.
   chmod 755 "$S"
+  auto_wait auto-ro
   [[ $(<"$T/rc-auto-ro") != 0 ]] || fail "the worker exited 0"
   # The try has no outcome, which alone reads as a stop and would allow
   # another try; the marker ends the tries instead.
@@ -762,6 +765,17 @@ touch "$1"; exec sleep 30' _ "$T/held-cli" "$S/image-progress.json" 3>&- &
   # A value other than 1 is no flag.
   LANAI_AUTO_LAUNCHER=yes run cmd_panel
   assert_equal "$(view .auto_update.launch)" false
+  # A job holds the panel: no words say an update waits, and the button
+  # shows, disabled while the job runs.
+  panel_result_write snapshots '{"token":"t","command":"snapshot","args":[],"started":5}'
+  hold panel-job.lock
+  run cmd_panel
+  assert_equal "$(view .auto_update.launch)" false
+  assert_equal "$(view '.buttons.update_client | [.show, .enable] | tostring')" '[true,false]'
+  run view_words
+  refute_output --partial "$W_WAIT"
+  refute_output --partial "$W_RUN"
+  stop_bg
 }
 
 @test "view: no ask in each case of requirement 2" {

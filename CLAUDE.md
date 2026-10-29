@@ -12,8 +12,8 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   `lanai-vm-helper`, the client unit's `lanai-client-exec`, and `lanai-setup-host`,
   which installs the host packages in a terminal), `Widget.qml` (the bar glyph),
   `LanaiPanel.qml` (setup cards, VM controls, detail sections, drafts and
-  confirmations), `LanaiModel.qml` (panel polling, literal command transport and
-  clipboard exit feedback), `lib/` (`panel.sh` holds the
+  confirmations), `LanaiModel.qml` (panel polling, literal command transport,
+  clipboard exit feedback and the launch of Lanai's own client update), `lib/` (`panel.sh` holds the
   read-only panel view and words, `client.sh` holds the
   Looking Glass client code, `setup.sh` the setup flow, setup media and
   `$RUN/step6-checks.json` check outcomes and `$RUN/step6-scale-limit` worker

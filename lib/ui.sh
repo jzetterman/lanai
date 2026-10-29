@@ -264,6 +264,9 @@ auto_update_worker() {
   # A temporary record file left by a stop or a full disk.
   rm -f -- "$(auto_record_file)".*
   # 2. Check. A logout or reboot that queued this start spends nothing.
+  # Each exit here that records nothing must match a test in auto_view's
+  # $want or $over (the session, the update case, the tries, the gave-up
+  # marker), or the bar items relaunch every 30 seconds.
   if ! session_active; then
     emit true "" "No update is due: the desktop session is not active." ""
     return 0
