@@ -36,7 +36,7 @@ license.
    1. The wordmark, the one-line description, and a short status: an early 0.x
       release; setup offers a snapshot, and where it cannot, make a backup
       first.
-   2. **Requirements:** Omarchy 4.0 with its plugin API (if `omarchy plugin`
+   2. **Requirements:** Omarchy 4.0 or later, with its plugin API (if `omarchy plugin`
       is not a command, the release is too old), stated as today's README
       states it: Lanai targets the 4.0.0.alpha shell API, and no exact tested
       build is recorded (the desktop it was built on runs an Omarchy dev
@@ -47,7 +47,8 @@ license.
       the host's memory, at most 16 GiB) and Settings can change it; about
       1 GB of downloads during setup, plus the Arch packages; what Lanai does
       not do (install Windows, TPM, Secure Boot, legacy layouts); that setup
-      installs Arch packages with `sudo pacman` in a terminal it opens, with
+      installs Arch packages in a terminal it opens, where the user types their
+      password, with
       the packages named in one line of prose and `LANAI_HOST_PACKAGES` linked
       as the exact list, and builds the Looking Glass client.
    3. **Install:** one command,

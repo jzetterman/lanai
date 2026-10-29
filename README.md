@@ -9,25 +9,25 @@ starts under Lanai. Where it cannot, make a backup first.
 
 ## Requirements
 
-- Omarchy 4.0 with its plugin API. If `omarchy plugin` is not a command, your Omarchy
-  is too old. Lanai targets the shell API of Omarchy 4.0.0.alpha. Nobody has recorded
-  an exact tested build: Lanai was built on a desktop that runs an Omarchy dev build.
-- A UEFI Windows install from `omarchy-windows-vm install`, finished to the Windows
-  desktop.
+- Omarchy 4.0 or later, with its plugin API. If `omarchy plugin` is not a command,
+  your Omarchy is too old. Lanai targets the shell API of Omarchy 4.0.0.alpha.
+  Nobody has recorded an exact tested build: Lanai was built on a desktop that runs
+  an Omarchy dev build.
+- A finished UEFI Windows install from `omarchy-windows-vm install`.
 - Access to `/dev/kvm` as your user.
 - Enough memory for Windows and Linux. Lanai starts with the memory size of the
-  container (the Windows VM that `omarchy-windows-vm` runs)
-  when it can read the container's settings. Otherwise it uses half the host's
-  memory, at most 16 GiB. You can change it in Settings.
+  container (the Windows VM that `omarchy-windows-vm` runs) when it can read the
+  container's settings. Otherwise it uses half the host's memory, at most 16 GiB.
+  You can change it in Settings.
 - About 1 GB of downloads during setup, plus the Arch packages.
 
 Lanai does not install Windows. It does not support TPM, Secure Boot or legacy
 layouts.
 
-Setup installs Arch packages with `sudo pacman`, in a terminal it opens for you: QEMU
-and its modules, virtiofsd, passt, socat, jq, Python, diffutils and the Looking Glass
-build tools. [`LANAI_HOST_PACKAGES`](lib/client.sh) has the exact list. Setup also
-builds the Looking Glass client.
+Setup installs Arch packages in a terminal it opens for you, where you type your
+password: QEMU and its modules, virtiofsd, passt, socat, jq, Python, diffutils and
+the Looking Glass build tools. [`LANAI_HOST_PACKAGES`](lib/client.sh) has the exact
+list. Setup also builds the Looking Glass client.
 
 ## Install
 
