@@ -123,7 +123,11 @@ license.
      under lanai-vm), since their sentences mix in panel internals;
    - commands corrected so that they run as written: `lanai` and `bin/lanai`
      get the full path of requirement 7, and a bare `omarchy-windows-vm` that
-     means "start it" becomes `omarchy-windows-vm launch`.
+     means "start it" becomes `omarchy-windows-vm launch`;
+   - Removal step 1's order (John, 2026-10-29, EDT, after the diff gate's
+     panel round): jobs finish first, then the VM stops, since a bare
+     `systemctl --user stop` during a setup boot counts as setup.cmd's own
+     shutdown and setup boots Windows again.
 4. `docs/development.md` holds the developer content: the background (Why and
    Plan, the spike), the plugin's file layout, the Tests section's test and
    panel-internals text (README 569-618, including `lanai panel`, the poll

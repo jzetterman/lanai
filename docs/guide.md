@@ -476,14 +476,15 @@ the final measurement. If the wait expires, the next start reports the forced st
 
 ## Removal
 
-1. First, shut Lanai's VM down. This Linux command works even without the plugin:
+1. First, let any detached setup, snapshot, restore or Windows window update finish.
+   To stop setup partway, click **Shut down** in the panel. Then shut Lanai's VM
+   down. This Linux command works even without the plugin:
 
    ```sh
    systemctl --user stop lanai-vm.service
    ```
 
-   It waits for shutdown and can force-stop at the timeout. Let any detached setup,
-   snapshot, restore or Windows window update finish before removing its code. Once Lanai's VM
+   It waits for shutdown and can force-stop at the timeout. Once Lanai's VM
    is stopped, start Windows with `omarchy-windows-vm launch` and connect over RDP.
    **Do every Windows removal step below in that RDP session**: uninstalling the
    IDD or SPICE vdagent can remove Lanai's display or input, and a normal Lanai boot
