@@ -50,7 +50,7 @@ omarchy-windows-vm stop
 Setup changes Windows. It turns off the Windows lock without saving your old lock
 settings, so Windows stays unlocked whenever Linux is: lock Linux to cover it. It
 trusts the Looking Glass driver's publisher and installs Lanai's services. Windows
-can also read what you copy on Linux. The
+can also read what you copy on Linux, files too. The
 [user guide](docs/guide.md#windows-lock-and-trust-exposure) explains each change.
 
 Left-click Lanai's glyph in the bar (an L in a monitor) to open the panel, then
@@ -86,8 +86,9 @@ one; after most, click **Continue setup** to move on.
   loses unsaved work.
 - Never start `omarchy-windows-vm` while Lanai runs Windows. Leave the container's
   Windows version, language, disk size or format, `CLEAR` and ISO mounts unchanged.
-  To use the container over RDP instead, shut Windows down in Lanai and let any
-  snapshot or restore finish, then run `omarchy-windows-vm launch`.
+  To use the container over RDP instead, shut Windows down in Lanai, let any
+  snapshot or restore finish (or finish an unfinished one in the panel), then run
+  `omarchy-windows-vm launch`.
 - Outside capture mode, Ctrl+Alt+Del goes to Omarchy and closes all windows, the
   Windows window too. Windows keeps running.
 - Press Scroll Lock to enter capture mode. The mouse, the keyboard and Omarchy's
@@ -98,7 +99,7 @@ one; after most, click **Continue setup** to move on.
 - **Settings** in the panel sets memory, cores and Windows' scale. Memory and cores
   apply at the next start.
 - **Snapshots** in the panel lists your snapshots. Take or restore one while Windows
-  is shut down. After a restore, run setup again.
+  is shut down. After a restore, setup starts again: click **Continue setup**.
 
 The [user guide](docs/guide.md#daily-use) has the detail.
 
@@ -114,11 +115,10 @@ shut Windows down, open **More actions** and click **Run setup again**.
 
 ## Removal
 
-These are the short steps. The [user guide](docs/guide.md#removal) has the full
-steps.
+The [user guide](docs/guide.md#removal) has the full steps.
 
 1. Let any setup, snapshot, restore or update in the panel finish. To stop setup
-   partway, click **Shut down** in the panel. Then stop Lanai's VM:
+   partway, click **Shut down** in the panel and confirm. Then stop Lanai's VM:
 
    ```sh
    systemctl --user stop lanai-vm.service

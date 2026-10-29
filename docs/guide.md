@@ -477,8 +477,8 @@ the final measurement. If the wait expires, the next start reports the forced st
 ## Removal
 
 1. First, let any detached setup, snapshot, restore or Windows window update finish.
-   To stop setup partway, click **Shut down** in the panel. Then shut Lanai's VM
-   down. This Linux command works even without the plugin:
+   To stop setup partway, click **Shut down** in the panel and confirm. Then shut
+   Lanai's VM down. This Linux command works even without the plugin:
 
    ```sh
    systemctl --user stop lanai-vm.service

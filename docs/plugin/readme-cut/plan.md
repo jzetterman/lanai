@@ -54,7 +54,11 @@ license.
       `omarchy plugin add https://github.com/jzetterman/lanai.git --enable`
       (it asks once where in the bar to put the glyph), and
       `omarchy-windows-vm stop` before setup.
-   4. **First setup:** how to start it (left-click Lanai's bar glyph to open
+   4. **First setup:** first, a short paragraph on what setup changes in
+      Windows (the lock turned off without saving the old settings, a trusted
+      publisher added, Lanai's services, the clipboard), with a link to the
+      guide's section on it, so the user reads it before consenting. Then how
+      to start it (left-click Lanai's bar glyph to open
       the panel, then click **Continue setup**), and that **Continue setup**
       moves on after most steps. Then a numbered list of the six steps, each
       with what the user does or waits for:
@@ -71,10 +75,6 @@ license.
          do not click Shut down.
       6. Verify: wait while Lanai checks Windows; if Windows waits at its
          sign-in screen, sign in as the user who ran setup.
-
-      One sentence says what setup changes in Windows (the lock turned off, a
-      trusted publisher added, Lanai's services) and that Windows can read
-      what you copy on Linux, and links the guide's section on it.
    5. **Daily use:** left-click opens the panel, right-click starts or opens
       Windows; closing the Windows window leaves Windows running (right-click
       reopens it); Shut down and Force stop; never start `omarchy-windows-vm`
@@ -125,7 +125,8 @@ license.
      get the full path of requirement 7, and a bare `omarchy-windows-vm` that
      means "start it" becomes `omarchy-windows-vm launch`;
    - Removal step 1's order (John, 2026-10-29, EDT, after the diff gate's
-     panel round): jobs finish first, then the VM stops, since a bare
+     panel round): jobs finish first (to stop setup partway, click **Shut
+     down** in the panel and confirm), then the VM stops, since a bare
      `systemctl --user stop` during a setup boot counts as setup.cmd's own
      shutdown and setup boots Windows again.
 4. `docs/development.md` holds the developer content: the background (Why and
