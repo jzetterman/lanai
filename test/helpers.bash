@@ -89,6 +89,9 @@ isolate_home() {
   # The desktop session's display and Hyprland instance, which a boot
   # reads; tests that need one set their own.
   unset WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+  # The bar model's poll says it launches Lanai's own client update
+  # (LanaiModel.qml); a test of an older bar model unsets it.
+  export LANAI_AUTO_LAUNCHER=1
   export HOME=$BATS_TEST_TMPDIR/home
   export XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share
   export XDG_STATE_HOME=$HOME/.local/state XDG_CACHE_HOME=$HOME/.cache
@@ -136,6 +139,16 @@ make_install() {
   : >"$1/windows.boot"
   echo win11x64.iso >"$1/windows.base"
   echo 6.05 >"$1/windows.ver"
+}
+
+# Install a fake client build <name> that reports version <version> (default
+# <name>) on --help, as the real one does on its first log line.
+fake_build() {
+  local bin=$XDG_DATA_HOME/lanai/looking-glass/$1/bin/looking-glass-client
+  mkdir -p "${bin%/*}"
+  printf '#!/usr/bin/env bash\necho "00:00:00.000 [I]              main.c:4303 | main                           | Looking Glass (%s)" >&2\n' \
+    "${2:-$1}" >"$bin"
+  chmod +x "$bin"
 }
 
 # Write both pinned-client identity files used by setup and panel fixtures.

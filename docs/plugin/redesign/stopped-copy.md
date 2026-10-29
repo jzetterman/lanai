@@ -40,6 +40,9 @@ Restoring board shows no status lines.
    sentence keeps it, for example "Taking a snapshot.", "Checking Windows." or
    "Updating the Windows window. This may take several minutes. You can start
    Windows when it finishes.".
+   (Superseded for the client update: its busy line is now empty, and the
+   warning says the Windows window is updating and that Windows can start
+   during it; see `../client-auto-update/plan.md`, "What each state shows".)
 3. While a job shows its progress line and bar, the panel shows no busy line.
    A restore never shows a busy line, with or without progress: its target
    line and "Keep Windows stopped until the restore finishes." already show,

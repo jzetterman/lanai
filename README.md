@@ -316,17 +316,25 @@ notice, and then stops. In both cases Windows keeps its last size and the pictur
 is scaled to fit the window. Resize the window or leave fullscreen to fix it.
 
 Installs set up with an earlier version of Lanai keep working, but Windows may not
-match the window, and after the computer wakes from sleep, the mouse may reach
-only part of Windows. The panel says what may go wrong and names one step. When
-only the Windows window needs an update, these last until you click **Update the
-Windows window**. It takes several minutes, works whether Windows runs or not, and
-changes nothing in Windows. When it finishes, close the Windows window and open it
-again. If the update fails, the panel points to the Windows window build log. When
-the scale task in Windows was set up without the sign-in step, Windows may stay at
-its old size after it starts, until you resize the window. Then the panel names
-**Run setup again** instead. It updates the Windows window too, turns the Windows
-lock off again, and restarts Windows as setup always does. If setup cannot update
-the window, the panel points to the same build log.
+match the window, and after the computer wakes from sleep, the mouse may reach only
+part of Windows. When only the Windows window needs an update, Lanai updates it by
+itself, with no click, after `omarchy plugin update`, a shell restart or a sign-in.
+The first plugin update to this version starts it only at the next shell restart
+(`omarchy-restart-shell`) or sign-in; until then the panel names **Update the
+Windows window** in More actions.
+The update takes several minutes, works whether Windows runs or not, and changes
+nothing in Windows. You can start and use Windows during the update, and the update
+gets less CPU than Windows. If a Windows window that opened before the update
+finished is still open, the panel and the bar's tooltip say to close it and open it
+again. If the update fails, cannot start, or stops twice before it finishes (for
+example at a logout), the panel says what may go wrong and names **Update the
+Windows window** in More actions. When a log holds the reason, the panel also names
+that log: the Windows window build log or the Jobs log. When the scale task in
+Windows was set up without the sign-in step, Windows may stay at its old size after
+it starts, until you resize the window. Lanai then does not update the window by
+itself, and the panel names **Run setup again**. It updates the Windows window too,
+turns the Windows lock off again, and restarts Windows as setup always does. If
+setup cannot update the window, the panel points to the same build log.
 
 Windows' display scale changes while Windows runs, without a restart or sign-out.
 “Match my monitor” uses the Windows step nearest the scale of the monitor the

@@ -44,6 +44,276 @@ signin_step_missing() {
   setup_done && [[ $(setup_get round) != true && $(setup_get signin_step) != "$LANAI_SIGNIN_STEP" ]]
 }
 
+# client_update_case <finished true|false> [<patches id>]: print which step
+# brings the client up to date (spec 12). The id, when given, saves hashing
+# the patches again. "none": the plan is not finished, the client is
+# current, its stamp is not the pin's, or the guest's driver is behind
+# (req 8's case). "update": the client was built without the current
+# patches, and the live scale task has the sign-in step, so Update the
+# Windows window is the one step, and Lanai runs it by itself
+# (docs/plugin/client-auto-update/spec.md). "setup": the client is old and
+# Run setup again is the one step. The panel view and Lanai's own update
+# worker both decide from it.
+client_update_case() {
+  if [[ $1 != true ]] || ! build_stamp_current || build_patches_current "${2:-}" ||
+    [[ -n $(guest_version_behind) ]]; then
+    echo none
+  elif [[ $(scale_task_kind) == new ]] && ! signin_step_missing; then
+    echo update
+  else
+    echo setup
+  fi
+}
+
+# --- Lanai's own client update (docs/plugin/client-auto-update/) ---
+#
+# The try record, <state>/client-auto.json, survives reboots:
+#   {"patches":"<patches_id>","tries":[{"token":"auto-...","at":<time>,"outcome":null}]}
+# One entry per counted try, at most two. outcome is null (no result yet),
+# "ok", "failed" or "launch" (the launch could not start). Every write
+# happens under panel-job.lock. Builds Lanai did not start by itself never
+# touch it.
+
+auto_record_file() { printf '%s\n' "$(state_dir)/client-auto.json"; }
+
+# auto_record_read <patches id>: print the record for patch set <id>. A
+# missing, unreadable or foreign record (another patch set), or a file that
+# holds more than one JSON value, counts as an empty one, so a new patch set
+# gets new tries.
+auto_record_read() {
+  jq -cse --arg p "$1" 'select(length == 1) | .[0] | select(type == "object" and .patches == $p and
+    (.tries | type == "array" and all(.[]; type == "object")))' "$(auto_record_file)" 2>/dev/null ||
+    jq -nc --arg p "$1" '{patches:$p,tries:[]}'
+}
+
+# auto_record_write <doc>: replace the record with <doc> so that it survives
+# a power loss: a temporary file, synced, moved into place, then the folder
+# synced.
+auto_record_write() {
+  local f tmp
+  f=$(auto_record_file)
+  mkdir -p -- "${f%/*}" || return 1
+  tmp=$(mktemp "$f.XXXXXX") || return 1
+  if ! printf '%s\n' "$1" >"$tmp" || ! sync -- "$tmp" || ! mv -f -- "$tmp" "$f" || ! sync -- "${f%/*}"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
+# auto_try_due <doc>: succeed while record <doc> allows a try: fewer than
+# two entries, and none failed or could not launch.
+auto_try_due() {
+  jq -e '(.tries | length) < 2 and all(.tries[]; .outcome != "failed" and .outcome != "launch")' <<<"$1" >/dev/null
+}
+
+# auto_try_add <doc> <token> <outcome json>: print <doc> with one entry more.
+auto_try_add() {
+  jq -c --arg t "$2" --argjson at "$(ui_timestamp)" --argjson o "$3" '.tries += [{token:$t,at:$at,outcome:$o}]' <<<"$1"
+}
+
+# auto_outcome_set <token> <outcome>: set the outcome of try <token>, only
+# while it has none, in whatever patch set the record holds.
+auto_outcome_set() {
+  local doc
+  doc=$(jq -ce --arg t "$1" --arg o "$2" 'select(type == "object" and (.tries | type) == "array") |
+    .tries |= map(if type == "object" and .token == $t and .outcome == null then .outcome = $o else . end)' \
+    "$(auto_record_file)" 2>/dev/null) || return 1
+  auto_record_write "$doc"
+}
+
+# Print the token of each automatic update unit (lanai-panel-auto-*) that
+# runs, one per line. A unit that systemd is stopping still counts, so a
+# logout's stop does not read as a finished stop before the unit is gone.
+auto_units() {
+  systemctl --user list-units --plain --no-legend --state=activating,active,reloading,deactivating \
+    'lanai-panel-auto-*' 2>/dev/null |
+    awk '$1 ~ /^lanai-panel-auto-[A-Za-z0-9-]+\.service$/ {
+      u = $1; sub(/^lanai-panel-/, "", u); sub(/\.service$/, "", u); print u }' || true
+}
+
+# Print the live progress of a snapshot or restore as JSON, or null: its
+# operation lock is held and its progress record is live (image-proof.py).
+image_activity() {
+  python3 "$LANAI_LIB/image-proof.py" activity "$(state_dir)/lock" "$(state_dir)/image-progress.json"
+}
+
+# Succeed while a command-line snapshot or restore shows progress.
+auto_progress_active() {
+  local p
+  p=$(image_activity 2>/dev/null) || return 1
+  [[ -n $p && $p != null ]]
+}
+
+# auto_launch_failed <token>: systemd-run could not start the update's unit,
+# so record a "launch" try, which ends the tries. Not while the session or
+# the user manager stops (a logout or reboot): that refusal spends no try.
+# The one write a launch makes. When the lock cannot be opened or the record
+# cannot be written (a full or read-only state folder, where the launch's
+# log could not open either), or the patches cannot be read, it writes the
+# gave-up marker instead: no worker runs to write it, and the views would
+# ask again at every check. It waits for panel-job.lock with no time limit,
+# which also waits out the view's read probe. A subshell, so the lock goes
+# when it returns.
+auto_launch_failed() (
+  local fd manager id doc
+  session_active || return 0
+  # degraded exits 1 but still runs units.
+  manager=$(systemctl --user is-system-running 2>/dev/null) || true
+  [[ $manager == running || $manager == degraded ]] || return 0
+  if ! mkdir -p -- "$(state_dir)" 2>/dev/null || ! { exec {fd}>>"$(state_dir)/panel-job.lock"; } 2>/dev/null ||
+    ! flock "$fd"; then
+    auto_gave_up_write
+    return 1
+  fi
+  if ! id=$(patches_id 2>/dev/null); then
+    auto_gave_up_write
+    return 1
+  fi
+  doc=$(auto_record_read "$id")
+  auto_try_due "$doc" || return 0
+  if ! doc=$(auto_try_add "$doc" "$1" '"launch"') || ! auto_record_write "$doc"; then
+    auto_gave_up_write
+    return 1
+  fi
+)
+
+# auto_step <name>: a no-op seam that auto_update_worker calls after it
+# counts the try (counted), writes the client record (published), builds
+# (built) and records the outcome (recorded). Tests override it.
+auto_step() { :; }
+
+# The marker of a worker that failed before it could count its try, in
+# $RUN: "<time> <patches id>", the id last, since it is empty when the
+# patches cannot be read. $RUN is a tmpfs, so a full home disk cannot stop
+# the write, and a reboot clears it.
+auto_gave_up_file() { printf '%s\n' "$(run_dir)/client-auto-gave-up"; }
+
+# auto_gave_up_read <patches id>: print the time of the gave-up marker for
+# patch set <id> (empty for patches that cannot be read), or nothing.
+auto_gave_up_read() {
+  local at="" id=""
+  run_dir >/dev/null 2>&1 || return 0
+  read -r at id 2>/dev/null <"$(auto_gave_up_file)" || return 0
+  [[ $id != "$1" || ! $at =~ ^[0-9]+(\.[0-9]+)?$ ]] || printf '%s\n' "$at"
+}
+
+# The worker's EXIT trap, for an exit with an error that no signal caused.
+# After the try is counted, it writes "failed", if the try has no outcome
+# yet. Before, or when that write fails too (the state folder filled or
+# turned read-only after the count, so the try would read as a stop and
+# allow another), it writes the gave-up marker for the current patch set
+# (the id is empty when the patches cannot be read), so the view ends the
+# tries rather than ask for a launch at every check. A stop by a signal
+# writes neither. Then lanai_main's trap runs, so a worker that
+# printed nothing still prints its JSON object.
+auto_on_exit() {
+  local rc=$1
+  if ((rc != 0 && ${AUTO_SIGNAL:-0} == 0)); then
+    if [[ ${AUTO_COUNTED:-false} == true ]]; then
+      auto_outcome_set "$AUTO_TOKEN" failed || auto_gave_up_write || true
+    else
+      auto_gave_up_write || true
+    fi
+  fi
+  lanai_on_exit "$rc"
+}
+
+# Write the gave-up marker for the current patch set (an empty id when the
+# patches cannot be read). It never writes through a bad $RUN.
+auto_gave_up_write() {
+  local id
+  id=$(patches_id 2>/dev/null) || id=''
+  run_dir_check >/dev/null 2>&1 || return 1
+  printf '%s %s\n' "$(ui_timestamp)" "$id" >"$(auto_gave_up_file)" 2>/dev/null
+}
+
+# auto_update_worker <token>: Lanai's own update of the Windows window, in
+# its unit lanai-panel-<token>.service (lanai ui-job <token> build-client
+# --auto). It waits until no panel job, client build, or command-line
+# snapshot or restore holds it back, holding no lock while it sleeps. Then
+# it checks from fresh state that an update is due. If one is, its first
+# act is to count the try in the record. Then it writes the panel's client
+# record, builds, records the outcome and ends the client record. It takes
+# panel-job.lock before build.lock, as every job does, and runs build_client
+# itself under build.lock.
+auto_update_worker() {
+  local s fd bfd plan="" plan_ok=true id doc started inv rc=0 out reply record
+  AUTO_TOKEN=$1 AUTO_COUNTED=false AUTO_SIGNAL=0
+  # Bash runs the trap when the running command ends; systemd signals the
+  # build's processes too, so the trap runs before the outcome is written.
+  trap 'AUTO_SIGNAL=1; exit 143' TERM INT HUP
+  trap 'auto_on_exit $?' EXIT
+  umask 077
+  s=$(state_dir)
+  mkdir -p -- "$s"
+  exec {fd}>>"$s/panel-job.lock"
+  exec {bfd}>>"$s/build.lock"
+  # 1. Wait: when no build or image work holds it back, take both locks,
+  # check the image work once more, and go on; else release and sleep.
+  while :; do
+    if ! lock_held "$s/build.lock" && ! auto_progress_active; then
+      flock "$fd"
+      if flock -w 1 "$bfd"; then
+        auto_progress_active || break
+        flock -u "$bfd"
+      fi
+      flock -u "$fd"
+    fi
+    ui_sleep 2
+  done
+  # A temporary record file left by a stop or a full disk.
+  rm -f -- "$(auto_record_file)".*
+  # 2. Check. A logout or reboot that queued this start spends nothing.
+  # Each exit here that records nothing must match a test in auto_view's
+  # $want or $over (the session, the update case, the tries, the gave-up
+  # marker), or the bar items relaunch every 30 seconds.
+  if ! session_active; then
+    emit true "" "No update is due: the desktop session is not active." ""
+    return 0
+  fi
+  if ! plan=$(setup_plan "$(shared_facts)"); then plan_ok=false; fi
+  if $plan_ok && [[ $(client_update_case "$(jq -r .finished <<<"$plan")") != update ]]; then
+    emit true "" "No update is due." ""
+    return 0
+  fi
+  id=$(patches_id)
+  doc=$(auto_record_read "$id")
+  # Another worker or a failed launch may have given up meanwhile.
+  if ! auto_try_due "$doc" || [[ -n $(auto_gave_up_read "$id") ]]; then
+    emit true "" "No update is due: Lanai's tries for these patches are over." ""
+    return 0
+  fi
+  # 3. Count. From here every error is in the Jobs log.
+  doc=$(auto_try_add "$doc" "$AUTO_TOKEN" null)
+  auto_record_write "$doc"
+  AUTO_COUNTED=true
+  : >"$s/panel-job.log"
+  exec 2>>"$s/panel-job.log"
+  if ! $plan_ok; then
+    echo "Lanai could not read the setup plan" >&2
+    exit 1
+  fi
+  auto_step counted
+  # 4. The panel's client record, as for every panel job.
+  started=$(ui_timestamp)
+  inv=$(unit_invocation)
+  record=$(ui_record "$AUTO_TOKEN" build-client '["--auto"]' "$started" "$inv" null null)
+  panel_result_write client "$record"
+  auto_step published
+  # 5. Build, and turn the result into lanai build-client's reply.
+  out=$(build_client) || rc=$?
+  reply=$(build_client_emit "$rc" "$out") || true
+  auto_step built
+  # 6. The outcome.
+  if ((rc == 0)); then auto_outcome_set "$AUTO_TOKEN" ok; else auto_outcome_set "$AUTO_TOKEN" failed; fi
+  auto_step recorded
+  # 7. End the client record, then release.
+  record=$(ui_record "$AUTO_TOKEN" build-client '["--auto"]' "$started" "$inv" "$reply" "$(ui_timestamp)")
+  panel_result_write client "$record"
+  exec {bfd}>&- {fd}>&-
+  emit true "" "Panel job finished." ""
+}
+
 # settings [<memory GiB> <cores> [<Windows scale>]]: show or save settings.
 # Two-argument saves keep the scale, its save number and unrelated keys.
 # Three-argument saves are scale saves: they also count the save number up
@@ -166,6 +436,8 @@ panel_group() {
 ui_timestamp() { local LC_ALL=C; printf '%s\n' "$EPOCHREALTIME"; }
 ui_now() { printf '%s\n' "$EPOCHSECONDS"; }
 ui_sleep() { sleep "$1"; }
+# Succeed while the user's graphical session is active. It prints nothing.
+session_active() { systemctl --user is-active --quiet graphical-session.target >/dev/null 2>&1; }
 unit_invocation() { systemctl --user show -p InvocationID --value "$LANAI_UNIT" 2>/dev/null || true; }
 
 # Run a literal command and validate its one JSON reply, logging only stderr.
@@ -206,24 +478,60 @@ cmd_ui_run() {
   LANAI_EMITTED=1
 }
 
-# Launch the worker in a session unit, independent of the shell/plugin lifetime.
+# ui_job_check <token> <command> [<arg>...]: check a panel job's launch, as
+# cmd_ui_job and cmd_ui_job_worker take it. Print true for Lanai's own
+# update (build-client --auto, with an auto- token), false for any other
+# panel job, and fail for anything else: a token that is not letters,
+# digits and dashes, a command the panel does not run as a job, a
+# build-client argument other than none or exactly --auto, or the auto-
+# prefix without --auto. The prefix names the unit lanai-panel-auto-*,
+# which the view finds (auto_units).
+ui_job_check() {
+  local token=${1:-} command=${2:-} auto=false
+  [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore|delete-snapshot|build-client)$ ]] || return 1
+  shift 2
+  if [[ $command == build-client ]]; then
+    case $# in
+      0) ;;
+      1) [[ $1 == --auto ]] || return 1; auto=true ;;
+      *) return 1 ;;
+    esac
+  fi
+  if [[ $token == auto-* ]]; then [[ $auto == true && $token =~ ^auto-[A-Za-z0-9-]+$ ]] || return 1
+  else [[ $auto == false ]] || return 1; fi
+  echo "$auto"
+}
+
+# Launch the worker in a session unit, independent of the shell/plugin
+# lifetime. --service-type=exec makes systemd-run fail when the worker
+# cannot be executed (the default type reports success right after the
+# fork). A client build (the button, or Lanai's own update with --auto)
+# yields to the VM and the Windows window: it gets CPU only when they leave
+# some (CPUWeight=idle), the kernel's OOM killer picks it first
+# (OOMScoreAdjust=1000), and a killed compiler fails the build without
+# stopping the unit (OOMPolicy=continue), so the worker records the failure.
+# For --auto, a failed systemd-run records a "launch" try.
 cmd_ui_job() {
-  local token=${1:-} command=${2:-} v s
-  local -a env=()
-  [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore|delete-snapshot|build-client)$ ]] || {
-    emit false "" "Invalid panel job." ""; return 2;
-  }
+  local token=${1:-} command=${2:-} v s auto
+  local -a env=() props=(--service-type=exec)
+  if ! auto=$(ui_job_check "$@"); then
+    emit false "" "Invalid panel job." ""; return 2
+  fi
+  [[ $command != build-client ]] || props+=(-p CPUWeight=idle -p OOMScoreAdjust=1000 -p OOMPolicy=continue)
   umask 077
-  s=$(state_dir); mkdir -p -- "$s"
+  # A state folder that cannot be made fails the launch's log below, so the
+  # launch fails as for any systemd-run refusal.
+  s=$(state_dir); mkdir -p -- "$s" 2>/dev/null || true
   # The session's display and Hyprland instance: setup's boot_vm records
   # them for QEMU's window and the scale feed (the user manager may lack them).
   for v in WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME XDG_CACHE_HOME; do
     [[ -z ${!v:-} ]] || env+=("--setenv=$v=${!v}")
   done
   if ! systemd-run --user --collect --quiet --unit="lanai-panel-$token" \
-    --description="Lanai panel operation" --slice=session.slice --expand-environment=no \
+    --description="Lanai panel operation" --slice=session.slice --expand-environment=no "${props[@]}" \
     -p PartOf=graphical-session.target -p After=graphical-session.target \
     "${env[@]}" -- "$LANAI_BIN/lanai" ui-job-worker "$@" >>"$s/panel-job.log" 2>&1; then
+    [[ $auto != true ]] || auto_launch_failed "$token" || true
     emit false "" "Lanai could not start the panel job." "see the panel job log"; return 1
   fi
   emit true "" "Panel job launched." ""
@@ -236,7 +544,7 @@ ui_setup_next() {
   s=$(state_dir)
   while :; do
     ui_sleep 2
-    systemctl --user is-active --quiet graphical-session.target || return 1
+    session_active || return 1
     st=$(unit_state) || return 1
     case $(jq -r .step <<<"$reply") in
       5)
@@ -264,11 +572,17 @@ ui_setup_next() {
 # Internal worker: publish started after locking, then following, then ended
 # before releasing. Refused launches leave the owner's record untouched and append
 # their reason to the job log, so a pending launch failure has a diagnostic.
+# build-client --auto (an auto- token) is Lanai's own update instead
+# (auto_update_worker), with the same token and argument rules as cmd_ui_job.
 cmd_ui_job_worker() {
-  local token=${1:-} command=${2:-} group args s fd out started inv at reply
-  [[ $token =~ ^[A-Za-z0-9-]+$ && $command =~ ^(setup|snapshot|restore|delete-snapshot|build-client)$ ]] || {
-    emit false "" "Invalid panel job." ""; return 2;
-  }
+  local token=${1:-} command=${2:-} group args s fd out started inv at reply auto
+  if ! auto=$(ui_job_check "$@"); then
+    emit false "" "Invalid panel job." ""; return 2
+  fi
+  if [[ $auto == true ]]; then
+    auto_update_worker "$token"
+    return
+  fi
   shift 2
   umask 077
   s=$(state_dir); mkdir -p -- "$s"
@@ -285,7 +599,7 @@ cmd_ui_job_worker() {
   while :; do
     # Lingering keeps the user manager alive after logout. Never let an old
     # setup worker enter a call that could boot Windows outside its session.
-    if [[ $command == setup ]] && ! systemctl --user is-active --quiet graphical-session.target; then
+    if [[ $command == setup ]] && ! session_active; then
       out=${out:-'{"ok":false,"reason":"session"}'}
       break
     fi

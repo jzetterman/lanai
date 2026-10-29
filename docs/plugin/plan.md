@@ -2188,7 +2188,8 @@ spec, plan and review gates before it is built.
   patch hash no longer matches and starts the rebuild in the background, with no
   click. When the Windows window is open, the panel says to close and open it
   again; Lanai never reopens it by itself. Patch 0003 shipped first, with the
-  update button (v0.3.2).
+  update button (v0.3.2). Built (client-auto-update): Lanai starts the update at
+  any check that finds the client old; see `docs/plugin/client-auto-update/`.
 - **Show VM updates in Windows, and cut the panel's status text.** John's call
   (2026-10-26): when Lanai updates something for Windows, show it the way Windows
   does, with an installer-style window in Windows that says what is happening.
@@ -2933,6 +2934,9 @@ bar's tooltip, which `LanaiModel.qml` builds from `view.warning`.
   panel's logs block; `panel-job.log` holds nothing useful for it.
   `build_client_locked`'s rc 3 (another build running) replies with its own
   reason, `build-busy`, and its own panel words.
+  (Superseded: Lanai now starts this update by itself, Start Windows stays
+  available during it, and the done words are gone; see
+  `client-auto-update/plan.md`, "What each state shows".)
 - Old scale task: the resize warning names Run setup again only, and no update button
   shows. `setup_plan`'s step 4 check becomes `! build_stamp_current || !
   build_patches_current`. The "done" check above it stays pin-only, so only a

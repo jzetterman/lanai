@@ -20,6 +20,11 @@ Item {
   // for at least 2 s (clickNoticeAt, ms) and at most 5 s.
   property string clickNotice: ""
   property double clickNoticeAt: 0
+  // The last key of Lanai's own client update this model launched, and when
+  // (ms). See autoUpdate().
+  property string autoKey: ""
+  property double autoAt: 0
+  property int autoRearmMs: 30000
   property var copyResults: ({})
   property string copyingId: ""
   property string copyingText: ""
@@ -31,7 +36,9 @@ Item {
   readonly property string tooltip: ["Lanai", view.bar && view.bar.label, view.label, view.headline, view.cause, view.next, view.notice, view.warning, view.right_click_tooltip].filter(function(s, i, words) { return !!s && words.indexOf(s) === i }).join("\n")
 
   function control(name) { return view.buttons[name] || {show: false, enable: false, label: ""} }
-  function token() { return "panel-" + Date.now() + "-" + Math.floor(Math.random() * 1000000) }
+  // A launch token: <prefix>-<ms>-<random>. "panel" for a click, "auto" for
+  // Lanai's own client update (the unit name tells them apart).
+  function token(prefix) { return prefix + "-" + Date.now() + "-" + Math.floor(Math.random() * 1000000) }
 
   function logRow(id) {
     return (view.logs.rows || []).find(function(row) { return row.id === id })
@@ -52,6 +59,32 @@ Item {
       if (root.copyTarget(id) && root.copyTarget(id) === root.copyResults[id].target) kept[id] = root.copyResults[id]
     })
     copyResults = kept
+    autoUpdate()
+  }
+
+  // Lanai's own update of the Windows window (docs/plugin/client-auto-update/).
+  // When the view asks (auto_update.launch), start its panel job once per
+  // key. The backend decides: the job waits out other jobs, checks again and
+  // counts the try, so a launch with nothing to do costs nothing. A key
+  // launches again after a view says launch false (its unit was seen and
+  // ended), or after autoRearmMs (longer than the slowest poll plus a
+  // launch), since the view asks only while no automatic unit runs. An
+  // unreadable poll has no ask and changes nothing. A worker that fails
+  // before it counts a try (a full disk) marks that, and the view then stops
+  // asking, so no launch repeats at every check. It never touches the click
+  // state (pendingToken, clickNotice), so the user's clicks never wait on it.
+  function autoUpdate() {
+    var ask = view.auto_update
+    if (!ask) return
+    if (ask.launch !== true) {
+      autoKey = ""
+      return
+    }
+    var now = Date.now()
+    if (ask.key === autoKey && now - autoAt < autoRearmMs) return
+    autoKey = ask.key
+    autoAt = now
+    Quickshell.execDetached([cli, "ui-job", token("auto"), "build-client", "--auto"])
   }
   function copyFinished(success) {
     if (!copyingId) return
@@ -98,7 +131,10 @@ Item {
       if (afterAction === true) refreshAgain = true
       return
     }
-    var args = ["timeout", "--signal=KILL", "10", cli, "panel"]
+    // LANAI_AUTO_LAUNCHER: this model launches Lanai's own client update
+    // (autoUpdate), so the view may ask for it (auto_view). Its value is the
+    // launch contract's version; change both sides together.
+    var args = ["timeout", "--signal=KILL", "10", "env", "LANAI_AUTO_LAUNCHER=1", cli, "panel"]
     if (pendingToken) args = args.concat(["--pending", pendingToken, String(pendingAt)])
     panelProcess.command = args
     panelProcess.running = true
@@ -117,7 +153,7 @@ Item {
       clickNoticeTimer.restart()
       return ""
     }
-    var clickToken = token()
+    var clickToken = token("panel")
     if (longJob) {
       pendingToken = clickToken
       pendingAt = now

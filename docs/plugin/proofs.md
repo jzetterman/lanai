@@ -1582,6 +1582,68 @@ at scale 2, and the window is 1576x950. Times count from the client's start, as
   stayed 2 across the restart. No `core.geometry` line came between the restart
   and those lines (the first is at 00:01:18), so no resize did the work.
 
+## Update unit settings (2026-10-27, EDT)
+
+Claude ran these on John's machine at about 17:30 EDT, with no VM, for
+docs/plugin/client-auto-update/plan.md (Phase E, step 6). systemd 262 (262.1-1-arch).
+The units were named `impl-*`, and each was stopped and gone at the end. The plan
+named them `lanai-props-check` and `lanai-trapcheck-<n>`. A bar lists only
+`lanai-panel-auto-*` units, so neither name reaches a live bar.
+
+- `systemd-run --user --collect --quiet --unit=impl-props-check
+  --slice=session.slice --service-type=exec -p CPUWeight=idle -p
+  OOMScoreAdjust=1000 sleep 30`: the unit's cgroup under `session.slice` had
+  `cpu.idle` 1 (and `cpu.weight` 1). `cgroup.subtree_control` of `session.slice`
+  was `cpu memory pids`. The sleep's `/proc/<pid>/oom_score_adj` was 1000. The
+  stop left it inactive.
+- A non-executable `ExecStart`: `systemd-run` exited 0 with the default type and 1
+  with `--service-type=exec`, as when the plan was written.
+- The TERM trap under a real `systemctl --user stop`: a temporary
+  `XDG_STATE_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_CONFIG_HOME` under
+  the scratchpad (passed with `--setenv`), a fixture setup record there, and a
+  `lanai` wrapper that stubbed `shared_facts`, `setup_plan` (`{"finished":true}`),
+  `client_update_case` (`update`), `unit_invocation`, the build (it touches a file)
+  and the `built` seam (it waits). The unit `impl-trapcheck-1` ran `lanai
+  ui-job-worker auto-trapcheck build-client --auto`. At the `built` seam the record
+  held one entry with no outcome. After `systemctl --user stop impl-trapcheck-1`
+  (exit 0), the entry's outcome was still null: a stop, not a failure. The client
+  record had no reply and no end. The temporary folders were removed.
+
+## Client auto-update, phase F (2026-10-29, EDT)
+
+John's hand check on his desktop, in the installed plugin's folder, with the
+feature branch (3c97768) checked out as `auto-check`. A header edit to
+`0003-client-restart-scale.patch` (working tree only) made the patch set differ,
+as the throwaway commit would. Times are from the user journal and the try
+record (`client-auto.json`).
+
+- First try, 10:43:56: the folder moved to the branch and the plugins were
+  rescanned. The panel said W_RUN and the bar showed busy, but nothing started:
+  no `lanai-panel-*` unit in the journal, no try record. The shell had started
+  on 2026-10-28 at 14:43, before the checkout, and the rescan keeps the QML it
+  loaded then (its reload calls `Qt.clearComponentCache` only when it exists,
+  and Qt's QML returns `undefined` for it). So the 0.3.2 bar model, which has no
+  update code, polled the branch's scripts. This led to spec requirement 9 and
+  the `LANAI_AUTO_LAUNCHER` flag. During this wait John found Windows
+  unresponsive and force-stopped it at 10:47:09. No build ran then. The host had
+  3.1 GiB of memory available and 22 GiB in zram swap, and the stopped VM
+  reported an 8 GiB swap peak over its 5.5 days; that may explain the stall,
+  but it is not proven.
+- Part one, after `omarchy-restart-shell` at 10:52:50, Windows running and the
+  window open: the update unit started by itself at 10:52:52 and ended at
+  10:53:10 (18 seconds), with the try's outcome `ok`. The panel then said
+  W_REOPEN. John closed the window at 10:55:37 and reopened it at 10:55:40, and
+  the words went away.
+- Part two, with Windows shut down at 10:56:26: undoing the header edit made
+  the patch set differ again. A second update started by itself at 10:56:55 and
+  ended at 10:57:13. The VM unit started at 10:57:14, one second after the
+  update ended, and John reports that the start worked. The 18-second build left
+  little time, so this run does not show a start that overlapped the update.
+- Afterwards: a third update for the restored patch ran 10:57:52 to 10:58:11,
+  with outcome `ok`. The folder went back to `main` at 10:58:49. `main`'s
+  `lanai panel` then showed no warning, no update button and the bar active: the
+  client is current, with no click.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

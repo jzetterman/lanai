@@ -200,6 +200,40 @@ client_active() {
   [[ $st == active || $st == activating || $st == reloading ]]
 }
 
+# Print the main pid of lanai-client.service, or nothing.
+client_main_pid() {
+  systemctl --user show -p MainPID --value "$LANAI_CLIENT_UNIT" 2>/dev/null || true
+}
+
+# client_exe <pid>: print "<dev>:<inode> <link text>" for the binary that
+# process <pid> runs. The kernel adds " (deleted)" to the link text when the
+# file is gone. LANAI_PROC swaps /proc.
+client_exe() {
+  local id link exe=${LANAI_PROC:-/proc}/$1/exe
+  id=$(stat -L -c %d:%i -- "$exe" 2>/dev/null) || return 1
+  link=$(readlink -- "$exe" 2>/dev/null) || return 1
+  printf '%s %s\n' "$id" "$link"
+}
+
+# Succeed when the open Windows window runs a client binary that is not the
+# installed pinned build: a window that opened before an update installed
+# the new client (docs/plugin/client-auto-update/spec.md, req 7). Before
+# the client starts, the unit's main process is lanai-client-exec (bash),
+# so a window that is still opening never counts. Closing the window, or
+# shutting Windows down, stops the unit, so the answer goes by itself.
+client_window_stale() {
+  local pid exe link installed
+  client_active || return 1
+  pid=$(client_main_pid)
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+  exe=$(client_exe "$pid") || return 1
+  link=${exe#* }
+  [[ ${link% (deleted)} == */bin/looking-glass-client ]] || return 1
+  [[ $link != *" (deleted)" ]] || return 0
+  installed=$(stat -c %d:%i -- "$(client_builds)/$LG_BUILD/bin/looking-glass-client" 2>/dev/null) || return 1
+  [[ ${exe%% *} != "$installed" ]]
+}
+
 # Print the folder that holds Lanai's client builds, one folder per build.
 client_builds() {
   printf '%s\n' "$(data_dir)/looking-glass"
@@ -441,19 +475,28 @@ builds_prune() {
   done
 }
 
+# build_step <name>: a no-op seam that build_client calls between its
+# install steps (installing, installed, stamped, synced, swapped, committed,
+# cleaned). Tests override it to stop the build there.
+build_step() { :; }
+
 # Build and install the pinned client (plan phase 5): fetch the source
 # tarball into <cache>/lanai/downloads, verify its SHA-256 (which covers
 # every submodule, spec 26), unpack it, check the submodule folders, apply
 # Lanai's patches exactly (none is an error), build the client with
 # -DENABLE_X11=no, fail if USB audio is off, and install
 # into <data>/looking-glass/<build>/ through a .partial folder that holds
-# the binary and both stamps before it replaces the old build. The
-# installed binary must report the pinned build. Keeps other builds until
-# the guest's IDD matches the pin. Build output goes to <state>/build-client.log,
-# which each build starts empty. Every failure prints one line that says
-# why and adds it to that log, so the log never shows an older build's
-# output and always ends with the reason. Only when the log itself cannot
-# be written does the reason go to stdout alone.
+# the binary and both stamps, all synced to disk, before one atomic rename
+# swaps it with the old build (spec requirement 4 of
+# docs/plugin/client-auto-update/spec.md): a stop at any moment leaves the
+# old build or the new one, complete. The installed binary must report the
+# pinned build. The quick path removes a .partial left by a stop after the
+# swap. Keeps other builds until the guest's IDD matches the pin. Build
+# output goes to <state>/build-client.log, which each build starts empty.
+# Every failure prints one line that says why and adds it to that log, so
+# the log never shows an older build's output and always ends with the
+# reason. Only when the log itself cannot be written does the reason go to
+# stdout alone.
 # Prints the client binary; on failure prints why. Does nothing when the
 # pinned build is already installed with the current patches.
 build_client() {
@@ -484,6 +527,8 @@ build_client() {
       build_fail "$log" "cannot write $dest/build-stamp"
       return 1
     }
+    # A stop after the swap leaves the old build in .partial.
+    rm -rf -- "$dest.partial"
     builds_prune
     printf '%s\n' "$dest/bin/looking-glass-client"
     return 0
@@ -539,6 +584,7 @@ build_client() {
     }
     part=$dest.partial
     rm -rf -- "$part"
+    build_step installing
     cmake --install "$work/build" --prefix "$part" >>"$log" 2>&1 || {
       rm -rf -- "$part"
       build_fail "$log" "the client did not install; see $log"
@@ -550,6 +596,7 @@ build_client() {
       build_fail "$log" "the built client reports $out, not $LG_BUILD"
       exit 1
     }
+    build_step installed
     # The stamps go in before the swap, so a reader never sees the new
     # binary without them.
     { printf '%s\n' "$LG_BUILD" >"$part/build-stamp" &&
@@ -558,10 +605,37 @@ build_client() {
       build_fail "$log" "cannot write the build stamps in $part"
       exit 1
     }
-    { rm -rf -- "$dest" && mv -T -- "$part" "$dest"; } 2>>"$log" || {
+    build_step stamped
+    # Every new file and folder is on disk before the swap.
+    find "$part" -exec sync -- {} + 2>>"$log" || {
+      rm -rf -- "$part"
+      build_fail "$log" "cannot write the new client to disk in $part"
+      exit 1
+    }
+    build_step synced
+    # One rename swaps the old and new trees (renameat2 RENAME_EXCHANGE), so
+    # the path names a complete build at every moment. A filesystem without
+    # the exchange fails here and keeps the old client: no fallback.
+    if [[ -e $dest ]]; then
+      mv --exchange -T -- "$part" "$dest" 2>>"$log"
+    else
+      mv -T -- "$part" "$dest" 2>>"$log"
+    fi || {
+      rm -rf -- "$part"
       build_fail "$log" "cannot install into $dest"
       exit 1
     }
+    build_step swapped
+    # The swap is on disk only after this sync. Until then the old build in
+    # .partial is the fallback, so a failed sync keeps it and fails.
+    sync -- "${dest%/*}" 2>>"$log" || {
+      build_fail "$log" "cannot write the swap to disk in ${dest%/*}"
+      exit 1
+    }
+    build_step committed
+    # After the exchange, .partial holds the old build.
+    rm -rf -- "$part"
+    build_step cleaned
   ) || return 1
   builds_prune
   printf '%s\n' "$dest/bin/looking-glass-client"

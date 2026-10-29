@@ -6,7 +6,7 @@
 # systemd-run, hyprctl, curl, cmake, pacman, sudo and omarchy are PATH shims:
 # nothing talks to the real user manager, opens a real window, downloads,
 # builds or installs anything.
-# shellcheck disable=SC2030,SC2031,SC2016,SC2034
+# shellcheck disable=SC2030,SC2031,SC2016,SC2034,SC2329
 
 load helpers
 
@@ -54,16 +54,6 @@ unit_is() {
   shift 2
   printf '%s\n' "ActiveState=$active" "SubState=running" "Result=success" \
     "InvocationID=0123456789abcdef0123456789abcdef" "ExecMainStatus=0" "$@" >"$T/show-$unit"
-}
-
-# Install a fake client build <name> that reports version <version> (default
-# <name>) on --help, as the real one does on its first log line.
-fake_build() {
-  local bin=$LGDIR/$1/bin/looking-glass-client
-  mkdir -p "${bin%/*}"
-  printf '#!/usr/bin/env bash\necho "00:00:00.000 [I]              main.c:4303 | main                           | Looking Glass (%s)" >&2\n' \
-    "${2:-$1}" >"$bin"
-  chmod +x "$bin"
 }
 
 # Print client log <file> as lanai-client-exec leaves it: its start line
@@ -778,6 +768,24 @@ patch_fixture() {
   assert_equal "$(patches_id)" "$second"
 }
 
+@test "client_exe: names the running binary's file and path, also once it is deleted" {
+  local bin=$T/looking-glass-client id pid
+  # The real /proc, for a real process.
+  unset LANAI_PROC
+  cp /usr/bin/sleep "$bin"
+  "$bin" 30 3>&- &
+  pid=$!
+  BG_PIDS+=("$pid")
+  id=$(stat -c %d:%i "$bin")
+  run client_exe "$pid"
+  assert_success
+  assert_output "$id $bin"
+  rm "$bin"
+  run client_exe "$pid"
+  assert_success
+  assert_output "$id $bin (deleted)"
+}
+
 @test "build_patches_current: requires a binary and a current patch id file" {
   LANAI_PATCHES=$T/patches
   mkdir -p "$LANAI_PATCHES"
@@ -961,6 +969,111 @@ exec /usr/bin/mv "$@"'
   assert_line build-stamp
   assert_line build-patches
   assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
+}
+
+# Spec requirement 4: a stop at any install step leaves the old client or
+# the new one, complete. SIGKILL runs no trap, as at a power loss.
+@test "build_client: a stop at each install step leaves a client that opens" {
+  local step old bin=$LGDIR/$LG_BUILD/bin/looking-glass-client
+  for step in installing installed stamped synced swapped committed cleaned; do
+    rm -rf "${LGDIR:?}" "${T:?}/src" "$T/patchdiff" "$T/fixture-patches" "$XDG_CACHE_HOME/lanai"
+    lg_source
+    fake_build "$LG_BUILD"
+    echo '# the old build' >>"$bin"
+    echo "$LG_BUILD" >"$LGDIR/$LG_BUILD/build-stamp"
+    echo stale >"$LGDIR/$LG_BUILD/build-patches"
+    old=$(sha256sum <"$bin")
+    STOP=$step
+    build_step() { [[ $1 != "$STOP" ]] || kill -KILL "$BASHPID"; }
+    run build_client
+    assert_failure
+    [[ -x $bin ]] || fail "no client is left after a stop at $step"
+    assert_equal "$(client_version "$bin")" "$LG_BUILD"
+    case $step in
+      installing | installed | stamped | synced)
+        assert_equal "$(sha256sum <"$bin")" "$old"
+        assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" stale
+        run build_patches_current
+        assert_failure
+        ;;
+      *)
+        [[ $(sha256sum <"$bin") != "$old" ]] || fail "the old binary is still in place after $step"
+        assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
+        build_patches_current
+        ;;
+    esac
+    build_step() { :; }
+    run build_client
+    assert_success
+    assert [ ! -e "$LGDIR/$LG_BUILD.partial" ]
+    build_patches_current
+  done
+}
+
+@test "build_client: the new tree is on disk before the swap, and the swap after" {
+  local synced swap after
+  lg_source
+  shim sync 'echo "sync $*" >>"$T/order"; exec /usr/bin/sync "$@"'
+  shim mv 'echo "mv $*" >>"$T/order"; exec /usr/bin/mv "$@"'
+  # A first install has nothing to exchange with.
+  run build_client
+  assert_success
+  run grep -c -- --exchange "$T/order"
+  assert_output 0
+  swap=$(grep -n -m1 -F -- "mv -T -- $LGDIR/$LG_BUILD.partial $LGDIR/$LG_BUILD" "$T/order" | cut -d: -f1)
+  synced=$(grep -n -m1 -F -- "sync -- $LGDIR/$LG_BUILD.partial" "$T/order" | cut -d: -f1)
+  after=$(grep -n -F -x -- "sync -- $LGDIR" "$T/order" | tail -n 1 | cut -d: -f1)
+  ((synced < swap && swap < after)) || fail "order: $(cat "$T/order")"
+  # An update exchanges the two trees in one rename.
+  echo stale >"$LGDIR/$LG_BUILD/build-patches"
+  rm "$T/order"
+  run build_client
+  assert_success
+  swap=$(grep -n -m1 -F -- "mv --exchange -T -- $LGDIR/$LG_BUILD.partial $LGDIR/$LG_BUILD" "$T/order" | cut -d: -f1)
+  synced=$(grep -n -m1 -F -- "sync -- $LGDIR/$LG_BUILD.partial" "$T/order" | cut -d: -f1)
+  after=$(grep -n -F -x -- "sync -- $LGDIR" "$T/order" | tail -n 1 | cut -d: -f1)
+  ((synced < swap && swap < after)) || fail "order: $(cat "$T/order")"
+  run grep -F -- "sync -- $LGDIR/$LG_BUILD.partial" "$T/order"
+  assert_output --partial "$LGDIR/$LG_BUILD.partial/bin/looking-glass-client"
+  assert_output --partial "$LGDIR/$LG_BUILD.partial/build-patches"
+  assert [ ! -e "$LGDIR/$LG_BUILD.partial" ]
+  assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
+}
+
+@test "build_client: a failed sync after the swap keeps the old client beside the new one" {
+  lg_source
+  run build_client
+  assert_success
+  echo stale >"$LGDIR/$LG_BUILD/build-patches"
+  echo old >"$LGDIR/$LG_BUILD/marker"
+  # Only the sync of the parent folder, after the swap, fails.
+  shim sync "[[ \"\$*\" != \"-- $LGDIR\" ]] || { echo 'sync: I/O error' >&2; exit 1; }
+exec /usr/bin/sync \"\$@\""
+  run build_client
+  assert_failure
+  # The swap took place, and the old tree stays until the swap is on disk.
+  assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" "$(patches_id)"
+  assert_equal "$(<"$LGDIR/$LG_BUILD.partial/marker")" old
+  run cat "$(state_dir)/build-client.log"
+  assert_output --partial "cannot write the swap to disk"
+}
+
+@test "build_client: a filesystem that refuses the exchange keeps the old client" {
+  local sum bin=$LGDIR/$LG_BUILD/bin/looking-glass-client
+  lg_source
+  shim mv 'for a; do [[ $a != --exchange ]] || { echo "mv: not supported" >&2; exit 1; }; done
+exec /usr/bin/mv "$@"'
+  fake_build "$LG_BUILD"
+  echo '# the old build' >>"$bin"
+  echo "$LG_BUILD" >"$LGDIR/$LG_BUILD/build-stamp"
+  echo stale >"$LGDIR/$LG_BUILD/build-patches"
+  sum=$(sha256sum <"$bin")
+  run build_client
+  assert_failure
+  assert_output --partial "cannot install into $LGDIR/$LG_BUILD"
+  assert_equal "$(sha256sum <"$bin")" "$sum"
+  assert_equal "$(<"$LGDIR/$LG_BUILD/build-stamp")" "$LG_BUILD"
+  assert_equal "$(<"$LGDIR/$LG_BUILD/build-patches")" stale
 }
 
 @test "build_client: an unapplied fixture patch fails before installation and cleans its work" {
@@ -1277,6 +1390,39 @@ exec /usr/bin/mv "$@"'
   assert_failure
   assert_equal "$(field reason)" build-busy
   assert_equal "$(field message)" "Another build of the Windows window is running."
+}
+
+@test "build_client_locked: waits out a shared probe" {
+  mkdir -p "$S"
+  : >"$S/build.lock"
+  flock -s "$S/build.lock" bash -c 'touch "$1"; exec sleep 0.3' _ "$T/probed" 3>&- &
+  BG_PIDS+=("$!")
+  wait_for_file "$T/probed"
+  build_client() { echo built; }
+  run build_client_locked
+  assert_success
+  assert_output built
+}
+
+@test "lock_held: true only for an exclusive holder" {
+  run lock_held "$S/build.lock"
+  assert_failure
+  assert [ ! -e "$S/build.lock" ]
+  mkdir -p "$S"
+  : >"$S/build.lock"
+  run lock_held "$S/build.lock"
+  assert_failure
+  flock "$S/build.lock" bash -c 'touch "$1"; exec sleep 30' _ "$T/exclusive" 3>&- &
+  BG_PIDS+=("$!")
+  wait_for_file "$T/exclusive"
+  run lock_held "$S/build.lock"
+  assert_success
+  stop_bg
+  flock -s "$S/build.lock" bash -c 'touch "$1"; exec sleep 30' _ "$T/shared" 3>&- &
+  BG_PIDS+=("$!")
+  wait_for_file "$T/shared"
+  run lock_held "$S/build.lock"
+  assert_failure
 }
 
 # --- lanai setup-host (spec 7; the one sudo, in the panel's terminal) ---

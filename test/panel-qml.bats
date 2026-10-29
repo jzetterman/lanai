@@ -1600,6 +1600,10 @@ TestCase {
     verify(poll.running)
     compare(model.refreshAgain, false)
     compare(poll.command.slice(0, 3).join(' '), 'timeout --signal=KILL 10')
+    // The poll says this model launches Lanai's own client update; an
+    // older model's poll has no flag, and the backend offers the button.
+    compare(poll.command.slice(3, 5).join(' '), 'env LANAI_AUTO_LAUNCHER=1')
+    compare(poll.command.slice(5).join(' '), model.cli + ' panel')
     ready(model)
     model.run(['settings', '8', '4'], false)
     var action = objects(model, function(o) { return o.command && o.command[1] === 'ui-run' })[0]
@@ -1832,6 +1836,91 @@ TestCase {
     verify(model.clickNotice !== '')
     tryCompare(model, 'clickNotice', '', 1500)
     verify(action.running)
+  }
+  // A view with the backend's ask for Lanai's own client update.
+  function autoView(launch, key) {
+    return {ok:true,buttons:{},setup:{},settings:{},snapshots:{names:[]},result:{},logs:{},auto_update:{launch:launch,key:key}}
+  }
+  function compareAutoLaunch(model) {
+    compare(Quickshell.lastCommand.length, 5)
+    compare(Quickshell.lastCommand[0], model.cli)
+    compare(Quickshell.lastCommand[1], 'ui-job')
+    verify(/^auto-[0-9]+-[0-9]+$/.test(Quickshell.lastCommand[2]), Quickshell.lastCommand[2])
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'build-client --auto')
+  }
+  function test_auto_update_launches_once_per_key() {
+    var model, count, poll
+    for (var open = 0; open < 2; open++) {
+      model = createTemporaryObject(modelComponent, tests)
+      wait(1); ready(model)
+      model.panelOpen = open === 1
+      ready(model)
+      count = Quickshell.launchCount
+      model.view = autoView(true, 'a:0')
+      compare(Quickshell.launchCount, count + 1)
+      compareAutoLaunch(model)
+      model.view = autoView(true, 'a:0')
+      compare(Quickshell.launchCount, count + 1)
+      // Its unit was seen, then ended before it counted a try.
+      model.view = autoView(false, 'a:0')
+      model.view = autoView(true, 'a:0')
+      compare(Quickshell.launchCount, count + 2)
+      // A unit that ended before any poll saw it: 30 s re-arms the key.
+      model.autoAt = Date.now() - 29000
+      model.view = autoView(true, 'a:0')
+      compare(Quickshell.launchCount, count + 2)
+      model.autoAt = Date.now() - 30000
+      model.view = autoView(true, 'a:0')
+      compare(Quickshell.launchCount, count + 3)
+      // A counted try changes the key.
+      model.view = autoView(true, 'a:1')
+      compare(Quickshell.launchCount, count + 4)
+      // An unreadable poll forgets nothing.
+      model.refresh()
+      poll = process(model, 'timeout')
+      verify(poll.running)
+      poll.complete('not a view', 0)
+      compare(model.view.layout, 'failed')
+      model.view = autoView(true, 'a:1')
+      compare(Quickshell.launchCount, count + 4)
+    }
+    // A second bar item, or a shell restart, launches on its own once.
+    var second = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(second)
+    count = Quickshell.launchCount
+    second.view = autoView(true, 'a:0')
+    compare(Quickshell.launchCount, count + 1)
+    compareAutoLaunch(second)
+    second.view = autoView(true, 'a:0')
+    compare(Quickshell.launchCount, count + 1)
+  }
+  function test_auto_update_has_no_pending_notice_or_blocked_click() {
+    var model = createTemporaryObject(modelComponent, tests)
+    wait(1); ready(model)
+    var count = Quickshell.launchCount
+    model.view = autoView(true, 'b:0')
+    compare(Quickshell.launchCount, count + 1)
+    compareAutoLaunch(model)
+    compare(model.pendingToken, '')
+    compare(model.clickNotice, '')
+    // The next poll names no pending click, so the view never says the
+    // operation did not start.
+    model.refresh()
+    var poll = process(model, 'timeout')
+    verify(poll.running)
+    compare(poll.command.indexOf('--pending'), -1)
+    poll.complete(JSON.stringify(autoView(true, 'b:0')), 0)
+    // The user's clicks go at once.
+    var token = model.run(['snapshot', 'x'], true)
+    verify(token !== '')
+    compare(Quickshell.lastCommand[1], 'ui-job')
+    compare(Quickshell.lastCommand.slice(3).join(' '), 'snapshot x')
+    compare(model.clickNotice, '')
+    model.run(['start'], false)
+    var action = objects(model, function(o) { return o.command && o.command[1] === 'ui-run' })[0]
+    verify(action.running)
+    compare(action.command.slice(3).join(' '), 'start')
+    compare(model.clickNotice, '')
   }
   function test_finished_setup_reveals_both_display_choices_without_a_bare_job() {
     var model = createTemporaryObject(modelComponent, tests)

@@ -1825,7 +1825,7 @@ assert_plan_agreement() {
 
 # Durable steps, with a running worker supplied without a service or process.
 setup_worker() {
-  panel_records() { echo '{"held":true,"records":{"setup":{"command":"setup","started":1}}}'; }
+  panel_records() { echo '{"held":true,"records":{"setup":{"command":"setup","started":1}},"job":{"command":"setup","started":1}}'; }
 }
 
 @test "panel: first-time setup hides Start and Open at every step and keeps settings" {
@@ -1897,7 +1897,7 @@ setup_worker() {
   run cmd_panel
   assert_equal "$(jq -r .setup.attention <<<"$output")" false
   rm "$RUN/step6-checked"
-  panel_records() { echo '{"held":false,"records":{"setup":{"command":"setup","started":1,"ended":2,"reply":{"ok":false,"step":"6","stop":"timeout","reason":"scale-task"}}}}'; }
+  panel_records() { echo '{"held":false,"job":{},"records":{"setup":{"command":"setup","started":1,"ended":2,"reply":{"ok":false,"step":"6","stop":"timeout","reason":"scale-task"}}}}'; }
   run cmd_panel
   assert_equal "$(jq -r .setup.attention <<<"$output")" true
   setup_worker
@@ -1906,7 +1906,7 @@ setup_worker() {
   assert_equal "$(jq -r .setup.attention <<<"$output")" true
   assert_equal "$(jq -r .buttons.reopen_window.show <<<"$output")" true
   client_active() { return 0; }
-  panel_records() { echo '{"held":false,"records":{}}'; }
+  panel_records() { echo '{"held":false,"records":{},"job":{}}'; }
   run cmd_panel
   assert_equal "$(jq -r .setup.attention <<<"$output")" true
   state '{"snapshot":"declined","step5":false}'
@@ -1923,7 +1923,7 @@ setup_worker() {
   setup_worker
   run cmd_panel
   assert_equal "$(jq -r .setup.attention <<<"$output")" false
-  panel_records() { echo '{"held":true,"records":{"setup":{"command":"setup","started":1,"reply":{"ok":false,"step":"6","reason":"client"}}}}'; }
+  panel_records() { echo '{"held":true,"records":{"setup":{"command":"setup","started":1,"reply":{"ok":false,"step":"6","reason":"client"}}},"job":{"command":"setup","started":1,"reply":{"ok":false,"step":"6","reason":"client"}}}'; }
   run cmd_panel
   assert_equal "$(jq -r .setup.attention <<<"$output")" true
   source "$REPO/lib/panel.sh"
@@ -2590,6 +2590,14 @@ SCALE='Scale saves apply only the next time Windows starts.'
 LOCK='Running setup again also turns the Windows lock off again.'
 CLIENT_DONE='The Windows window is updated. If the Windows window is open, close it and open it again.'
 CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window in More actions again.'
+W_RUN='Lanai is updating the Windows window. This can take several minutes and changes nothing in Windows. You can start and use Windows during the update.'
+
+# End Lanai's own update tries for the current patches with one failed try
+# at time 0, so the update button shows (docs/plugin/client-auto-update/).
+# A hand record started after 0 is an update by hand after the tries.
+auto_over() {
+  jq -nc --arg p "$(patches_id)" '{patches:$p,tries:[{token:"auto-old",at:0,outcome:"failed"}]}' >"$S/client-auto.json"
+}
 
 # Assert the panel's warning is <stopped words> while Windows is stopped and
 # <running words> while it runs, with no Update button and no note under
@@ -2612,13 +2620,23 @@ assert_rerun_warning() {
   assert_equal "$(jq -r '.settings.note | contains("Run setup again")' <<<"$output")" false
 }
 
-@test "panel resize: an old client with the live scale task and the sign-in step warns and offers the update, stopped or running" {
+@test "panel resize: an old client with the live scale task and the sign-in step updates by itself, then offers the update, stopped or running" {
   state "$CURRENT"
   build_patches_current() { return 1; }
   for ST in inactive active; do
     run cmd_panel
     assert_success
     assert_equal "$(jq -r .setup.finished <<<"$output")" true
+    # Lanai updates it by itself: no button.
+    assert_equal "$(jq -r .warning <<<"$output")" "$W_RUN"
+    assert_equal "$(jq -r .auto_update.launch <<<"$output")" true
+    assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" false
+  done
+  # Once its tries end, the button shows.
+  auto_over
+  for ST in inactive active; do
+    run cmd_panel
+    assert_success
     # The warning is the bar tooltip's source too (LanaiModel.qml).
     assert_equal "$(jq -r .warning <<<"$output")" "$RESIZE_NEW"
     assert_equal "$(jq -c '.buttons.update_client | [.show,.enable,.label]' <<<"$output")" '[true,true,"Update the Windows window"]'
@@ -2723,21 +2741,24 @@ assert_rerun_warning() {
   assert_equal "$(jq -r .warning <<<"$output")" ''
 }
 
-@test "panel resize: the update button shows disabled while a panel job runs, and the busy line names the update" {
+@test "panel resize: the update button shows disabled while a panel job runs, and the warning names the update" {
   local fd
   state "$CURRENT"
   build_patches_current() { return 1; }
+  auto_over
   panel_result_write client '{"token":"t","command":"build-client","args":[],"started":5}'
   exec {fd}>"$S/panel-job.lock"; flock "$fd"
   ST=inactive
   run cmd_panel
   assert_equal "$(jq -c '.buttons.update_client | [.show,.enable]' <<<"$output")" '[true,false]'
-  assert_equal "$(jq -r .buttons.start.enable <<<"$output")" false
-  assert_equal "$(jq -r .busy.line <<<"$output")" 'Updating the Windows window. This may take several minutes. You can start Windows when it finishes.'
-  # A running Windows has no Start button to wait for.
+  # Windows can start during the update.
+  assert_equal "$(jq -r '.buttons.start.show and .buttons.start.enable' <<<"$output")" true
+  assert_equal "$(jq -r .busy.line <<<"$output")" ''
+  assert_equal "$(jq -r .warning <<<"$output")" "$W_RUN"
   ST=active
   run cmd_panel
-  assert_equal "$(jq -r .busy.line <<<"$output")" 'Updating the Windows window. This may take several minutes.'
+  assert_equal "$(jq -r .busy.line <<<"$output")" ''
+  assert_equal "$(jq -r .warning <<<"$output")" "$W_RUN"
   exec {fd}>&-
 }
 
@@ -2755,47 +2776,10 @@ assert_rerun_warning() {
   assert_equal "$(jq -r .logs.build <<<"$output")" "Windows window build log: $S/build-client.log"
 }
 
-@test "panel resize: the done words stay until a client starts after the update ended" {
-  state "$CURRENT"
-  panel_result_write client '{"token":"t","command":"build-client","args":[],"started":1000.25,"ended":1100.5,"reply":{"ok":true}}'
-  # No client since: the window was closed when the update finished.
-  rm -f "$RUN/client.log"
-  run cmd_panel
-  assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_DONE"
-  # The client that ran during the update is still the old one.
-  printf '%s 1100\nlog\n' "$LANAI_CLIENT_START" >"$RUN/client.log"
-  run cmd_panel
-  assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_DONE"
-  # A VM start empties the log before its client starts.
-  : >"$RUN/client.log"
-  run cmd_panel
-  assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_DONE"
-  printf '%s 1101\nlog\n' "$LANAI_CLIENT_START" >"$RUN/client.log"
-  run cmd_panel
-  assert_equal "$(jq -r .result.client <<<"$output")" ''
-  # A reboot empties the runtime folder, so no client.log tells; an update
-  # that ended before this boot is over too.
-  rm -f "$RUN/client.log"
-  printf 'cpu  1 2 3\nbtime 1100\n' >"$LANAI_PROC/stat"
-  run cmd_panel
-  assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_DONE"
-  printf 'cpu  1 2 3\nbtime 1101\n' >"$LANAI_PROC/stat"
-  run cmd_panel
-  assert_equal "$(jq -r .result.client <<<"$output")" ''
-  # A client that is old again (new patches came with a Lanai update) ends
-  # the done words at once: the warning names the update again.
-  printf 'cpu  1 2 3\nbtime 1100\n' >"$LANAI_PROC/stat"
-  run cmd_panel
-  assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_DONE"
-  build_patches_current() { return 1; }
-  run cmd_panel
-  assert_equal "$(jq -r .result.client <<<"$output")" ''
-  assert_equal "$(jq -r .warning <<<"$output")" "$RESIZE_NEW"
-}
-
 @test "panel resize: an interrupted update has its own words and never arms Continue setup" {
   state "$CURRENT"
   build_patches_current() { return 1; }
+  auto_over
   panel_result_write client '{"token":"t","command":"build-client","args":[],"started":1}'
   run cmd_panel
   assert_equal "$(jq -r .result.client <<<"$output")" "$CLIENT_INTERRUPTED"
@@ -2814,6 +2798,7 @@ assert_rerun_warning() {
 @test "panel resize: failed and interrupted update words go once the client is current" {
   state "$CURRENT"
   build_patches_current() { return 1; }
+  auto_over
   panel_result_write client '{"token":"t","command":"build-client","args":[],"started":1,"ended":2,"reply":{"ok":false}}'
   run cmd_panel
   assert_equal "$(jq -r .result.client <<<"$output")" 'The Windows window could not be updated. Check the Windows window build log (build-client.log), then try again.'
@@ -2828,6 +2813,7 @@ assert_rerun_warning() {
 @test "panel resize: failed and interrupted update words show only with the update button" {
   local doc st words
   build_patches_current() { return 1; }
+  auto_over
   for doc in '{"token":"t","command":"build-client","args":[],"started":1,"ended":2,"reply":{"ok":false}}' \
     '{"token":"t","command":"build-client","args":[],"started":1}'; do
     panel_result_write client "$doc"
@@ -2866,14 +2852,14 @@ assert_rerun_warning() {
     run cmd_panel
     assert_equal "$(jq -r .result.setup <<<"$output")" "$again"
     assert_equal "$(jq -r .buttons.continue_setup.label <<<"$output")" 'Run setup again'
-    # With the update button showing, the warning names the one step, so
-    # the setup words go.
+    # With the sign-in step, Lanai updates the client by itself and the
+    # warning says so, so the setup words go.
     state "$CURRENT"
     run cmd_panel
-    assert_equal "$(jq -r .buttons.update_client.show <<<"$output")" true
+    assert_equal "$(jq -r .warning <<<"$output")" "$W_RUN"
     assert_equal "$(jq -r .result.setup <<<"$output")" ''
     assert_equal "$(jq -r .layout <<<"$output")" daily
-    assert_equal "$(jq -r .bar.mode <<<"$output")" stopped
+    assert_equal "$(jq -r .bar.mode <<<"$output")" busy
   done
   # A step 4 failure from a first setup (no display argument) is over once
   # the plan is finished, even with an old client.

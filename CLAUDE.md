@@ -12,14 +12,16 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   `lanai-vm-helper`, the client unit's `lanai-client-exec`, and `lanai-setup-host`,
   which installs the host packages in a terminal), `Widget.qml` (the bar glyph),
   `LanaiPanel.qml` (setup cards, VM controls, detail sections, drafts and
-  confirmations), `LanaiModel.qml` (panel polling, literal command transport and
-  clipboard exit feedback), `lib/` (`panel.sh` holds the
+  confirmations), `LanaiModel.qml` (panel polling, literal command transport,
+  clipboard exit feedback and the launch of Lanai's own client update), `lib/` (`panel.sh` holds the
   read-only panel view and words, `client.sh` holds the
   Looking Glass client code, `setup.sh` the setup flow, setup media and
   `$RUN/step6-checks.json` check outcomes and `$RUN/step6-scale-limit` worker
   timeout for each attempt, `pins.sh`
-  the pinned downloads, `ui.sh` the settings command, per-group result records
-  and session-unit panel jobs, `snapshot.sh` snapshot and restore,
+  the pinned downloads, `ui.sh` the settings command, per-group result records,
+  session-unit panel jobs and Lanai's own client update (its try record,
+  `client-auto.json`, and the `$RUN/client-auto-gave-up` marker), `snapshot.sh`
+  snapshot and restore,
   `snapshot-label.py` the snapshot label validator and reader, `copy.sh` the
   reflink copy helpers, `ficlone.py` the in-place clone, `image-proof.py` the
   one-read image hash, FIEMAP proof and progress record),
@@ -31,6 +33,7 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   in `COPYING`) and `test/` (bats; fake
   QMP and guest agent servers and trimmed client logs in `test/fixtures/`;
   `test/client-patches.bats` builds and runs the patches' C tests;
+  `test/client-auto.bats` tests Lanai's own client update;
   `test/panel-fixtures.bash` shares isolated backend fixtures between the panel
   tests and the ten-board renderer integration in `test/panel-qml.bats`).
   `docs/plugin/proof-kit/` holds the phase 1, live-scale and resize proof scripts and
