@@ -128,3 +128,4 @@ One phase.
 | Gate | Stage | Round | Findings |
 |---|---|---|---|
 | Doc | a (gpt-6.1-sol) | 1 | 4 P2, all confirmed and fixed |
+| Doc | a (gpt-6.1-sol) | 2 | 0, clean |
