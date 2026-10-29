@@ -46,7 +46,7 @@ holds more, and names the right-click action. All long words stay in the panel.
    3. The right-click words (`right_click_tooltip`), as today. When the panel holds
       more (rule 2) and the right-click action opens the panel, rules 2 and 3 fold
       into one line, "Right-click: Open the panel for details.", so the pointer
-      shows also with the window open.
+      shows whatever right-click does.
 2. No notice, warning, headline, cause or next step text appears in the hover text.
 3. The bar's accessible name stays equal to the hover text.
 4. Before the first view arrives, the hover text is "Lanai: Checking" and
@@ -68,12 +68,14 @@ show in the panel, and the hover text points there.
 - A bats test of `lanai panel` compares the whole `tooltip` field, as an exact
   string, in these cases (so it also shows that no long text gets in):
   - stopped: "Lanai: Stopped" and "Right-click: Start Windows.";
-  - the auto update running, window closed: "Lanai: Running (busy)", "Open the
+  - the auto update running: "Lanai: Running (busy)", "Open the panel for
+    details." and "Right-click: Open the Windows window." (right-click opens or
+    raises the Looking Glass window, open or not);
+  - the same while setup shows QEMU's own window (`LanaiWindow`, right-click opens
+    the panel): "Lanai: Running (busy)" and "Right-click: Open the panel for
+    details.";
+  - the reopen words after an update, bar active: "Lanai: Running", "Open the
     panel for details." and "Right-click: Open the Windows window.";
-  - the same with the window open: "Lanai: Running (busy)" and "Right-click: Open
-    the panel for details.";
-  - the reopen words after an update, window open, bar active: "Lanai: Running" and
-    "Right-click: Open the panel for details.";
   - a notice (a forced stop last time) with Windows stopped and nothing else:
     "Lanai: Stopped", the details line and "Right-click: Start Windows.";
   - setup step 5 with Windows running, on a first setup: "Lanai: Setup needed" and
@@ -104,8 +106,8 @@ show in the panel, and the hover text points there.
   installed ("Lanai: Not installed (your turn)"), version mismatch ("Lanai:
   Display driver needs an update (your turn)") and in use boards, each with
   "Right-click: Open the panel for details.".
-- John hovers the bar item during an auto update, with the window closed and then
-  open, and sees the lines above.
+- John hovers the bar item during an auto update and after it, while the reopen
+  words show, and sees the lines above.
 
 ## Plan
 
@@ -164,3 +166,10 @@ One phase, test first.
 | doc | b single (opus-5.5) | 1 | 4 should-fix, 3 nits, 0 refuted: with the window open the pointer dropped, so the reopen words and a notice read like a healthy VM (now folded into "Right-click: Open the panel for details."); setup step 5 and Force stop had no pointer (now the layout and the Force stop offer count); the docs list missed row 12b and three auto-update spec lines; the QML fixtures had no `tooltip` and the no-percent check would pass on an empty string (moved to bats, plus a ten-board check). Nits: exact strings for each case and a busy-over-stopped case; the default view's right-click line and the error view's missing parentheses; "brackets" became "parentheses". Integrated. |
 | doc | b single (opus-5.5) | 2 | 4 should-fix, 4 nits, 0 refuted: a failed start keeps right-click on Start, so that case expected the wrong text; a first setup reads "Setup needed", not "Running"; no case covered your turn or a restore; the ten-board test's search for the right-click words would break on the folded line, and the update test's view was not named. Nits: result lines left out on purpose (noted), "compared without case", the doc's path; "Click for details." was not taken, since John picked "Open the panel for details.". Integrated. |
 | doc | b single (opus-5.5) | 3 | 5 nits, 0 refuted; every acceptance case traced through the code gives the stated text. Nits: where the reopen case's fixture lives, an exact string for the progress case, exact text for three ten-board views, the kept QML test's name, the "\n" join. Integrated; the gate closed on a nits-only round. |
+
+Implementation note (2026-10-29, EDT): the implementer found that right-click's
+"window" test reads `LanaiWindow`, QEMU's own setup window, not the Looking Glass
+window. So with the Looking Glass window open, right-click still opens (raises)
+the Windows window, and the reopen and auto-update cases have three lines, not
+the folded line the doc first expected. The rules were right; the expected text
+was wrong, and is corrected above.
