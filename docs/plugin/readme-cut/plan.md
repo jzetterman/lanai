@@ -35,17 +35,19 @@ license.
    sentences:
    1. The wordmark, the one-line description, and a short status: an early 0.x
       release, take a backup or a snapshot before setup.
-   2. **Requirements:** Omarchy 4.0 with its plugin API, stated as today's
-      README states it: Lanai targets the 4.0.0.alpha shell API, and no exact
+   2. **Requirements:** Omarchy 4.0 with its plugin API (if `omarchy plugin`
+      is not a command, the release is too old), stated as today's README
+      states it: Lanai targets the 4.0.0.alpha shell API, and no exact
       tested build is recorded (the desktop it was built on runs an Omarchy dev
       build); a UEFI Windows install from `omarchy-windows-vm`, finished to
       the Windows desktop; `/dev/kvm` access as your user; enough memory for
       Windows and Linux, with a note that Lanai starts with the container's
       memory size when it can read the container's settings (otherwise half the
       host's memory, at most 16 GiB) and Settings can change it; about 1 GB of downloads during
-      setup; what Lanai does not do (install Windows, TPM, Secure Boot, legacy
+      setup, plus the Arch packages; what Lanai does not do (install Windows, TPM, Secure Boot, legacy
       layouts); that setup installs Arch packages with `sudo pacman` in a
-      terminal it opens (the package list stays linked), and builds the Looking
+      terminal it opens, with the packages named in one line of prose and
+      `LANAI_HOST_PACKAGES` linked as the exact list, and builds the Looking
       Glass client.
    3. **Install:** the two `omarchy plugin` commands, and
       `omarchy-windows-vm stop` before setup.
@@ -56,41 +58,67 @@ license.
       for: Packages (Install in a terminal, password), Snapshot (take one, or
       confirm a backup), Prepare (wait while Lanai builds the client, several
       minutes), Drivers (in Windows, run `setup.cmd` from Lanai's setup drive and
-      approve the administrator prompt as the same user), Verify (sign in as the
-      user who ran setup). One sentence says what setup changes in Windows (the
+      approve the administrator prompt as the same user; Windows then shuts down
+      by itself and Lanai starts it again, so do not click Shut down), Verify
+      (sign in as the user who ran setup). One sentence says what setup changes in Windows (the
       lock turned off, a trusted publisher added, Lanai's services) and links
       the guide's section on it.
    5. **Daily use:** left-click opens the panel, right-click starts or opens
       Windows; closing the Windows window leaves Windows running (right-click
-      reopens it); Shut down and Force stop; capture mode with Scroll Lock (on a
+      reopens it); Shut down and Force stop; never start `omarchy-windows-vm`
+      while Lanai runs Windows, and leave the container's Windows version,
+      language, disk size or format, `CLEAR` and ISO mounts unchanged (stop
+      Lanai first to use the container over RDP as a fallback); outside capture
+      mode, Ctrl+Alt+Del reaches the host, not Windows; resize the window to
+      change Windows' resolution; capture mode with Scroll Lock (on a
       laptop, often Fn with another key); the shared folder `~/Windows`;
       Settings for memory, cores and Windows scale; snapshots in one or two
       sentences.
    6. **Updating:** `omarchy plugin update`, then `omarchy-restart-shell`; Lanai
-      updates the Windows window by itself.
-   7. **Removal:** the short steps that requirement 31 of `docs/plugin/spec.md`
-      asks for, with a link to the full steps in the guide.
+      updates the Windows window by itself; if the panel names **Run setup
+      again**, run it.
+   7. **Removal:** these short steps, in this order, with a link to the full
+      steps in the guide (today's Removal section):
+      1. Stop Lanai's VM with `systemctl --user stop lanai-vm.service`.
+      2. Start Windows with `omarchy-windows-vm`, connect over RDP, and undo
+         setup's Windows changes by the guide (the lock, the apps, the scale
+         task and service, the publisher certificate).
+      3. Shut Windows down from the Start menu.
+      4. Run `omarchy plugin remove io.github.jzetterman.lanai`.
    8. **More:** links to `docs/guide.md`, `docs/development.md` and the specs.
    9. **License:** MIT, except the Looking Glass patches (GPL-2.0-or-later).
 2. The README fits on about two screens: at most 150 lines.
 3. `docs/guide.md` (the user guide) holds every user-facing paragraph cut from
-   the README, grouped under the README's section names plus the current
-   sections it does not keep (Windows lock and trust exposure, Networking and
-   coexistence, the full Removal). Text moves as it is; edits are limited to
+   the README, under today's README section names (Install and setup, Daily
+   use, Windows lock and trust exposure, Networking and coexistence, Removal),
+   with subheadings where a section is long (for example Snapshots under
+   Install and setup). Text moves as it is; edits are limited to
    headings, links that change with the move, and sentences that the README's
    new text makes repeat.
 4. `docs/development.md` holds the developer content: the background (Why and
    Plan, the spike), the plugin's file layout, and Tests.
 5. Nothing is lost: every paragraph of today's README is in the new README, the
    guide or the development doc, or is a stale status line that the new status
-   replaces.
+   replaces. The stale status lines are README lines 7-9, 29-30, 40-41, 49 and
+   51 (as of main c72a2e6), and the words "for a rehearsal" at line 59. Lines
+   that say phase 8 is pending (397-398, 461-471) are still true and move to
+   the guide unchanged. Where the guide drops a sentence that the new README
+   now states (requirement 3), the README keeps the fact and the guide links to
+   it.
 6. Specs and rules follow the move:
-   - `docs/plugin/spec.md` gains one rule: where it says the README states
-     something, the README or the user guide it links may state it.
-     Requirement 31 (install and removal steps, license, dependencies in the
-     README) stays as it is, and the new README meets it.
-   - `CLAUDE.md`'s "Docs to update before merge" adds `docs/guide.md`, and its
-     Tests paragraph points to `docs/development.md` where it repeats it.
+   - `docs/plugin/spec.md` gains one rule, as a paragraph right after
+     requirement 32: wherever the spec or its acceptance table refers to the
+     README's content, words or steps (it "states", "names", "says", "notes" or
+     "lists", text "written in the README", "the README's words", "the README's
+     restore steps", "removal steps from the README"), the README or the user
+     guide it links (`docs/guide.md`) may hold it. Row 7's "a user who follows
+     the README" still means the README alone. Requirement 31 (install and
+     removal steps, license, dependencies in the README) stays as it is, and
+     the new README meets it.
+   - `CLAUDE.md`'s "Docs to update before merge" adds `docs/guide.md` and
+     `docs/development.md`; its layout bullet for `docs/` names the two new
+     docs; its Tests paragraph stays inline (agents load CLAUDE.md, not
+     development.md).
    - Plans and proofs that cite README line numbers are history and stay.
 7. The README names no command that is not on PATH. Where a step needs Lanai's
    CLI, it gives the full path
@@ -102,9 +130,14 @@ license.
 - `README.md` has the sections of requirement 1, in order, and at most 150
   lines.
 - A check script (run once, not kept) lists every paragraph of today's
-  README and finds each in the new README, the guide or the development doc, or
-  names it as a replaced status line. Its output goes in the PR body.
-- Every relative link in the three files resolves to a file in the repo.
+  README and finds each in the new README, the guide or the development doc.
+  A match is verbatim after whitespace is normalized and the link targets
+  that requirement 3 allows to change are ignored. Each paragraph without a
+  match is listed with its reason (a stale status line from requirement 5, or
+  a sentence the new README states) and where its fact now lives. Its output
+  goes in the PR body.
+- Every relative link in the three files resolves to a file in the repo, and
+  every `#anchor` in them resolves to a heading in its target file.
 - The README states everything requirement 31 asks for.
 - `bats test` passes (no test reads the README).
 - John reads the new README and says it is enough to get going.
@@ -118,8 +151,8 @@ One phase.
 2. Write `docs/guide.md` from the rest, in the README's order, with a short
    contents list at the top.
 3. Rewrite `README.md` by requirement 1, from the moved text and the panel's
-   own words. Where the README states a fact the guide also states, the guide
-   keeps the detail and the README links to it.
+   own words. The README states each fact briefly and links to the guide for
+   the detail; the guide drops only the sentences requirement 5 names.
 4. Edit `docs/plugin/spec.md` and `CLAUDE.md` by requirement 6.
 5. Run the paragraph check, the link check and `bats test`.
 
@@ -129,3 +162,4 @@ One phase.
 |---|---|---|---|
 | Doc | a (gpt-6.1-sol) | 1 | 4 P2, all confirmed and fixed |
 | Doc | a (gpt-6.1-sol) | 2 | 0, clean |
+| Doc | b single (opus-5.5) | 1 | 4 should-fix, 4 nits, 0 refuted; all confirmed and integrated |
