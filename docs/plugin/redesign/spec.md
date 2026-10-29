@@ -168,8 +168,9 @@ Users need a clear status, a next action and details they can open when needed.
     an invented percentage: animate a fixed-width underline segment.
     Except for that Drivers wait, give failure priority over attention, then busy,
     then active, then stopped.
-    Preserve tooltips with warnings, notices and the actual right-click
-    action. Left-click and Return, keypad Enter, Space and Menu toggle the panel.
+    The tooltip names the state and the actual right-click action. When the
+    panel holds more, such as a warning or a notice, it says to open the panel
+    for details ([../bar-tooltip/plan.md](../bar-tooltip/plan.md)). Left-click and Return, keypad Enter, Space and Menu toggle the panel.
     Right-click uses the backend's guarded Start or Open, otherwise opens the
     panel. Failed shortcuts and forced-stop reports still open the panel.
 15. Failed opens Logs and presents the actual cause and permitted recovery.

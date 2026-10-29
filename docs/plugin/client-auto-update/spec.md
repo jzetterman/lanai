@@ -97,8 +97,9 @@ bar (one per monitor), which keeps checking while the panel is closed.
    - A stop with a try left shows no failure: the panel shows the update as starting
      again at the next check.
    - After an update installs the new client, while a Windows window that started
-     before that install is open, the panel and the bar item's hover text say to
-     close it and open it again (John's call, 2026-10-27). This holds for any build
+     before that install is open, the panel says to close it and open it again
+     (John's call, 2026-10-27). The bar item's hover text points to the panel
+     ([../bar-tooltip/plan.md](../bar-tooltip/plan.md)). This holds for any build
      that installs the client, including `lanai build-client`. When that window
      closes, or Windows shuts down, the words go away. Lanai never closes or reopens
      the window by itself. The bar item shows no failure or busy state for it.
@@ -151,8 +152,8 @@ bar (one per monitor), which keeps checking while the panel is closed.
 - Tests show the words and bar states of requirement 7 for each bullet: during a
   wait, at the launching check and while the update runs (busy; no button named, no
   "wait to start"; with a snapshot's progress too), after a stop with a try left
-  (no failure), with an older window open after the install (panel and hover text,
-  no bar failure), after that window closes and after Windows shuts down (the words
+  (no failure), with an older window open after the install (panel words, a hover
+  text that points to the panel, no bar failure), after that window closes and after Windows shuts down (the words
   go away), with no window open (nothing), and after automatic tries end (failure
   on every bar item, after a reload and with Windows started, until an update by
   hand or a current client).
@@ -177,7 +178,8 @@ bar (one per monitor), which keeps checking while the panel is closed.
     patch's header text (so its patch set differs from the installed client's and
     it still applies; row 12b's repeatable pre-fix fixture): with Windows running
     and the window open, see the bar item show the update running without a click,
-    Windows stay responsive, then the hover text say to close and reopen the window.
+    Windows stay responsive, then the panel say to close and reopen the window and
+    the hover text point to the panel.
     After the reopen, the warning is gone and `client.log` starts fresh.
   - Part two, with Windows stopped, on the feature branch without the throwaway
     commit (its patch set is `main`'s, so it differs again): see a second update
