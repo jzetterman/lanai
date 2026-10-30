@@ -3,6 +3,7 @@
 # Lanai
 
 Use Windows in a window on Omarchy, through [Looking Glass](https://github.com/gnif/LookingGlass).
+The Windows window is the Looking Glass window that shows Windows.
 
 Lanai is new, and its version is 0.x. Before Windows starts with Lanai for the
 first time, setup lets you make a snapshot. If setup cannot make a snapshot, make a
@@ -13,23 +14,22 @@ backup first.
 - Omarchy 4.0 or newer, with its plugin API. If `omarchy plugin` is not a command,
   you must have a newer Omarchy version. Lanai is for the shell API of Omarchy
   4.0.0.alpha. We did not record the accurate Omarchy build that we used for
-  tests. We made Lanai on a desktop that operates an Omarchy dev build.
+  tests. We made Lanai on a desktop with an Omarchy dev build.
 - A completed UEFI installation of Windows, from `omarchy-windows-vm install`.
 - Access to `/dev/kvm` for your user.
-- Sufficient memory for Windows and Linux. If Lanai can read the settings of the
-  container, it starts Windows with the same quantity of memory as the container.
-  The container is the Windows VM that `omarchy-windows-vm` operates. If Lanai cannot
+- Sufficient memory for Windows and Linux. The container is the Windows VM that
+  `omarchy-windows-vm` operates. If Lanai can read the settings of the container, it
+  starts Windows with the same quantity of memory as the container. If Lanai cannot
   read these settings, it uses half the memory of the host, to a maximum of 16 GiB.
   You can change the memory in Settings.
 - Setup downloads approximately 1 GB, plus the Arch packages.
 
 Lanai does not install Windows. It cannot use TPM, Secure Boot or legacy layouts.
 
-Setup opens a terminal for you, where you type your password. In this terminal,
-setup installs the Arch packages: QEMU and its modules, virtiofsd, passt, socat, jq,
-Python, diffutils and the Looking Glass build tools.
-[`LANAI_HOST_PACKAGES`](lib/client.sh) has the accurate list. Setup also builds the
-Looking Glass client.
+Setup opens a terminal for you, where you type your password. In this terminal, setup
+installs the Arch packages: QEMU and its modules, virtiofsd, passt, socat, jq, Python,
+diffutils and the Looking Glass build tools. [`LANAI_HOST_PACKAGES`](lib/client.sh) has
+the accurate list. Setup also builds the Looking Glass client.
 
 ## Install
 
@@ -50,40 +50,41 @@ omarchy-windows-vm stop
 
 ## First setup
 
-Setup makes changes to Windows. It disables the Windows lock, and it does not save
-your previous lock settings. Thus, Windows stays unlocked when Linux stays unlocked.
-Lock Linux. Then the Windows window is behind the Linux lock screen.
+Setup makes changes to Windows. It disables the Windows lock, and it does not save your
+previous lock settings. Thus, Windows stays unlocked when Linux stays unlocked. To put
+the Windows window behind the Linux lock screen and prevent access to it, lock Linux.
 
-Setup also trusts the publisher of the Looking Glass driver, and it installs Lanai's
-services. Windows can read the data that you copy on Linux. This includes files.
+Setup also trusts the publisher of the Looking Glass display driver, and it installs
+Lanai's services. Windows can read the data that you copy on Linux. This includes files.
 The [user guide](docs/guide.md#windows-lock-and-trust-exposure) tells you about each
 change.
 
-To open the panel, left-click Lanai's glyph in the bar. The glyph is an L in a
-monitor. Then click **Continue setup**.
+Lanai's glyph in the bar is an L in a monitor. To open the panel, left-click the
+glyph. Then click **Continue setup**.
 
 Setup has six steps. At each step, the panel gives the instructions. After most
 steps, click **Continue setup** to go to the next step.
 
-1. **Check.** Lanai does a check of the Windows installation. Wait.
+1. **Check.** Lanai does a check of the Windows that you installed. Wait.
 2. **Packages.** Click **Install in a terminal**. Type your password. Accept pacman's
    prompts. When the installation stops, press Enter.
-3. **Snapshot.** Click **Take a snapshot**. Then click **Save snapshot**. A name for
-   the snapshot is optional. If you have a backup, you can click
-   **Continue without a snapshot** as an alternative.
-4. **Prepare.** Wait while Lanai builds the Windows window. The Windows window is the
-   Looking Glass window that shows Windows. This step continues for some minutes.
+3. **Snapshot.** Click **Take a snapshot**. A name for the snapshot is optional. Then
+   click **Save snapshot**. If you have a backup, you can click **Continue without a
+   snapshot** as an alternative.
+4. **Prepare.** Wait while Lanai builds the Looking Glass client. This step continues
+   for some minutes.
 5. **Drivers.** Lanai downloads approximately 900 MB of drivers. Then Windows starts
    in a basic window.
 
-   In Windows, open Lanai's setup drive in Explorer. Run `setup.cmd`. Give your
-   approval in the administrator prompt with the signed-in Windows account. Setup
+   In Windows, open Lanai's setup drive in Explorer. Run `setup.cmd`. In the
+   administrator prompt, give your approval as the signed-in Windows user. Setup
    does not accept a different account.
 
-   Then Windows shuts down automatically, and Lanai starts it again. Do not click
-   **Shut down** unless `setup.cmd` or the panel tells you to click it.
+   Then Windows shuts down automatically, and Lanai starts it again. While `setup.cmd`
+   runs, do not click **Shut down** unless `setup.cmd` or the panel tells you to click
+   it.
 6. **Verify.** Wait while Lanai does a check of Windows. If Windows stays at its
-   sign-in screen, sign in with the account of the user who ran setup. Then the panel
+   sign-in screen, sign in as the Windows user who ran setup. Then the panel
    changes to its usual display, and Windows operates in the Windows window.
 
 ## After setup
@@ -103,30 +104,32 @@ steps, click **Continue setup** to go to the next step.
   restore is in progress, wait until its end. If the panel shows a snapshot or
   restore that stopped before its end, complete it in the panel. Then run
   `omarchy-windows-vm launch`.
-- When you are not in capture mode, Ctrl+Alt+Del goes to Omarchy and closes all
-  windows. This includes the Windows window. Windows continues to operate.
 - To start capture mode, press Scroll Lock. In capture mode, the mouse, the
   keyboard and Omarchy's shortcuts go to Windows. To stop capture mode, press
-  Scroll Lock again. On a laptop, Scroll Lock is frequently Fn plus a different key.
+  Scroll Lock again. On many laptops, Scroll Lock is Fn and a different key.
+- When you are not in capture mode, Ctrl+Alt+Del goes to Omarchy and closes all
+  windows. This includes the Windows window. Windows continues to operate.
 - To change Windows' resolution, resize the Windows window.
 - The shared folder is `~/Windows` on Linux and a drive in Windows Explorer.
 - In the panel, **Settings** sets the memory, the cores and the scale of Windows.
   Lanai uses changes to memory and cores when Windows starts the next time.
-- In the panel, **Snapshots** shows your snapshots. Make or restore a snapshot while
-  Windows is off. After a restore, setup starts again. Click **Continue setup**.
+- In the panel, **Snapshots** shows your snapshots. Before you make or restore a
+  snapshot, shut down Windows. After a restore, setup starts again. Click **Continue
+  setup**.
 
 The [user guide](docs/guide.md#daily-use) has more information.
 
 ## Updates
+
+To update Lanai, run these commands:
 
 ```sh
 omarchy plugin update io.github.jzetterman.lanai
 omarchy-restart-shell
 ```
 
-Lanai updates the Windows window automatically. If the panel shows
-**Run setup again**, shut down Windows. Then open **More actions**. Click
-**Run setup again**.
+Lanai updates the Looking Glass client automatically. If the panel shows **Run setup
+again**, shut down Windows. Then open **More actions**. Click **Run setup again**.
 
 ## Removal
 
@@ -141,9 +144,8 @@ The [user guide](docs/guide.md#removal) has the full steps.
    ```
 
 2. Run `omarchy-windows-vm launch`. This command starts Windows and opens an RDP
-   window. In the RDP window, open an administrator Command Prompt with the account
-   of the Windows user who ran setup. Set the lock settings of Windows to the
-   defaults:
+   window. In the RDP window, open an administrator Command Prompt as the Windows
+   user who ran setup. Set the lock settings of Windows to the defaults:
 
    ```bat
    reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\System /v DisableLockWorkstation /f
@@ -154,7 +156,7 @@ The [user guide](docs/guide.md#removal) has the full steps.
    Then remove the other changes with the steps in the guide. These changes are the
    apps, the scale task and service, and the publisher certificate.
 
-3. From its Start menu, shut down Windows.
+3. From the Windows Start menu, shut down Windows.
 4. Remove the plugin:
 
    ```sh
