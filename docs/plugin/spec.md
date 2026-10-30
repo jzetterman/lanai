@@ -502,6 +502,18 @@ or 6008).
     request, and, if Lanai's VM still runs, stop it with a command that works without
     the plugin.
 
+The README and the user guide it links (`docs/guide.md`) share the README's role
+(John, 2026-10-29, EDT). Wherever this spec, its acceptance table or a plan refers to
+the README's content, words or steps, either of them may hold it. Examples are
+"states", "names", "says", "tells", "notes", "lists", "written in the README", "the
+README's words", "the README's restore steps" and "removal steps from the README";
+the list is not complete. Two exceptions. First, requirement 31's install steps,
+license and dependencies stay in the README, and so do the removal steps in order,
+with the commands that restore Windows' lock (requirement 32's first step); the other
+Windows undo commands may sit in the guide. Second, row 7's "a user who follows the
+README" means the README alone. This rule also governs the plans' open work, such as
+`docs/plugin/plan.md`'s phase 8 notes that write to "the README".
+
 ## Acceptance criteria
 
 Every check is first rehearsed with Lanai pointed at a reflink copy of `~/.windows`

@@ -5,7 +5,9 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
 
 ## Layout
 
-- `docs/` holds specs and plans, with review logs in each doc.
+- `docs/` holds specs and plans, with review logs in each doc, plus `docs/guide.md`
+  (the user guide: the detail the README leaves out) and `docs/development.md`
+  (background, layout and tests for developers).
 - `spike/` holds the software-mode test harness. `spike/work/` is gitignored scratch.
 - The Lanai plugin sits at the root: `manifest.json`, `bin/` (the `lanai` CLI,
   `lanai-copy`, the VM unit's `lanai-vm-exec`, `lanai-vm-stop` and
@@ -83,4 +85,5 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
 
 ## Docs to update before merge
 
-`README.md`, the governing doc in `docs/`, and `CLAUDE.md` when layout or rules change.
+`README.md`, `docs/guide.md`, `docs/development.md`, the governing doc in `docs/`, and
+`CLAUDE.md` when layout or rules change.
