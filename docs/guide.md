@@ -485,7 +485,8 @@ click it, Lanai tells Windows to do a clean shutdown. The panel does not wait fo
 end of the shutdown. If Windows ignores the shutdown while it starts, click
 **Shut down** again.
 
-15 seconds after your first click, the panel shows **Force stop**.
+15 seconds after Lanai first tells Windows to shut down, the panel shows
+**Force stop**.
 
 **Caution:** If you click **Force stop**, Windows does not keep the work that you did
 not save.
@@ -519,7 +520,7 @@ commands. For example, Scroll Lock+F is the command for fullscreen. To see a lis
 these commands, press and hold Scroll Lock.
 
 When the mouse is on the Windows window, Looking Glass does not show your Linux
-pointer. It shows the Windows cursor at the same position. Lanai does not let the
+pointer. It shows only the Windows cursor. Lanai does not let the
 Looking Glass client move your Linux pointer. Thus, when you drag the edge of the
 window, the edge follows the mouse. This causes two problems:
 
@@ -623,8 +624,8 @@ The display scale of Windows changes while Windows runs. It is not necessary to 
 Windows again or to sign out.
 
 “Match my monitor” uses the Windows step that is nearest to the scale of the monitor
-that shows the Windows window. If the step above and the step below are equally near,
-Lanai uses the lower step.
+that shows the Windows window. If two steps are equally near, Lanai uses the step
+with the smaller value.
 
 In 5 seconds or less, Windows changes its scale when the window moves to a monitor
 with a different scale. Windows also does this when the scale of that monitor
@@ -779,7 +780,8 @@ exposures:
 - The frames and the cursor of Looking Glass
 - The SPICE input, audio and clipboard
 - The network backend
-- The shared folder, `~/Windows`. Windows can open only this folder on Linux.
+- The shared folder, `~/Windows`. Through this channel, Windows can open only this
+  folder on Linux.
 - The channel of the QEMU guest agent. Lanai uses it for the clock. At setup, Lanai
   also sends one command through it, and the allow-list of the agent must reject it.
 - The scale channel.
@@ -814,8 +816,8 @@ Tailscale MagicDNS. A DNS client in Windows, for example Cloudflare WARP or an a
 from your company, replaces the resolver of the host.
 
 Windows can connect to the same network locations as the host. This includes VPNs.
-But Windows cannot connect to a service of the host that listens only on the loopback
-address. Windows can connect to services of the host on other addresses.
+But Windows cannot connect to a service of the host that is available only on the
+loopback address. Windows can connect to services of the host on other addresses.
 
 If the host has no default route when Windows boots, Windows starts with no network
 access. Windows has no network access until the next start of the VM.
@@ -904,7 +906,8 @@ the time limit, the next start tells you about the forced stop.
    the previous service configuration.
 
    If the container or a different SPICE connection uses the SPICE vdagent, the
-   vdagent can stay. If not, uninstall it there too.
+   vdagent can stay. If the container and other SPICE connections do not use the
+   vdagent, uninstall it there too.
 
    **Caution:** If a different workflow used a `VirtioFsSvc` that was there before
    setup, the commands that follow also remove it. Setup did not save its previous
@@ -939,8 +942,8 @@ the time limit, the next start tells you about the forced stop.
    Windows runs. In this condition, `%LOCALAPPDATA%\Lanai` also contains the scale
    log. Delete that folder too.
 
-   If a different workflow used the previous service, install and configure its
-   virtiofs tools again before you use it.
+   If a different workflow used the previous service, install its virtiofs tools
+   again. Then configure these tools. Do these steps before you use that workflow.
 
    WinFsp and the newer signed `viofs` driver can stay. Without the service, they do
    not make Lanai's shared folder. And a different virtiofs workflow can use them.
@@ -951,7 +954,8 @@ the time limit, the next start tells you about the forced stop.
    device uses the driver. A different virtiofs workflow can use
    this driver.
 
-   Then, in Device Manager, uninstall the VirtIO FS device and its driver.
+   If no workflow uses them, uninstall the VirtIO FS device and its driver in Device
+   Manager.
 
    The RDP connection of the container and its usual file share can operate without
    Lanai's virtiofs service and scale task.
