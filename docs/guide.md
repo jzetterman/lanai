@@ -106,8 +106,8 @@ each time shows UTC. The panel shows the name of a snapshot above its date. If t
 snapshots with the same name have the same minute, their times also show the seconds.
 The panel counts only the correct snapshots for this storage location.
 
-To see the path of a snapshot, open the Snapshots section. Then click **Show
-details**. To copy the path, click the icon adjacent to it.
+After you make a snapshot, open the Snapshots section. To see the path of this
+snapshot, click **Show details**. To copy the path, click the icon adjacent to it.
 
 The panel changes the list after Lanai makes, deletes or restores a snapshot. It also
 changes the list each time that the panel reads its data again.
@@ -225,7 +225,7 @@ of this shutdown. A shutdown from the panel does not complete this step.
 **Caution:** During the setup boot, a shutdown from the panel stops setup, and then
 you must select how to continue. Thus, only in these conditions, click **Shut down**:
 
-- The `setup.cmd` window does not change and does not accept input.
+- `setup.cmd` stops before its end and does not show a message.
 - The shared-folder check of `setup.cmd` tells you to click **Shut down**.
 
 The `setup.cmd` script makes sure that the shared folder from Linux is a drive in
@@ -667,7 +667,7 @@ monitor, the scale does not change. Thus, if there is no monitor when Windows st
 the scale stays at 100%.
 
 If you save a scale while Windows operates, Windows gets it in 5 seconds or less. But if
-you did not sign in to Windows, Windows gets it 20 seconds or less after your next
+Windows has no signed-in user, Windows gets it 20 seconds or less after the next
 sign-in. Lanai cannot know which of the two is correct. Thus, the panel tells you
 about the two conditions. If you save a scale while Windows is off, Windows uses it
 at the next start.
@@ -730,8 +730,8 @@ stops when setup runs again. Setup builds the program again each time that it ru
 
 Smart App Control cannot let only one program run. On many Windows versions, only a new
 installation of Windows can enable Smart App Control again after you disable it. As an
-alternative to the policy change, you can disable Smart App Control in Windows Security
-> App & browser control.
+alternative to the policy change, you can disable Smart App Control in
+Windows Security > App & browser control.
 
 Then shut down Windows. Then open **More actions**. Click **Run setup again**. Setup
 makes sure that Windows runs the program. If Windows does not run it, setup stops and
