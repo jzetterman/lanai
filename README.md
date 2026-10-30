@@ -52,7 +52,7 @@ omarchy-windows-vm stop
 
 Setup makes changes to Windows. It disables the Windows lock, and it does not save
 your previous lock settings. Thus, Windows stays unlocked when Linux stays unlocked.
-When you lock Linux, you cannot see the Windows window.
+Lock Linux. Then the Windows window is behind the Linux lock screen.
 
 Setup also trusts the publisher of the Looking Glass driver, and it installs Lanai's
 services. Windows can read the data that you copy on Linux. This includes files.
