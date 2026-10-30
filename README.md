@@ -21,7 +21,7 @@ backup first.
   `omarchy-windows-vm` operates. If Lanai can read the settings of the container, it
   starts Windows with the same quantity of memory as the container. If Lanai cannot
   read these settings, it uses half the memory of the host, to a maximum of 16 GiB.
-  You can change the memory in Settings.
+  You can change the memory in **Settings**.
 - Setup downloads approximately 1 GB, plus the Arch packages.
 
 Lanai does not install Windows. It cannot use TPM, Secure Boot or legacy layouts.
@@ -68,7 +68,7 @@ steps, click **Continue setup** to go to the next step.
 
 1. **Check.** Lanai does a check of the Windows that you installed. Wait.
 2. **Packages.** Click **Install in a terminal**. Type your password. Accept
-   pacman's prompts. When the installation stops, press Enter to close the terminal.
+   pacman's prompts. At the end of the installation, press Enter to close the terminal.
 3. **Snapshot.** Click **Take a snapshot**. A name for the snapshot is optional. Then
    click **Save snapshot**. If you have a backup, you can click **Continue without a
    snapshot** as an alternative.
@@ -77,15 +77,15 @@ steps, click **Continue setup** to go to the next step.
 5. **Drivers.** Lanai downloads approximately 900 MB of drivers. Then Windows starts
    in a basic window.
 
-   In Windows, open Lanai's setup drive in Windows Explorer. Run `setup.cmd`. During
-   this step, do not click **Shut down** unless `setup.cmd` or the panel tells you to
-   click it. In the administrator prompt, give your approval as the signed-in Windows
-   user. Setup does not accept an approval from a different account.
+   In Windows, open Lanai's setup drive in Windows Explorer. Run `setup.cmd`. In the
+   administrator prompt, give your approval as the signed-in Windows user. Setup does
+   not accept an approval from a different account. During this step, do not click
+   **Shut down** unless `setup.cmd` or the panel tells you to click it.
 
    Then Windows shuts down automatically, and Lanai starts it again.
-6. **Verify.** Wait while Lanai does a check of Windows. If Windows stays at its
-   sign-in screen, sign in as the Windows user who ran setup. Then the panel
-   changes to its usual header, and Windows operates in the Windows window.
+6. **Verify.** Wait while Lanai does a check of Windows. If Windows stays at its sign-in
+   screen, sign in as the Windows user who ran setup. Then the panel changes to its usual
+   header, and Windows operates in the Windows window. This is the end of setup.
 
 ## After setup
 
@@ -93,7 +93,7 @@ steps, click **Continue setup** to go to the next step.
   When Windows operates, right-click the glyph to open the Windows window.
 - When you close the Windows window, Windows continues to operate. To open the
   window again, right-click the glyph.
-- To stop Windows, click **Shut down** in the panel. If Windows does not stop after
+- To shut down Windows, click **Shut down** in the panel. If Windows does not stop after
   15 seconds, the panel shows **Force stop** in **More actions**.
 - **Caution:** If you click **Force stop**, Windows does not keep the work that you
   did not save.
@@ -153,8 +153,8 @@ The [user guide](docs/guide.md#removal) has the full steps.
    reg delete "HKCU\Control Panel\Desktop" /v ScreenSaverIsSecure /f
    ```
 
-   Then do steps 3 and 4 in the [Removal section of the guide](docs/guide.md#removal).
-   These steps remove the apps, the scale task and service, and the publisher certificate.
+   Then do steps 3 and 4 in the [Removal section of the guide](docs/guide.md#removal). These
+   steps remove the apps, the scale task, the virtiofs service and the publisher certificate.
 
 3. From the Windows Start menu, shut down Windows.
 4. Remove the plugin:
