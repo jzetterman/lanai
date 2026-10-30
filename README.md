@@ -54,10 +54,11 @@ Setup makes changes to Windows. It disables the Windows lock, and it does not sa
 previous lock settings. Thus, Windows stays unlocked when Linux stays unlocked. To put
 the Windows window behind the Linux lock screen and prevent access to it, lock Linux.
 
-Setup also trusts the publisher of the Looking Glass display driver, and it installs
-Lanai's services. Windows can read the data that you copy on Linux. This includes files.
-The [user guide](docs/guide.md#windows-lock-and-trust-exposure) tells you about each
-change.
+Setup also makes Windows accept all drivers from the publisher of the Looking Glass
+display driver, and it installs Lanai's services. The
+[user guide](docs/guide.md#windows-lock-and-trust-exposure) tells you about each change.
+
+Windows can read the data that you copy on Linux. This includes files.
 
 Lanai's glyph in the bar is an L in a monitor. To open the panel, left-click the
 glyph. Then click **Continue setup**.
@@ -66,8 +67,8 @@ Setup has six steps. At each step, the panel gives the instructions. After most
 steps, click **Continue setup** to go to the next step.
 
 1. **Check.** Lanai does a check of the Windows that you installed. Wait.
-2. **Packages.** Click **Install in a terminal**. Type your password. Accept pacman's
-   prompts. When the installation stops, press Enter.
+2. **Packages.** Click **Install in a terminal**. Type your password. Accept
+   pacman's prompts. When the installation stops, press Enter to close the terminal.
 3. **Snapshot.** Click **Take a snapshot**. A name for the snapshot is optional. Then
    click **Save snapshot**. If you have a backup, you can click **Continue without a
    snapshot** as an alternative.
@@ -76,16 +77,15 @@ steps, click **Continue setup** to go to the next step.
 5. **Drivers.** Lanai downloads approximately 900 MB of drivers. Then Windows starts
    in a basic window.
 
-   In Windows, open Lanai's setup drive in Explorer. Run `setup.cmd`. In the
-   administrator prompt, give your approval as the signed-in Windows user. Setup
-   does not accept a different account.
+   In Windows, open Lanai's setup drive in Windows Explorer. Run `setup.cmd`. During
+   this step, do not click **Shut down** unless `setup.cmd` or the panel tells you to
+   click it. In the administrator prompt, give your approval as the signed-in Windows
+   user. Setup does not accept an approval from a different account.
 
-   Then Windows shuts down automatically, and Lanai starts it again. While `setup.cmd`
-   runs, do not click **Shut down** unless `setup.cmd` or the panel tells you to click
-   it.
+   Then Windows shuts down automatically, and Lanai starts it again.
 6. **Verify.** Wait while Lanai does a check of Windows. If Windows stays at its
    sign-in screen, sign in as the Windows user who ran setup. Then the panel
-   changes to its usual display, and Windows operates in the Windows window.
+   changes to its usual header, and Windows operates in the Windows window.
 
 ## After setup
 
@@ -97,16 +97,16 @@ steps, click **Continue setup** to go to the next step.
   15 seconds, the panel shows **Force stop** in **More actions**.
 - **Caution:** If you click **Force stop**, Windows does not keep the work that you
   did not save.
-- Do not start `omarchy-windows-vm` while Lanai operates Windows. Do not change these
+- While Lanai operates Windows, do not start `omarchy-windows-vm`. Do not change these
   settings of the container: the Windows version, language, disk size or format,
   `CLEAR` or ISO mounts.
 - To use the container through RDP, shut down Windows in Lanai. If a snapshot or
   restore is in progress, wait until its end. If the panel shows a snapshot or
   restore that stopped before its end, complete it in the panel. Then run
   `omarchy-windows-vm launch`.
-- To start capture mode, press Scroll Lock. In capture mode, the mouse, the
-  keyboard and Omarchy's shortcuts go to Windows. To stop capture mode, press
-  Scroll Lock again. On many laptops, Scroll Lock is Fn and a different key.
+- To start capture mode, press Scroll Lock. In capture mode, the mouse, the keyboard
+  and Omarchy's shortcuts go to Windows. To stop capture mode, press Scroll Lock again.
+  On many laptops, to get Scroll Lock, press Fn and a different key.
 - When you are not in capture mode, Ctrl+Alt+Del goes to Omarchy and closes all
   windows. This includes the Windows window. Windows continues to operate.
 - To change Windows' resolution, resize the Windows window.
@@ -137,7 +137,7 @@ The [user guide](docs/guide.md#removal) has the full steps.
 
 1. If a setup, snapshot, restore or update in the panel is in progress, wait until
    its end. To stop setup before its end, click **Shut down** in the panel. Then
-   give your approval in the panel. After this, stop Lanai's VM:
+   click it again to give your approval. After this, stop Lanai's VM:
 
    ```sh
    systemctl --user stop lanai-vm.service
@@ -153,8 +153,8 @@ The [user guide](docs/guide.md#removal) has the full steps.
    reg delete "HKCU\Control Panel\Desktop" /v ScreenSaverIsSecure /f
    ```
 
-   Then remove the other changes with the steps in the guide. These changes are the
-   apps, the scale task and service, and the publisher certificate.
+   Then do steps 3 and 4 in the [Removal section of the guide](docs/guide.md#removal).
+   These steps remove the apps, the scale task and service, and the publisher certificate.
 
 3. From the Windows Start menu, shut down Windows.
 4. Remove the plugin:

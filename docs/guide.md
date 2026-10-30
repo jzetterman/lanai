@@ -27,8 +27,8 @@ removal steps.
 The README gives the [necessary conditions](../README.md#requirements) and the
 [command that installs Lanai](../README.md#install).
 
-Before Lanai can go into the marketplace, it must have a manual setup, and a
-maintainer must examine it.
+Lanai is not in the marketplace at this time. Before it can be in the marketplace, it
+must have a manual setup, and a maintainer must examine it.
 
 If `${XDG_CONFIG_HOME:-$HOME/.config}/lanai/settings.json` has no `storage` value,
 Lanai uses `~/.windows`. The values for memory and cores in this file are optional. If
@@ -65,7 +65,7 @@ the same build.
 
 ### Snapshots
 
-Setup lets you make a snapshot before the first boot. Accept this snapshot. As an
+Setup lets you make a snapshot before the first boot. Make this snapshot. As an
 alternative, make a backup. Then tell setup to continue without a snapshot. If the
 filesystem cannot make a snapshot, setup tells you that a backup is necessary before
 you continue without a snapshot.
@@ -89,11 +89,12 @@ A snapshot name has these limits:
 - It has no `<` or `>` characters, no control characters and no characters that you
   cannot see.
 - It can have the usual space character, but no other space characters.
-- Lanai removes spaces and new-line characters at the start and at the end of a name.
+- Lanai removes space characters and new-line characters at the start and at the end
+  of a name.
 
 If Lanai rejects a name, the panel shows the cause below the field. Your text stays in
-the field, where you can correct it. If you closed the panel before this message came,
-the field opens again and shows the message.
+the field, where you can correct it. If you closed the panel before the panel showed
+this message, the field opens again and shows the message.
 
 You can give a name to a snapshot only when you make it. Lanai always identifies a
 snapshot by its UTC time, and this time is also the name of its folder. Thus, two
@@ -106,9 +107,10 @@ snapshots with the same name have the same minute, their times also show the sec
 The panel counts only the correct snapshots for this storage location.
 
 To see the path of a snapshot, open the Snapshots section. Then click **Show
-details**. To copy the path, click the icon adjacent to it. The panel changes the list
-after Lanai makes, deletes or restores a snapshot. It also changes the list each time
-that the panel reads its data again.
+details**. To copy the path, click the icon adjacent to it.
+
+The panel changes the list after Lanai makes, deletes or restores a snapshot. It also
+changes the list each time that the panel reads its data again.
 
 Before you make or restore a snapshot, make sure that Windows is off in Lanai and in
 the container. Lanai disables **Take a snapshot** in these conditions, but you can see
@@ -119,7 +121,7 @@ the button:
 - There is an unfinished restore.
 - A different operation is in progress.
 
-After a restore, run Lanai setup again.
+After a restore, you must complete Lanai setup again.
 
 Each row has **Delete** and **Restore** controls.
 
@@ -210,17 +212,17 @@ restore.
 
 ### Setup in Windows
 
-In the setup window, open Lanai's setup drive in Explorer. Run `setup.cmd`. In the
-administrator prompt, give your approval as the signed-in Windows user. Setup does
+In the setup window, open Lanai's setup drive in Windows Explorer. Run `setup.cmd`. In
+the administrator prompt, give your approval as the signed-in Windows user. Setup does
 not accept an approval from a different account.
 
 The setup drive must stay read-only. Do not attach setup media that Windows can write
 to. Do not replace the files on the setup drive with files that Windows wrote.
 
 At the end of the installation in Windows, setup shuts down Windows. Wait for the end
-of this shutdown. Shut down in the panel does not give the same result.
+of this shutdown. If you click **Shut down** in the panel, the result is not the same.
 
-**Caution:** While `setup.cmd` runs, a shutdown from the panel stops setup, and then
+**Caution:** During the setup boot, a shutdown from the panel stops setup, and then
 you must select how to continue. Thus, click **Shut down** only in these conditions:
 
 - The `setup.cmd` window does not change and does not accept input.
@@ -233,34 +235,35 @@ Windows, and that Windows can read it. It stops in these conditions:
 - Windows cannot read the folder.
 - The check cannot run.
 
-If the check could not run and a security tool does not let scripts run, do these
-steps:
+If the check could not run and a security tool stops scripts, let Windows PowerShell
+run `lanai-share-check.ps1` from the setup drive.
 
-1. Let Windows PowerShell run `lanai-share-check.ps1` from the setup drive.
-2. Do one of these steps:
-   - If `setup.cmd` previously stopped at this check, do not start Windows again. From
-     the Lanai panel, shut down Windows. Then click **Set up in a basic window** or
-     **Set up in the Windows window**. Lanai then does a check of the folder on Linux.
-   - If this is the first time that `setup.cmd` stopped at this check, click
-     **Restart** in the Start menu. Then run `setup.cmd` again.
+Then, in all of these conditions, do one of these steps:
+
+- If this is the first time that `setup.cmd` stopped at this check, click **Restart**
+  in the Start menu. Then run `setup.cmd` again.
+- If `setup.cmd` also stopped at this check before this time, do not start Windows
+  again. From the Lanai panel, shut down Windows. Then click **Set up in a basic
+  window** or **Set up in the Windows window**. Lanai then does a check of the folder
+  on Linux.
 
 While a setup operation is in progress, the panel continues setup after Windows shuts
-down. If no setup operation is in progress, click **Continue setup** at the end of
-`setup.cmd`. If Windows stops during the **Verify** checks, click **Continue setup** to
-start Windows again.
+down. If no setup operation is in progress, the panel does not continue setup. In this
+condition, wait for the end of `setup.cmd`. Then click **Continue setup**. If Windows
+stops during the **Verify** checks, click **Continue setup** to start Windows again.
 
 **Verify** shows the rows Display driver, Windows agents and Scale task. Each row
-shows Not checked, Waiting, Done or Failed. This value comes only from the checks that
-ran. Windows agents shows Done only if all these checks are satisfactory:
+shows Not checked, Waiting, Done or Failed. Only the checks that ran set this value.
+Windows agents shows Done only if all these checks are satisfactory:
 
 - The SPICE agent check
 - The guest-agent clock check
 - The allow-list check.
 
 Done gives only the result of those checks at that time. It does not tell you that the
-parts continue to operate correctly. The scale row makes sure only that the task
-opened its port. It does not make sure that Windows applied the scale, or that you can
-see the desktop.
+parts continue to operate correctly. The check for the scale row makes sure only that
+the task opened its port. It does not make sure that Windows applied the scale, or that
+you can see the desktop.
 
 The scale task starts when the Windows user who ran setup signs in. Lanai cannot see
 the sign-in screen, and it cannot identify the signed-in user. If Windows tells you to
@@ -283,7 +286,7 @@ part. To do the checks again, click **Continue setup**.
 
 To install Lanai's parts in Windows again, shut down Windows. Then click **Set up in a
 basic window** or **Set up in the Windows window**. If `setup.cmd` stopped and showed
-a message in Windows, also do these steps.
+a message in Windows, do the same steps to install Lanai's parts again.
 
 The panel can tell you that an update of the display driver in Windows is necessary.
 It can also tell you that the QEMU guest agent in Windows does not have its
@@ -294,8 +297,8 @@ If a setup boot stopped before its end, the panel shows **Set up in a basic wind
 and **Set up in the Windows window**. Until the display driver is in Windows, use the
 basic window. After the installation of this driver, use the Windows window.
 
-The panel always shows **Start Windows** and **Open window**, but not in these
-conditions:
+Only in these conditions, the panel does not show **Start Windows** and **Open
+window**:
 
 - Before the end of the first setup for this location
 - During a setup boot or a boot for the **Verify** checks.
@@ -319,7 +322,7 @@ approval. It also shows this message:
 “Shutting down now stops setup. You'll choose how to continue.”
 
 If a shutdown for this boot is in progress, or you started one previously, it is not
-necessary to click again. When you click Shut down or Force stop for
+necessary to click again. When you click **Shut down** or **Force stop** for
 the first time, the panel cancels the approval that the other control waits for.
 
 Setup continues its checks when the panel is not open, and when the shell starts again.
@@ -328,12 +331,13 @@ run. The panel tells you about the end of setup only after Lanai records it for 
 disk.
 
 If an operation stops with an error or before its end, the panel tells you to continue
-or to try again. To continue, click **Continue setup**. After the shell starts again,
-this button first finds the step that setup is at.
+or to try again. Before you continue, do these steps:
 
-- If Windows operates without the setup drive, shut down Windows before you continue.
-- During the **Verify** checks, wait for the end of a shutdown before you continue
-  setup.
+- If Windows operates without the setup drive, shut down Windows.
+- During the **Verify** checks, wait for the end of a shutdown.
+
+To continue, click **Continue setup**. After the shell starts again, this button first
+finds the step that setup is at.
 
 To run setup again after its end, shut down Windows. Then open **More actions**. Click
 **Run setup again**. Select how Windows shows during setup. If you do not want to run
@@ -410,8 +414,8 @@ scale has one of these values:
 
 **Save** saves the scale only if you selected an item in the scale list after you opened
 the panel. If you clicked **Reset** after that, the selection must also be after
-**Reset**. This is also correct when you select the item that the list shows at that
-time. If you did not select an item, **Save** saves only the memory and the cores.
+**Reset**. **Save** also saves the scale when you select the item that the list shows at
+that time. If you did not select an item, **Save** saves only the memory and the cores.
 
 **Unsaved** shows that you changed a draft, or selected a scale, since Lanai saved
 your settings. The drafts stay in these conditions:
@@ -420,7 +424,8 @@ your settings. The drafts stay in these conditions:
 - You open a different section.
 - Lanai cannot save the settings.
 
-If the backend rejects the settings, Settings keeps the result.
+If the backend rejects the settings, Settings shows an error message. The message stays
+in Settings.
 
 **Reset** sets the fields of the panel to the saved values.
 After **Reset**, **Save** does not save the scale until you select a scale again.
@@ -494,7 +499,7 @@ must do a step to repair a problem, the glyph shows it first.
 
 ### Shut down and Force stop
 
-**Shut down** is available while Windows starts and while it shuts down. When you
+**Shut down** is also available while Windows starts and while it shuts down. When you
 click it, Lanai tells Windows to do a clean shutdown. The panel does not wait for the
 end of the shutdown. If Windows ignores the shutdown while it starts, click
 **Shut down** again.
@@ -518,8 +523,8 @@ its web console. Before you use it, stop Lanai's VM.
 
 In capture mode, Windows gets the mouse and the keyboard, and Omarchy's shortcuts go
 to Windows. To start capture mode, press Scroll Lock. To stop capture mode, press
-Scroll Lock again. On many laptops, Scroll Lock is Fn and a different key. Looking
-Glass shows Capture Enabled or Capture Disabled.
+Scroll Lock again. On many laptops, to get Scroll Lock, press Fn and a different key.
+Looking Glass shows Capture Enabled or Capture Disabled.
 
 When you press Scroll Lock with a different key, Looking Glass runs one of its
 commands. For example, Scroll Lock+F is the command for fullscreen. To see a list of
@@ -561,7 +566,7 @@ changes its resolution to agree with the window in these conditions:
 - The window changes to fullscreen mode.
 - The window moves to a monitor with a different scale.
 
-This is also correct after the display driver starts again.
+Windows also does this after the display driver starts again.
 
 Before you sign in, Windows cannot change the dimensions of its desktop. Thus, when
 Windows starts or starts again, it agrees with the window 15 seconds or less after
@@ -585,8 +590,8 @@ In two conditions, Windows does not agree with the window:
   screen can have flicker, or Windows can show a notice.
 
 In the two conditions, Windows keeps its previous dimensions. The Windows window makes
-the image of the desktop larger or smaller to fill the window. To repair this, resize
-the window or stop fullscreen mode.
+the image of the desktop larger or smaller. It shows all of the image in the window. To
+repair this, resize the window or stop fullscreen mode.
 
 ### Updates
 
@@ -691,9 +696,11 @@ occur 20 seconds or less after it, not 5 seconds or less. These changes are:
 - The scale for the dimensions that Lanai sets.
 
 This scale is the display scale of Windows. It is different from “Text size” in
-Windows. Windows also has custom scaling, a percentage that Windows uses only after a
-sign-out. While custom scaling is on, Windows uses it, and not the scale that
-Lanai sets. To stop custom scaling:
+Windows.
+
+Windows also has custom scaling, a percentage that Windows uses only after a sign-out.
+While custom scaling is on, Windows uses it, and not the scale that Lanai sets. To stop
+custom scaling:
 
 1. In Settings > System > Display > Scale, set custom scaling to off.
 2. Sign out.
@@ -711,7 +718,7 @@ of this program, or remove it. For example:
 - Your antivirus puts the program in quarantine.
 - Smart App Control, an App Control policy or an AppLocker policy becomes active.
 
-After this, the scale and the dimensions at sign-in do not follow Lanai. To repair
+After this, the scale and the dimensions at sign-in do not obey Lanai. To repair
 this, let the program run by its path, `C:\Program Files\Lanai\lanai-start.exe`. Do
 this in your antivirus, or in the App Control or AppLocker policy.
 
@@ -774,11 +781,12 @@ Lanai does not change these facts:
 - RDP and the web console at `127.0.0.1:8006` tell you to type the Windows password,
   because of `PROTECT: "Y"`.
 - All processes that run as your Linux user can read the saved password.
-- Lanai does not read or use the saved Windows password.
+
+Lanai does not read or use the saved Windows password.
 
 But after setup, Windows does not lock automatically, and it does not lock when you
 try to lock it. If you do not lock your Linux session and you are not at the computer,
-Windows stays open while the VM operates.
+Windows stays unlocked while the VM operates.
 
 To put the Windows window behind the Linux lock screen and prevent access to it, lock
 Linux.
@@ -845,20 +853,21 @@ While Lanai operates Windows with QEMU and no container, the four Windows plugin
 use the container show **stopped**. Lanai uses a different name, glyph and VM name:
 Lanai, the L-in-a-monitor glyph and `Lanai,process=lanai`.
 
-**Caution:** Do not start `omarchy-windows-vm` while Lanai operates Windows. The
-proofs make sure that dockur **6.05** does not start while Lanai operates Windows, and
-this is safe. While you use Lanai, do not change the Windows version, language, disk
-size or format of the container. Also do not change `CLEAR` or the ISO mounts that you
-added. At each start, Lanai examines the known paths where dockur writes before the
-boot. But a subsequent dockur version can write to paths that Lanai does not examine.
+**Caution:** While Lanai operates Windows, do not start `omarchy-windows-vm`. A
+subsequent dockur version can write to paths that Lanai does not examine. The proofs
+show that dockur **6.05** does not start while Lanai operates Windows, and this is safe.
+
+At each start, Lanai examines the known paths where dockur writes before the boot.
+While you use Lanai, do not change the Windows version, language, disk size or format
+of the container. Also do not change `CLEAR` or the ISO mounts that you added.
 
 If Lanai cannot read the settings of the container, it compares `windows.base` with
 the usual Windows 11/no-language image. It also does not do the check of the disk
 size. In this condition, the container can make the disk larger. This adds space, but
-it does not replace Windows data. Lanai rejects disk layouts that are unknown.
+it does not replace Windows data. Lanai rejects installation layouts that are unknown.
 
-The proofs ran with dockur **6.05**, and they found no problem. `lib/dockur-6.05.args`
-and the [proofs](plugin/proofs.md) record this version. We did not record the accurate
+Lanai has proofs for dockur **6.05**. `lib/dockur-6.05.args` and the
+[proofs](plugin/proofs.md) record this version. We did not record the accurate
 Omarchy build that we used for these proof sessions. **Phase 8 must record it before the
 release.**
 
@@ -874,7 +883,7 @@ the shutdown in the time limit, the next start tells you about the forced stop.
 **Phase 8 must measure the time of a clean Windows shutdown with Lanai on John's
 computer, when it reboots. This measurement has no result at this time.**
 
-In the previous proof 4 sessions, Windows had no work to do. Its shutdown continued
+In the previous sessions of proof 4, Windows had no work to do. Its shutdown continued
 for 7 seconds when the computer rebooted, and for 11 to 13 seconds at a logout. These
 times do not replace the phase 8 measurement.
 
@@ -885,8 +894,8 @@ times do not replace the phase 8 measurement.
    setup before its end, click **Shut down** in the panel. Then click it again to give
    your approval.
 
-   **Caution:** At its timeout, the command that follows can do a forced stop. In this
-   condition, Windows does not keep the work that you did not save.
+   **Caution:** If the command that follows continues until its timeout, it can do a
+   forced stop. In this condition, Windows does not keep the work that you did not save.
 
    Then stop Lanai's VM with this Linux command. You can also use this command without
    the plugin. It waits for the shutdown.
@@ -921,9 +930,9 @@ times do not replace the phase 8 measurement.
 
 3. Before you remove the plugin, remove the other changes in Windows.
 
-   If no other workflow uses the Looking Glass IDD and the QEMU guest agent, uninstall
-   them in Installed apps. When you uninstall qemu-ga, this also removes Lanai's
-   clock-only service configuration,
+   If no other workflow uses the display driver and the QEMU guest agent, uninstall them
+   in Installed apps. The display driver is Looking Glass IDD. When you uninstall the
+   QEMU guest agent, you also remove Lanai's clock-only service configuration,
    `--allow-rpcs=guest-sync,guest-sync-delimited,guest-set-time`. Setup did not save
    the previous service configuration.
 
@@ -935,7 +944,7 @@ times do not replace the phase 8 measurement.
    setup, the commands that follow also remove it. Setup did not save its previous
    settings.
 
-   From the administrator prompt, remove Lanai's scale task and virtiofs service:
+   From the administrator Command Prompt, remove Lanai's scale task and virtiofs service:
 
    ```bat
    schtasks /End /TN "Lanai display scale"
@@ -975,10 +984,11 @@ times do not replace the phase 8 measurement.
 
    If no virtiofs workflow uses WinFsp or this driver, do these steps:
 
-   - Uninstall WinFsp in Installed apps.
-   - **Caution:** Before you select the removal of the driver, make sure that no other
-     device uses the driver. A different virtiofs workflow can use this driver.
-   - Uninstall the VirtIO FS device and its driver in Device Manager.
+   1. Uninstall WinFsp in Installed apps.
+   2. **Caution:** Before you select the removal of the driver, make sure that no other
+      device uses the driver. A different virtiofs workflow can use this driver.
+
+      Uninstall the VirtIO FS device and its driver in Device Manager.
 
    The RDP connection of the container and its usual file share can operate without
    Lanai's virtiofs service and scale task.
@@ -987,7 +997,7 @@ times do not replace the phase 8 measurement.
    **HostFission** signing certificate that setup added. This removes the permission
    to install all drivers that HostFission signs with no publisher prompt.
 
-   As an alternative, do these steps from the administrator prompt:
+   As an alternative, do these steps from the administrator Command Prompt:
 
    1. Run `certutil -store TrustedPublisher`.
    2. Find the certificate with a Subject that names HostFission.
