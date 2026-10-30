@@ -1,8 +1,9 @@
 # Lanai user guide
 
-The [README](../README.md) has what you need to get going. This guide has the
-detail: each setup step, snapshots, the panel, the Windows window, what setup
-changes in Windows, and the full removal steps.
+The [README](../README.md) tells you how to start. This guide gives more
+information about each setup step, snapshots, the panel and the Windows window. It
+also tells you about the changes that setup makes in Windows, and it gives the full
+removal steps.
 
 - [Install and setup](#install-and-setup)
   - [Setup steps](#setup-steps)
@@ -23,169 +24,311 @@ changes in Windows, and the full removal steps.
 
 ## Install and setup
 
-The README lists the [requirements](../README.md#requirements) and the
-[install command](../README.md#install). The plugin will need manual setup and a
-maintainer review before it joins the marketplace.
+The README gives the [necessary conditions](../README.md#requirements) and the
+[command that installs Lanai](../README.md#install). Before the plugin can go into the
+marketplace, a manual setup and an inspection by a maintainer are necessary.
 
-Without a `storage` setting in
-`${XDG_CONFIG_HOME:-$HOME/.config}/lanai/settings.json`, Lanai uses `~/.windows`.
-Memory and cores are optional; setup seeds them from the container's settings when
-readable, otherwise from half the host's memory (at most 16 GiB) and half its CPU
-threads (at most 8).
+If `${XDG_CONFIG_HOME:-$HOME/.config}/lanai/settings.json` has no `storage` value,
+Lanai uses `~/.windows`. The values for memory and cores in this file are optional. If
+the file does not have these values, setup gives them initial values. If Lanai can
+read the settings of the container, setup uses the values of the container. If Lanai
+cannot read these settings, setup uses these values:
+
+- For memory, half the memory of the host, to a maximum of 16 GiB
+- For cores, half the CPU threads of the host, to a maximum of 8.
 
 ### Setup steps
 
-Left-click Lanai's L-in-a-monitor glyph to open the panel, then click **Continue setup**.
-The panel shows Step N of 6: Check, Packages, Snapshot, Prepare, Drivers and
-Verify. Prepare covers storage preparation and building the pinned client.
-Drivers covers the Windows install, then Verify checks the result. Completion
-returns to the daily header. At the package step, **Install in a terminal** opens
-a terminal which shows the exact install command before the normal package-manager
-password prompt. Nothing else in Lanai escalates. Dependencies are listed in
-[`LANAI_HOST_PACKAGES`](../lib/client.sh): QEMU and its GTK/SPICE/device modules,
-virtiofsd, passt, socat, jq, Python, diffutils and the Looking Glass build libraries
-and tools. Files Lanai downloads itself are pinned with SHA-256 in
-[`lib/pins.sh`](../lib/pins.sh); the client and IDD use the same build.
+To open the panel, left-click Lanai's glyph. The glyph is an L in a monitor. Then
+click **Continue setup**.
+
+The panel shows Step N of 6: Check, Packages, Snapshot, Prepare, Drivers and Verify.
+In **Prepare**, Lanai prepares the storage and builds the pinned client. **Drivers**
+includes the installation in Windows. Then **Verify** does a check of the result. At
+the end of setup, the panel changes to its usual header.
+
+In **Packages**, **Install in a terminal** opens a terminal. The terminal shows the
+accurate command that installs the packages. Then it shows the usual password prompt
+for pacman. No other part of Lanai gets administrator access.
+
+[`LANAI_HOST_PACKAGES`](../lib/client.sh) has the list of the dependencies:
+
+- QEMU and its GTK, SPICE and device modules
+- Python, virtiofsd, passt, socat, jq and diffutils
+- The Looking Glass build libraries and tools.
+
+Lanai downloads some files directly. [`lib/pins.sh`](../lib/pins.sh) pins each of
+these files with a SHA-256 hash. The client and the IDD use the same build.
 
 ### Snapshots
 
-Accept the snapshot offer before the first boot, or make a backup and explicitly
-continue without a snapshot. A snapshot shares disk blocks, takes little space
-initially and grows as Windows changes. After a snapshot, expand Snapshots and
-choose **Show details** to see its path and copy it with the icon beside it.
-The list updates after each snapshot, delete or restore job, and whenever the
-panel refreshes. If the filesystem cannot make a snapshot,
-the setup offer explains that you need a backup before continuing without one.
-Either **Take a snapshot** button asks for an optional name first: it opens
-**Snapshot name (optional)** and becomes **Save snapshot**. Save snapshot, or
-Enter in the field, takes the snapshot. A held Enter key does not submit.
-**Cancel** or Escape closes the field
-and keeps your text for next time; a second Escape closes the panel. From a
-terminal, use
-`~/.config/omarchy/plugins/io.github.jzetterman.lanai/bin/lanai snapshot "<name>"`.
-Leave the name empty for a snapshot with no name. A name is one line of up to 64
-characters, with no `<`, `>`, control or invisible characters. Only ordinary
-spaces may separate words.
-Lanai trims spaces and line breaks at the ends of a name. If Lanai refuses a
-name, the reason shows below the field and your text stays there to fix. If
-you closed the panel before the refusal came back, the field opens again with
-it. You set a name only when you take the snapshot. The UTC time stays each
-snapshot's identity and folder name, so two snapshots can share a name, and Restore and
-Delete always use the time. Snapshots show newest first, with readable dates
-and times marked UTC. A saved name shows above its date. When two snapshots
-share a name in the same minute, their times show seconds. Each row has
-**Delete** and **Restore** actions. The count
-includes only valid snapshots for this storage location. Restoring asks you to
-confirm the snapshot you chose with **Restore now** and warns that later
-changes will be lost. Deleting asks you to confirm with **Delete snapshot**
-and leaves Windows as it is.
-The **Cancel** under the row clears either confirmation. A confirming click
-counts only after a short pause, so holding a key cannot arm and confirm in
-one press. A deleted snapshot
-leaves the list, with no separate message. You can delete a snapshot while
-Windows runs or while another VM uses it. Deletion is unavailable while another
-operation runs or a restore is unfinished.
-Snapshot and restore show their actual phase and measured percentage, also when
-you open the panel partway through or start from the CLI. Work with no measured
-total shows a busy indicator. A restore names its target above the controls. An
-unfinished restore keeps that name when its record is valid; otherwise it shows
-a generic restore label. You can close the panel during a snapshot. Keep Windows
-stopped until a restore finishes.
-Lanai blocks Start while a restore is unfinished. Use **Finish the unfinished
-restore** to resume it, or restore another saved snapshot to start over.
-When restore work stops unfinished, the panel opens Snapshots to show these actions.
-It tries the Lanai data directory's `snapshots/`, then
-`<storage>.lanai-snapshots/` on the storage filesystem. Both VMs must be stopped for
-snapshot or restore. **Take a snapshot** stays visible but is disabled while Windows
-runs, another VM uses the install, a restore is pending, or an operation is busy.
-Before a new snapshot, Lanai removes interrupted snapshot
-folders whose recorded storage location matches this install, freeing their shared
-blocks. Other locations and folders with no recorded location are left alone.
-A restore requires running Lanai setup again.
-Each operation clones first and reads the image once, then proves its shared
-btrfs extents stayed unchanged. Plain, compressed, NOCOW and preallocated
-unwritten extents are supported; other filesystems or unprovable extent classes
-fall back to backup advice. This detects ordinary writes and interruptions;
-deliberate re-cloning or reference juggling by another process running as your
-user is outside the proof, including substitution of compressed extent slices.
-An existing disk keeps its locked inode during restore. If dockur already deleted
-the disk, Lanai publishes its locked clone and verified boot files before reading
-it. An unfinished restore can be retried with the same snapshot or replaced
-with another saved snapshot. If the snapshot's image is damaged, restore another
-snapshot by name. A failed check before the disk is put
-in place removes the temporary files. Windows is unchanged only when there was
-no earlier unfinished restore.
+Setup lets you make a snapshot before the first boot. Accept this snapshot. As an
+alternative, make a backup. Then tell setup to continue without a snapshot. If the
+filesystem cannot make a snapshot, setup tells you that a backup is necessary before
+you continue without a snapshot.
+
+A snapshot uses the same disk blocks as the Windows disk. At first, it uses a small
+quantity of space. When Windows changes, the snapshot becomes larger.
+
+To see the path of a snapshot, expand the Snapshots section. Then click **Show
+details**. To copy the path, click the icon adjacent to it. The panel updates the list
+after Lanai makes, deletes or restores a snapshot. It also updates the list each time
+that the panel reads its data again.
+
+Each **Take a snapshot** button first opens the field **Snapshot name (optional)**,
+where you can type a name. The button then changes to **Save snapshot**.
+
+- To make the snapshot, click **Save snapshot** or press Enter in the field.
+- To close the field, click **Cancel** or press Escape. The panel keeps your text for
+  the next time.
+- To close the panel, press Escape a second time.
+- To make a snapshot from a terminal, run
+  `~/.config/omarchy/plugins/io.github.jzetterman.lanai/bin/lanai snapshot "<name>"`.
+- For a snapshot with no name, keep the name empty.
+
+A held Enter key does not send the name.
+
+A snapshot name has these limits:
+
+- It is one line, with a maximum of 64 characters.
+- It has no `<` or `>` characters, no control characters and no characters that you
+  cannot see.
+- It can have the usual space character, but no other space characters.
+- Lanai removes spaces and new-line characters at the start and at the end of a name.
+
+If Lanai rejects a name, the panel shows the cause below the field. Your text stays in
+the field, where you can correct it. If you closed the panel before this message came,
+the field opens again and shows the message.
+
+You can give a name to a snapshot only when you make it. Lanai always identifies a
+snapshot by its UTC time, and this time is also the name of its folder. Thus, two
+snapshots can have the same name. When you restore or delete a snapshot, Lanai always
+uses the time.
+
+The list shows the newest snapshot first. Its dates and times are easy to read, and
+each time shows UTC. The panel shows the name of a snapshot above its date. If two
+snapshots with the same name have the same minute, their times also show the seconds.
+The panel counts only the correct snapshots for this storage location.
+
+Each row has **Delete** and **Restore** controls.
+
+**Caution:** When you restore a snapshot, Windows does not keep the changes that
+occurred after that snapshot.
+
+- To restore a snapshot, click its restore control. The panel tells you about this
+  risk. To give your approval for the snapshot that you selected, click **Restore
+  now**.
+- To delete a snapshot, click its delete control. To give your approval, click
+  **Delete snapshot**. Windows does not change.
+- To stop before you give your approval, click **Cancel** below the row.
+
+The panel accepts your approval only after a short time. Thus, a held key cannot
+select the control and give the approval at the same time. When Lanai deletes a
+snapshot, the panel removes it from the list and shows no other message.
+
+You can delete a snapshot while Windows runs, or while a different VM uses the Windows
+installation. You cannot delete a snapshot while a different operation runs, or while
+there is an unfinished restore.
+
+During a snapshot or a restore, the panel shows the phase in progress and its measured
+percentage. It also shows them when you open the panel during the work, or when you
+start the work from the CLI. If a part of the work has no measured total, the panel
+shows a busy indicator.
+
+During a restore, the panel identifies the snapshot above the controls. For an
+unfinished restore, it also identifies the snapshot if the record of the restore is
+correct. If the record is not correct, it shows a general text for the restore.
+
+You can close the panel during a snapshot. Do not start Windows until the end of a
+restore.
+
+While there is an unfinished restore, Lanai does not let you start Windows. To
+continue the restore, click **Finish the unfinished restore**. To start again, restore
+a different saved snapshot. If a restore stops before its end, the panel opens the
+Snapshots section to show these controls.
+
+Lanai first tries to keep snapshots in `snapshots/` in the Lanai data directory. If
+this is not possible, it tries `<storage>.lanai-snapshots/` on the storage filesystem.
+
+Before a snapshot or a restore, make sure that the two VMs are off. Lanai disables
+**Take a snapshot** in these conditions, but you can see the button:
+
+- Windows runs.
+- A different VM uses the Windows installation.
+- There is an unfinished restore.
+- A different operation is in progress.
+
+Before Lanai makes a new snapshot, it removes the folders of snapshots that stopped
+before their end. It removes a folder only if the recorded storage location of the
+folder is the storage location of this installation. This releases the disk blocks
+that these folders and the Windows disk use together. Lanai does not change the
+folders of other locations, or folders that have no recorded location.
+
+After a restore, it is necessary to run Lanai setup again.
+
+In each operation, Lanai first makes a clone and reads the image one time. Then it
+makes sure that the btrfs extents that the clone and the image use together did not
+change. This check is possible for these types of extents:
+
+- Regular extents
+- Compressed extents
+- NOCOW extents
+- Preallocated unwritten extents.
+
+For other filesystems and other types of extents, Lanai tells you to make a backup.
+
+This check finds usual writes to the image. It also finds an operation that stopped
+before its end. But the check cannot find these changes when a different process that
+uses your user account tries to make them:
+
+- A new clone of the extents
+- Changes to the extent references
+- Slices of compressed extents that the process replaces.
+
+If the disk is there, it keeps its locked inode during the restore. If dockur deleted
+the disk before the restore, Lanai first puts these items in their positions:
+
+- Its locked clone of the disk
+- The boot files, after it makes sure that they are correct.
+
+Then Lanai reads the clone.
+
+You can try an unfinished restore again with the same snapshot. You can also replace
+it with a different saved snapshot. If the image of a snapshot has damage, restore a
+different snapshot by its name. If a check finds a problem before Lanai puts the disk
+in its position, Lanai removes the temporary files. Windows stays the same only if
+there was no previous unfinished restore.
 
 ### Setup in Windows
 
-In the setup window, open Lanai's setup drive in Explorer and run `setup.cmd`. Approve
-the administrator prompt as the same Windows user; approval as a different account
-is refused. The setup drive must stay **read-only**: do not attach writable setup
-media or substitute files written by Windows. Setup shuts Windows down when the guest
-install finishes. Let that shutdown finish; Shut down from the panel does not count.
-Use Shut down only if setup.cmd stops responding, or when its shared-folder check
-tells you to.
-setup.cmd checks that the shared folder from Linux appears in Windows as a drive it
-can read. It stops if the folder did not appear, if Windows could not read it, or if
-the check could not run. When the check could not run and a security tool blocks
-scripts, allow Windows PowerShell to run `lanai-share-check.ps1` from the setup
-drive. Then restart Windows from the Start menu and run setup.cmd again. If
-setup.cmd stopped at this check before, shut Windows down from the Lanai panel
-instead, then click **Set up in a basic window** or **Set up in the Windows window**.
-Lanai then checks the folder on Linux.
-When a setup operation is running, the panel continues setup after Windows shuts
-down. Otherwise, click **Continue setup** when the setup script finishes. If Windows
-stops during the final checks, click **Continue setup** to start it again.
-Verify lists Display driver, Windows agents and Scale task. Each row shows Not
-checked, Waiting, Done or Failed from the checks that actually ran. Windows agents
-is Done only after the SPICE agent, guest-agent clock and allow-list checks all
-pass. Done describes that attempt, rather than continuous health. The scale row
-checks that the task opened its port; it does not prove applied scale or a visible
-desktop.
-The scale task starts when the Windows user who ran setup signs in. Lanai cannot
-see the sign-in screen or identify the signed-in user. If Windows asks for a
-password, sign in as the user who ran setup. While setup waits for the scale task,
-the panel shows the remaining sign-in duration from the backend deadline. The
-limit defaults to 2 minutes and follows the setup worker's recorded
-`LANAI_SETUP_SCALE_LIMIT` when overridden, even if the panel's environment differs.
-Reopening the panel, restarting the shell or restarting Windows does not reset
-it. Missing or invalid timing shows no countdown. Continue setup after a stop
-starts fresh checks and a fresh scale wait when they pass. If a part does not
-answer in time, setup stops and the panel names it. Click **Continue setup** to
-check again. To install Lanai's parts in Windows again, shut Windows down, then
-click **Set up in a basic window** or **Set up in the Windows window**. Do this too if setup.cmd stopped with a
-message in Windows. When the panel says the display driver in Windows needs an update, or the
-QEMU guest agent in Windows is missing its allow-list, shut Windows down, then click
-**Continue setup** to set up Windows again.
-If a setup boot stopped unfinished, the panel shows both **Set up in a basic window**
-and **Set up in the Windows window**. Use the basic window until the Lanai display
-driver is installed, and the Windows window afterward. **Start Windows** and **Open window**
-are hidden only before first-time setup finishes for this location or while a setup
-boot or final check boot is running. Lanai starts Windows and opens its window itself
-for those boots. A working install keeps those controls when a client or driver
-update or an unfinished setup round is pending. Setup shows the pending step beside
-them. When the usual controls are hidden and the Windows window closes, use
-**Reopen the Windows window** in Setup.
-**Snapshots** is hidden while Windows runs during setup and returns when Windows is
-off. Settings stay available. The setup card uses
-your theme's accent color when it needs you to act and clears the highlight while
-Lanai works by itself. Its inset stays the same. During the setup boot, **Shut down**
-asks for a second click:
-“Shutting down now stops setup. You'll choose how to continue.” A shutdown already
-requested for this boot or in progress needs no further confirmation. Arming Shut
-down or Force stop clears the other confirmation. Once setup finishes,
-the usual controls return. Setup keeps checking while the panel is closed or the shell restarts.
-Reopening the panel shows the current step and any running operation. The panel says
-setup is finished only when Lanai has recorded its completion for this disk.
-A failed or interrupted operation asks you to continue or retry. Click **Continue setup**
-to go on. After a shell restart, that button checks where setup stands.
-If Windows is running without the setup drive, shut it down before continuing.
-During the final checks, wait for any shutdown to finish before continuing setup.
-To run setup again after it finishes, shut Windows down, open **More actions**
-and click **Run setup again**.
-Choose how Windows should show during setup, or click **Cancel** to return.
-A restore's success note stays until the next snapshot action; the Setup section
-shows whether setup still needs to finish.
+In the setup window, open Lanai's setup drive in Explorer. Run `setup.cmd`. In the
+administrator prompt, give your approval with the account of the same Windows user.
+Setup does not accept an approval from a different account.
+
+The setup drive must stay read-only. Do not attach setup media that Windows can write
+to. Do not replace the files on the setup drive with files that Windows wrote.
+
+At the end of the installation in Windows, setup shuts down Windows. Wait for the end
+of this shutdown. Shut down in the panel does not give the same result.
+
+**Caution:** While setup.cmd runs, click **Shut down** only if setup.cmd does not
+continue or its shared-folder check tells you to click it. A shutdown from the panel
+stops setup, and then you must select how to continue.
+
+setup.cmd makes sure that the shared folder from Linux is a drive in Windows, and that
+Windows can read it. It stops in these conditions:
+
+- Windows does not show the folder.
+- Windows cannot read the folder.
+- The check cannot run.
+
+If the check could not run and a security tool does not let scripts run, do these
+steps:
+
+1. Let Windows PowerShell run `lanai-share-check.ps1` from the setup drive.
+2. Restart Windows from the Start menu.
+3. Run setup.cmd again.
+
+If setup.cmd stopped at this check before, do not restart Windows. From the Lanai
+panel, shut down Windows. Then click **Set up in a basic window** or **Set up in the
+Windows window**. Lanai then does a check of the folder on Linux.
+
+While a setup operation runs, the panel continues setup after Windows shuts down. If
+no setup operation runs, click **Continue setup** at the end of the setup script. If
+Windows stops during the last checks, click **Continue setup** to start Windows again.
+
+**Verify** shows the rows Display driver, Windows agents and Scale task. Each row
+shows Not checked, Waiting, Done or Failed. This value comes only from the checks that
+ran. Windows agents shows Done only if all these checks are satisfactory:
+
+- The SPICE agent check
+- The guest-agent clock check
+- The allow-list check.
+
+Done gives only the result of those checks at that time. It does not tell you that the
+parts continue to operate correctly. The scale row makes sure only that the task
+opened its port. It does not make sure that Windows applied the scale, or that you can
+see the desktop.
+
+The scale task starts when the Windows user who ran setup signs in. Lanai cannot see
+the sign-in screen, and it cannot identify the signed-in user. If Windows tells you to
+type a password, sign in with the account of the user who ran setup.
+
+While setup waits for the scale task, the panel shows a countdown of the remaining
+time for the sign-in. The countdown uses the time limit that the backend records. The
+default limit is 2 minutes. If `LANAI_SETUP_SCALE_LIMIT` changes the limit, the setup
+worker records this value. The panel uses this recorded value, also when the
+environment variable of the panel has a different value.
+
+The countdown does not start again when you open the panel again, or when the shell or
+Windows restarts. If the time data is missing or not correct, the panel shows no
+countdown.
+
+If you continue setup after it stops, Lanai does the checks again. If they are
+satisfactory, Lanai waits for the scale task again, with a new countdown. If a part
+does not give a result in the time limit, setup stops, and the panel identifies the
+part. To do the checks again, click **Continue setup**.
+
+To install Lanai's parts in Windows again, shut down Windows. Then click **Set up in a
+basic window** or **Set up in the Windows window**. Also do these steps if setup.cmd
+stopped and showed a message in Windows.
+
+The panel can tell you that an update of the display driver in Windows is necessary.
+It can also tell you that the QEMU guest agent in Windows does not have its
+allow-list. In these conditions, shut down Windows. Then click **Continue setup** to
+prepare Windows again.
+
+If a setup boot stopped before its end, the panel shows **Set up in a basic window**
+and **Set up in the Windows window**. Until the Lanai display driver is in Windows,
+use the basic window. After the installation of this driver, use the Windows window.
+
+The panel always shows **Start Windows** and **Open window**, but not in these
+conditions:
+
+- Before the end of the first setup for this location
+- During a setup boot or a boot for the last checks.
+
+For these boots, Lanai starts Windows and opens its window automatically. After the
+first setup, the panel keeps these controls when an update of the client or the driver
+waits, or when setup must continue. Setup shows the step that waits, adjacent to these
+controls. If the panel does not show the usual controls and the Windows window closes,
+click **Reopen the Windows window** in the Setup section. At the end of setup, the
+panel shows the usual controls again.
+
+While Windows runs during setup, the panel does not show **Snapshots**. When Windows
+is off, the panel shows it again. The Settings section stays available.
+
+When you must do something, the setup card uses the accent color of your theme. While
+Lanai does work automatically, the card does not use this color. The inset of the card
+stays the same.
+
+During the setup boot, **Shut down** tells you to click it again to give your
+approval. It also shows this message:
+“Shutting down now stops setup. You'll choose how to continue.”
+
+If a shutdown for this boot is in progress, or you started one before, it is not
+necessary to click again. When you click Shut down or Force stop for
+the first time, the panel cancels the approval that the other control waits for.
+
+Setup continues its checks when the panel is not open, and when the shell restarts.
+When you open the panel again, it shows the step in progress and the operations that
+run. The panel tells you about the end of setup only after Lanai records it for this
+disk.
+
+If an operation stops with an error or before its end, the panel tells you to continue
+or to try again. To continue, click **Continue setup**. After the shell restarts, this
+button first finds the step that setup is at.
+
+- If Windows runs without the setup drive, shut down Windows before you continue.
+- During the last checks, wait for the end of a shutdown before you continue setup.
+
+To run setup again after its end, shut down Windows. Then open **More actions**. Click
+**Run setup again**. Select how Windows shows during setup. If you do not want to run
+setup again, click **Cancel**.
+
+When a restore is satisfactory, the panel shows a message. The message stays until you
+make, restore or delete a snapshot again. The Setup section tells you if setup must
+continue.
 
 ## Daily use
 
