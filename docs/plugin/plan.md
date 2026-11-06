@@ -2200,6 +2200,13 @@ spec, plan and review gates before it is built.
   client rebuild runs on Linux, and Windows may be off), how Lanai would drive a
   window in Windows (requirement 27's trust limits apply), and which panel
   messages still need words.
+- **Keep the last client log.** John's call (2026-11-06): each window open
+  overwrites `$RUN/client.log` (`client_exec` in `lib/client.sh`), and each VM
+  start empties it (`lib/vm.sh`), so reopening a stuck window or restarting
+  Windows wipes the log of the session that froze. Seen that day: after a night
+  idle, Windows sent no frames (the client sat at its splash screen) until a
+  restart, and the frozen session's log was already gone. Wanted: at both points,
+  move a non-empty old log to `$RUN/client.log.1` first, keeping one previous log.
 
 ## Follow-on: live scale (John, 2026-10-10)
 
