@@ -172,3 +172,4 @@ Write these first and watch them fail:
 | doc | b single (opus-5.5) | 3 | 7 nits, no blocker or should-fix: gate closed. Integrated: the tool's own error line before Lanai's; requirement 3 wording; two more race outcomes named; the dead `rm` dropped; no fd 3 in the inode test; plan.md wording. John's call on the last: skip timeout-only logs |
 | diff | a (gpt-6.1-sol) | 1 | clean, no findings (0 refuted, 0 downgraded to nit) |
 | diff | b single (opus-5.5) | 1 | 1 test gap, 5 nits, 1 informational (0 refuted, 0 downgraded to nit); nits-only stop. Integrated: a dangling-link test at `.1` (proved by mutation), comment fixes in `lib/client.sh` and `lib/vm.sh`, the follow-on bullet marked built |
+| diff | a (gpt-6.1-sol) | 2 | rerun on the final diff: clean, no findings (0 refuted, 0 downgraded to nit). Gate closed |
