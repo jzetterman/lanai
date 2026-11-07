@@ -613,9 +613,12 @@ diagnostics in Lanai’s state directory as
 `panel-run.log` and `panel-job.log`. The panel labels these as the Actions log
 and the Jobs log. Rapid repeated clicks keep the first
 launch pending. Other controls preserve a failed launch notice until the next
-setup, snapshot, restore or update starts. The Windows window log has its own
-path, and so does the Windows window build log, `build-client.log` in Lanai’s
-state directory; the Windows VM log is in your user journal, under lanai-vm.
+setup, snapshot, restore or update starts. The Windows window log is
+`$XDG_RUNTIME_DIR/lanai/client.log`; Lanai keeps the end (up to 16 MiB) of the
+last three logs beside it as `client.log.1` to `.3`, newest first, until you
+log out or the host restarts. The Windows window build log is
+`build-client.log` in Lanai’s state directory; the Windows VM log is in your
+user journal, under lanai-vm.
 
 Lanai is MIT licensed (see [LICENSE](LICENSE)), except the patches to the
 Looking Glass client in `patches/looking-glass/`. Those carry Looking Glass's

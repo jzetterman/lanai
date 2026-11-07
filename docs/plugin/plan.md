@@ -2205,8 +2205,9 @@ spec, plan and review gates before it is built.
   start empties it (`lib/vm.sh`), so reopening a stuck window or restarting
   Windows wipes the log of the session that froze. Seen that day: after a night
   idle, Windows sent no frames (the client sat at its splash screen) until a
-  restart, and the frozen session's log was already gone. Wanted: at both points,
-  move a non-empty old log to `$RUN/client.log.1` first, keeping one previous log.
+  restart, and the frozen session's log was already gone. Wanted: at all three
+  points, copy a non-empty old log to `$RUN/client.log.1` first, keeping three
+  previous logs. See `docs/plugin/client-log/plan.md`.
 
 ## Follow-on: live scale (John, 2026-10-10)
 

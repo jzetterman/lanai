@@ -1006,6 +1006,7 @@ start_exec() {
   assert [ ! -e "$RUN/scale-monitor" ]
   assert [ ! -e "$RUN/ivshmem" ]
   assert [ ! -s "$RUN/client.log" ]
+  assert_equal "$(<"$RUN/client.log.1")" "old client log"
   assert [ ! -e "$RUN/step6-checked" ]
   assert_equal "$(stat -c %a "$RUN")" 700
   # QEMU runs as the unit's main process, with the arguments vm_args builds.
@@ -1034,6 +1035,35 @@ start_exec() {
   assert_line --index 1 --partial "--mode=delay"
   assert_line --partial "lanai-vm-helper"
   assert_line shutdown-watch
+}
+
+@test "lanai-vm-exec: an empty client log leaves the previous kept log alone" {
+  exec_shims
+  mkdir -m 700 "$RUN"
+  : >"$RUN/client.log"
+  echo previous >"$RUN/client.log.1"
+  mkdir -p "$S"
+  echo '{"scale": 150, "scale_save": 7, "setup": false}' >"$S/boot.json"
+  start_exec
+  wait_for_file "$T/qemu.args" "QEMU never started: $(cat "$T/exec.out")"
+  assert [ ! -s "$RUN/client.log" ]
+  assert_equal "$(<"$RUN/client.log.1")" previous
+}
+
+@test "lanai-vm-exec: a failed keep still starts QEMU and empties client.log" {
+  exec_shims
+  mkdir -m 700 "$RUN"
+  echo old >"$RUN/client.log"
+  echo blocked >"$RUN/client.log.2"
+  mkdir "$RUN/client.log.3"
+  mkdir -p "$S"
+  echo '{"scale": 150, "scale_save": 7, "setup": false}' >"$S/boot.json"
+  start_exec
+  wait_for_file "$T/qemu.args" "QEMU never started: $(cat "$T/exec.out")"
+  assert [ ! -s "$RUN/client.log" ]
+  run cat "$T/exec.out"
+  assert_line "lanai: could not keep the old Windows window log in $RUN"
+  assert [ -s "$T/qemu.args" ]
 }
 
 @test "lanai-vm-exec: a window setup boot attaches the media and exports WAYLAND_DISPLAY" {

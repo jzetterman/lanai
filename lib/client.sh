@@ -15,6 +15,7 @@ LANAI_CLIENT_UNIT=lanai-client.service
 # mean the IDD is missing.
 LANAI_CLIENT_WAIT=${LANAI_CLIENT_WAIT:-60}
 LANAI_IDD_WAIT=30
+LANAI_CLIENT_LOG_KEEP=16777216
 
 # The Looking Glass client patches (patches/looking-glass/NNNN-*.patch, GPL;
 # COPYING beside them) are kept with the plugin. Tests may point this at a
@@ -370,13 +371,41 @@ client_wait() {
   done
 }
 
+# Keep a bounded copy of the previous client log, shifting the older copies.
+client_log_keep() {
+  local run=$1 log=$1/client.log first=""
+  [[ ! -L $log && -f $log && -s $log ]] || return 0
+  IFS= read -r first <"$log" || true
+  [[ $first != "$LANAI_CLIENT_TIMEOUT"* ]] || return 0
+  if [[ -e $run/client.log.2 || -L $run/client.log.2 ]]; then
+    mv -fT -- "$run/client.log.2" "$run/client.log.3" || {
+      echo "lanai: could not keep the old Windows window log in $run" >&2
+      return 0
+    }
+  fi
+  if [[ -e $run/client.log.1 || -L $run/client.log.1 ]]; then
+    mv -fT -- "$run/client.log.1" "$run/client.log.2" || {
+      echo "lanai: could not keep the old Windows window log in $run" >&2
+      return 0
+    }
+  fi
+  tail -c "$LANAI_CLIENT_LOG_KEEP" -- "$log" >"$run/client.log.1" || {
+    echo "lanai: could not keep the old Windows window log in $run" >&2
+    return 0
+  }
+  touch -r "$log" -- "$run/client.log.1" || {
+    echo "lanai: could not keep the old Windows window log in $run" >&2
+    return 0
+  }
+}
+
 # lanai-client-exec <client>, the ExecStart of lanai-client.service: wait
 # for QEMU (client_wait on qmp-cli.sock, up to LANAI_CLIENT_WAIT seconds),
-# check $RUN, then start client.log afresh with the start line and exec the
-# client, its output appended to the log. QEMU creates the shared memory
-# before it answers any command, so the client never opens a stale ivshmem.
-# On a timeout the message goes to the journal and, as the log's only line,
-# to client.log, where lanai status reads it.
+# check $RUN, keep the old log, then start client.log afresh with the start
+# line and exec the client, its output appended to the log. QEMU creates the
+# shared memory before it answers any command, so the client never opens a
+# stale ivshmem. On a timeout the message goes to the journal and, as the
+# log's only line, to client.log, where lanai status reads it.
 client_exec() {
   local client=$1 run log problem msg
   local -a args
@@ -393,6 +422,7 @@ client_exec() {
     # never creates it (the VM does); ! -L, so the log is never written
     # through a symlink.
     if [[ -d $run && ! -L $run ]] && run_dir_check >/dev/null; then
+      client_log_keep "$run"
       printf '%s\n' "$msg" >"$log"
     fi
     return 1
@@ -402,9 +432,10 @@ client_exec() {
     return 1
   }
   mapfile -t args < <(client_args "$run")
+  client_log_keep "$run"
   printf '%s %s\n' "$LANAI_CLIENT_START" "$EPOCHSECONDS" >"$log"
-  # Appending keeps the log whole when lanai-vm-exec empties it at the next
-  # VM start while this client still runs.
+  # Appending keeps the client on the same inode when lanai-vm-exec keeps a
+  # copy and empties client.log at the next VM start.
   exec "$client" "${args[@]}" >>"$log" 2>&1
 }
 
