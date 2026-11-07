@@ -960,11 +960,10 @@ vm_plan() {
 # <state>/boot.json, builds QEMU's arguments with vm_plan, removes stale
 # sockets, run stamps and shared memory, keeps the previous client log before
 # emptying client.log, then starts the helpers in the background (in the
-# unit's cgroup;
-# systemd stops them after ExecStop): virtiofsd once, the others under
-# supervise. It waits for virtiofsd's fresh socket, writes the "running"
-# marker with $INVOCATION_ID, and execs QEMU. Only for a boot that shows
-# QEMU's window does QEMU get WAYLAND_DISPLAY, from boot.json (the user
+# unit's cgroup; systemd stops them after ExecStop): virtiofsd once, the
+# others under supervise. It waits for virtiofsd's fresh socket, writes the
+# "running" marker with $INVOCATION_ID, and execs QEMU. Only for a boot that
+# shows QEMU's window does QEMU get WAYLAND_DISPLAY, from boot.json (the user
 # manager may lack it). Prints why and fails on any problem, before QEMU
 # starts.
 vm_exec() {

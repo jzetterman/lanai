@@ -341,6 +341,18 @@ EOF
   assert_equal "$(<"$T/external.log")" external
 }
 
+@test "client_log_keep: shifts a dangling symlink at .1 and never creates its target" {
+  mkdir -m 700 "$RUN"
+  ln -s "$T/missing.log" "$RUN/client.log.1"
+  echo current >"$RUN/client.log"
+  client_log_keep "$RUN"
+  assert [ -L "$RUN/client.log.2" ]
+  assert_equal "$(readlink "$RUN/client.log.2")" "$T/missing.log"
+  assert [ ! -L "$RUN/client.log.1" ]
+  assert_equal "$(<"$RUN/client.log.1")" current
+  assert [ ! -e "$T/missing.log" ]
+}
+
 @test "client_log_keep: replaces a .3 link to a directory without writing through it" {
   mkdir -m 700 "$RUN"
   mkdir "$T/archive-target"

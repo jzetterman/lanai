@@ -15,6 +15,7 @@ LANAI_CLIENT_UNIT=lanai-client.service
 # mean the IDD is missing.
 LANAI_CLIENT_WAIT=${LANAI_CLIENT_WAIT:-60}
 LANAI_IDD_WAIT=30
+# Bytes kept from the end of each old client log (16 MiB; tests shrink it).
 LANAI_CLIENT_LOG_KEEP=16777216
 
 # The Looking Glass client patches (patches/looking-glass/NNNN-*.patch, GPL;
@@ -371,7 +372,10 @@ client_wait() {
   done
 }
 
-# Keep a bounded copy of the previous client log, shifting the older copies.
+# client_log_keep <run>: keep the end of <run>/client.log as client.log.1,
+# shifting .1 to .2 and .2 to .3 (the old .3 drops). Skips a symlink, a
+# non-file, an empty log and a timeout-only log. Always returns 0, since the
+# callers run under errexit: a failed step prints one lanai: line and stops.
 client_log_keep() {
   local run=$1 log=$1/client.log first=""
   [[ ! -L $log && -f $log && -s $log ]] || return 0
@@ -434,8 +438,8 @@ client_exec() {
   mapfile -t args < <(client_args "$run")
   client_log_keep "$run"
   printf '%s %s\n' "$LANAI_CLIENT_START" "$EPOCHSECONDS" >"$log"
-  # Appending keeps the client on the same inode when lanai-vm-exec keeps a
-  # copy and empties client.log at the next VM start.
+  # Appending puts the client's writes at the new end after lanai-vm-exec
+  # keeps a copy and empties client.log at the next VM start.
   exec "$client" "${args[@]}" >>"$log" 2>&1
 }
 
