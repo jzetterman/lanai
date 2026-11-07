@@ -958,12 +958,12 @@ vm_plan() {
 # lanai-vm-exec, the unit's ExecStart (plan: Architecture). It reads the
 # scale, its save number and the boot mode boot_vm left in
 # <state>/boot.json, builds QEMU's arguments with vm_plan, removes stale
-# sockets, run stamps and shared memory, empties client.log, starts the
-# helpers in the background (in the unit's cgroup;
-# systemd stops them after ExecStop): virtiofsd once, the others under
-# supervise. It waits for virtiofsd's fresh socket, writes the "running"
-# marker with $INVOCATION_ID, and execs QEMU. Only for a boot that shows
-# QEMU's window does QEMU get WAYLAND_DISPLAY, from boot.json (the user
+# sockets, run stamps and shared memory, keeps the previous client log before
+# emptying client.log, then starts the helpers in the background (in the
+# unit's cgroup; systemd stops them after ExecStop): virtiofsd once, the
+# others under supervise. It waits for virtiofsd's fresh socket, writes the
+# "running" marker with $INVOCATION_ID, and execs QEMU. Only for a boot that
+# shows QEMU's window does QEMU get WAYLAND_DISPLAY, from boot.json (the user
 # manager may lack it). Prints why and fails on any problem, before QEMU
 # starts.
 vm_exec() {
@@ -1010,6 +1010,7 @@ vm_exec() {
     echo "lanai: cannot record setup's time limits in $run" >&2
     return 1
   }
+  client_log_keep "$run"
   : >"$run/client.log"
 
   run_once virtiofsd "$LANAI_VIRTIOFSD" --sandbox namespace --shared-dir "$HOME/Windows" \

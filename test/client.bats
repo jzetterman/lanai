@@ -283,6 +283,143 @@ EOF
   export REPO
 }
 
+@test "client_log_keep: shifts the latest three logs in order and drops the fourth-oldest" {
+  mkdir -m 700 "$RUN"
+  echo L0 >"$RUN/client.log"
+  local open
+  for open in 1 2 3; do
+    client_log_keep "$RUN"
+    echo "open $open" >"$RUN/client.log"
+  done
+  assert_equal "$(<"$RUN/client.log.1")" "open 2"
+  assert_equal "$(<"$RUN/client.log.2")" "open 1"
+  assert_equal "$(<"$RUN/client.log.3")" L0
+  assert_equal "$(<"$RUN/client.log")" "open 3"
+  client_log_keep "$RUN"
+  echo "open 4" >"$RUN/client.log"
+  assert_equal "$(<"$RUN/client.log.1")" "open 3"
+  assert_equal "$(<"$RUN/client.log.2")" "open 2"
+  assert_equal "$(<"$RUN/client.log.3")" "open 1"
+  assert_equal "$(<"$RUN/client.log")" "open 4"
+}
+
+@test "client_log_keep: empty, missing and timeout-only logs leave old logs alone" {
+  mkdir -m 700 "$RUN"
+  echo oldest >"$RUN/client.log.3"
+  echo middle >"$RUN/client.log.2"
+  echo newest >"$RUN/client.log.1"
+  : >"$RUN/client.log"
+  client_log_keep "$RUN"
+  rm "$RUN/client.log"
+  client_log_keep "$RUN"
+  printf '%s; the Windows window did not open\n' "$LANAI_CLIENT_TIMEOUT" >"$RUN/client.log"
+  client_log_keep "$RUN"
+  assert_equal "$(<"$RUN/client.log.1")" newest
+  assert_equal "$(<"$RUN/client.log.2")" middle
+  assert_equal "$(<"$RUN/client.log.3")" oldest
+}
+
+@test "client_log_keep: skips a symlink at client.log" {
+  mkdir -m 700 "$RUN"
+  echo external >"$T/external.log"
+  ln -s "$T/external.log" "$RUN/client.log"
+  client_log_keep "$RUN"
+  assert [ -L "$RUN/client.log" ]
+  assert [ ! -e "$RUN/client.log.1" ]
+  assert_equal "$(<"$T/external.log")" external
+}
+
+@test "client_log_keep: shifts a symlink at .1 without changing its target" {
+  mkdir -m 700 "$RUN"
+  echo external >"$T/external.log"
+  ln -s "$T/external.log" "$RUN/client.log.1"
+  echo current >"$RUN/client.log"
+  client_log_keep "$RUN"
+  assert [ -L "$RUN/client.log.2" ]
+  assert_equal "$(readlink "$RUN/client.log.2")" "$T/external.log"
+  assert_equal "$(<"$RUN/client.log.1")" current
+  assert_equal "$(<"$T/external.log")" external
+}
+
+@test "client_log_keep: shifts a dangling symlink at .1 and never creates its target" {
+  mkdir -m 700 "$RUN"
+  ln -s "$T/missing.log" "$RUN/client.log.1"
+  echo current >"$RUN/client.log"
+  client_log_keep "$RUN"
+  assert [ -L "$RUN/client.log.2" ]
+  assert_equal "$(readlink "$RUN/client.log.2")" "$T/missing.log"
+  assert [ ! -L "$RUN/client.log.1" ]
+  assert_equal "$(<"$RUN/client.log.1")" current
+  assert [ ! -e "$T/missing.log" ]
+}
+
+@test "client_log_keep: replaces a .3 link to a directory without writing through it" {
+  mkdir -m 700 "$RUN"
+  mkdir "$T/archive-target"
+  echo previous >"$RUN/client.log.2"
+  ln -s "$T/archive-target" "$RUN/client.log.3"
+  echo current >"$RUN/client.log"
+  client_log_keep "$RUN"
+  assert [ ! -L "$RUN/client.log.3" ]
+  assert_equal "$(<"$RUN/client.log.3")" previous
+  assert [ -z "$(ls -A "$T/archive-target")" ]
+}
+
+@test "client_log_keep: replaces a .2 link to a directory without writing through it" {
+  mkdir -m 700 "$RUN"
+  mkdir "$T/archive-target"
+  echo previous >"$RUN/client.log.1"
+  ln -s "$T/archive-target" "$RUN/client.log.2"
+  echo current >"$RUN/client.log"
+  client_log_keep "$RUN"
+  assert [ ! -L "$RUN/client.log.2" ]
+  assert_equal "$(<"$RUN/client.log.1")" current
+  assert_equal "$(<"$RUN/client.log.2")" previous
+  assert [ -L "$RUN/client.log.3" ]
+  assert [ -z "$(ls -A "$T/archive-target")" ]
+}
+
+@test "client_log_keep: keeps the source log's modification time" {
+  mkdir -m 700 "$RUN"
+  echo current >"$RUN/client.log"
+  touch -d @1000000000 "$RUN/client.log"
+  client_log_keep "$RUN"
+  assert_equal "$(stat -c %Y "$RUN/client.log.1")" "$(stat -c %Y "$RUN/client.log")"
+}
+
+@test "client_log_keep: keeps exactly the last configured number of bytes" {
+  mkdir -m 700 "$RUN"
+  LANAI_CLIENT_LOG_KEEP=16
+  printf '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ' >"$RUN/client.log"
+  client_log_keep "$RUN"
+  assert_equal "$(stat -c %s "$RUN/client.log.1")" 16
+  assert_equal "$(<"$RUN/client.log.1")" "KLMNOPQRSTUVWXYZ"
+}
+
+@test "client_log_keep: reports a failed shift and returns success" {
+  mkdir -m 700 "$RUN"
+  echo old >"$RUN/client.log"
+  echo blocked >"$RUN/client.log.2"
+  mkdir "$RUN/client.log.3"
+  run client_log_keep "$RUN"
+  assert_success
+  assert_line "lanai: could not keep the old Windows window log in $RUN"
+}
+
+@test "client_log_keep: a client that keeps writing stays attached to client.log" {
+  mkdir -m 700 "$RUN"
+  echo old >"$RUN/client.log"
+  local fd
+  exec {fd}>>"$RUN/client.log"
+  client_log_keep "$RUN"
+  : >"$RUN/client.log"
+  printf 'written after reset\n' >&"$fd"
+  exec {fd}>&-
+  assert_equal "$(<"$RUN/client.log")" 'written after reset'
+  run cat "$RUN/client.log.1"
+  refute_output --partial "written after reset"
+}
+
 @test "lanai-client-exec: waits for a status reply, closes QMP, then execs the client with its flags" {
   mkdir -m 700 "$RUN"
   echo "an old client's log" >"$RUN/client.log"
@@ -294,6 +431,7 @@ EOF
   # The handshake: capabilities, then query-status.
   assert_equal "$(sed -n 1p "$T/qmp.log")" '{"execute":"qmp_capabilities","id":1}'
   assert_equal "$(sed -n 2p "$T/qmp.log")" '{"execute":"query-status","id":2}'
+  assert_equal "$(<"$RUN/client.log.1")" "an old client's log"
   run cat "$T/client.args"
   assert_output -- "-f
 $RUN/ivshmem
@@ -383,6 +521,28 @@ wayland:warpSupport=no"
   [[ $stderr == *"0700"* ]] || fail "no reason: $stderr"
   assert [ ! -e "$T/client.args" ]
   assert_equal "$(cat "$RUN/client.log")" sentinel
+  assert [ ! -e "$RUN/client.log.1" ]
+}
+
+@test "lanai-client-exec: a failed keep still starts the client and writes its start line" {
+  mkdir -m 700 "$RUN"
+  echo old >"$RUN/client.log"
+  echo blocked >"$RUN/client.log.2"
+  mkdir "$RUN/client.log.3"
+  fake_client
+  serve "$RUN/qmp-cli.sock" "$FIX/fake-qmp"
+  local rc
+  if timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client" >"$T/out" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  assert_equal "$rc" 0
+  grep -Fx "lanai: could not keep the old Windows window log in $RUN" "$T/out" ||
+    fail "keep failure was not reported: $(cat "$T/out")"
+  assert [ -e "$T/client.args" ]
+  run head -n 1 "$RUN/client.log"
+  assert_output --regexp '^lanai: client started at [0-9]+$'
 }
 
 @test "lanai-client-exec: a missing client stops it before the wait, and the log is untouched" {
@@ -409,10 +569,13 @@ wayland:warpSupport=no"
   LANAI_CLIENT_WAIT=1 run timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client"
   assert_failure
   assert_equal "$(cat "$RUN/client.log")" sentinel
+  assert [ ! -e "$RUN/client.log.1" ]
   # A sound $RUN gets the message.
   chmod 700 "$RUN"
+  echo "an old timed-out client's log" >"$RUN/client.log"
   LANAI_CLIENT_WAIT=1 run timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client"
   assert_failure
+  assert_equal "$(<"$RUN/client.log.1")" "an old timed-out client's log"
   run cat "$RUN/client.log"
   assert_output --regexp '^lanai: QEMU did not answer'
 }
