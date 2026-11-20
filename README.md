@@ -48,7 +48,20 @@ for Windows and Linux. It does not install Windows or support TPM, Secure Boot o
 legacy layouts. Setup installs Arch packages and builds a native client. The plugin
 will need manual setup and a maintainer review before it joins the marketplace.
 
-First rehearse on a reflink copy, as described in the [acceptance plan](docs/plugin/plan.md#phase-8-acceptance).
+First rehearse on a reflink copy. Stop the container VM, then make the copy from a
+Lanai checkout, on the same btrfs filesystem as `~/.windows`:
+
+```sh
+bin/lanai-copy ~/.windows ~/lanai-rehearsal
+```
+
+Do not use plain `cp --reflink`. Dockur marks `data.img` NOCOW, and btrfs will not
+reflink a NOCOW file into a normal one, so `cp` stops with "Invalid argument".
+`lanai-copy` gives the new `data.img` the same NOCOW flag before it copies, holds the
+disk lock so no VM starts during the copy, and checks each file's SHA-256 before it
+renames the copy into place. The [acceptance plan](docs/plugin/plan.md#phase-8-acceptance)
+lists the rehearsal checks.
+
 Stop the container VM before setup. For the released plugin, the host commands are:
 
 ```sh
@@ -580,14 +593,8 @@ builds the client, and builds and runs the client's own tests. The guest C# and
 PowerShell tests in `test/guest.bats` need `pwsh`. CI does not install it, so CI
 skips them: run them locally before a merge. Two QML tests in `test/panel-qml.bats`
 load the installed shell's controls from `/usr/share/omarchy/shell`, which CI does not
-have, so CI skips them too. Lint with
-`shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats test/helpers.bash spike/test/*.bats
-docs/plugin/proof-kit/proof-vm docs/plugin/proof-kit/proof-unit-start
-docs/plugin/proof-kit/proof-unit-stop docs/plugin/proof-kit/clock-ping
-docs/plugin/proof-kit/size-window-on-open docs/plugin/proof-kit/stamp-client-log
-test/fixtures/fake-qmp test/fixtures/fake-qga test/qml-lint`.
-
-Run `test/qml-lint`.
+have, so CI skips them too. Lint with `bin/check`: it runs `test/shellcheck`, which
+CI also runs, then `test/qml-lint`, and exits 0 when both pass. It does not run bats.
 
 Panel fixtures in `test/panel.bats`,
 `test/panel-jobs.bats` and `test/ui.bats` use a fake CLI and host facts without

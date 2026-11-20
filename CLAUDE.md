@@ -38,6 +38,9 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   tests and the ten-board renderer integration in `test/panel-qml.bats`).
   `docs/plugin/proof-kit/` holds the phase 1, live-scale and resize proof scripts and
   `count-image-extents.py`, the read-only extent census.
+- Fast check: `bin/check` runs `test/shellcheck` (every shell file, found by
+  extension or shebang; CI also runs it) and then
+  `test/qml-lint`, in about 12 s, and exits 0 on pass. It skips bats.
 - QML lint: `test/qml-lint` (or `test/qml-lint <file>`). It makes a temporary
   repository-local import root with `qs` linked to `/usr/share/omarchy/shell`,
   then runs `/usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell -I "$imports" "$@"`.
