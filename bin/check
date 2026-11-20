@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# bin/check: the fast repo check the agent hooks run before a turn ends.
+# It runs test/shellcheck (CI runs the same script), then the QML lint. It
+# leaves out the bats suite, which is too slow for every turn; run
+# `bats test spike/test` yourself, and CI runs it on each PR. Exits 0 when
+# every check passes.
+set -euo pipefail
+cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.."
+
+test/shellcheck
+test/qml-lint

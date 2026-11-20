@@ -249,9 +249,8 @@ proof findings are folded into phases 4 to 7 below.
   tests run QEMU under TCG with `-S`, no KVM needed). Checkout with
   `persist-credentials: false`. Then `bats test spike/test` as an unprivileged user
   `tester` (via `runuser`, with its own `XDG_RUNTIME_DIR`), so the tests of unreadable
-  files run, and `shellcheck -x bin/* lib/*.sh spike/lgtest test/*.bats
-  test/helpers.bash spike/test/*.bats docs/plugin/proof-kit/proof-vm
-  docs/plugin/proof-kit/proof-unit-start docs/plugin/proof-kit/proof-unit-stop`.
+  files run, and `test/shellcheck` (every shell file, found by extension or
+  shebang; `bin/check` runs it too, with `test/qml-lint`).
   Actions pinned by full SHA. btrfs-only tests skip on overlayfs.
 
 ## Phase 3: Adoption checks and settings (TDD)
