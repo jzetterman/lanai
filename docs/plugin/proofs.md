@@ -1657,6 +1657,23 @@ edit started one more update (11:54:22 to 11:54:39, outcome `ok`). The folder
 went back to `main` at 11:55:03, and `main`'s view showed no warning and no
 update button. John reports every check as expected.
 
+## Empty-workspace open on NVIDIA (2026-11-21, AKST)
+
+Allen Fox's test install, not John's: RTX 4070 SUPER, NVIDIA 615.78.08, Hyprland
+0.56.2, Lanai runtime 0.3.3, client B7-826-236efcb1, output DP-3 5120x2160 at scale
+1.6. See `docs/plugin/client-renderer/plan.md`.
+
+- Symptom: on an empty workspace the window flashed and closed; with another window
+  on the workspace it opened. `client.log` ended at `Failed to swap EGL buffers
+  (eglError: 0x3000)`, and `lanai-client.service` exited 255.
+- Client started by hand with Lanai's flags on empty workspace 17: EGL failed 4 of 8
+  opens; `egl:noSwapDamage=yes` and `egl:doubleBuffer=yes` each failed their one try;
+  `app:renderer=OpenGL` failed 0 of 7.
+- `app:renderer=OpenGL` in `client.ini`, five opens through `lanai open` on the same
+  workspace: 0 failed, `Using Renderer: OpenGL` in `client.log`.
+- Result: Lanai passes `app:renderer=OpenGL` on NVIDIA hosts (`lib/client.sh`,
+  `client_args`). Still to run: the plan's hand check on the shipped build.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

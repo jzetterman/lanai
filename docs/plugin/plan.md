@@ -515,7 +515,9 @@ Where the code differs from the text above, the code and this list win:
   client never opens a stale `ivshmem` left by an earlier run; proof 4 hit that race,
   when the client found the old file and the new VM then replaced it. The client runs
   with `-f $RUN/ivshmem spice:host=$RUN/spice.sock spice:port=0 win:setGuestRes=yes
-  wayland:warpSupport=no` (the last flag since 2026-10-23, from phase 7's resize check).
+  wayland:warpSupport=no` (the last flag since 2026-10-23, from phase 7's resize check),
+  plus `app:renderer=OpenGL` on NVIDIA hosts since 2026-11-21
+  (`docs/plugin/client-renderer/plan.md`).
   Closing it does not stop the VM.
 - `version_check` (tests first, with trimmed fixtures from the spike's
   `spike/work/client-*.log`): parse `Version  :` after `Guest Information:`; normalize
