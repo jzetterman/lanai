@@ -425,6 +425,8 @@ EOF
   echo "an old client's log" >"$RUN/client.log"
   fake_client
   export FAKE_QMP_LOG=$T/qmp.log
+  # No NVIDIA driver: the client keeps its default renderer.
+  export LANAI_NVIDIA_VERSION=$T/no-nvidia
   serve "$RUN/qmp-cli.sock" "$FIX/fake-qmp"
   run timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client"
   assert_success
@@ -444,6 +446,25 @@ wayland:warpSupport=no"
   assert_line --index 0 --regexp '^lanai: client started at [0-9]+$'
   assert_line --index 1 --partial "Looking Glass (B7-826-236efcb1)"
   refute_output --partial "an old client"
+}
+
+@test "client_args: an NVIDIA host gets the OpenGL renderer after the other flags" {
+  echo "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  615.78.08" >"$T/nvidia-version"
+  LANAI_NVIDIA_VERSION=$T/nvidia-version run client_args "$RUN"
+  assert_success
+  assert_output -- "-f
+$RUN/ivshmem
+spice:host=$RUN/spice.sock
+spice:port=0
+win:setGuestRes=yes
+wayland:warpSupport=no
+app:renderer=OpenGL"
+}
+
+@test "client_args: without the NVIDIA driver, no renderer flag" {
+  LANAI_NVIDIA_VERSION=$T/no-nvidia run client_args "$RUN"
+  assert_success
+  refute_output --partial "app:renderer"
 }
 
 @test "lanai-client-exec: on a one-client socket, a try without a status leaks nothing" {

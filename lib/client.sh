@@ -48,9 +48,19 @@ LANAI_HOST_PACKAGES=(qemu-system-x86 qemu-img virtiofsd python qemu-ui-spice-cor
 # (docs/plugin/client-warp/plan.md). The command line overrides the client's
 # ini files, so a warpSupport line in one cannot undo it (an app:configFile set
 # in any of them could; Lanai sets none).
+#
+# On an NVIDIA host it adds app:renderer=OpenGL. With the default EGL renderer
+# the client's first frame fails about half the time when its window opens alone
+# on an empty workspace ("Failed to swap EGL buffers"), and the client exits
+# with status 255, so the window flashes and closes
+# (docs/plugin/client-renderer/plan.md). The probe is the NVIDIA kernel
+# driver's version file; LANAI_NVIDIA_VERSION replaces its path in tests.
 client_args() {
   printf '%s\n' -f "$1/ivshmem" "spice:host=$1/spice.sock" spice:port=0 win:setGuestRes=yes \
     wayland:warpSupport=no
+  if [[ -e ${LANAI_NVIDIA_VERSION:-/proc/driver/nvidia/version} ]]; then
+    printf '%s\n' app:renderer=OpenGL
+  fi
 }
 
 # --- versions (spec 8) ---

@@ -236,6 +236,13 @@ When the panel holds more, such as a warning or a forced-stop notice, the toolti
 says to open the panel for details. The panel keeps **Start Windows**, **Open window**
 and **Shut down** controls. Panel controls support Tab, Shift+Tab, Enter and Space;
 Escape closes it.
+
+On an NVIDIA host, Lanai starts the Looking Glass client with its OpenGL renderer.
+The default EGL renderer often fails its first frame when the window opens alone on
+an empty workspace, and the window flashes and closes. The cost: the EGL renderer's
+extras, such as its scaling filters and HDR to SDR mapping, are not available on
+NVIDIA.
+
 If starting or opening fails, the glyph opens the panel to explain why. It also
 opens the panel when a start reports that the previous run was forced to stop.
 The daily header shows saved memory, cores and scale. Draft edits do not change
