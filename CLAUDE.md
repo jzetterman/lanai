@@ -36,8 +36,9 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   `test/client-auto.bats` tests Lanai's own client update;
   `test/panel-fixtures.bash` shares isolated backend fixtures between the panel
   tests and the ten-board renderer integration in `test/panel-qml.bats`).
-  `docs/plugin/proof-kit/` holds the phase 1, live-scale and resize proof scripts and
-  `count-image-extents.py`, the read-only extent census.
+  `docs/plugin/proof-kit/` holds the phase 1, live-scale and resize proof scripts,
+  `count-image-extents.py`, the read-only extent census, and `swap-fail-open` with
+  `swap-fail.c`, which make a client's buffer swaps fail to prove patch 0006.
 - Fast check: `bin/check` runs `test/shellcheck` (every shell file, found by
   extension or shebang; CI also runs it) and then
   `test/qml-lint`, in about 12 s, and exits 0 on pass. It skips bats.
@@ -75,7 +76,11 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   the IDD stays the pinned build. A pin change needs patches that apply exactly to
   the new source, and a recheck that the new IDD still stores the ask where and as
   `guest/lanai-start.cs` reads it (`ExtraMode` in `HKLM\SOFTWARE\LookingGlass\IDD`,
-  `<w>x<h>@<refresh>[*]`; spec 12, the sign-in bullet).
+  `<w>x<h>@<refresh>[*]`; spec 12, the sign-in bullet). It also needs a recheck, in
+  the new client's source, of what patch 0006 relies on: a frame drawn after
+  `app_invalidateWindow(true)` is a full redraw, and it marks the EGL renderer's
+  overlay history so that later frames on older buffers redraw in full too
+  (docs/plugin/client-swap-fail/plan.md, Requirements).
 - The spike (`spike/`) never writes to the live `omarchy-windows-vm` disk; it works on a
   reflink copy. Lanai boots the live disk only after its adoption checks pass
   (docs/plugin/spec.md, requirements 1-5).

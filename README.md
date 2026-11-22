@@ -623,7 +623,10 @@ launch pending. Other controls preserve a failed launch notice until the next
 setup, snapshot, restore or update starts. The Windows window log is
 `$XDG_RUNTIME_DIR/lanai/client.log`; Lanai keeps the end (up to 16 MiB) of the
 last three logs beside it as `client.log.1` to `.3`, newest first, until you
-log out or the host restarts. The Windows window build log is
+log out or the host restarts. When the window fails to show a frame
+(`Failed to swap EGL buffers ..., trying again` in that log), it tries again for
+up to a second before it closes, and logs `EGL swap succeeded after ...` when it
+recovers. The Windows window build log is
 `build-client.log` in Lanai’s state directory; the Windows VM log is in your
 user journal, under lanai-vm.
 

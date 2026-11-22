@@ -1657,6 +1657,46 @@ edit started one more update (11:54:22 to 11:54:39, outcome `ok`). The folder
 went back to `main` at 11:55:03, and `main`'s view showed no warning and no
 update button. John reports every check as expected.
 
+## Failed buffer swap (2026-11-22, EST)
+
+Patch 0006 keeps the client running after a failed buffer swap
+(docs/plugin/client-swap-fail/plan.md). The failure itself is from Allen Fox's host
+(PR 28): RTX 4070 SUPER (12 GB), NVIDIA 615.78.08, a 5120x2160 monitor at scale 1.6,
+the pinned client with patches 0001 to 0003, and a real VM.
+
+- With about 10.9 of 12.3 GB of video memory in use, 13 of 24 opens closed at the
+  first swap after the first guest frame, with
+  `Failed to swap EGL buffers (eglError: 0x3000)`. With about 2.3 GB in use, 0 of 8
+  closed.
+- In a test build that logged a failed swap and carried on, 4 of 8 opens had one
+  failed swap (swap 8 or 9), and the next swap succeeded.
+- With the OpenGL renderer, in a build that logs a failed swap on that path, 0 of 8
+  opens logged one under the same pressure.
+- Why the swap fails is not known. Nearly full video memory is the only trigger
+  seen.
+
+The patch's proof ran on John's desktop (RTX 3090, the same driver, 3840x2160 at
+scale 1) with `docs/plugin/proof-kit/swap-fail-open`. It opens a client with no VM,
+against a scratch memory file, with `swap-fail.c` loaded to make swaps fail from
+swap 8. "Stock" is the installed client with patches 0001 to 0003; "patched" adds
+0006, built from the pinned source with `patches_apply`.
+
+- Stock, one failed swap: the client ended. It logged the old line at 0.349 s.
+- Patched, one failed swap: still up after 4 s. It logged
+  `Failed to swap EGL buffers (eglError: 0x3000), trying again` and then
+  `EGL swap succeeded after 1 failed in 10 ms`.
+- Patched, 5 failed swaps in a row: still up after 4 s, with
+  `EGL swap succeeded after 5 failed in 50 ms`.
+- Patched, every swap fails: the client ended. It logged `trying again` at 0.335 s
+  and `100 failed in a row` at 1.337 s.
+- Patched, no failed swap: still up after 4 s, with no line about a failed swap or a
+  recovery.
+
+Not covered here: the NVIDIA driver's own failed swap, and a partial redraw after a
+failed swap with real guest frames. The client's "waiting" screen is always a full
+redraw. Allen's test of the patched client on his host covers both; its result goes
+here when it is in.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

@@ -5,8 +5,10 @@
 # resize case run. Locally, when LANAI_TEST_LG_TARBALL names the pinned
 # source tarball: every patch applied exactly to the real source, the
 # client itself built (it compiles main.c, which patches 0002 and 0003
-# change), and the client tests that cover the changes built and run (needs
-# the client's build dependencies and GoogleTest).
+# change, and egl.c, which patch 0006 changes), and the client tests that
+# cover the changes built and run (needs the client's build dependencies and
+# GoogleTest). Patch 0006 has no client test: its proof is the swap-failure
+# runs in docs/plugin/client-swap-fail/plan.md.
 # shellcheck disable=SC2030,SC2031,SC2034
 
 load helpers
@@ -25,7 +27,7 @@ COPYING_SHA=8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
 @test "patches: each header carries its license and no line patch reads as a diff; COPYING is the GPL-2.0 text" {
   local p header
   run patches_list
-  assert_output $'0001-client-resize-module.patch\n0002-client-resize-hooks.patch\n0003-client-restart-scale.patch'
+  assert_output $'0001-client-resize-module.patch\n0002-client-resize-hooks.patch\n0003-client-restart-scale.patch\n0006-client-swap-fail.patch'
   # The header is the text before the first diff line. Its SPDX line comes
   # last, so a header line that patch would read as a diff cuts it off.
   for p in "$PATCHES"/[0-9][0-9][0-9][0-9]-*.patch; do
@@ -83,7 +85,8 @@ COPYING_SHA=8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
     -DWESTON_EXECUTABLE=/usr/bin/true >"$T/cmake.log" 2>&1 ||
     fail "cmake could not configure: $(tail -20 "$T/cmake.log")"
   # The client too, with build_client's -DENABLE_X11=no: only it compiles
-  # main.c, which patches 0002 and 0003 change.
+  # main.c, which patches 0002 and 0003 change, and egl.c, which patch 0006
+  # changes.
   cmake --build "$T/build" -j "$(nproc)" \
     --target looking-glass-client resize-tests config-message-tests mouse-tests >"$T/build.log" 2>&1 ||
     fail "the client or its tests did not build: $(grep -m5 -E 'error' "$T/build.log")"

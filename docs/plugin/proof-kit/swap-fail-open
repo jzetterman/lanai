@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# swap-fail-open <out folder> <label> <client> <first> <count>: the proof for
+# patch 0006 (docs/plugin/client-swap-fail/plan.md). Open a Looking Glass
+# client on an empty Hyprland workspace with swap-fail.c loaded, so that
+# <count> buffer swaps in a row fail, starting at swap <first> (0 for none).
+# Report whether the client is still up after 4 seconds, and its log lines
+# about failed swaps.
+#
+# The client reads a scratch memory file, so it draws its "waiting" screen.
+# No VM, live socket or Windows install is touched. A config file that the
+# client loads last (-C) repeats the scratch paths and the EGL renderer, so
+# no client.ini on the host can point the client elsewhere, and the script
+# stops the client if its log names another memory file.
+#
+# The script switches to the workspace (9, or SWAP_FAIL_WS), takes a
+# screenshot of the monitor when the client stays up, and switches back. It
+# writes <label>.log, <label>.txt (the result) and <label>.png to
+# <out folder>. Needs the live Hyprland session's
+# HYPRLAND_INSTANCE_SIGNATURE, cc, jq and grim.
+set -euo pipefail
+
+out=${1:?out folder} label=${2:?label} client=${3:?client binary}
+first=${4:?first swap to fail} count=${5:?fail count}
+here=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)
+run=$XDG_RUNTIME_DIR/lanai-swap-fail
+ws=${SWAP_FAIL_WS:-9}
+
+orig=$(hyprctl activeworkspace -j | jq -r .id)
+pid="" made=""
+cleanup() {
+  [[ -n $pid ]] && kill "$pid" 2>/dev/null || true
+  hyprctl dispatch "hl.dsp.focus({ workspace = \"$orig\" })" >/dev/null || true
+  [[ -n $made ]] && rm -rf "$run"
+}
+trap cleanup EXIT
+
+mkdir -p "$out"
+# A folder left by another run stops this one here, before the trap may
+# remove it.
+mkdir -m 700 "$run"
+made=1
+cc -shared -fPIC -Wall -Wextra -Werror -o "$run/swap-fail.so" "$here/swap-fail.c" -ldl
+truncate -s 128M "$run/ivshmem"
+cat >"$run/client.ini" <<EOF
+[app]
+renderer=EGL
+transport=lgmp
+[lgmp]
+shmDevice=$run/ivshmem
+[spice]
+host=$run/spice.sock
+port=0
+EOF
+
+# Another window on the workspace would change the client's size and focus.
+on_ws() { hyprctl clients -j | jq "[.[] | select(.workspace.id == $ws)] | length"; }
+[[ $(on_ws) == 0 ]] || { echo "$label: workspace $ws is not empty, stopping"; exit 1; }
+hyprctl dispatch "hl.dsp.focus({ workspace = \"$ws\" })" >/dev/null
+sleep 0.5
+[[ $(on_ws) == 0 ]] || { echo "$label: workspace $ws is not empty, stopping"; exit 1; }
+
+# Lanai's client flags (client_args in lib/client.sh), on the scratch folder.
+log=$out/$label.log
+start=$(date +%s.%N)
+LD_PRELOAD=$run/swap-fail.so SWAPFAIL_FIRST=$first SWAPFAIL_COUNT=$count \
+  "$client" -f "$run/ivshmem" "spice:host=$run/spice.sock" spice:port=0 \
+  win:setGuestRes=yes wayland:warpSupport=no -C "$run/client.ini" >"$log" 2>&1 &
+pid=$!
+
+state=up rc=""
+for _ in $(seq 1 16); do
+  sleep 0.25
+  if ! kill -0 "$pid" 2>/dev/null; then
+    state=ended
+    wait "$pid" && rc=0 || rc=$?
+    break
+  fi
+  if grep 'KVMFR Device' "$log" | grep -q -v -F -- ": $run/ivshmem"; then
+    echo "$label: the client opened another memory file, stopping"
+    exit 1
+  fi
+done
+lived=$(awk -v a="$start" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
+if [[ $state == up ]]; then
+  grim -o "$(hyprctl monitors -j | jq -r '.[] | select(.focused) | .name')" "$out/$label.png"
+  kill -TERM "$pid" 2>/dev/null || true
+  wait "$pid" && rc=0 || rc=$?
+fi
+pid=""
+{
+  printf '%s: %s after %s s, exit %s\n' "$label" "$state" "$lived" "$rc"
+  grep -E 'swap-fail:|Failed to swap|EGL swap succeeded|Using Renderer|KVMFR Device' "$log" |
+    sed 's/^/    /'
+} | tee "$out/$label.txt"
