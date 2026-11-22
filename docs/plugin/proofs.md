@@ -1657,6 +1657,48 @@ edit started one more update (11:54:22 to 11:54:39, outcome `ok`). The folder
 went back to `main` at 11:55:03, and `main`'s view showed no warning and no
 update button. John reports every check as expected.
 
+## Windows freeze after quick resizes, phase 0 (2026-11-21, EST)
+
+The window froze on its last picture after quick resizes, such as a monitor
+waking from sleep. Phase 0 of docs/plugin/resize-hang/plan.md forced the hang
+on a copy and recovered it with a driver restart, before any code. The evidence
+is in `~/lanai-proofs/resize-hang-phase0/`.
+
+- The copy: `~/lanai-proofs/resize-hang-copy`, a `lanai-copy` of the live disk,
+  run next to the live VM with 8 GB, the live VM's scale port and SMBIOS line,
+  and its network link cut. Lanai's B7-826-236efcb1 client drove a window on a
+  hidden workspace; frames arrive there as on screen.
+- Windows 11 Pro 25H2, build 26200.9168. The adapter is `ROOT\DISPLAY\0000`,
+  "Looking Glass Indirect Display Device", hardware ID `Root\LGIdd`, driver
+  1.27.7.771.
+- Baseline on a healthy driver: `pnputil /restart-device` exited 0 in 404 ms,
+  and a frame at the window's size came within 1 s.
+- Hangs came at bursts 85, 300 and 304. Burst 300 came after a clean run of
+  274, cut short when the harness stopped the copy's QEMU.
+
+  | Hang | Driver state | pnputil | First frame at the window's size |
+  | --- | --- | --- | --- |
+  | 1 | New monitor, modes committed, no swap chain (as on 2026-11-19) | exit 0, 1.6 s | about 2 s after the restart began |
+  | 2 | `ReplugMonitor`, then nothing (as on 2026-11-21) | exit 0, 5.9 s | about 6 s |
+  | 3 | As hang 2 | exit 0, 2.0 s | about 2 s |
+
+  Each time the desktop came back at the window's size, the Windows key opened
+  and closed Start, and the next three bursts all took. In hang 3 the client
+  had already logged "did not take"; the new session asked again by itself.
+  Hang 3's last replug came in the same second as the one before it.
+- Still desktop: with all windows minimized, Windows sent one frame in 20 s
+  (the taskbar clock's minute). The driver refused 5200x2900 ("Refusing
+  resolution 5200x2900: configured frame capacity must be at least ... MiB")
+  and sent the refusal to its helper pipe, not to the client. After the
+  client's fifth ask, no frame came for 38 s. So a refused size looks like a
+  hang from the host.
+- The driver log tells the two apart. In every hang log (hangs 1-3 and the
+  live 2026-11-21 freeze), the last `ReplugMonitor` has no `Swap chain device
+  set` after it. In the refusal log, it has one. Phase 0's and John's driver
+  logs hold 2,119 distinct replugs. 2,114 finished in 3 s or less. The other 5
+  were all hangs: hangs 1-3 and the live freezes of 2026-11-19 (a replug left
+  unfinished for 33 minutes) and 2026-11-21.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

@@ -1,7 +1,9 @@
 # Windows freezes after quick resizes
 
-Combined spec and plan for two changes. The first is a new Looking Glass client
-patch, `patches/looking-glass/0004-client-resize-settle.patch`. The second is a
+Combined spec and plan for two changes. The first is two new Looking Glass
+client patches: `patches/looking-glass/0004-client-resize-settle.patch` changes
+the resize module, and `0005-client-resize-feed.patch` feeds it from the client.
+The second is a
 recovery path: the client notices the hang, the host passes it on, and the scale
 task in Windows restarts the Looking Glass display driver.
 
@@ -10,7 +12,8 @@ day: a driver restart recovered 3 of 3 forced hangs. It also found two changes
 for part C, which John accepted (decision 3): the scale task confirms the hang
 from the driver log, and selects the adapter by hardware ID. A fourth, focused
 review of those changes, approved by John past the three-round cap, found two
-P2s, now integrated. Phase 1 is next. No code yet.
+P2s, now integrated. Phase 1 (the client patches) is done, not yet reviewed.
+Phase 2 is next.
 
 ## Problem
 
@@ -93,7 +96,7 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
 
 ## Requirements
 
-### A. Fewer and calmer replugs (client patch 0004)
+### A. Fewer and calmer replugs (client patches 0004 and 0005)
 
 1. The client asks Windows for a new size only after the window has not changed
    size for 2 s (`RESIZE_SETTLE_US`). The clock starts at each raw size change,
@@ -111,7 +114,7 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
    about 2 s after the drag stops, not about 0.6 s. The constants live in
    `resize.h`.
 
-### B. Notice the hang (client patch 0004)
+### B. Notice the hang (client patches 0004 and 0005)
 
 5. The client counts every frame it receives, not only format changes, and
    keeps the time of the last one.
@@ -370,7 +373,8 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
 
 ## Constraints
 
-- The pin and the IDD stay as they are. 0004 applies exactly after 0001-0003.
+- The pin and the IDD stay as they are. 0004 and 0005 apply exactly after
+  0001-0003.
 - Nothing new runs as admin in Windows. The scale task already runs with the
   setup user's admin rights (spec 27). It gets one more fixed action, through the
   one exclusive reader it already has.
@@ -456,7 +460,7 @@ hidden workspace; frames arrive there as on screen. The evidence is in
   `Refusing resolution`. John accepted a check on this signature (decision
   3), now in requirements 8, 10, 11, 13 and 18.
 
-### Phase 1: client patch 0004, test first
+### Phase 1: client patches 0004 and 0005, test first
 
 Cases first, then in `resize.c`: the settle clock fed by raw size changes, the
 gap, the stall detector, and the frame counter. Then the hooks: raw size changes
@@ -468,6 +472,37 @@ update `test/client-patches.bats` for 0004. Copy the evidence above into
 
 A test-only build switch turns off the settle and gap rules and keeps the
 stall detector, so phase 3 can force hangs with the new detector.
+
+#### Phase 1 result (2026-11-21)
+
+The change is two patches, not one. 0004 touches only the files 0001 creates
+(`resize.c`, `resize.h`, `resize_test.c`), so CI applies 0001 and 0004 to an
+empty folder and runs every module case on each push. 0005 holds the glue
+(`core.c`, `core.h`, `message.c`, `main.c`, the glue tests and
+`tests/CMakeLists.txt`), which only the local tarball test builds.
+
+- The raw size comes from `lgMessage_process`, which hands each posted size to
+  the module with the time `core_updatePositionInfo` posted it. That is the raw
+  change time, read on the main thread, so the module stays single-threaded.
+  The debounce can hand an older post back after a newer one, so the module
+  ignores a post older than the last change.
+- The frame counter is a separate atomic beside `g_state.frameCount`, which the
+  FPS timer resets every 500 ms.
+- The stall line reads `Resize: no frame from Windows for 10 s (asked for
+  <w>x<h>)` or `(new session)`; the end reads `Resize: frames from Windows
+  again`. Phase 2 parses these.
+- Tests: 30 module cases (10 new) and 19 glue cases (2 new). The cases whose
+  timing changed on purpose say so in a comment. Each new case fails when its
+  rule is removed: without the settle (`burst`, `drag`, `raw-order`), without
+  the gap (`gap`, `new-window`), with the old 2 s first retry
+  (`windows-change` and ten older cases), without the stall detector (the five
+  stall cases), without the later-of rule (`stall`, `frames-again`), without
+  the raw feed in `message.c` (`resize-settle`) and without the frame count in
+  `core.c` (`resize-seen`). The five stall cases also pass in a
+  `-DRESIZE_NO_SETTLE` build, and `burst` fails there, as it should.
+- `test/client-patches.bats` with `LANAI_TEST_LG_TARBALL`: all five patches
+  apply with no offset or fuzz, the client builds with no warnings, and the 69
+  resize, config-message and mouse tests pass.
 
 ### Phase 2: host feed and scale task, test first
 

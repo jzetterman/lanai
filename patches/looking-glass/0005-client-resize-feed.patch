@@ -1,0 +1,553 @@
+Subject: client: feed raw window sizes and every frame to the resize module
+
+Wires the settle and the stall detector from the previous patch into the
+client.
+
+- message.c: lgMessage_process hands each posted window size, with the
+  time core_updatePositionInfo posted it, to core_onWindowSizeRaw before
+  the debounce, so the settle counts from the raw change.
+- core.c: core_onWindowSizeRaw calls resize_raw. core_resizeFrameSeen
+  counts each frame in an atomic, and core_resizeUpdate calls
+  resize_seen on the main thread when the count moves. A new session
+  starts from the current count.
+- main.c: main_frameThread calls core_resizeFrameSeen for each frame,
+  beside the frame counter.
+- config_message_test.c: the cases that checked the debounce through the
+  ask now check its "window is" log line, cases that wait for an ask
+  wait for the settle or the gap, and new cases cover the raw feed
+  (size A, then size B 1.8 s later, asks only for B, 2 s after B) and
+  the frame count.
+- tests/CMakeLists.txt: registers the new resize and config-message
+  cases.
+
+No message is added and no message's format changes.
+
+From Lanai, https://github.com/jzetterman/lanai
+Copyright (C) 2026 John Zetterman
+SPDX-License-Identifier: GPL-2.0-or-later
+
+diff -Naur lg-pristine/client/src/core.c lg-working/client/src/core.c
+--- lg-pristine/client/src/core.c	2026-11-21 21:06:14.896998825 -0500
++++ lg-working/client/src/core.c	2026-11-21 21:06:14.899096684 -0500
+@@ -442,6 +442,7 @@
+   bool                     haveToken;
+   LG_TransportControlToken token;
+   uint32_t                 lastCount;
++  unsigned                 lastSeen;
+   uint64_t                 retryAt;
+   bool                     faulted;
+ }
+@@ -449,6 +450,10 @@
+ 
+ static atomic_uint_least64_t l_resizeFrame;
+ 
++/* Every frame the frame thread receives, format change or not. The main
++ * thread compares it with l_resize.lastSeen to learn that frames still come. */
++static atomic_uint l_resizeSeen;
++
+ static bool resizeSend(void * opaque, unsigned width, unsigned height)
+ {
+   const LG_TransportControl control =
+@@ -509,6 +514,7 @@
+   memset(&l_resize, 0, sizeof(l_resize));
+   resize_init(&l_resize.state, resizeSend, resizeLog, NULL);
+   atomic_store_explicit(&l_resizeFrame, 0, memory_order_relaxed);
++  atomic_store_explicit(&l_resizeSeen, 0, memory_order_relaxed);
+ }
+ 
+ /* Called at the start of each display session, while the frame thread is
+@@ -517,6 +523,8 @@
+ {
+   atomic_store_explicit(&l_resizeFrame, 0, memory_order_relaxed);
+   l_resize.lastCount = 0;
++  l_resize.lastSeen  = atomic_load_explicit(&l_resizeSeen,
++      memory_order_relaxed);
+   l_resize.haveToken = false;
+   resize_session(&l_resize.state);
+ }
+@@ -534,10 +542,24 @@
+       memory_order_release);
+ }
+ 
++/* Called by the frame thread for each frame it receives. */
++void core_resizeFrameSeen(void)
++{
++  atomic_fetch_add_explicit(&l_resizeSeen, 1, memory_order_relaxed);
++}
++
+ /* Called by the main loop about every 100ms while the session is valid. */
+ void core_resizeUpdate(void)
+ {
+   const uint64_t now   = microtime();
++  const unsigned seen  =
++    atomic_load_explicit(&l_resizeSeen, memory_order_relaxed);
++  if (seen != l_resize.lastSeen)
++  {
++    resize_seen(&l_resize.state, now);
++    l_resize.lastSeen = seen;
++  }
++
+   const uint64_t value =
+     atomic_load_explicit(&l_resizeFrame, memory_order_acquire);
+   const uint32_t count = (uint32_t)value;
+@@ -551,6 +573,14 @@
+   resize_update(&l_resize.state, now, resizeResponding(now));
+ }
+ 
++/* Called by lgMessage_process, on the main thread, for each window size
++ * posted, with the time core_updatePositionInfo posted it: before the
++ * debounce, so the settle clock starts at the raw change. */
++void core_onWindowSizeRaw(unsigned width, unsigned height, uint64_t at)
++{
++  resize_raw(&l_resize.state, width, height, at);
++}
++
+ void core_onWindowSizeChanged(unsigned width, unsigned height)
+ {
+   resize_window(&l_resize.state, width, height);
+diff -Naur lg-pristine/client/src/core.h lg-working/client/src/core.h
+--- lg-pristine/client/src/core.h	2026-11-21 21:06:14.899096684 -0500
++++ lg-working/client/src/core.h	2026-11-21 21:06:14.901181946 -0500
+@@ -22,6 +22,7 @@
+ #define _H_LG_CORE_
+ 
+ #include <stdbool.h>
++#include <stdint.h>
+ 
+ bool core_inputEnabled(void);
+ void core_updateKeyboardLEDsSync(void);
+@@ -36,6 +37,8 @@
+ void core_resizeInit(void);
+ void core_resizeSession(void);
+ void core_resizeFrame(unsigned width, unsigned height);
++void core_resizeFrameSeen(void);
++void core_onWindowSizeRaw(unsigned width, unsigned height, uint64_t at);
+ void core_resizeUpdate(void);
+ void core_resetPointerScale(void);
+ void core_updatePositionInfo(void);
+diff -Naur lg-pristine/client/src/main.c lg-working/client/src/main.c
+--- lg-pristine/client/src/main.c	2026-11-21 21:06:14.901998817 -0500
++++ lg-working/client/src/main.c	2026-11-21 21:06:14.904354022 -0500
+@@ -1646,6 +1646,7 @@
+ 
+     const uint64_t queueStart = nanotime();
+     atomic_fetch_add_explicit(&g_state.frameCount, 1, memory_order_relaxed);
++    core_resizeFrameSeen();
+     frameTimingQueue(frameToken, frame.serial, &timing,
+         g_state.frameImportTime, g_state.frameImportWaitTime,
+         dispatchStart, queueStart);
+diff -Naur lg-pristine/client/src/message.c lg-working/client/src/message.c
+--- lg-pristine/client/src/message.c	2026-11-21 21:06:14.904998812 -0500
++++ lg-working/client/src/message.c	2026-11-21 21:06:14.906559639 -0500
+@@ -104,6 +104,9 @@
+     {
+       case LG_MSG_WINDOWSIZE:
+       {
++        core_onWindowSizeRaw(event->msg.windowSize.width,
++            event->msg.windowSize.height, event->timestamp);
++
+         // retain the last/latest windowsize event
+         if (!windowSize || event->timestamp >= windowSize->timestamp)
+         {
+diff -Naur lg-pristine/client/tests/CMakeLists.txt lg-working/client/tests/CMakeLists.txt
+--- lg-pristine/client/tests/CMakeLists.txt	2026-11-21 21:06:14.906998808 -0500
++++ lg-working/client/tests/CMakeLists.txt	2026-11-21 21:06:14.908925115 -0500
+@@ -786,6 +786,16 @@
+   replaced
+   one-side
+   log-lines
++  burst
++  drag
++  gap
++  windows-change
++  stall
++  stall-from
++  frames-again
++  session-stall
++  stall-session
++  raw-order
+ )
+ foreach(name IN LISTS RESIZE_CASES)
+   add_test(NAME resize-${name}
+@@ -821,6 +831,8 @@
+   equal
+   reinit
+   control
++  resize-settle
++  resize-seen
+   resize-frame
+   resize-token
+   resize-session
+diff -Naur lg-pristine/client/tests/config_message_test.c lg-working/client/tests/config_message_test.c
+--- lg-pristine/client/tests/config_message_test.c	2026-11-21 21:06:14.908998805 -0500
++++ lg-working/client/tests/config_message_test.c	2026-11-21 21:06:14.910907966 -0500
+@@ -39,6 +39,8 @@
+ #define DEBOUNCE_US UINT64_C(500000)
+ #define POLL_US     UINT64_C(100000)
+ #define SEC_US      UINT64_C(1000000)
++#define SETTLE_US   UINT64_C(2000000)
++#define GAP_US      UINT64_C(4000000)
+ #define TEST_ALARM_S 5U
+ 
+ struct LG_Transport
+@@ -55,6 +57,7 @@
+   LG_TransportControlToken token[MAX_CTL];
+   bool                     unread;
+   unsigned int             statusCalls;
++  uint64_t                 lastPost;
+ };
+ 
+ static struct Trace        t;
+@@ -177,6 +180,7 @@
+     },
+   };
+   lgMessage_post(&msg);
++  t.lastPost = t.now;
+ }
+ 
+ static void step(uint64_t us)
+@@ -218,25 +222,75 @@
+   CHECK(t.token[no] == no + 1);
+ }
+ 
++/* Count the lines holding `text` that the client logs while `fn` runs. */
++static unsigned int countLogged(const char * text, void (*fn)(void))
++{
++  fflush(stderr);
++  FILE * capture = tmpfile();
++  CHECK(capture);
++  const int saved = dup(STDERR_FILENO);
++  CHECK(saved >= 0);
++  CHECK(dup2(fileno(capture), STDERR_FILENO) >= 0);
++
++  fn();
++
++  fflush(stderr);
++  CHECK(dup2(saved, STDERR_FILENO) >= 0);
++  CHECK(close(saved) == 0);
++
++  unsigned int count = 0;
++  char line[1024];
++  rewind(capture);
++  while (fgets(line, sizeof(line), capture))
++    if (strstr(line, text))
++      ++count;
++  fclose(capture);
++  return count;
++}
++
++/* One pass of the main loop; the number of window sizes that message.c's
++ * debounce handed on during it. */
++static unsigned int handed(void)
++{
++  return countLogged("Resize: window is", process);
++}
++
++/* 0004: an ask waits until the window has held its size for 2 s. Move the
++ * clock to 2 s after the last post, then make one pass. */
++static void settle(void)
++{
++  if (t.now < t.lastPost + SETTLE_US)
++    step(t.lastPost + SETTLE_US - t.now);
++  process();
++}
++
+ static void testDebounce(void)
+ {
+   msgInit();
+   post(800, 600);
+-  process();
+-  CHECK(t.send == 0);
++  CHECK(handed() == 0);
+   step(DEBOUNCE_US - 1);
+-  process();
+-  CHECK(t.send == 0);
++  CHECK(handed() == 0);
+   step(1);
+-  process();
++  CHECK(handed() == 1);
++
++  /* 0004: the ask waits for the settle, not for the debounce. */
++  CHECK(t.send == 0);
++  settle();
+   CHECK(t.send == 1);
+   checkCtl(0, 800, 600);
+ 
++  /* The same size is not handed on again; a new one is, and its ask comes
++   * 2 s after its post, which is also 4 s after the last ask. */
+   post(800, 600);
+-  mature();
++  step(DEBOUNCE_US);
++  CHECK(handed() == 0);
++  settle();
+   CHECK(t.send == 1);
+   post(801, 600);
+-  mature();
++  step(DEBOUNCE_US);
++  CHECK(handed() == 1);
++  settle();
+   CHECK(t.send == 2);
+   checkCtl(1, 801, 600);
+   lgMessage_deinit();
+@@ -248,14 +302,13 @@
+   post(800, 600);
+   step(100);
+   post(1024, 768);
+-  process();
+-  CHECK(t.send == 0);
++  CHECK(handed() == 0);
+ 
+   step(DEBOUNCE_US - 1);
+-  process();
+-  CHECK(t.send == 0);
++  CHECK(handed() == 0);
+   step(1);
+-  process();
++  CHECK(countLogged("Resize: window is 1024x768", process) == 1);
++  settle();
+   CHECK(t.send == 1);
+   checkCtl(0, 1024, 768);
+   lgMessage_deinit();
+@@ -267,6 +320,7 @@
+   post(800, 600);
+   post(1024, 768);
+   mature();
++  settle();
+ 
+   CHECK(t.send == 1);
+   /* Posting order decides when timestamps are equal. */
+@@ -280,26 +334,23 @@
+   post(640, 480);
+   lgMessage_deinit();
+   CHECK(lgMessage_init());
+-  mature();
+-  CHECK(t.send == 0);
++  step(DEBOUNCE_US);
++  CHECK(handed() == 0);
+ 
+   post(640, 480);
+-  mature();
+-  CHECK(t.send == 1);
++  step(DEBOUNCE_US);
++  CHECK(handed() == 1);
+ 
+   /* Move the window size on behind the message filter, so the filter alone
+    * decides whether 640x480 reaches the client again. */
+   core_onWindowSizeChanged(800, 600);
+-  process();
+-  CHECK(t.send == 2);
+   lgMessage_deinit();
+   CHECK(lgMessage_init());
+   post(640, 480);
+-  mature();
++  step(DEBOUNCE_US);
+ 
+   /* A new message instance must not inherit its old duplicate filter. */
+-  CHECK(t.send == 3);
+-  checkCtl(2, 640, 480);
++  CHECK(countLogged("Resize: window is 640x480", process) == 1);
+   lgMessage_deinit();
+ }
+ 
+@@ -317,6 +368,7 @@
+   t.status = LG_TRANSPORT_ERROR;
+   post(1300, 700);
+   mature();
++  settle();
+   CHECK(t.send == 1);
+   checkCtl(0, 1300, 700);
+   step(DEBOUNCE_US);
+@@ -334,8 +386,9 @@
+   CHECK(t.send == 3);
+   checkCtl(2, 1300, 700);
+ 
+-  /* That was the first ask of its sequence: the next one waits 2 s. */
+-  run(2 * SEC_US - POLL_US);
++  /* That was the first ask of its sequence: the next one waits 4 s (0004:
++   * was 2 s). */
++  run(GAP_US - POLL_US);
+   CHECK(t.send == 3);
+   run(POLL_US);
+   CHECK(t.send == 4);
+@@ -343,6 +396,64 @@
+   lgMessage_deinit();
+ }
+ 
++/* 0004: size A, then size B 1.8 s later. The debounce hands A on, but the
++ * settle counts from each raw post, so A is never asked for and B is asked
++ * for 2 s after its post. */
++static void testResizeSettle(void)
++{
++  msgInit();
++  post(1600, 900);
++  run(1800 * UINT64_C(1000));
++  CHECK(t.send == 0);
++
++  post(1700, 950);
++  run(SETTLE_US - POLL_US);
++  CHECK(t.send == 0);
++  run(POLL_US);
++  CHECK(t.send == 1);
++  checkCtl(0, 1700, 950);
++  lgMessage_deinit();
++}
++
++static void seenPolls(void)
++{
++  for (unsigned int i = 0; i < 150; ++i)
++  {
++    core_resizeFrameSeen();
++    run(POLL_US);
++  }
++}
++
++static void quietPolls(void)
++{
++  run(10 * SEC_US);
++}
++
++static void oneFrame(void)
++{
++  core_resizeFrameSeen();
++  process();
++}
++
++/* 0004: frames that change nothing still reach the module, so a guest that
++ * keeps drawing at the old size never looks stalled. */
++static void testResizeSeen(void)
++{
++  static const char * stall = "no frame from Windows for 10 s";
++
++  msgInit();
++  t.unread = true;
++  post(1600, 900);
++  mature();
++  settle();
++  CHECK(t.send == 1);
++
++  CHECK(countLogged(stall, seenPolls) == 0);
++  CHECK(countLogged(stall, quietPolls) == 1);
++  CHECK(countLogged("frames from Windows again", oneFrame) == 1);
++  lgMessage_deinit();
++}
++
+ static void testResizeFrame(void)
+ {
+   glueInit();
+@@ -364,6 +475,7 @@
+   t.unread = true;
+   post(1600, 900);
+   mature();
++  settle();
+   CHECK(t.send == 1);
+   checkCtl(0, 1600, 900);
+ 
+@@ -388,6 +500,7 @@
+   t.unread = true;
+   post(1600, 900);
+   mature();
++  settle();
+   CHECK(t.send == 1);
+ 
+   /* A new session drops the unread token and waits for its first frame. */
+@@ -431,7 +544,9 @@
+   msgInit();
+   post(1600, 900);
+   mature();
+-  run(37 * SEC_US);
++  settle();
++  /* 0004: the waits are 4, 5, 10 and 20 s. */
++  run(39 * SEC_US);
+   CHECK(t.send == 5);
+ 
+   /* 61 s after the last ask, Windows leaves its size and comes back to it
+@@ -463,7 +578,7 @@
+   mature();
+   core_resizeFrame(1600, 900);
+   core_resizeFrame(1280, 720);
+-  process();
++  settle();
+   CHECK(t.send == 1);
+   checkCtl(0, 1600, 900);
+   lgMessage_deinit();
+@@ -474,6 +589,7 @@
+   msgInit();
+   post(1600, 900);
+   mature();
++  settle();
+   CHECK(t.send == 1);
+ 
+   /* The new session's first frame has the same count as the old session's
+@@ -486,41 +602,17 @@
+   lgMessage_deinit();
+ }
+ 
+-/* Count the lines holding `text` that the client logs while `fn` runs. */
+-static unsigned int countLogged(const char * text, void (*fn)(void))
+-{
+-  fflush(stderr);
+-  FILE * capture = tmpfile();
+-  CHECK(capture);
+-  const int saved = dup(STDERR_FILENO);
+-  CHECK(saved >= 0);
+-  CHECK(dup2(fileno(capture), STDERR_FILENO) >= 0);
+-
+-  fn();
+-
+-  fflush(stderr);
+-  CHECK(dup2(saved, STDERR_FILENO) >= 0);
+-  CHECK(close(saved) == 0);
+-
+-  unsigned int count = 0;
+-  char line[1024];
+-  rewind(capture);
+-  while (fgets(line, sizeof(line), capture))
+-    if (strstr(line, text))
+-      ++count;
+-  fclose(capture);
+-  return count;
+-}
+-
+ static void faultPolls(void)
+ {
+   run(3 * SEC_US);
+ }
+ 
++/* 0004: the new size's ask goes out 4 s after the last ask, the gap. */
+ static void faultNewSize(void)
+ {
+   post(1700, 950);
+   mature();
++  run(GAP_US - DEBOUNCE_US);
+ }
+ 
+ static void testResizeFault(void)
+@@ -531,7 +623,8 @@
+   msgInit();
+   post(1600, 900);
+   t.status = LG_TRANSPORT_UNAVAILABLE;
+-  CHECK(countLogged(warn, mature) == 0);
++  mature();
++  CHECK(countLogged(warn, settle) == 0);
+   CHECK(t.send == 1);
+   CHECK(countLogged(warn, faultPolls) == 0);
+   CHECK(t.send == 4);
+@@ -540,7 +633,8 @@
+   msgInit();
+   post(1600, 900);
+   t.status = LG_TRANSPORT_ERROR;
+-  CHECK(countLogged(warn, mature) == 1);
++  mature();
++  CHECK(countLogged(warn, settle) == 1);
+   CHECK(t.send == 1);
+ 
+   /* Tried again no sooner than 1 s later, and with no second warning. */
+@@ -721,6 +815,8 @@
+   { "equal"         , testEqual         },
+   { "reinit"        , testReinit        },
+   { "control"       , testControl       },
++  { "resize-settle" , testResizeSettle  },
++  { "resize-seen"   , testResizeSeen    },
+   { "resize-frame"  , testResizeFrame   },
+   { "resize-token"  , testResizeToken   },
+   { "resize-session", testResizeSession },
