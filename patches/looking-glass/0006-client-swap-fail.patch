@@ -1,0 +1,116 @@
+Subject: client: keep running after a failed buffer swap
+
+The EGL renderer ended the client on the first failed buffer swap:
+egl_render returned the swap's result, and a false result breaks the
+render loop. On an NVIDIA host (RTX 4070 SUPER, driver 615.78.08) with
+video memory nearly full, the first swap after the first guest frame
+failed in 13 of 24 opens of the window. The EGL error was 0x3000
+(EGL_SUCCESS). A test build that carried on showed one failed swap each
+time, and the next swap succeeded.
+
+A failed swap now ends the client only when every swap has failed for
+one second. This does not remove the cause of the failed swap, which
+is not known. It stops a short run of failed swaps from closing the
+window.
+
+- egl.c: egl_render counts the failed swaps in a row. On a failed swap
+  it waits SWAP_FAIL_RETRY_NS (10 ms), calls app_invalidateWindow(true)
+  and returns true. The frame did not reach the screen, so the damage
+  history no longer matches the buffers. The call makes the next frame a
+  full redraw and wakes the render thread for the next try. The wait
+  keeps a run of failed swaps to about 100 tries: a try asks the
+  compositor for a frame callback (with win:jitRender) and for a
+  presentation report (when the compositor has that protocol), and both
+  wait for the surface's next commit, which a failed swap may not make.
+  When swaps have failed for SWAP_FAIL_LIMIT_NS (one second), egl_render
+  returns false as before. The first good swap resets the count.
+
+The caller still treats a frame with a failed swap as shown: it retires
+the render queue's pending source change and the cursor repaint one try
+early, and it counts the frame's timing. The next try redraws all of it.
+
+The log line for a failed swap keeps its text and gains ", trying
+again". Only the first and the last failed swap of a run are logged.
+The first good swap after them logs "EGL swap succeeded after N failed
+in M ms".
+
+From Lanai, https://github.com/jzetterman/lanai
+Copyright (C) 2026 John Zetterman
+SPDX-License-Identifier: GPL-2.0-or-later
+
+diff -Naur lg-pristine/client/renderers/EGL/egl.c lg-working/client/renderers/EGL/egl.c
+--- lg-pristine/client/renderers/EGL/egl.c	2026-11-22 13:56:43.401161769 -0500
++++ lg-working/client/renderers/EGL/egl.c	2026-11-22 14:44:38.009258669 -0500
+@@ -60,6 +60,11 @@
+ #define MAX_ACCUMULATED_DAMAGE ((LG_MAX_FRAME_DAMAGE_RECTS + MAX_OVERLAY_RECTS + 2) * MAX_BUFFER_AGE)
+ #define IDX_AGO(counter, i, total) (((counter) + (total) - (i)) % (total))
+ 
++/* Lanai: how long swaps may keep failing before the client ends, and the
++ * wait before each new try. */
++#define SWAP_FAIL_LIMIT_NS 1000000000ULL
++#define SWAP_FAIL_RETRY_NS 10000000ULL
++
+ struct Options
+ {
+   bool vsync;
+@@ -115,6 +120,9 @@
+ 
+   bool                 hadOverlay;
+   bool                 noSwapDamage;
++  /* Lanai: the failed swaps in a row, and when the first of them failed. */
++  unsigned int         swapFails;
++  uint64_t             swapFailStart;
+   struct DesktopDamage desktopDamage[DESKTOP_DAMAGE_COUNT];
+   unsigned int         desktopDamageIdx;
+   LG_Lock              desktopDamageLock;
+@@ -1792,10 +1800,47 @@
+       this->noSwapDamage ? 0 : damageIdx, timing->frameToken,
+       &timing->swapTime, &timing->presentTracked);
+ 
+-  if (!swapResult)
+-    DEBUG_ERROR("Failed to swap EGL buffers (eglError: 0x%x)", eglGetError());
++  if (likely(swapResult))
++  {
++    if (unlikely(this->swapFails))
++    {
++      DEBUG_WARN("EGL swap succeeded after %u failed in %u ms",
++          this->swapFails,
++          (unsigned)((nanotime() - this->swapFailStart) / 1000000ULL));
++      this->swapFails = 0;
++    }
++    return true;
++  }
+ 
+-  return swapResult;
++  /* Lanai: a failed swap does not end the client at once. The NVIDIA driver
++   * can fail one swap when video memory is nearly full, and the next swap
++   * succeeds. This frame did not reach the screen, so the damage history no
++   * longer matches the buffers: ask for a full redraw, which also wakes the
++   * render thread for the next try. The client ends only when every swap
++   * has failed for SWAP_FAIL_LIMIT_NS. Only the first and the last failed
++   * swap of a run are logged. */
++  const EGLint   swapError = eglGetError();
++  const uint64_t now       = nanotime();
++  if (!this->swapFails++)
++  {
++    this->swapFailStart = now;
++    DEBUG_ERROR("Failed to swap EGL buffers (eglError: 0x%x), trying again",
++        swapError);
++  }
++  else if (now - this->swapFailStart >= SWAP_FAIL_LIMIT_NS)
++  {
++    DEBUG_ERROR("Failed to swap EGL buffers (eglError: 0x%x), "
++        "%u failed in a row", swapError, this->swapFails);
++    return false;
++  }
++
++  /* A try asks the compositor for a frame callback (with win:jitRender)
++   * and for a presentation report (when the compositor has that protocol).
++   * Both wait for the surface's next commit, which a failed swap may not
++   * make. The wait keeps a run of failed swaps to about 100 tries. */
++  nsleep(SWAP_FAIL_RETRY_NS);
++  app_invalidateWindow(true);
++  return true;
+ }
+ 
+ static bool egl_capture(LG_Renderer * renderer, LG_RendererCapture * capture)
