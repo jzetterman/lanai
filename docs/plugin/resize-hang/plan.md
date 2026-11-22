@@ -8,8 +8,9 @@ task in Windows restarts the Looking Glass display driver.
 Status: design reviewed (three rounds), 2026-11-21. Phase 0 passed the same
 day: a driver restart recovered 3 of 3 forced hangs. It also found two changes
 for part C, which John accepted (decision 3): the scale task confirms the hang
-from the driver log, and selects the adapter by hardware ID. These changes get
-one focused review before code. No code yet.
+from the driver log, and selects the adapter by hardware ID. A fourth, focused
+review of those changes, approved by John past the three-round cap, found two
+P2s, now integrated. Phase 1 is next. No code yet.
 
 ## Problem
 
@@ -149,38 +150,42 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
      so a same-second restart, a truncate-and-regrow between polls and a
      rotation are all caught, and lines from an earlier client are never
      replayed. A log shorter than the offset also starts again at offset 0;
-   - whether a recovery is pending, and when it started;
-   - each restart attempt in this VM run, with its time.
+   - whether a recovery is pending, when it started, and the time of each send
+     for it;
+   - each restart seen in this VM run (requirement 11), with its time.
 
    The feed writes the state to a temporary file and renames it over the old
    one, so an interrupted write leaves the old state whole.
 10. A stall line makes a recovery pending. These end it: a `frames from Windows
     again` line, a new client generation, the client unit not running (the
-    feed checks it at each poll), the end of the VM, or a declined attempt
-    (requirement 11).
+    feed checks it at each poll), or the end of the VM.
 11. While a recovery is pending, the feed sends `lanai-display-restart` only when
     QEMU reports the scale port's guest side open (`frontend-open` on `scale0`,
     as setup's step 6 check reads it). So a stall before the scale task starts,
-    such as before sign-in, waits instead of being lost. It tries again while
-    the recovery stays pending, at most once every 60 s and at most 3 attempts in
-    one VM run. Before each write, it records the attempt in the state file, so
-    every attempt counts, whether the write succeeds, fails or is cut off: the
-    count errs toward fewer restarts. Whenever a recovery is pending and no
-    attempt is left (after 60 s with no frames for the third attempt, or a fourth
-    stall after three recoveries), it sends nothing more, and `lanai status`
-    warns that Windows' display is stuck and that a restart of Windows fixes it.
-    Scale lines keep flowing as today while a recovery waits.
+    such as before sign-in, waits instead of being lost. Scale lines keep
+    flowing as today while a recovery waits.
 
-    The channel stays one-way (spec 27), so the feed learns the outcome from
-    `client.log`. A driver restart always ends the client's session, and the
-    client logs a new one (`Starting session`, upstream's line). If no new
-    session is logged within 30 s of a send, the attempt was declined: the scale
-    task found the display not hung, the restart failed, or the task is too old
-    to know the line. The feed then ends the recovery without the warning and
-    sends nothing more for this stall. Until a frame arrives, `lanai status`
-    notes that Windows has sent no picture for a while and that a restart of
-    Windows fixes a frozen window. A frame, a new client generation or the end
-    of the VM clears the note. A declined attempt still counts toward the 3.
+    The channel stays one-way (spec 27), so the feed never learns whether
+    Windows restarted its display or declined (requirement 13). It treats each
+    send's outcome as unknown and retries within two limits:
+    - Per recovery: at most 3 sends, at least 60 s apart.
+    - Per VM run: at most 3 restarts seen. A restart seen is a send that a new
+      client session (`Starting session`, upstream's line) followed within
+      60 s. A driver restart ends the client's session, and phase 0 saw the new
+      one 2 to 6 s after each restart. A declined send restarts nothing, so it
+      costs no restart seen; an unrelated reconnect after a send counts as one,
+      which errs toward fewer restarts.
+
+    Before each write, the feed records the send in the state file, so every
+    send counts against both limits it can, whether the write succeeds, fails
+    or is cut off. With either limit spent, it sends nothing more for this
+    recovery.
+
+    While a recovery has been pending for 60 s or more, `lanai status` notes
+    that Windows has sent no picture for that long and that, if the window is
+    frozen, a restart of Windows fixes it. The note does not say the display is
+    stuck: a refused size on a still desktop also sends no picture (requirement
+    8). Whatever ends the recovery clears the note.
 12. The scale task accepts the exact line `lanai-display-restart` and nothing
     longer or different. Restart lines and scale lines are separate kinds in a
     drained batch:
@@ -190,32 +195,46 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
       one restart.
 13. On a restart line, the task first confirms the hang from the driver's own
     log, because a refused size on a still desktop looks the same from the host
-    (requirement 8). It reads the last 1 MiB of
-    `%ProgramData%\Looking Glass (IDD)\looking-glass-idd.txt`, opened for shared
-    read, since the driver keeps writing it. The display is hung only when all
-    of these hold:
-    - The tail holds a line from `CMonitorManager::Replug` that ends
-      `| ReplugMonitor`.
-    - No line after the last such line ends `| Swap chain device set`.
-    - That line's time (`[yyyy-MM-dd HH:mm:ssZ]`, UTC) is at least 5 s before
-      Windows' clock now.
+    (requirement 8). The check and the restart run in one child process with a
+    45 s limit, so neither can stop scale handling. The check reads the last
+    1 MiB of `%ProgramData%\Looking Glass (IDD)\looking-glass-idd.txt`, opened
+    for shared read, since the driver keeps writing it. It skips the first line
+    of the tail and any last line with no newline, since either may be cut. A
+    candidate is the last complete line from `CMonitorManager::Replug` that ends
+    `| ReplugMonitor`, with no later complete line that ends
+    `| Swap chain device set` or contains `IddCxMonitorDeparture Failed` (the
+    driver's path that keeps the old monitor and stays healthy). The check
+    reads the log twice, 10 s apart by a monotonic timer, not by the log's
+    times, so a clock step cannot fake the wait. The display counts as hung
+    only when both reads find a candidate at the same byte offset in the file.
 
-    Otherwise, including a missing or unreadable log or a time it cannot parse,
-    it logs "Display not hung (<reason>); no restart." and does nothing. Phase 0
-    found this signature in all three forced hangs and in the live 2026-11-21
-    freeze, and not in a healthy log with five refusals. The strings belong to
-    the pinned IDD; a pin change rechecks them (requirement 18).
+    Anything else, including no candidate, a missing or unreadable log, or a
+    file that shrank between the reads, logs "Display hang not confirmed
+    (<reason>); no restart." and does nothing. The driver starts a new log at
+    each start, so the current file holds only the running driver's events; a
+    hang whose replug line is gone gets no automatic restart, which errs toward
+    fewer restarts.
+
+    The check proves an unfinished replug, not a hung display. The evidence
+    makes that a close stand-in. Phase 0's and John's driver logs hold 2,119
+    distinct replugs and no departure failure. 2,114 finished in 3 s or less.
+    The other five were all hangs: hangs 1-3, the live 2026-11-21 freeze, and
+    the live 2026-11-19 replug that stayed unfinished for 33 minutes until
+    John's graphics reset.
+    Accepted risk: a healthy replug slower than 10 s after a 10 s stall gets one
+    needless restart, one display flicker. The strings and their meaning belong
+    to the pinned IDD; a pin change rechecks them (requirement 18).
 
     For a restart, the task selects the Looking Glass display adapter by its
     hardware ID, `Root\LGIdd`, which is the same on every install. The instance
     ID (`ROOT\DISPLAY\0000` in phase 0) is not, so it is read each time. It acts
     only when exactly one present device has that hardware ID, and logs and does
     nothing for none or several. It runs
-    `C:\Windows\System32\pnputil.exe /restart-device <instance ID>` in a child
-    process with a 30 s limit, so a stuck restart cannot stop scale handling.
-    It logs the exit code. Exit code 3010 (reboot needed) and any other failure
-    are logged, not retried by the task: the host's next send is the retry. It
-    restarts at most once a minute.
+    `C:\Windows\System32\pnputil.exe /restart-device <instance ID>` with the
+    instance ID as one argument, and matches the hardware ID without regard to
+    case. It logs the exit code. Exit code 3010 (reboot needed) and any other
+    failure are logged, not retried by the task: the host's next send is the
+    retry. It restarts at most once a minute.
 14. An install whose scale task predates the restart handler gets the same
     treatment as an old scale task today: the panel says to run setup again and
     names the fix. Setup records the new task version.
@@ -250,10 +269,13 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
     recovery, and says that a restart of Windows is the fallback.
 17. The panel's old-client and old-task messages name the freeze fix (the
     pattern 0003 set: "may", one item per fix).
-18. `CLAUDE.md`'s pin rule adds a recheck: the new IDD still logs the three
-    strings requirement 13 reads (`CMonitorManager::Replug` with
-    `ReplugMonitor`, `Swap chain device set`, and the bracketed UTC time), at the
-    same log path, and still has the hardware ID `Root\LGIdd`. Spec 12's
+18. `CLAUDE.md`'s pin rule adds a recheck of what requirement 13 reads, in the
+    new IDD's source: it still logs `ReplugMonitor` from
+    `CMonitorManager::Replug` before the departure, `Swap chain device set` when
+    a new swap chain is ready, and `IddCxMonitorDeparture Failed` on the path
+    that keeps the old monitor, with no other path that ends a replug without
+    one of those lines. The log keeps its path and starts a new file at each
+    driver start, and the adapter keeps the hardware ID `Root\LGIdd`. Spec 12's
     sign-in bullet, which the rule cites, gets the same note.
 
 ## Acceptance
@@ -285,19 +307,24 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
   - A stall line with the port open sends `lanai-display-restart` once.
   - A stall line with the port closed sends nothing, then sends once the port
     opens.
-  - With no `frames again` line, it tries again after 60 s. After the third
-    attempt and 60 s with no frames, it sends nothing more, and the status
-    warning appears.
-  - Three stalls that each recover, then a fourth stall: nothing is sent, and
-    the warning appears.
-  - A write that fails, and a feed killed between recording an attempt and
-    writing: each counts as an attempt.
+  - With no `frames again` line, it sends again 60 s after each send, whether
+    or not a session followed, and stops after the third send for one
+    recovery.
+  - Restarts seen: a send followed by `Starting session` within 60 s counts
+    one. After three in a VM run, a new stall sends nothing. Sends with no
+    session after them (a declined check, a failed restart) do not count, so a
+    refused size that stalls on every idle minute never spends the run's
+    restarts. A session that comes 61 s after a send does not count; an
+    unrelated session after a declined send does.
+  - A write that fails, and a feed killed between recording a send and
+    writing: each counts as a send. A feed restart while it waits to learn
+    whether a session follows keeps the send and its time.
+  - `frames again` without a new session ends the recovery and counts no
+    restart.
   - `frames again`, a new client generation, or the client unit stopping ends
     the recovery: nothing more is sent.
-  - A send with no `Starting session` within 30 s is declined: the recovery
-    ends, nothing more is sent for that stall, no stuck warning appears, and
-    the no-picture note shows until a frame. A send followed by a session but
-    no frame tries again after 60 s.
+  - The status note shows once a recovery has been pending for 60 s, never
+    says "stuck", and clears when the recovery ends.
   - Two client starts in the same second, with the new log regrown past the old
     offset before the next poll: the new ID starts a new generation, and the old
     stall line is not acted on. The same holds for a rotated log.
@@ -316,13 +343,19 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
   - A second restart within a minute does nothing.
   - No matching device or two matching devices: logged, no restart.
   - The hang check, on trimmed copies of the phase 0 driver logs in
-    `test/fixtures/`: hangs 1-3 and the live 2026-11-21 freeze restart; the
-    healthy log with five refusals does not. Also no restart for a missing log,
-    a log with no `ReplugMonitor` in its last 1 MiB, a last replug under 5 s
-    old, and a time that does not parse. A log the driver holds open is still
-    read.
-  - A nonzero exit and exit 3010 are logged. A restart that runs past 30 s is
-    stopped, and scale handling goes on meanwhile.
+    `test/fixtures/`, with the 10 s wait shortened by a test hook: hangs 1-3
+    (including hang 3's same-second replug) and the live 2026-11-21 freeze
+    restart; the healthy log with five refusals does not. No restart for: a
+    missing log; no `ReplugMonitor` in the tail; `IddCxMonitorDeparture Failed`
+    after the last replug; a `Swap chain device set` that appears between the
+    two reads; a new replug line at another offset on the second read; a file
+    that shrank between the reads; and a tail cut through the candidate line
+    or ending in a partial line. A log the driver holds open is still read.
+  - Selection: one present device whose hardware ID list holds `root\lgidd`
+    in any case, under another instance suffix, is restarted with its instance
+    ID as one argument.
+  - A nonzero exit and exit 3010 are logged. A check and restart that run past
+    45 s are stopped, and scale handling goes on meanwhile.
 - Every patch applies exactly, the client builds, and its tests pass
   (`test/client-patches.bats` with `LANAI_TEST_LG_TARBALL`). The bats suite,
   `bin/check` and CI pass.
@@ -440,9 +473,10 @@ stall detector, so phase 3 can force hangs with the new detector.
 
 The client ID line in `client_exec`. The follower, its state file and the send
 rules in `lib/vm.sh`, with the `frontend-open` and client unit checks. The
-status warning, the declined-attempt rule and the no-picture note. The hang
-check and the restart handler in `guest/lanai-scale.ps1`, with trimmed phase 0
-driver logs as fixtures, the task version in setup, and the panel messages.
+per-recovery and per-run limits with restarts seen, and the no-picture note.
+The hang check and the restart handler in `guest/lanai-scale.ps1`, with
+trimmed phase 0 driver logs as fixtures, the task version in setup, and the
+panel messages.
 Then the spec, README and CLAUDE.md updates.
 
 ### Phase 3: proof on a copy
@@ -481,3 +515,4 @@ John accepted this one on 2026-11-21, after phase 0:
 | design (gpt-6.1-sol, high, blind) | 1 | 9 | Two P1 and seven P2, all confirmed against the files and integrated: a defined stall lifecycle, including a client that starts on a hung display (B6-B8); a pending recovery that waits for the scale port and resends within limits (C10-C11); the settle clock fed by raw size changes (A1); restart-safe follower state (C9); spec 12's timing amended (D15); the cause stated as provisional (Problem); phase 3 on a test build with the detector, and phase 0 naming the state it reproduced; a portable device selector with bounded failures (C13); and both kinds of line in a batch (C12). The review's manifest check failed only on the manifest's own entry (an author error); the 19 other inputs matched. |
 | design (gpt-6.1-sol, high, follow-up with round 1 findings) | 2 | 4 | Round 1: five resolved, four partly. Four new P2, all confirmed and integrated: a stall survives a new session and ends only on a frame, and the client unit stopping ends a recovery (B7, C10); a unique client ID on the log's second line, since the first line's epoch can repeat and two readers parse that line strictly (C9); every attempt recorded before the write, an atomic state file, and a warning whenever no attempt is left (C9, C11); spec 12 measured from the last raw size change, with a stall exception (D15). Manifest: 21 of 21 matched. |
 | design (gpt-6.1-sol, high, follow-up with round 2 findings) | 3 | 1 | Round 2's four and round 1's partly-resolved items: all resolved except one. One P2, confirmed and integrated: an event with no window size change, such as a resolution picked in Windows, is measured from that event, not from an older window resize (D15), with a module case for it. The author verified the fix directly against `spec.md:300-308` and `0001`'s "late-change" case. Manifest: 22 of 22 matched. The review cap of three cycles is reached; the design gate is closed. |
+| design, part C changes after phase 0 (gpt-6.1-sol, high, blind; a fourth round John approved past the cap) | 4 | 2 | Approve with changes. Two P2, both confirmed against the source and integrated. (1) A missing `Starting session` cannot prove a declined send: upstream's connect loop has no 30 s deadline, and an unrelated reconnect can log one. Each send's outcome is now unknown; sends retry within a per-recovery limit (3, 60 s apart), and only sends a session followed within 60 s count toward the run's 3 restarts, so declines cost nothing. The "stuck" warning became a neutral no-picture note (C9-C11). (2) The driver-log rule detects an unfinished replug, not a hang, and `CMonitorManager.cpp:241-255` shows a departure failure that logs `ReplugMonitor` and stays healthy. Now a departure failure cancels a candidate; the check reads complete lines only and confirms the same candidate twice, 10 s apart by a monotonic timer, not log times; a missing replug means no restart; the risk of a healthy replug slower than 10 s is stated and accepted, with the author's measurement: of 2,119 distinct replugs in the logs, 2,114 finished in 3 s or less and the other five were all hangs, including a 33-minute unfinished replug that was the 2026-11-19 freeze (C13, C18, acceptance). The adapter selector had no finding; case-insensitive matching and one-argument passing were added. Manifest: 28 of 28 matched at start and end. |
