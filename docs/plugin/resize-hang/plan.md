@@ -12,8 +12,9 @@ day: a driver restart recovered 3 of 3 forced hangs. It also found two changes
 for part C, which John accepted (decision 3): the scale task confirms the hang
 from the driver log, and selects the adapter by hardware ID. A fourth, focused
 review of those changes, approved by John past the three-round cap, found two
-P2s, now integrated. Phase 1 (the client patches) is done, not yet reviewed.
-Phase 2 is next.
+P2s, now integrated. Phases 1 (the client patches) and 2 (the host feed, the
+scale task, the panel and the docs) are done, not yet reviewed. Phase 3, the
+proof on a copy, is next.
 
 ## Problem
 
@@ -513,6 +514,33 @@ The hang check and the restart handler in `guest/lanai-scale.ps1`, with
 trimmed phase 0 driver logs as fixtures, the task version in setup, and the
 panel messages.
 Then the spec, README and CLAUDE.md updates.
+
+#### Phase 2 result (2026-11-21)
+
+- Host (`lib/client.sh`, `lib/vm.sh`, `lib/lanai.sh`): `client_exec` writes
+  `lanai: client id <uuid>` as the log's second line. `display_recovery_step`
+  runs in each feed pass, before the scale line, and keeps
+  `$RUN/display-recovery.json` as requirement 9 lists it, with `watch` for the
+  last send no session has followed yet. It asks QMP on `qmp-cli.sock`, as
+  `lanai status` does, only when a send is due. `lanai status` reports
+  `LanaiNoPicture` and the note "Windows has sent no picture for N minutes. If
+  the Windows window looks frozen, restart Windows to fix it."
+- Guest (`guest/lanai-scale.ps1`): the restart child is the same script with
+  `-DisplayRestart`, so setup copies no new file. The child is started with
+  `Start-Process` in the start program's job. Stopping it at 45 s kills the
+  child powershell.exe only; a pnputil it started may run on, and ends with the
+  job at the latest. Both processes write `lanai-scale.log`; the child retries
+  a write that meets the task's.
+- Setup and panel (requirement 14): step 6 records `display_restart`
+  (`LANAI_DISPLAY_RESTART`, 1), and `display_restart_missing` reads it. Without
+  the sign-in step, the freeze is one more item in the Run setup again message
+  ("all four" at most). With the step, it is its own Run setup again message
+  after any update words.
+- Tests: 16 host cases in `test/scale-feed.bats`, the ID line in
+  `test/client.bats`, the VM start cleanup in `test/vm.bats`, 8 guest cases on
+  the phase 0 driver logs in `test/fixtures/idd/`, the mark in `test/ui.bats`
+  and `test/setup.bats`, and the panel words in `test/panel.bats`. Each rule
+  was removed in turn, and a test failed each time.
 
 ### Phase 3: proof on a copy
 

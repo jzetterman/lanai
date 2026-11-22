@@ -993,8 +993,10 @@ start_exec() {
   : >"$RUN/ivshmem"
   echo "old client log" >"$RUN/client.log"
   echo 1700000000 >"$RUN/step6-checked"
-  # The window's monitor from the last run must not carry over.
+  # The window's monitor and the display recovery from the last run must
+  # not carry over.
   echo DP-9 >"$RUN/scale-monitor"
+  echo '{"pending":true,"restarts":[1,2,3]}' >"$RUN/display-recovery.json"
   mkdir -p "$S"
   echo '{"scale": 150, "scale_save": 7, "setup": false}' >"$S/boot.json"
   start_exec
@@ -1004,6 +1006,7 @@ start_exec() {
   assert [ ! -e "$RUN/qmp.sock" ]
   assert [ ! -e "$RUN/scale.sock" ]
   assert [ ! -e "$RUN/scale-monitor" ]
+  assert [ ! -e "$RUN/display-recovery.json" ]
   assert [ ! -e "$RUN/ivshmem" ]
   assert [ ! -s "$RUN/client.log" ]
   assert_equal "$(<"$RUN/client.log.1")" "old client log"

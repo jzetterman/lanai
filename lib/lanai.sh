@@ -857,8 +857,10 @@ shared_facts() {
 # unit's `systemctl --user show` output, then Lanai's own (LanaiInstall,
 # LanaiSetup, LanaiContainer, LanaiForced, LanaiLastRun, and for an active
 # unit LanaiWindow=true when it shows QEMU's window, LanaiQmp, LanaiQga,
-# LanaiHelpersMissing, LanaiStopAge and
-# LanaiClient=timeout when the client gave up waiting for QEMU),
+# LanaiHelpersMissing, LanaiStopAge,
+# LanaiClient=timeout when the client gave up waiting for QEMU, and
+# LanaiNoPicture=<seconds> while a display recovery has been pending that
+# long, recovery_pending_age),
 # LanaiVersion (version_check's verdict on client.log for an active unit,
 # else "unknown"; idd-missing only while the client runs), and
 # LanaiDriverOld=<version> when the recorded guest driver is not the pinned
@@ -892,6 +894,8 @@ status_facts() {
       helper_alive "$run" "$name" || missing+=,$name
     done
     [[ -z $missing ]] || echo "LanaiHelpersMissing=${missing#,}"
+    at=$(recovery_pending_age "$EPOCHSECONDS")
+    [[ -z $at ]] || echo "LanaiNoPicture=$at"
     if [[ -n $inv && -f $s/stop-requested ]] && read -r rinv at <"$s/stop-requested" &&
       [[ $rinv == "$inv" && $at =~ ^[0-9]+$ ]]; then
       echo "LanaiStopAge=$((EPOCHSECONDS - at))"
@@ -931,7 +935,7 @@ status_facts() {
 # IDD on a booted VM failed, with the client log as its logs (spec 8); a
 # stop in progress and a QEMU error come first.
 status_map() {
-  local line state message next notice="" warning="" force=false name logs="" up=false
+  local line state message next notice="" warning="" force=false name logs="" up=false at
   local -A f=()
   local -a lost=()
   while IFS= read -r line; do
@@ -1012,6 +1016,12 @@ status_map() {
   # status_facts reports LanaiClient only for an active unit.
   if [[ ${f[LanaiClient]:-} == timeout ]]; then
     warning+="${warning:+ }The Windows window did not open: QEMU did not answer within $LANAI_CLIENT_WAIT s. Try Open again."
+  fi
+  # A refused size on a still desktop also sends no picture, so the note
+  # never says the display is stuck.
+  if [[ $state == running && ${f[LanaiNoPicture]:-} =~ ^[0-9]+$ ]]; then
+    at=$((f[LanaiNoPicture] / 60))
+    warning+="${warning:+ }Windows has sent no picture for $at minute$([[ $at == 1 ]] || echo s). If the Windows window looks frozen, restart Windows to fix it."
   fi
   if [[ -n ${f[LanaiDriverOld]:-} && $state != version-mismatch ]]; then
     warning+="${warning:+ }The Windows display driver (${f[LanaiDriverOld]}) is not Lanai's pinned build ($LG_BUILD); run Lanai setup again to update it."

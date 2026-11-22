@@ -31,8 +31,9 @@ panel_fixture_setup() {
   auto_units() { :; }
   expected_base() { echo fixture.iso; }
   settings_seed() { echo '{"memory_gib":8,"cores":4}'; }
-  # A finished setup with the live scale task and the current sign-in mark.
-  CURRENT=$(jq -nc --argjson i "$LANAI_SIGNIN_STEP" '{done:true,scale_task:2,signin_step:$i}')
+  # A finished setup with the live scale task and the current sign-in and
+  # display restart marks.
+  CURRENT=$(jq -nc --argjson i "$LANAI_SIGNIN_STEP" --argjson r "$LANAI_DISPLAY_RESTART" '{done:true,scale_task:2,signin_step:$i,display_restart:$r}')
   export T
 }
 

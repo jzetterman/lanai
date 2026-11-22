@@ -1149,10 +1149,14 @@ exec /usr/bin/mv "$@"'
   # it runs nothing even where an agent accepts it (spec 27).
   grep -qxF 'cmd {"execute":"guest-exec"}' "$T/qga.log" || fail "no argument-free guest-exec: $(cat "$T/qga.log")"
   # The live scale task, which carries the sign-in step in the start
-  # program: the current signin_step.
-  assert_equal "$(jq -c '[.done, .scale_task, .signin_step]' "$S/setup.json")" "[true,2,$LANAI_SIGNIN_STEP]"
+  # program and the display restart: the current signin_step and
+  # display_restart.
+  assert_equal "$(jq -c '[.done, .scale_task, .signin_step, .display_restart]' "$S/setup.json")" \
+    "[true,2,$LANAI_SIGNIN_STEP,$LANAI_DISPLAY_RESTART]"
   assert_equal "$(scale_task_kind)" new
   run signin_step_missing
+  assert_failure
+  run display_restart_missing
   assert_failure
   run setup_done
   assert_success
@@ -1890,7 +1894,7 @@ exec /usr/bin/mv "$@"'
   assert_success
   assert_equal "$(field step)" 7
   assert_equal "$(jq -c 'del(.location)' "$S/setup.json")" \
-    "{\"snapshot\":\"declined\",\"done\":true,\"scale_task\":2,\"signin_step\":$LANAI_SIGNIN_STEP}"
+    "{\"snapshot\":\"declined\",\"done\":true,\"scale_task\":2,\"signin_step\":$LANAI_SIGNIN_STEP,\"display_restart\":$LANAI_DISPLAY_RESTART}"
   setup_run
   assert_equal "$(field step)" 7
 }

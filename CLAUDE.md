@@ -31,7 +31,8 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   the scale task's start program, which setup builds in Windows), `patches/looking-glass/`
   (Lanai's Looking Glass client patches, `NNNN-<topic>.patch`, with the GPL-2.0 text
   in `COPYING`) and `test/` (bats; fake
-  QMP and guest agent servers and trimmed client logs in `test/fixtures/`;
+  QMP and guest agent servers, trimmed client logs, and trimmed display driver
+  logs from the freeze proofs (`idd/`) in `test/fixtures/`;
   `test/client-patches.bats` builds and runs the patches' C tests;
   `test/client-auto.bats` tests Lanai's own client update;
   `test/panel-fixtures.bash` shares isolated backend fixtures between the panel
@@ -75,7 +76,15 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   the IDD stays the pinned build. A pin change needs patches that apply exactly to
   the new source, and a recheck that the new IDD still stores the ask where and as
   `guest/lanai-start.cs` reads it (`ExtraMode` in `HKLM\SOFTWARE\LookingGlass\IDD`,
-  `<w>x<h>@<refresh>[*]`; spec 12, the sign-in bullet).
+  `<w>x<h>@<refresh>[*]`; spec 12, the sign-in bullet). It also needs a recheck, in
+  the new IDD's source, of what `guest/lanai-scale.ps1`'s hang check reads: the
+  driver still logs `ReplugMonitor` from `CMonitorManager::Replug` before the
+  departure, `Swap chain device set` when a new swap chain is ready, and
+  `IddCxMonitorDeparture Failed` on the path that keeps the old monitor, with no
+  other path that ends a replug without one of those lines; the log keeps its path
+  (`%ProgramData%\Looking Glass (IDD)\looking-glass-idd.txt`) and starts a new file
+  at each driver start; and the adapter keeps the hardware ID `Root\LGIdd`
+  (docs/plugin/resize-hang/plan.md, requirement 13).
 - The spike (`spike/`) never writes to the live `omarchy-windows-vm` disk; it works on a
   reflink copy. Lanai boots the live disk only after its adoption checks pass
   (docs/plugin/spec.md, requirements 1-5).

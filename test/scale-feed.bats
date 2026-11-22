@@ -3,7 +3,7 @@
 # pure target and line functions with fixture hyprctl JSON, one feed pass
 # with PATH shims for hyprctl and systemctl, and the loop against fake scale
 # sockets that read everything, never read, or flood. No VM, no Hyprland.
-# shellcheck disable=SC2030,SC2031,SC2016,SC2034
+# shellcheck disable=SC2030,SC2031,SC2016,SC2034,SC2329
 
 load helpers
 
@@ -562,4 +562,339 @@ c = s.accept(); time.sleep(600)' "$RUN/scale.sock" 3>&- &
   ((now - first <= 2048)) || fail "RSS grew from $first kB to $now kB"
   run cat "$T/feed.log"
   assert_output --partial "cannot send"
+}
+
+# --- display recovery (docs/plugin/resize-hang/plan.md, part C) ---
+
+# Start a fresh client log, as client_exec does, with generation <id>.
+client_gen() {
+  printf 'lanai: client started at 1000\nlanai: client id %s\n' "$1" >"$RUN/client.log"
+}
+
+# Append one client line with message <msg>, in the client's log format.
+client_line() {
+  printf '00:00:01.000 [I]              core.c:482  | resizeLog                      | %s\n' "$1" >>"$RUN/client.log"
+}
+
+stall() { client_line "Resize: no frame from Windows for 10 s (asked for 1600x900)"; }
+again() { client_line "Resize: frames from Windows again"; }
+session() {
+  printf '00:00:02.000 [I]              main.c:4095 | lg_run                         | Starting session\n' >>"$RUN/client.log"
+}
+
+# The scale port's guest side, as query-chardev reports it.
+port() {
+  printf '{"return":[{"label":"scale0","frontend-open":%s}]}\n' "$1" >"$T/chardevs"
+}
+
+# One recovery pass at time <now>, with the client unit running unless
+# <running> is false. QMP answers from $T/chardevs; each send is recorded in
+# $T/sent with its time, and fails when $T/send-fails exists.
+recover() {
+  qmp_call() { cat "$T/chardevs"; }
+  scale_send() {
+    printf '%s %s\n' "$NOW" "$2" >>"$T/sent"
+    [[ ! -e $T/send-fails ]]
+  }
+  NOW=$1 display_recovery_step "$1" "${2:-true}" 2>>"$T/feed.log"
+}
+
+# The times of the restart lines sent so far, space-separated.
+sends() {
+  awk '$2 == "lanai-display-restart" { printf "%s%s", (n++ ? " " : ""), $1 } END { print "" }' "$T/sent" 2>/dev/null
+}
+
+# Field <jq path> of the state file.
+state() {
+  jq -c "$1" "$RUN/display-recovery.json"
+}
+
+@test "recovery: a stall with the port open sends the restart line once" {
+  client_gen aaa
+  port true
+  recover 100
+  assert_equal "$(sends)" ""
+  stall
+  recover 102
+  assert_equal "$(sends)" 102
+  recover 104
+  recover 161
+  assert_equal "$(sends)" 102
+  run grep -c . "$T/sent"
+  assert_output 1
+}
+
+@test "recovery: with the port closed nothing is sent, and the send comes once it opens" {
+  client_gen aaa
+  port false
+  stall
+  recover 100
+  recover 130
+  assert_equal "$(sends)" ""
+  port true
+  recover 132
+  assert_equal "$(sends)" 132
+}
+
+@test "recovery: with no frames again, a send every 60 s, three at most, with or without a session" {
+  client_gen aaa
+  port true
+  stall
+  recover 100
+  recover 159
+  session
+  recover 160
+  recover 200
+  recover 220
+  recover 279
+  recover 280
+  recover 400
+  recover 1000
+  assert_equal "$(sends)" "100 160 220"
+  assert_equal "$(state '.restarts | length')" 1
+}
+
+@test "recovery: three restarts seen in a VM run, and a new stall sends nothing" {
+  client_gen aaa
+  port true
+  local t
+  for t in 100 1000 2000; do
+    stall
+    recover "$t"
+    session
+    recover $((t + 5))
+    again
+    recover $((t + 7))
+  done
+  assert_equal "$(sends)" "100 1000 2000"
+  assert_equal "$(state '.restarts')" "[105,1005,2005]"
+  stall
+  recover 3000
+  recover 3100
+  assert_equal "$(sends)" "100 1000 2000"
+}
+
+@test "recovery: declined sends never spend the run's restarts" {
+  # A refused size on a still desktop stalls on every idle minute; the scale
+  # task declines and frames come back by themselves.
+  client_gen aaa
+  port true
+  local t
+  for t in 100 200 300 400 500; do
+    stall
+    recover "$t"
+    again
+    recover $((t + 30))
+  done
+  assert_equal "$(sends)" "100 200 300 400 500"
+  assert_equal "$(state '.restarts')" "[]"
+}
+
+@test "recovery: a session 61 s after a send is no restart; an unrelated one within 60 s is" {
+  client_gen aaa
+  port true
+  stall
+  recover 100
+  # The port closes, so no second send; the session is read 61 s on.
+  port false
+  session
+  recover 161
+  assert_equal "$(state '.restarts')" "[]"
+  port true
+  again
+  recover 170
+  stall
+  recover 300
+  session
+  recover 330
+  assert_equal "$(state '.restarts')" "[330]"
+}
+
+@test "recovery: a failed write and a send cut off after its record each count" {
+  client_gen aaa
+  port true
+  : >"$T/send-fails"
+  stall
+  recover 100
+  assert_equal "$(state '.sends')" "[100]"
+  rm "$T/send-fails"
+  # Killed after the record, before the write: the record holds.
+  (
+    qmp_call() { cat "$T/chardevs"; }
+    scale_send() { exit 9; }
+    display_recovery_step 160 true 2>>"$T/feed.log"
+  ) || true
+  assert_equal "$(state '.sends')" "[100,160]"
+  recover 220
+  recover 400
+  assert_equal "$(sends)" "100 220"
+  assert_equal "$(state '.sends')" "[100,160,220]"
+}
+
+@test "recovery: a feed restart keeps the send it waits on, and its attempt count" {
+  client_gen aaa
+  port true
+  stall
+  recover 100
+  # A new feed process: same state file, nothing in memory.
+  session
+  run bash -c '
+    source "$1/lib/lanai.sh"
+    qmp_call() { cat "$T/chardevs"; }
+    scale_send() { echo "$2" >>"$T/sent-new"; }
+    display_recovery_step 104 true
+    display_recovery_step 150 true' _ "$REPO"
+  assert_success
+  assert [ ! -e "$T/sent-new" ]
+  assert_equal "$(state '.restarts')" "[104]"
+  assert_equal "$(state '.sends')" "[100]"
+  recover 160
+  assert_equal "$(sends)" "100 160"
+}
+
+@test "recovery: frames again without a session ends it and counts no restart" {
+  client_gen aaa
+  port true
+  stall
+  recover 100
+  again
+  recover 110
+  session
+  recover 120
+  recover 200
+  assert_equal "$(sends)" 100
+  assert_equal "$(state '.pending')" false
+  assert_equal "$(state '.restarts')" "[]"
+}
+
+@test "recovery: frames again, a new client or a stopped client unit ends it" {
+  port true
+  client_gen aaa
+  stall
+  recover 100
+  again
+  recover 101
+  recover 200
+  assert_equal "$(sends)" 100
+
+  stall
+  recover 300
+  client_gen bbb
+  recover 301
+  recover 400
+  assert_equal "$(sends)" "100 300"
+
+  stall
+  recover 500
+  recover 501 false
+  recover 600
+  assert_equal "$(sends)" "100 300 500"
+  assert_equal "$(state '.pending')" false
+}
+
+@test "recovery: a new client ID starts a new generation, also when the new log outgrew the old offset" {
+  port true
+  client_gen aaa
+  local i
+  for ((i = 0; i < 20; i++)); do client_line "Resize: window is 1600x900"; done
+  recover 100
+  # The old client logs a stall the feed has not read yet. Then a client
+  # restart in the same second: a fresh log whose own stall comes first,
+  # regrown past the old offset before the next poll. The new client's
+  # stall is read from the start of its log; the old one is never acted on.
+  stall
+  client_gen bbb
+  stall
+  for ((i = 0; i < 40; i++)); do client_line "Resize: window is 1700x950"; done
+  recover 101
+  assert_equal "$(state '.gen')" '"bbb"'
+  assert_equal "$(sends)" 101
+  assert_equal "$(state '.since')" 101
+
+  # A rotated log (the old one kept as client.log.1) starts over the same
+  # way, and ends the old client's recovery.
+  mv "$RUN/client.log" "$RUN/client.log.1"
+  client_gen ccc
+  recover 103
+  recover 200
+  assert_equal "$(sends)" 101
+  assert_equal "$(state '.pending')" false
+}
+
+@test "recovery: a log with no client ID, or a partial last line, is never acted on" {
+  port true
+  echo "lanai: client started at 1000" >"$RUN/client.log"
+  stall
+  recover 100
+  assert_equal "$(sends)" ""
+  client_gen aaa
+  printf '00:00:01.000 [I]   core.c:482  | resizeLog   | Resize: no frame from Windows for 10 s (asked for 1600x900)' >>"$RUN/client.log"
+  recover 101
+  assert_equal "$(sends)" ""
+  printf '\n' >>"$RUN/client.log"
+  recover 102
+  assert_equal "$(sends)" 102
+}
+
+@test "recovery: a feed restart neither resends for an old stall nor resets the count" {
+  client_gen aaa
+  port true
+  stall
+  recover 100
+  recover 160
+  run bash -c '
+    source "$1/lib/lanai.sh"
+    qmp_call() { cat "$T/chardevs"; }
+    scale_send() { echo "$2" >>"$T/sent-new"; }
+    for t in 170 200 219; do display_recovery_step "$t" true; done' _ "$REPO"
+  assert_success
+  assert [ ! -e "$T/sent-new" ]
+  recover 220
+  recover 400
+  assert_equal "$(sends)" "100 160 220"
+}
+
+@test "recovery: the status note shows after 60 s pending, never says stuck, and clears" {
+  client_gen aaa
+  port false
+  stall
+  recover 100
+  run recovery_pending_age 159
+  assert_output ""
+  run recovery_pending_age 160
+  assert_output 60
+  run bash -c 'source "$1/lib/lanai.sh"
+    printf "%s\n" ActiveState=active LanaiInstall=present LanaiSetup=done LanaiContainer=none \
+      LanaiQmp=running LanaiQga=open LanaiNoPicture=185 | status_map' _ "$REPO"
+  assert_success
+  local warning
+  warning=$(jq -r '.warning' <<<"$output")
+  [[ $warning == *"no picture for 3 minutes"* && $warning == *"restart Windows"* ]] ||
+    fail "warning: $warning"
+  [[ $warning != *stuck* ]] || fail "warning says stuck: $warning"
+  again
+  recover 200
+  run recovery_pending_age 300
+  assert_output ""
+}
+
+@test "recovery: a feed pass sends the restart line beside the scale line, only while the client runs" {
+  serve_reader
+  settings 150 4
+  port true
+  qmp_call() { cat "$T/chardevs"; }
+  client_gen aaa
+  stall
+  echo 0 >"$T/client-pid"
+  step
+  run received
+  refute_output --partial lanai-display-restart
+  window_on 1
+  stall
+  step
+  run received
+  assert_line "lanai-display-restart"
+  assert_line "lanai-scale 150 4"
+  run grep -c "asks Windows to restart its display driver (send 1 of 3)" "$T/feed.log"
+  assert_output 1
 }

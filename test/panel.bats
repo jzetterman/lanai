@@ -2667,12 +2667,14 @@ exec /usr/bin/python3 "$@"'
 # --- the resize upgrade: a client built without the current patches, or a
 # scale task without the sign-in step (req 12) ---
 
-RESIZE_NEW='After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size. To fix both, click Update the Windows window in More actions. Updating changes nothing in Windows.'
+RESIZE_NEW='After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size, and the window may freeze after quick resizes. To fix all three, click Update the Windows window in More actions. Updating changes nothing in Windows.'
 MOUSE='After the computer wakes from sleep, the mouse may reach only part of Windows.'
 BOTH='Windows may start at the wrong size and stay there until you resize the window, and it may change to the wrong size while it runs.'
 SIGNIN='After Windows starts, it may stay at its old size until you resize the window.'
 SCALE='Scale saves apply only the next time Windows starts.'
 LOCK='Running setup again also turns the Windows lock off again.'
+FREEZE='The Windows window may freeze after quick resizes, such as when the monitor wakes.'
+RESTART="If the Windows window freezes after quick resizes, Lanai cannot bring the picture back by itself."
 CLIENT_DONE='The Windows window is updated. If the Windows window is open, close it and open it again.'
 CLIENT_INTERRUPTED='The update did not finish. Click Update the Windows window in More actions again.'
 W_RUN='Lanai is updating the Windows window. This can take several minutes and changes nothing in Windows. You can start and use Windows during the update.'
@@ -2734,27 +2736,27 @@ assert_rerun_warning() {
 
 @test "panel resize: a current client without the sign-in step names Run setup again and the lock" {
   state '{"done":true,"scale_task":2}'
-  assert_rerun_warning "$SIGNIN To fix this, click Run setup again in More actions. $LOCK" \
-    "$SIGNIN To fix this, shut Windows down and click Run setup again in More actions. $LOCK"
+  assert_rerun_warning "$SIGNIN $FREEZE To fix both, click Run setup again in More actions. $LOCK" \
+    "$SIGNIN $FREEZE To fix both, shut Windows down and click Run setup again in More actions. $LOCK"
   # A mark other than the current one counts as missing: 1 is phase F's
   # step in PowerShell, before the start program.
   state '{"done":true,"scale_task":2,"signin_step":1}'
-  assert_rerun_warning "$SIGNIN To fix this, click Run setup again in More actions. $LOCK" \
-    "$SIGNIN To fix this, shut Windows down and click Run setup again in More actions. $LOCK"
+  assert_rerun_warning "$SIGNIN $FREEZE To fix both, click Run setup again in More actions. $LOCK" \
+    "$SIGNIN $FREEZE To fix both, shut Windows down and click Run setup again in More actions. $LOCK"
 }
 
 @test "panel resize: an old client without the sign-in step names only Run setup again, for the mouse and the size" {
   state '{"done":true,"scale_task":2}'
   build_patches_current() { return 1; }
-  assert_rerun_warning "$MOUSE $BOTH To fix both, click Run setup again in More actions. $LOCK" \
-    "$MOUSE $BOTH To fix both, shut Windows down and click Run setup again in More actions. $LOCK"
+  assert_rerun_warning "$MOUSE $BOTH $FREEZE To fix all three, click Run setup again in More actions. $LOCK" \
+    "$MOUSE $BOTH $FREEZE To fix all three, shut Windows down and click Run setup again in More actions. $LOCK"
 }
 
 @test "panel resize: the old scale task names Run setup again once, with the scale fix, and keeps the save words" {
   local oldtask='Until you run setup again, the old scale task undoes scales you pick in Windows, and “Match my monitor” does not follow the window. Running setup again also turns the Windows lock off again.'
   state '{"done":true}'
-  assert_rerun_warning "$SIGNIN $SCALE To fix both, click Run setup again in More actions. $LOCK" \
-    "$SIGNIN $SCALE To fix both, shut Windows down and click Run setup again in More actions. $LOCK"
+  assert_rerun_warning "$SIGNIN $SCALE $FREEZE To fix all three, click Run setup again in More actions. $LOCK" \
+    "$SIGNIN $SCALE $FREEZE To fix all three, shut Windows down and click Run setup again in More actions. $LOCK"
   # A scale save's reply keeps its words: it answers the save.
   panel_result_write settings '{"command":"settings","invocation":"inv","ended":1,"reply":{"ok":true,"scale_saved":true,"running":true,"scale_task_kind":"old"}}'
   ST=active INV=inv
@@ -2762,8 +2764,30 @@ assert_rerun_warning() {
   assert_equal "$(jq -r .result.settings <<<"$output")" "Saved. Windows uses the saved scale the next time it starts. $oldtask"
   # With an old client too: one message.
   build_patches_current() { return 1; }
-  assert_rerun_warning "$MOUSE $BOTH $SCALE To fix all three, click Run setup again in More actions. $LOCK" \
-    "$MOUSE $BOTH $SCALE To fix all three, shut Windows down and click Run setup again in More actions. $LOCK"
+  assert_rerun_warning "$MOUSE $BOTH $SCALE $FREEZE To fix all four, click Run setup again in More actions. $LOCK" \
+    "$MOUSE $BOTH $SCALE $FREEZE To fix all four, shut Windows down and click Run setup again in More actions. $LOCK"
+}
+
+@test "panel resize: a task without the display restart names Run setup again for the freeze, alone or after the update words" {
+  # The sign-in step is current, so the freeze fix is its own message.
+  state "$(jq -c 'del(.display_restart)' <<<"$CURRENT")"
+  assert_rerun_warning "$RESTART To fix this, click Run setup again in More actions. $LOCK" \
+    "$RESTART To fix this, shut Windows down and click Run setup again in More actions. $LOCK"
+  # A mark other than the current one counts as missing.
+  state "$(jq -c '.display_restart = 0' <<<"$CURRENT")"
+  ST=inactive
+  run cmd_panel
+  assert_equal "$(jq -r .warning <<<"$output")" "$RESTART To fix this, click Run setup again in More actions. $LOCK"
+  # An old client too: the update words, then the setup words.
+  build_patches_current() { return 1; }
+  auto_over
+  run cmd_panel
+  assert_equal "$(jq -r .warning <<<"$output")" "$RESIZE_NEW $RESTART To fix this, click Run setup again in More actions. $LOCK"
+  # A setup round that has not recorded the mark yet warns of nothing more.
+  build_patches_current() { return 0; }
+  state "$(jq -c 'del(.display_restart) | .round = true' <<<"$CURRENT")"
+  run cmd_panel
+  assert_equal "$(jq -r '.warning | contains("freezes")' <<<"$output")" false
 }
 
 @test "panel resize: the live task's save words are the same with and without the sign-in step" {

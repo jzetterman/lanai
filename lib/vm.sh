@@ -33,6 +33,15 @@ declare -gA LANAI_HELPERS=(
 LANAI_SCALE_INTERVAL=${LANAI_SCALE_INTERVAL:-2}
 LANAI_SCALE_SEND_TIMEOUT=${LANAI_SCALE_SEND_TIMEOUT:-1}
 
+# Display recovery (docs/plugin/resize-hang/plan.md, part C): the line that
+# asks the scale task to restart the Looking Glass display driver, sends per
+# recovery and the seconds between them, restarts seen per VM run, how soon
+# after a send a client session counts as a restart seen, and how long a
+# recovery waits before lanai status notes it.
+LANAI_RESTART_LINE=lanai-display-restart
+LANAI_RECOVERY_SENDS=3 LANAI_RECOVERY_GAP=60 LANAI_RECOVERY_RESTARTS=3
+LANAI_RECOVERY_SEEN=60 LANAI_RECOVERY_NOTE=60
+
 # How often lanai-vm-stop repeats system_powerdown while QEMU runs, in
 # seconds (tests shorten it).
 LANAI_POWERDOWN_INTERVAL=${LANAI_POWERDOWN_INTERVAL:-10}
@@ -794,6 +803,8 @@ scale_feed_step() {
     echo "lanai: the scale feed cannot read the Windows scale in settings.json; it sends the last good scale" >&2
   fi
   pid=$(timeout 1 systemctl --user show -p MainPID --value "$LANAI_CLIENT_UNIT" 2>/dev/null) || pid=""
+  # Before the scale line, whose send can take its whole timeout.
+  display_recovery_step "$EPOCHSECONDS" "$([[ -n $pid && $pid != 0 ]] && echo true || echo false)" || true
   if clients=$(timeout 1 hyprctl clients -j </dev/null 2>/dev/null) &&
     monitors=$(host_monitors 1); then
     ((SCALE_FEED_HYPR_FAILS == 0)) || echo "lanai: hyprctl answers the scale feed again" >&2
@@ -831,6 +842,135 @@ scale_feed_step() {
     SCALE_FEED_SEND_FAILED=true
     echo "lanai: the scale feed cannot send to Windows; it keeps trying" >&2
   fi
+}
+
+# --- display recovery (docs/plugin/resize-hang/plan.md, part C) ---
+#
+# The scale feed follows client.log for the client's stall lines (patch
+# 0004) and asks the scale task to restart the display driver. Its state,
+# $RUN/display-recovery.json, lasts one VM run (vm_exec deletes it) and
+# survives a feed restart:
+#   gen       the client ID (client.log's second line) the offset belongs to
+#   offset    bytes of complete lines read so far in that log
+#   pending   a stall line was read and nothing has ended the recovery
+#   since     when the recovery started (the feed's clock, epoch seconds)
+#   sends     the time of each send for this recovery, recorded before the write
+#   watch     the last send that no client session has followed yet, or 0
+#   restarts  each restart seen this VM run: a session within
+#             LANAI_RECOVERY_SEEN s of a send
+# The scale channel is one-way, so a send's outcome is unknown: the scale
+# task may decline it (it restarts only a hang it confirms in the driver's
+# log). Only a session after a send costs one of the run's restarts.
+
+# Print the recovery state in <file> as one JSON object, with every field
+# present; a missing or unreadable file reads as no state.
+recovery_state() {
+  jq -c 'def times: [.[]? | numbers];
+    {gen: ((.gen | strings) // ""), offset: ((.offset | numbers) // 0),
+     pending: (.pending == true), since: ((.since | numbers) // 0), sends: (.sends | times),
+     watch: ((.watch | numbers) // 0), restarts: (.restarts | times)}' "$1" 2>/dev/null ||
+    echo '{"gen":"","offset":0,"pending":false,"since":0,"sends":[],"watch":0,"restarts":[]}'
+}
+
+# Write state <json> to <file> through a temporary file, so an interrupted
+# write leaves the old state whole.
+recovery_state_write() {
+  printf '%s\n' "$2" >"$1.tmp" && mv -f -- "$1.tmp" "$1"
+}
+
+# Print the client ID on client log <log>'s second line, or nothing.
+client_log_id() {
+  local first="" second=""
+  { IFS= read -r first && IFS= read -r second; } <"$1" 2>/dev/null || true
+  [[ $first == "$LANAI_CLIENT_START "* && $second =~ ^"$LANAI_CLIENT_ID "([0-9a-f-]+)$ ]] || return 0
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+# recovery_read_log <log> <offset>: print the offset after the last complete
+# line, then a word for each stall, again or session line after <offset>, in
+# order. A log shorter than <offset> is read from the start. A last line
+# with no newline waits for the next pass.
+recovery_read_log() {
+  local LC_ALL=C log=$1 off=$2 size data complete
+  size=$(stat -c %s -- "$log" 2>/dev/null) || return 1
+  ((size >= off)) || off=0
+  data=$(tail -c +"$((off + 1))" -- "$log" 2>/dev/null | head -c "$((size - off))"; printf x)
+  data=${data%x}
+  if [[ $data != *$'\n'* ]]; then
+    printf '%s\n' "$off"
+    return 0
+  fi
+  complete=${data%$'\n'*}
+  printf '%s\n' "$((off + ${#complete} + 1))"
+  # <time> [L] <file>:<line> | <function> | <message>, as version_check reads it.
+  awk '{
+      i = index($0, " | "); if (!i) next
+      rest = substr($0, i + 3); j = index(rest, " | "); if (!j) next
+      msg = substr(rest, j + 3)
+    }
+    index(msg, "Resize: no frame from Windows for 10 s (") == 1 { print "stall"; next }
+    msg == "Resize: frames from Windows again" { print "again"; next }
+    msg == "Starting session" { print "session" }' <<<"$complete"
+}
+
+# display_recovery_step <now> <client running true|false>: one pass. Read
+# the client log's new lines into the state: a stall starts a recovery;
+# frames again, a new client ID, or the client unit not running ends it; a
+# session soon after a send is a restart seen. Then, when a recovery is
+# pending, under both limits, and the last send is LANAI_RECOVERY_GAP s old,
+# send LANAI_RESTART_LINE once QEMU reports the scale port's guest side
+# open. The send is recorded before the write, so it counts whatever
+# happens to the write.
+display_recovery_step() {
+  local now=$1 running=$2 run f log state id off out events
+  run=$(run_dir) || return 1
+  f=$run/display-recovery.json log=$run/client.log
+  state=$(recovery_state "$f")
+  id=$(client_log_id "$log")
+  off=0
+  [[ -z $id || $id != $(jq -r .gen <<<"$state") ]] || off=$(jq -r .offset <<<"$state")
+  if [[ -n $id ]] && out=$(recovery_read_log "$log" "$off"); then
+    mapfile -t events <<<"$out"
+    off=${events[0]}
+    events=("${events[@]:1}")
+  else
+    events=()
+  fi
+  out=$(jq -c --arg id "$id" --argjson off "$off" --argjson now "$now" --argjson running "$running" \
+    --argjson seen "$LANAI_RECOVERY_SEEN" '
+    (if .gen != $id then .gen = $id | .pending = false | .sends = [] else . end) | .offset = $off |
+    reduce $ARGS.positional[] as $e (.;
+      if $e == "stall" then (if .pending then . else .pending = true | .since = $now | .sends = [] end)
+      elif $e == "again" then .pending = false | .sends = [] | .watch = 0
+      elif $e == "session" then
+        (if .watch > 0 and $now - .watch <= $seen then .restarts += [$now] else . end) | .watch = 0
+      else . end) |
+    (if .watch > 0 and $now - .watch > $seen then .watch = 0 else . end) |
+    (if $running and .gen != "" then . else .pending = false | .sends = [] end)' \
+    --args "${events[@]}" <<<"$state") || return 1
+  [[ $out == "$state" ]] || recovery_state_write "$f" "$out" || return 1
+  state=$out
+  jq -e --argjson now "$now" --argjson sends "$LANAI_RECOVERY_SENDS" --argjson gap "$LANAI_RECOVERY_GAP" \
+    --argjson restarts "$LANAI_RECOVERY_RESTARTS" '.pending and (.sends | length) < $sends and
+      (.restarts | length) < $restarts and ((.sends | length) == 0 or $now - .sends[-1] >= $gap)' \
+    <<<"$state" >/dev/null || return 0
+  # The scale task opens the port; before it starts the recovery waits.
+  qmp_call "$run/qmp-cli.sock" '{"execute":"query-chardev"}' 2>/dev/null | chardev_open scale0 || return 0
+  state=$(jq -c --argjson now "$now" '.sends += [$now] | .watch = $now' <<<"$state")
+  recovery_state_write "$f" "$state" || return 1
+  echo "lanai: Windows sends no picture; the scale feed asks Windows to restart its display driver (send $(jq '.sends | length' <<<"$state") of $LANAI_RECOVERY_SENDS)" >&2
+  scale_send "$run/scale.sock" "$LANAI_RESTART_LINE" ||
+    echo "lanai: the scale feed could not send the display restart to Windows" >&2
+}
+
+# recovery_pending_age <now>: print how long the display recovery has been
+# pending, once that is LANAI_RECOVERY_NOTE seconds or more; else nothing.
+recovery_pending_age() {
+  local run
+  run=$(run_dir) || return 0
+  [[ -f $run/display-recovery.json ]] || return 0
+  recovery_state "$run/display-recovery.json" | jq -r --argjson now "$1" --argjson note "$LANAI_RECOVERY_NOTE" '
+    select(.pending and .since > 0 and $now - .since >= $note) | $now - .since'
 }
 
 # scale-feed helper: send the latest scale to Windows every
@@ -1003,9 +1143,9 @@ vm_exec() {
     rm -f -- "$run/$name.pid"
   done
   # Setup's step 6 counts its limits from this start and keeps no marker
-  # from an earlier run, and the scale feed's window monitor and last line
-  # belong to one run.
-  rm -f -- "$run/ivshmem" "$run/scale-monitor" "$run/scale-line"
+  # from an earlier run, and the scale feed's window monitor, last line and
+  # display recovery belong to one run.
+  rm -f -- "$run/ivshmem" "$run/scale-monitor" "$run/scale-line" "$run/display-recovery.json"
   step6_start "$run" || {
     echo "lanai: cannot record setup's time limits in $run" >&2
     return 1

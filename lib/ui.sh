@@ -44,6 +44,14 @@ signin_step_missing() {
   setup_done && [[ $(setup_get round) != true && $(setup_get signin_step) != "$LANAI_SIGNIN_STEP" ]]
 }
 
+# Succeed when Windows' scale task lacks the current display restart
+# (docs/plugin/resize-hang/plan.md, requirement 14): setup is done, no setup
+# round runs, and the record's display_restart is not LANAI_DISPLAY_RESTART
+# (lib/setup.sh). Such a task ignores the feed's restart line.
+display_restart_missing() {
+  setup_done && [[ $(setup_get round) != true && $(setup_get display_restart) != "$LANAI_DISPLAY_RESTART" ]]
+}
+
 # client_update_case <finished true|false> [<patches id>]: print which step
 # brings the client up to date (spec 12). The id, when given, saves hashing
 # the patches again. "none": the plan is not finished, the client is

@@ -27,6 +27,16 @@
   elevated. Changes, caps, a current scale outside Windows' range (custom
   scaling) and distinct errors go to C:\Program Files\Lanai\lanai-scale.log.
 
+  The feed also sends the exact line "lanai-display-restart" when the
+  Looking Glass client sees no frame from Windows for 10 s (Lanai,
+  docs/plugin/resize-hang/plan.md, requirements 12 and 13). The task then
+  starts this script again with -DisplayRestart, in a child process it stops
+  after 45 s, at most once a minute. The child restarts the Looking Glass
+  display adapter only when the driver's own log shows the hang: an
+  unfinished monitor replug, the same one in two reads 10 s apart. A size the
+  driver refuses on a still desktop also sends no frame, and its log shows
+  no unfinished replug.
+
   The scale task runs C:\Program Files\Lanai\lanai-start.exe, a windowless
   program setup builds from lanai-start.cs. It starts this script in a
   hidden powershell.exe, in a job that ends the script when the program
@@ -35,11 +45,15 @@
 .PARAMETER Scale
   Use this percentage instead of the SMBIOS string. For testing.
 
+.PARAMETER DisplayRestart
+  Check the driver's log for the hang and, when it shows one, restart the
+  Looking Glass display adapter, then exit. The scale task starts this.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File lanai-scale.ps1
   powershell -ExecutionPolicy Bypass -File lanai-scale.ps1 -Scale 250
 #>
-param([int]$Scale = 0)
+param([int]$Scale = 0, [switch]$DisplayRestart)
 
 $ErrorActionPreference = 'Stop'
 
@@ -65,6 +79,10 @@ $Steps = @(100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500)
 
 # The scale channel's port, as Windows names it.
 $PortName = '\\.\Global\io.lanai.scale.0'
+
+# The display driver's log (requirement 13). The driver starts a new file at
+# each start and keeps writing it.
+$IddLog = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'Looking Glass (IDD)\looking-glass-idd.txt'
 
 # Write a line to the console and to the log file.
 function Write-Log([string]$Message) {
@@ -145,23 +163,32 @@ function ConvertFrom-ScaleLine([string]$Line) {
     return [pscustomobject]@{ Step = $i; Save = [int64]$Matches[2] }
 }
 
+# Return $true for the exact display restart line, and nothing longer or
+# different.
+function Test-RestartLine([string]$Line) {
+    return $Line -ceq 'lanai-display-restart'
+}
+
 # Decide what a batch of queued lines ({Text; At} in ms) means at time
 # <Now>: Kind "wait" while a line came less than 300 ms ago (a backlog
 # arrives at full speed, so a quiet gap means it is drained); else "line"
-# with the one valid line, "stale" for two or more (after a stall the port
-# delivers its oldest lines, phase 0 proof 4), or "none". Empty lines are
-# ignored; malformed ones are counted in Malformed and dropped. Valid counts
-# the valid lines.
+# with the one valid scale line, "stale" for two or more (after a stall the
+# port delivers its oldest lines, phase 0 proof 4), or "none". Restart lines
+# are a separate kind: Restart counts them, and any number make one
+# restart. Empty lines are ignored; malformed ones are counted in Malformed
+# and dropped. Valid counts the valid scale lines.
 function Get-DrainedLine([object[]]$Lines, [double]$Now) {
     $last = $null
     foreach ($l in $Lines) { if ($null -eq $last -or $l.At -gt $last) { $last = $l.At } }
     if ($null -ne $last -and $Now - $last -lt 300) {
-        return [pscustomobject]@{ Kind = 'wait'; Line = $null; Malformed = 0; Valid = 0 }
+        return [pscustomobject]@{ Kind = 'wait'; Line = $null; Malformed = 0; Valid = 0; Restart = 0 }
     }
     $valid = @()
     $bad = 0
+    $restart = 0
     foreach ($l in $Lines) {
         if ($l.Text -eq '') { continue }
+        if (Test-RestartLine $l.Text) { $restart++; continue }
         $p = ConvertFrom-ScaleLine $l.Text
         if ($null -eq $p) { $bad++ } else { $valid += , $p }
     }
@@ -169,7 +196,190 @@ function Get-DrainedLine([object[]]$Lines, [double]$Now) {
     if ($valid.Count -gt 1) { $kind = 'stale' } elseif ($valid.Count -eq 1) { $kind = 'line' }
     $line = $null
     if ($kind -eq 'line') { $line = $valid[0] }
-    return [pscustomobject]@{ Kind = $kind; Line = $line; Malformed = $bad; Valid = $valid.Count }
+    return [pscustomobject]@{ Kind = $kind; Line = $line; Malformed = $bad; Valid = $valid.Count; Restart = $restart }
+}
+
+# --- the display restart (requirement 13) ---
+
+# Read the last <Max> bytes of the driver's log at <Path>, opened for shared
+# read and write, since the driver keeps it open. Returns the file's Size,
+# the tail's Start offset and its Bytes. Throws when the log cannot be read.
+function Read-IddTail([string]$Path, [long]$Max = 1048576) {
+    $f = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try {
+        $size = $f.Length
+        $start = [math]::Max([long]0, $size - $Max)
+        $f.Position = $start
+        $bytes = New-Object byte[] ($size - $start)
+        $got = 0
+        while ($got -lt $bytes.Length) {
+            $n = $f.Read($bytes, $got, $bytes.Length - $got)
+            if ($n -le 0) { break }
+            $got += $n
+        }
+        if ($got -lt $bytes.Length) { [Array]::Resize([ref]$bytes, $got) }
+        return [pscustomobject]@{ Size = $size; Start = $start; Bytes = $bytes }
+    }
+    finally { $f.Dispose() }
+}
+
+# Find the unfinished replug in a tail of the driver's log: <Bytes> read from
+# file offset <Start>. Only complete lines count: the first line of a tail
+# that starts inside the file may be cut, and a last line with no newline
+# may be half written. The candidate is the last line from
+# CMonitorManager::Replug that ends "| ReplugMonitor", with no later line
+# that ends "| Swap chain device set" (the new monitor is ready) or holds
+# "IddCxMonitorDeparture Failed" (the driver kept the old monitor and stays
+# healthy). Returns its file Offset, or $null and the Reason there is none.
+function Find-ReplugCandidate([byte[]]$Bytes, [long]$Start) {
+    $offset = $null
+    $reason = 'no ReplugMonitor line in the driver log'
+    $pos = 0
+    $skip = $Start -gt 0
+    while ($pos -lt $Bytes.Length) {
+        $nl = [Array]::IndexOf($Bytes, [byte]10, $pos)
+        if ($nl -lt 0) { break }
+        if ($skip) {
+            $skip = $false
+        }
+        else {
+            $text = [Text.Encoding]::ASCII.GetString($Bytes, $pos, $nl - $pos).TrimEnd("`r")
+            if ($text.Contains('CMonitorManager::Replug') -and $text.EndsWith('| ReplugMonitor')) {
+                $offset = $Start + $pos
+            }
+            elseif ($null -ne $offset -and $text.EndsWith('| Swap chain device set')) {
+                $offset = $null
+                $reason = 'the last replug finished'
+            }
+            elseif ($null -ne $offset -and $text.Contains('IddCxMonitorDeparture Failed')) {
+                $offset = $null
+                $reason = 'the last replug kept the old monitor'
+            }
+        }
+        $pos = $nl + 1
+    }
+    return [pscustomobject]@{ Offset = $offset; Reason = $reason }
+}
+
+# Confirm the hang from the driver's log at <Path>: the same unfinished
+# replug at the same offset in two reads, with <Pause> (10 s by a monotonic
+# timer, Wait-Monotonic) between them. Returns '' for a hang, or the reason
+# it is not confirmed.
+function Test-DisplayHang([string]$Path, [scriptblock]$Pause, [long]$Max = 1048576) {
+    try { $a = Read-IddTail $Path $Max } catch { return 'the driver log cannot be read' }
+    $first = Find-ReplugCandidate $a.Bytes $a.Start
+    if ($null -eq $first.Offset) { return $first.Reason }
+    & $Pause
+    try { $b = Read-IddTail $Path $Max } catch { return 'the driver log cannot be read' }
+    if ($b.Size -lt $a.Size) { return 'the driver log shrank between the reads' }
+    $second = Find-ReplugCandidate $b.Bytes $b.Start
+    if ($null -eq $second.Offset) { return $second.Reason }
+    if ($second.Offset -ne $first.Offset) { return 'a new replug started between the reads' }
+    return ''
+}
+
+# Wait <Ms> milliseconds by a Stopwatch, which a clock change cannot move.
+function Wait-Monotonic([int]$Ms) {
+    $w = [Diagnostics.Stopwatch]::StartNew()
+    while ($w.ElapsedMilliseconds -lt $Ms) { Start-Sleep -Milliseconds 250 }
+}
+
+# Pick the Looking Glass display adapter from <Devices> (present devices,
+# each with InstanceId and HardwareID): the one whose hardware IDs hold
+# Root\LGIdd, in any case, the same on every install. Its instance ID is
+# not, so it is read each time. Returns its InstanceId, or $null and the
+# Reason when none or several match.
+function Select-LgAdapter([object[]]$Devices) {
+    $found = @($Devices | Where-Object { $null -ne $_ -and @($_.HardwareID | Where-Object { $_ -ieq 'Root\LGIdd' }).Count -gt 0 })
+    if ($found.Count -eq 1) { return [pscustomobject]@{ InstanceId = [string]$found[0].InstanceId; Reason = '' } }
+    return [pscustomobject]@{ InstanceId = $null; Reason = "found $($found.Count) Looking Glass display adapters, not one" }
+}
+
+# The present devices, for Select-LgAdapter.
+function Get-LgDevices {
+    return @(Get-PnpDevice -PresentOnly | Select-Object InstanceId, HardwareID)
+}
+
+# Restart device <InstanceId> with pnputil, the ID as one argument, and
+# return pnputil's exit code.
+function Invoke-PnpUtil([string]$InstanceId) {
+    & (Join-Path ([Environment]::SystemDirectory) 'pnputil.exe') '/restart-device' $InstanceId | Out-Null
+    return $LASTEXITCODE
+}
+
+# Log <Message> from the restart child. The task writes the same log, so a
+# write that meets the task's is tried again; a failed log never stops the
+# restart.
+function Write-RestartLog([string]$Message) {
+    for ($i = 0; $i -lt 5; $i++) {
+        try { Write-Log $Message | Out-Null; return } catch { Start-Sleep -Milliseconds 100 }
+    }
+}
+
+# The restart child (-DisplayRestart): confirm the hang from the driver log
+# at <Path>, then restart the one Looking Glass display adapter. Logs the
+# outcome and returns the exit code: 0 for no restart or a restart that
+# worked, else pnputil's code (3010 means Windows needs a restart to finish),
+# or 2 when no single adapter matches. The host's next send is the retry.
+function Invoke-DisplayRestart([string]$Path, [scriptblock]$Pause) {
+    $why = Test-DisplayHang $Path $Pause
+    if ($why -ne '') {
+        Write-RestartLog "Display hang not confirmed ($why); no restart."
+        return 0
+    }
+    $sel = Select-LgAdapter @(Get-LgDevices)
+    if ($null -eq $sel.InstanceId) {
+        Write-RestartLog "Display hang confirmed, but Lanai $($sel.Reason); no restart."
+        return 2
+    }
+    Write-RestartLog "Display hang confirmed; restarting the Looking Glass display adapter $($sel.InstanceId)."
+    $code = Invoke-PnpUtil $sel.InstanceId
+    if ($code -eq 0) { Write-RestartLog 'The display adapter restarted (pnputil exit 0).' }
+    elseif ($code -eq 3010) { Write-RestartLog 'pnputil exit 3010: Windows needs a restart to finish restarting the display adapter.' }
+    else { Write-RestartLog "pnputil could not restart the display adapter (exit $code)." }
+    return $code
+}
+
+# Start the restart child: this script with -DisplayRestart, in a hidden
+# powershell.exe by its absolute path, in Lanai's folder (Add-Type compiles
+# there). It runs in the start program's job, so it ends with the task.
+function Start-DisplayRestart {
+    $ps = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    return Start-Process -FilePath $ps -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru `
+        -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-DisplayRestart')
+}
+
+# One tick of the restart handling at <Now> (ms), with <Requests> restart
+# lines in the batch just drained. A child that runs 45 s is stopped, so it
+# never holds the display; one that exited with an error is logged. A
+# request starts a child at most once a minute; any later one in that
+# minute does nothing. Never throws.
+function Step-DisplayRestart($Ctx, [double]$Now, [int]$Requests) {
+    try {
+        if ($null -ne $Ctx.Restart) {
+            if ($Ctx.Restart.HasExited) {
+                if ($Ctx.Restart.ExitCode -ne 0) { Write-Log "The display restart ended with exit code $($Ctx.Restart.ExitCode)." }
+                $Ctx.Restart = $null
+            }
+            elseif ($Now - $Ctx.RestartAt -ge 45000) {
+                try { $Ctx.Restart.Kill() } catch { }
+                $Ctx.Restart = $null
+                Write-Log 'The display restart ran for 45 s; Lanai stopped it.'
+            }
+        }
+        if ($Requests -le 0) { return }
+        if ($null -ne $Ctx.RestartAt -and $Now - $Ctx.RestartAt -lt 60000) {
+            Write-Log 'Lanai asked to restart the display again within a minute; no restart.'
+            return
+        }
+        $Ctx.RestartAt = $Now
+        Write-Log 'Lanai sees no picture from Windows and asks to restart the display; checking the driver log.'
+        $Ctx.Restart = & $Ctx.StartRestart
+    }
+    catch {
+        Write-ErrorOnce $Ctx "The display restart did not start: $($_.Exception.Message)"
+    }
 }
 
 # The task's state at start: Want (a step index) and LastSave from the OEM
@@ -361,12 +571,16 @@ function Get-DisplayObservation {
 #                after an observation in range
 #   PortOpened   whether the port's opening was seen and logged
 #   MalformedLogged  whether a malformed line was logged
+#   Restart      the running restart child, or $null
+#   RestartAt    when the last child started (ms), or $null
+#   StartRestart starts a restart child (Start-DisplayRestart); tests swap it
 function New-ScaleContext($State, $Queue, $Shared) {
     return @{
         State = $State; Queue = $Queue; Shared = $Shared
         Lines = New-Object 'System.Collections.Generic.List[object]'
         NextObserve = 0; LastError = ''; LoggedPortError = ''; LoggedSet = ''; LoggedCap = ''
         RangeLogged = $false; PortOpened = $false; MalformedLogged = $false
+        Restart = $null; RestartAt = $null; StartRestart = { Start-DisplayRestart }
     }
 }
 
@@ -392,7 +606,8 @@ function Write-RangeOnce($Ctx, $Obs) {
 
 # One 250 ms tick of the main loop at time <Now> (ms): log the port's
 # opening and errors once each; move queued lines to Lines (stamping
-# LastArrival) and drain them once quiet; then, when a line is ready, the 2 s
+# LastArrival) and drain them once quiet; hand the batch's restart lines to
+# Step-DisplayRestart; then, when a line is ready, the 2 s
 # display poll is due, or the first-line wait just ended, run one
 # Step-ScaleState pass and call SetScale for its action, then read the scale
 # back (Confirm-ScaleSet). An out-of-range current scale and a capped target
@@ -420,6 +635,7 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
     }
     $drained = Get-DrainedLine $Ctx.Lines.ToArray() $Now
     $line = $null
+    Step-DisplayRestart $Ctx $Now $drained.Restart
     if ($drained.Kind -ne 'wait') {
         $Ctx.Lines.Clear()
         if ($drained.Malformed -gt 0 -and -not $Ctx.MalformedLogged) {
@@ -736,6 +952,7 @@ public static class LanaiDisplay {
 '@
 
 try {
+    if ($DisplayRestart) { exit (Invoke-DisplayRestart $IddLog { Wait-Monotonic 10000 }) }
     $save = $null
     if ($Scale -eq 0) {
         $baseline = Get-OemBaseline @((Get-CimInstance -ClassName Win32_ComputerSystem).OEMStringArray)

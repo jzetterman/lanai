@@ -2333,3 +2333,226 @@ start_run() {
   assert_output --partial 'Stopwatch clock = Stopwatch.StartNew();'
   assert_output --partial 'while (!step.Tick(clock.Elapsed.TotalMilliseconds)) Thread.Sleep(250);'
 }
+
+# --- the display restart (docs/plugin/resize-hang/plan.md, requirements 12-13) ---
+
+# The trimmed driver logs from phase 0: hangs 1-3 (CRLF), the live
+# 2026-11-21 freeze (LF), and a healthy log with five refusals.
+IDD_FIX=$BATS_TEST_DIRNAME/fixtures/idd
+
+@test "guest restart line: the exact line only, counted apart from scale lines in a batch" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    Assert (Test-RestartLine "lanai-display-restart") "exact line"
+    foreach ($b in @("lanai-display-restart now", "lanai-display-restart ", " lanai-display-restart",
+        "LANAI-DISPLAY-RESTART", "lanai-display-restart2", "lanai-display")) {
+      Assert (-not (Test-RestartLine $b)) "accepted [$b]"
+    }
+    # Restart then scale, and scale then restart: one restart, the scale line applies.
+    foreach ($batch in @(@((Q "lanai-display-restart" 100), (Q "lanai-scale 175 3" 100)),
+        @((Q "lanai-scale 175 3" 100), (Q "lanai-display-restart" 100)))) {
+      $d = Get-DrainedLine $batch 500
+      Assert ($d.Kind -eq "line" -and $d.Line.Step -eq 3 -and $d.Restart -eq 1 -and $d.Malformed -eq 0) "mixed batch"
+    }
+    # Two scale lines and a restart: the restart counts, the scale lines are stale.
+    $d = Get-DrainedLine @((Q "lanai-scale 150 2" 100), (Q "lanai-display-restart" 100), (Q "lanai-scale 175 3" 100)) 500
+    Assert ($d.Kind -eq "stale" -and $d.Restart -eq 1) "stale scale lines"
+    $d = Get-DrainedLine @((Q "lanai-display-restart" 100), (Q "lanai-display-restart" 100)) 500
+    Assert ($d.Kind -eq "none" -and $d.Restart -eq 2 -and $d.Malformed -eq 0) "two restart lines"
+    $d = Get-DrainedLine @((Q "lanai-display-restart now" 100)) 500
+    Assert ($d.Restart -eq 0 -and $d.Malformed -eq 1) "a longer line is malformed"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest restart tick: one child per batch, none within a minute, stopped at 45 s while scale lines go on" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $c = Ctx
+    $script:Started = 0
+    $script:Child = $null
+    $c.StartRestart = {
+      $script:Started++
+      $script:Child = [pscustomobject]@{ HasExited = $false; ExitCode = 0; Killed = 0 } |
+        Add-Member -MemberType ScriptMethod -Name Kill -Value { $this.Killed++; $this.HasExited = $true } -PassThru
+      $script:Child
+    }
+    # Two restart lines in one batch start one child.
+    $c.Queue.Enqueue((Q "lanai-display-restart" 1000))
+    $c.Queue.Enqueue((Q "lanai-display-restart" 1000))
+    Invoke-ScaleTick $c 1400
+    Assert ($script:Started -eq 1) "one child for the batch"
+    # A scale line while the child runs is handled.
+    $c.Queue.Enqueue((Q "lanai-scale 200 6" 2000))
+    Invoke-ScaleTick $c 2400
+    Assert ([LanaiDisplay]::Sets -ge 1 -and $c.State.Confirmed -eq 4) "scale handled while the child runs"
+    # At 45 s the child is stopped, once.
+    Invoke-ScaleTick $c 46000
+    Assert ($script:Child.Killed -eq 0) "stopped too soon"
+    Invoke-ScaleTick $c 46400
+    Assert ($script:Child.Killed -eq 1) "not stopped at 45 s"
+    Assert (@($script:Logs | Where-Object { $_ -like "*ran for 45 s*" }).Count -eq 1) "the stop is logged once"
+    # A request within a minute of the last start does nothing.
+    $c.Queue.Enqueue((Q "lanai-display-restart" 50000))
+    Invoke-ScaleTick $c 50400
+    Assert ($script:Started -eq 1) "a second start within a minute"
+    Assert (@($script:Logs | Where-Object { $_ -like "*within a minute*" }).Count -eq 1) "the refusal is logged"
+    # A minute on, a request starts a new child; its error exit is logged.
+    $c.Queue.Enqueue((Q "lanai-display-restart" 61000))
+    Invoke-ScaleTick $c 61500
+    Assert ($script:Started -eq 2) "a start after a minute"
+    $script:Child.ExitCode = 3010
+    $script:Child.HasExited = $true
+    Invoke-ScaleTick $c 62000
+    Assert ($null -eq $c.Restart) "the exited child is forgotten"
+    Assert (@($script:Logs | Where-Object { $_ -like "*exit code 3010*" }).Count -eq 1) "the exit code is logged"
+    # A child that cannot start is logged, and scale handling goes on.
+    $c.StartRestart = { throw "no powershell.exe" }
+    $c.Queue.Enqueue((Q "lanai-display-restart" 130000))
+    Invoke-ScaleTick $c 130500
+    Assert (@($script:Logs | Where-Object { $_ -like "*did not start: no powershell.exe*" }).Count -eq 1) "the failed start is logged"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest hang check: the phase 0 hangs and the live freeze are hangs; the healthy log with refusals is not" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  FIX=$IDD_FIX run guest_ps '
+    foreach ($n in "hang1", "hang2", "hang3", "live-2026-11-21") {
+      $why = Test-DisplayHang "$env:FIX/$n.txt" { }
+      Assert ($why -eq "") "$n reads as not hung: $why"
+    }
+    $why = Test-DisplayHang "$env:FIX/healthy-refusals.txt" { }
+    Assert ($why -eq "the last replug finished") "healthy: $why"
+    # Hang 3: its last two replugs share a second; the candidate is the last line.
+    $t = Read-IddTail "$env:FIX/hang3.txt"
+    $c = Find-ReplugCandidate $t.Bytes $t.Start
+    $lines = [IO.File]::ReadAllLines("$env:FIX/hang3.txt")
+    $last = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i].EndsWith("| ReplugMonitor")) { $last = $i } }
+    $want = 0
+    for ($i = 0; $i -lt $last; $i++) { $want += $lines[$i].Length + 2 }
+    Assert ($c.Offset -eq $want) "hang 3 candidate at $($c.Offset), want $want"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest hang check: no restart for a missing log, no replug, a departure failure, or a change between the reads" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  FIX=$IDD_FIX T=$BATS_TEST_TMPDIR run guest_ps '
+    $log = "$env:T/idd.txt"
+    function Fresh { Copy-Item "$env:FIX/hang2.txt" $log -Force }
+    function Add($Text) { [IO.File]::AppendAllText($log, "[2026-11-22 00:28:30Z] [I] $Text`r`n") }
+    Assert ((Test-DisplayHang "$env:T/missing.txt" { }) -eq "the driver log cannot be read") "missing log"
+    [IO.File]::WriteAllText($log, "[x] [I] DriverEntry:38 | Looking Glass IDD Driver`r`n")
+    Assert ((Test-DisplayHang $log { }) -eq "no ReplugMonitor line in the driver log") "no replug"
+    Fresh; Add "            CMonitorManager::Replug:250  | IddCxMonitorDeparture Failed (0xc0000001)"
+    Assert ((Test-DisplayHang $log { }) -eq "the last replug kept the old monitor") "departure failure"
+    Fresh
+    $why = Test-DisplayHang $log { Add "CSwapChainProcessor::SwapChainThreadCore:312  | Swap chain device set" }
+    Assert ($why -eq "the last replug finished") "swap chain between the reads: $why"
+    Fresh
+    $why = Test-DisplayHang $log { Add "                 CMonitorManager::Replug:241  | ReplugMonitor" }
+    Assert ($why -eq "a new replug started between the reads") "new replug: $why"
+    Fresh
+    $why = Test-DisplayHang $log { [IO.File]::WriteAllText($log, "") }
+    Assert ($why -eq "the driver log shrank between the reads") "shrank: $why"
+    # Growth that keeps the candidate is still a hang.
+    Fresh
+    $why = Test-DisplayHang $log { Add "      CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4320@60.0000" }
+    Assert ($why -eq "") "growth without a finish: $why"
+    # The pause is the one the caller passes, between the two reads.
+    $script:Paused = 0
+    Fresh; Test-DisplayHang $log { $script:Paused++ } | Out-Null
+    Assert ($script:Paused -eq 1) "paused $script:Paused times"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest hang check: a tail cut through the candidate, or a partial last line, is no hang; an open log is read" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  FIX=$IDD_FIX T=$BATS_TEST_TMPDIR run guest_ps '
+    $log = "$env:T/idd.txt"
+    $replug = "[2026-11-22 00:28:21Z] [T]                  CMonitorManager::Replug:241  | ReplugMonitor`r`n"
+    $after = "[2026-11-22 00:28:22Z] [W]  CDisplayConfiguration::LoadModes:89   | Filtering`r`n"
+    # The tail starts inside the replug line, past its time stamp, so the cut
+    # first line still holds the replug text.
+    [IO.File]::WriteAllText($log, ("x" * 300) + "`r`n" + $replug + $after)
+    $max = $after.Length + 50
+    $t = Read-IddTail $log $max
+    $first = [Text.Encoding]::ASCII.GetString($t.Bytes, 0, 50)
+    Assert ($first.Contains("CMonitorManager::Replug") -and -not $first.Contains("[2026")) "the cut: [$first]"
+    Assert ((Test-DisplayHang $log { } $max) -eq "no ReplugMonitor line in the driver log") "cut candidate"
+    Assert ((Test-DisplayHang $log { } 100000) -eq "") "whole candidate"
+    # A replug line with no newline yet is not a candidate.
+    Copy-Item "$env:FIX/healthy-refusals.txt" $log -Force
+    [IO.File]::AppendAllText($log, $replug.TrimEnd())
+    Assert ((Test-DisplayHang $log { }) -eq "the last replug finished") "partial last line"
+    # A log another handle holds open for writing, as the driver does.
+    Copy-Item "$env:FIX/hang1.txt" $log -Force
+    $w = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+    try { Assert ((Test-DisplayHang $log { }) -eq "") "open log" } finally { $w.Dispose() }'
+  assert_success
+  assert_output ok
+  # The driver keeps the log open, so it is read with shared write and delete.
+  run grep -c 'FileShare\]::ReadWrite -bor \[IO.FileShare\]::Delete' "$REPO/guest/lanai-scale.ps1"
+  assert_output 1
+}
+
+@test "guest adapter: one present device with Root\\LGIdd in any case, by its instance ID; none or two do nothing" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    function Dev($Id, $Ids) { [pscustomobject]@{ InstanceId = $Id; HardwareID = $Ids } }
+    $other = Dev "PCI\VEN_1234&DEV_1111\3&267A616A&0&10" @("PCI\VEN_1234&DEV_1111")
+    $s = Select-LgAdapter @($other, (Dev "ROOT\DISPLAY\0003" @("root\lgidd")))
+    Assert ($s.InstanceId -eq "ROOT\DISPLAY\0003") "lower case, another suffix: $($s.InstanceId)"
+    $s = Select-LgAdapter @((Dev "ROOT\DISPLAY\0000" @("Root\LGIdd")))
+    Assert ($s.InstanceId -eq "ROOT\DISPLAY\0000") "exact case"
+    $s = Select-LgAdapter @($other)
+    Assert ($null -eq $s.InstanceId -and $s.Reason -eq "found 0 Looking Glass display adapters, not one") "none"
+    $s = Select-LgAdapter @((Dev "ROOT\DISPLAY\0000" @("Root\LGIdd")), (Dev "ROOT\DISPLAY\0001" @("ROOT\LGIDD")))
+    Assert ($null -eq $s.InstanceId -and $s.Reason -like "found 2 *") "two"
+    $s = Select-LgAdapter @((Dev "ROOT\DISPLAY\0000" @("Root\LGIdd2")))
+    Assert ($null -eq $s.InstanceId) "a longer hardware ID"'
+  assert_success
+  assert_output ok
+  # The instance ID goes to pnputil as one argument, by its absolute path.
+  run grep -F "& (Join-Path ([Environment]::SystemDirectory) 'pnputil.exe') '/restart-device' \$InstanceId" \
+    "$REPO/guest/lanai-scale.ps1"
+  assert_success
+}
+
+@test "guest restart child: restarts the selected adapter once on a hang, logs exit codes, and declines otherwise" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  FIX=$IDD_FIX run guest_ps '
+    $script:Calls = @()
+    $script:Code = 0
+    function Get-LgDevices { @([pscustomobject]@{ InstanceId = "ROOT\DISPLAY\0000"; HardwareID = @("Root\LGIdd") }) }
+    function Invoke-PnpUtil($InstanceId) { $script:Calls += , $InstanceId; return $script:Code }
+    Assert ((Invoke-DisplayRestart "$env:FIX/hang1.txt" { }) -eq 0) "hang exit"
+    Assert ($script:Calls.Count -eq 1 -and $script:Calls[0] -eq "ROOT\DISPLAY\0000") "one call with the ID"
+    Assert ($script:Logs -contains "The display adapter restarted (pnputil exit 0).") "exit 0 logged"
+    $script:Code = 3010
+    Assert ((Invoke-DisplayRestart "$env:FIX/hang2.txt" { }) -eq 3010) "3010 returned"
+    Assert (@($script:Logs | Where-Object { $_ -like "*exit 3010*" }).Count -eq 1) "3010 logged"
+    $script:Code = 5
+    Assert ((Invoke-DisplayRestart "$env:FIX/hang3.txt" { }) -eq 5) "failure returned"
+    Assert (@($script:Logs | Where-Object { $_ -like "*(exit 5)*" }).Count -eq 1) "failure logged"
+    $script:Calls = @()
+    Assert ((Invoke-DisplayRestart "$env:FIX/healthy-refusals.txt" { }) -eq 0) "healthy exit"
+    Assert ($script:Calls.Count -eq 0) "no restart for the healthy log"
+    Assert ($script:Logs -contains "Display hang not confirmed (the last replug finished); no restart.") "decline logged"
+    function Get-LgDevices { @() }
+    Assert ((Invoke-DisplayRestart "$env:FIX/hang1.txt" { }) -eq 2) "no adapter"
+    Assert ($script:Calls.Count -eq 0) "no restart without an adapter"'
+  assert_success
+  assert_output ok
+}
+
+@test "lanai-scale.ps1: the restart child waits 10 s by a monotonic timer and starts from the main entry only" {
+  local f=$REPO/guest/lanai-scale.ps1
+  run grep -c "if (\$DisplayRestart) { exit (Invoke-DisplayRestart \$IddLog { Wait-Monotonic 10000 }) }" "$f"
+  assert_output 1
+  run grep -c 'Stopwatch\]::StartNew()' "$f"
+  [[ $output -ge 2 ]] || fail "Wait-Monotonic does not use a Stopwatch"
+}
