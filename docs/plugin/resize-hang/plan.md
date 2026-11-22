@@ -5,7 +5,11 @@ patch, `patches/looking-glass/0004-client-resize-settle.patch`. The second is a
 recovery path: the client notices the hang, the host passes it on, and the scale
 task in Windows restarts the Looking Glass display driver.
 
-Status: design reviewed (three rounds), 2026-11-21. No code yet. Phase 0 is next.
+Status: design reviewed (three rounds), 2026-11-21. Phase 0 passed the same
+day: a driver restart recovered 3 of 3 forced hangs. It also found two changes
+for part C, which John accepted (decision 3): the scale task confirms the hang
+from the driver log, and selects the adapter by hardware ID. These changes get
+one focused review before code. No code yet.
 
 ## Problem
 
@@ -125,9 +129,10 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
    `Resize: frames from Windows again`. That line is the only end of a stall that
    the client reports.
 8. A Windows that refuses a mode but keeps drawing is not a stall: any frame
-   resets the count. A refusal on a desktop that draws nothing for 10 s can look
-   like a stall. Phase 0 checks whether that happens, and the cost of a false
-   restart is one display flicker, within the limits of requirement 11.
+   resets the count. A refusal on a still desktop does look like a stall: in
+   phase 0, Windows refused 5200x2900 and sent no frame for 38 s. The client
+   cannot tell the two apart, so it reports both, and the scale task confirms
+   the hang before it restarts anything (requirement 13).
 
 ### C. Recover from the hang (host and scale task)
 
@@ -151,7 +156,8 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
    one, so an interrupted write leaves the old state whole.
 10. A stall line makes a recovery pending. These end it: a `frames from Windows
     again` line, a new client generation, the client unit not running (the
-    feed checks it at each poll), or the end of the VM.
+    feed checks it at each poll), the end of the VM, or a declined attempt
+    (requirement 11).
 11. While a recovery is pending, the feed sends `lanai-display-restart` only when
     QEMU reports the scale port's guest side open (`frontend-open` on `scale0`,
     as setup's step 6 check reads it). So a stall before the scale task starts,
@@ -164,6 +170,17 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
     stall after three recoveries), it sends nothing more, and `lanai status`
     warns that Windows' display is stuck and that a restart of Windows fixes it.
     Scale lines keep flowing as today while a recovery waits.
+
+    The channel stays one-way (spec 27), so the feed learns the outcome from
+    `client.log`. A driver restart always ends the client's session, and the
+    client logs a new one (`Starting session`, upstream's line). If no new
+    session is logged within 30 s of a send, the attempt was declined: the scale
+    task found the display not hung, the restart failed, or the task is too old
+    to know the line. The feed then ends the recovery without the warning and
+    sends nothing more for this stall. Until a frame arrives, `lanai status`
+    notes that Windows has sent no picture for a while and that a restart of
+    Windows fixes a frozen window. A frame, a new client generation or the end
+    of the VM clears the note. A declined attempt still counts toward the 3.
 12. The scale task accepts the exact line `lanai-display-restart` and nothing
     longer or different. Restart lines and scale lines are separate kinds in a
     drained batch:
@@ -171,15 +188,34 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
       more are stale and dropped.
     - One or more restart lines in a batch, in any order with scale lines, make
       one restart.
-13. For a restart, the task selects the Looking Glass display adapter by its
-    device ID pattern, which phase 0 records and must be the same on every
-    install (for example, an instance ID under `SWD\LGIDD\`). It acts only when
-    exactly one device matches, and logs and does nothing for none or several.
-    It runs `C:\Windows\System32\pnputil.exe /restart-device <instance ID>` in a
-    child process with a 30 s limit, so a stuck restart cannot stop scale
-    handling. It logs the exit code. Exit code 3010 (reboot needed) and any
-    other failure are logged, not retried by the task: the host's next send
-    is the retry. It restarts at most once a minute.
+13. On a restart line, the task first confirms the hang from the driver's own
+    log, because a refused size on a still desktop looks the same from the host
+    (requirement 8). It reads the last 1 MiB of
+    `%ProgramData%\Looking Glass (IDD)\looking-glass-idd.txt`, opened for shared
+    read, since the driver keeps writing it. The display is hung only when all
+    of these hold:
+    - The tail holds a line from `CMonitorManager::Replug` that ends
+      `| ReplugMonitor`.
+    - No line after the last such line ends `| Swap chain device set`.
+    - That line's time (`[yyyy-MM-dd HH:mm:ssZ]`, UTC) is at least 5 s before
+      Windows' clock now.
+
+    Otherwise, including a missing or unreadable log or a time it cannot parse,
+    it logs "Display not hung (<reason>); no restart." and does nothing. Phase 0
+    found this signature in all three forced hangs and in the live 2026-11-21
+    freeze, and not in a healthy log with five refusals. The strings belong to
+    the pinned IDD; a pin change rechecks them (requirement 18).
+
+    For a restart, the task selects the Looking Glass display adapter by its
+    hardware ID, `Root\LGIdd`, which is the same on every install. The instance
+    ID (`ROOT\DISPLAY\0000` in phase 0) is not, so it is read each time. It acts
+    only when exactly one present device has that hardware ID, and logs and does
+    nothing for none or several. It runs
+    `C:\Windows\System32\pnputil.exe /restart-device <instance ID>` in a child
+    process with a 30 s limit, so a stuck restart cannot stop scale handling.
+    It logs the exit code. Exit code 3010 (reboot needed) and any other failure
+    are logged, not retried by the task: the host's next send is the retry. It
+    restarts at most once a minute.
 14. An install whose scale task predates the restart handler gets the same
     treatment as an old scale task today: the panel says to run setup again and
     names the fix. Setup records the new task version.
@@ -207,11 +243,18 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
       message's format.
     - Requirement 27: the scale channel carries a scale step and a save number,
       or the fixed line `lanai-display-restart`, and nothing else. The scale task
-      acts on that line only by restarting the Looking Glass display adapter.
+      acts on that line only by restarting the Looking Glass display adapter,
+      and only after the driver's log shows the hang. The channel stays
+      one-way.
 16. `README.md` names the freeze, the monitor-sleep trigger and the automatic
     recovery, and says that a restart of Windows is the fallback.
 17. The panel's old-client and old-task messages name the freeze fix (the
     pattern 0003 set: "may", one item per fix).
+18. `CLAUDE.md`'s pin rule adds a recheck: the new IDD still logs the three
+    strings requirement 13 reads (`CMonitorManager::Replug` with
+    `ReplugMonitor`, `Swap chain device set`, and the bracketed UTC time), at the
+    same log path, and still has the hardware ID `Root\LGIdd`. Spec 12's
+    sign-in bullet, which the rule cites, gets the same note.
 
 ## Acceptance
 
@@ -251,6 +294,10 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
     writing: each counts as an attempt.
   - `frames again`, a new client generation, or the client unit stopping ends
     the recovery: nothing more is sent.
+  - A send with no `Starting session` within 30 s is declined: the recovery
+    ends, nothing more is sent for that stall, no stuck warning appears, and
+    the no-picture note shows until a frame. A send followed by a session but
+    no frame tries again after 60 s.
   - Two client starts in the same second, with the new log regrown past the old
     offset before the next poll: the new ID starts a new generation, and the old
     stall line is not acted on. The same holds for a rotated log.
@@ -268,6 +315,12 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
     (one restart).
   - A second restart within a minute does nothing.
   - No matching device or two matching devices: logged, no restart.
+  - The hang check, on trimmed copies of the phase 0 driver logs in
+    `test/fixtures/`: hangs 1-3 and the live 2026-11-21 freeze restart; the
+    healthy log with five refusals does not. Also no restart for a missing log,
+    a log with no `ReplugMonitor` in its last 1 MiB, a last replug under 5 s
+    old, and a time that does not parse. A log the driver holds open is still
+    read.
   - A nonzero exit and exit 3010 are logged. A restart that runs past 30 s is
     stopped, and scale handling goes on meanwhile.
 - Every patch applies exactly, the client builds, and its tests pass
@@ -325,6 +378,51 @@ The recovery claim covers only the states phase 0 reproduced. If the restart
 does not bring the picture back, stop and bring the result to John. Part C
 changes, and parts A and B still stand.
 
+#### Phase 0 result (2026-11-21)
+
+Run on `~/lanai-proofs/resize-hang-copy`, a `lanai-copy` of the live disk, next
+to the live VM. The copy had 8 GB, the live VM's scale port and SMBIOS line,
+and its network link cut. Lanai's B7-826-236efcb1 client drove a window on a
+hidden workspace; frames arrive there as on screen. The evidence is in
+`~/lanai-proofs/resize-hang-phase0/`.
+
+- Windows 11 Pro 25H2, build 26200.9168. The adapter is `ROOT\DISPLAY\0000`,
+  "Looking Glass Indirect Display Device", hardware ID `Root\LGIdd`, driver
+  1.27.7.771. The design's example (`SWD\LGIDD\`) was wrong. A root-
+  enumerated instance number is not stable across installs, but the hardware
+  ID is. Requirement 13 now selects by it.
+- Baseline on a healthy driver: pnputil exit 0 in 404 ms, and a frame at the
+  window's size within 1 s.
+- Hangs came at bursts 85, 300 (after a clean run of 274, cut short when the
+  harness stopped the copy's QEMU) and 304:
+
+  | Hang | State | pnputil | First frame at the window's size |
+  | --- | --- | --- | --- |
+  | 1 | 2026-11-19: new monitor, modes committed, no swap chain | exit 0, 1.6 s | about 2 s after the restart began |
+  | 2 | 2026-11-21: `ReplugMonitor`, then nothing | exit 0, 5.9 s | about 6 s |
+  | 3 | 2026-11-21 | exit 0, 2.0 s | about 2 s |
+
+  Each time the desktop came back at the window's size, the Windows key opened
+  and closed Start, and the next three bursts all took. In hang 3 the client
+  had already logged "did not take"; the new session asked again by itself.
+  Hang 3's last replug came in the same second as the one before it.
+- Static desktop (step 6): with all windows minimized, Windows sent one frame
+  in 20 s (the taskbar clock's minute). The driver refuses 5200x2900 ("Refusing
+  resolution 5200x2900: configured frame capacity must be at least ... MiB")
+  and sends the refusal to its helper pipe, not to the client. After the
+  client's fifth ask, no frame came for 38 s. So requirement 8's risk is real:
+  as written, the detector restarts the driver for a refused size. A window
+  larger than the shared memory allows, such as a full-screen window on a 5K
+  monitor, refuses on every ask, so every VM run would spend its 3 attempts.
+  The client cannot predict the refusal: the driver's rule
+  (`CLGMPFrameCaps::CanUseMode`) uses a frame memory offset and buffer count
+  that only the driver knows.
+- The driver log tells the two apart. In every hang log, the last
+  `ReplugMonitor` has no `Swap chain device set` after it: hangs 1-3 and the
+  live 2026-11-21 freeze. In the refusal log, it has one. A refusal also logs
+  `Refusing resolution`. John accepted a check on this signature (decision
+  3), now in requirements 8, 10, 11, 13 and 18.
+
 ### Phase 1: client patch 0004, test first
 
 Cases first, then in `resize.c`: the settle clock fed by raw size changes, the
@@ -342,8 +440,9 @@ stall detector, so phase 3 can force hangs with the new detector.
 
 The client ID line in `client_exec`. The follower, its state file and the send
 rules in `lib/vm.sh`, with the `frontend-open` and client unit checks. The
-status warning. The restart handler in `guest/lanai-scale.ps1`, the task
-version in setup, and the panel messages.
+status warning, the declined-attempt rule and the no-picture note. The hang
+check and the restart handler in `guest/lanai-scale.ps1`, with trimmed phase 0
+driver logs as fixtures, the task version in setup, and the panel messages.
 Then the spec, README and CLAUDE.md updates.
 
 ### Phase 3: proof on a copy
@@ -365,6 +464,15 @@ John accepted both on 2026-11-21:
    the scale task does with its existing admin rights. The other choice was a
    separate admin task in Windows with its own port, which means a second admin
    piece for setup to install and keep whole.
+
+John accepted this one on 2026-11-21, after phase 0:
+
+3. The scale task confirms the hang from the driver log before it restarts
+   (requirement 13). This ties Lanai to the wording of the pinned IDD's log,
+   which a pin change rechecks (requirement 18). The other choice was to accept
+   false restarts: a window larger than the driver allows, such as a
+   full-screen window on a 5K monitor, would cost 3 display flickers in every
+   VM run.
 
 ## Review log
 
