@@ -317,7 +317,9 @@ Neither needs GPU acceleration.
       ask, and a waiting ask does not count. Each ask makes Windows' display driver
       replug its monitor, and replugs in quick succession can hang it
       ([resize-hang/plan.md](resize-hang/plan.md)), so Lanai asks only once the
-      window's size has held for 2 seconds, and two asks are at least 4 seconds apart.
+      window's size has held for 2 seconds, and two asks in a display session are at
+      least 4 seconds apart. A new display session starts afresh: it follows a driver
+      or host restart, which ends the last ask's replug.
       When a trigger finds Windows at another size, Lanai asks then, and again after
       waits of 4, 5, 10 and 20 seconds, each counted from the previous ask, while
       Windows still differs, then stops; a match stops the asks. Triggers: the window's size changes, a new display session
@@ -349,10 +351,11 @@ Neither needs GPU acceleration.
       session started, it logs a stall line, and the first frame after it logs that
       frames came back. While a stall lasts and the scale task's port is open, the
       scale feed sends the restart line (requirement 27): at most 3 times per stall,
-      at least 60 seconds apart, and no more once 3 restarts have been seen in the VM
-      run (a client session that starts within 60 seconds of a send). The scale task
+      at least 60 seconds apart (also across stalls), and no more once 3 restarts have been seen in the VM
+      run (a client session that follows a send within 60 seconds, counted also when
+      the feed reads it late). The scale task
       restarts the Looking Glass display adapter only when the driver's own log shows
-      an unfinished replug, the same one in two reads 10 seconds apart, at most once a
+      an unfinished replug, the same one in two reads 10 seconds apart, starting at most one check a
       minute; a size Windows refuses on a still desktop also sends no frame, and its
       log shows no such replug. While a stall has lasted 60 seconds, `lanai status`
       and the panel say Windows has sent no picture for that long and that, if the
@@ -492,9 +495,11 @@ or 6008).
     scale task acts on the restart line only by restarting the Looking Glass display
     adapter, and only after the driver's own log shows the hang (requirement 12's
     recovery bullet). Lanai sends that line only from the client's own stall lines in
-    its log. A guest that writes text into that log (through the version string it
-    reports) can at most make Lanai send it the restart line within the recovery's
-    limits, or stop the recovery; both affect only its own display. A guest that never reads the channel, or floods it,
+    its log. A guest can write text into that log through the strings it reports
+    to the client (its version, CPU model and OS name). With it, the guest can at
+    most make Lanai send it the restart line once a minute, end or start a
+    recovery, or make `lanai status` and the panel show the no-picture note; each
+    affects only its own display and Lanai's words about it. A guest that never reads the channel, or floods it,
     cannot block, slow or grow the memory of any Lanai or shell process: a send that
     cannot go through is replaced by the latest one, and the scale task gets the latest
     target whenever it starts or reconnects. The save number never goes down during a VM

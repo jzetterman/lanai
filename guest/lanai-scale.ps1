@@ -31,7 +31,8 @@
   Looking Glass client sees no frame from Windows for 10 s (Lanai,
   docs/plugin/resize-hang/plan.md, requirements 12 and 13). The task then
   starts this script again with -DisplayRestart, in a child process it stops
-  after 45 s, at most once a minute. The child restarts the Looking Glass
+  after 45 s with the processes the child started, at most once a minute and
+  never while the last child or any pnputil.exe still runs. The child restarts the Looking Glass
   display adapter only when the driver's own log shows the hang: an
   unfinished monitor replug, the same one in two reads 10 s apart. A size the
   driver refuses on a still desktop also sends no frame, and its log shows
@@ -342,35 +343,57 @@ function Invoke-DisplayRestart([string]$Path, [scriptblock]$Pause) {
 }
 
 # Start the restart child: this script with -DisplayRestart, in a hidden
-# powershell.exe by its absolute path, in Lanai's folder (Add-Type compiles
-# there). It runs in the start program's job, so it ends with the task.
+# powershell.exe by its absolute path, in Lanai's folder as the task. It runs in the start program's job, so it ends with the task.
+# Reading Handle at once keeps the process open, so ExitCode is still known
+# after the child exits.
 function Start-DisplayRestart {
     $ps = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-    return Start-Process -FilePath $ps -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru `
+    $p = Start-Process -FilePath $ps -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru `
         -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-DisplayRestart')
+    $null = $p.Handle
+    return $p
+}
+
+# Stop process <Id> and every process it started (its pnputil), with
+# taskkill /T /F while the child still lives to name them.
+function Stop-ProcessTree([int]$Id) {
+    & (Join-Path ([Environment]::SystemDirectory) 'taskkill.exe') '/PID' $Id '/T' '/F' 2>&1 | Out-Null
+}
+
+# True when any pnputil.exe runs, such as one a stopped child left behind.
+function Test-PnpUtilRunning {
+    return $null -ne (Get-Process -Name pnputil -ErrorAction SilentlyContinue)
 }
 
 # One tick of the restart handling at <Now> (ms), with <Requests> restart
-# lines in the batch just drained. A child that runs 45 s is stopped, so it
-# never holds the display; one that exited with an error is logged. A
-# request starts a child at most once a minute; any later one in that
-# minute does nothing. Never throws.
+# lines in the batch just drained. A child that runs 45 s is stopped with
+# the processes it started, so it never holds the display; one that exited
+# with an error is logged. A request starts a child at most once a minute,
+# and never while the last child or any pnputil still runs: a stopped child
+# stays known until it has exited. Any other request does nothing. Never
+# throws.
 function Step-DisplayRestart($Ctx, [double]$Now, [int]$Requests) {
     try {
         if ($null -ne $Ctx.Restart) {
             if ($Ctx.Restart.HasExited) {
-                if ($Ctx.Restart.ExitCode -ne 0) { Write-Log "The display restart ended with exit code $($Ctx.Restart.ExitCode)." }
+                if (-not $Ctx.RestartStopped -and $Ctx.Restart.ExitCode -ne 0) { Write-Log "The display restart ended with exit code $($Ctx.Restart.ExitCode)." }
                 $Ctx.Restart = $null
+                $Ctx.RestartStopped = $false
             }
-            elseif ($Now - $Ctx.RestartAt -ge 45000) {
-                try { $Ctx.Restart.Kill() } catch { }
-                $Ctx.Restart = $null
-                Write-Log 'The display restart ran for 45 s; Lanai stopped it.'
+            elseif (-not $Ctx.RestartStopped -and $Now - $Ctx.RestartAt -ge 45000) {
+                # Stop first: the log write can fail, as the child writes the same log.
+                $Ctx.RestartStopped = $true
+                try { & $Ctx.StopRestart $Ctx.Restart.Id } catch { }
+                try { Write-Log 'The display restart ran for 45 s; Lanai stopped it.' } catch { }
             }
         }
         if ($Requests -le 0) { return }
         if ($null -ne $Ctx.RestartAt -and $Now - $Ctx.RestartAt -lt 60000) {
             Write-Log 'Lanai asked to restart the display again within a minute; no restart.'
+            return
+        }
+        if ($null -ne $Ctx.Restart -or (& $Ctx.PnpRunning)) {
+            Write-Log 'Lanai asked to restart the display while the last restart still runs; no restart.'
             return
         }
         $Ctx.RestartAt = $Now
@@ -571,16 +594,19 @@ function Get-DisplayObservation {
 #                after an observation in range
 #   PortOpened   whether the port's opening was seen and logged
 #   MalformedLogged  whether a malformed line was logged
-#   Restart      the running restart child, or $null
+#   Restart      the restart child until it has exited, or $null
+#   RestartStopped  whether Restart was stopped at 45 s
 #   RestartAt    when the last child started (ms), or $null
-#   StartRestart starts a restart child (Start-DisplayRestart); tests swap it
+#   StartRestart starts a restart child (Start-DisplayRestart); tests swap it,
+#                StopRestart (Stop-ProcessTree) and PnpRunning (Test-PnpUtilRunning)
 function New-ScaleContext($State, $Queue, $Shared) {
     return @{
         State = $State; Queue = $Queue; Shared = $Shared
         Lines = New-Object 'System.Collections.Generic.List[object]'
         NextObserve = 0; LastError = ''; LoggedPortError = ''; LoggedSet = ''; LoggedCap = ''
         RangeLogged = $false; PortOpened = $false; MalformedLogged = $false
-        Restart = $null; RestartAt = $null; StartRestart = { Start-DisplayRestart }
+        Restart = $null; RestartStopped = $false; RestartAt = $null; StartRestart = { Start-DisplayRestart }
+        StopRestart = { param($Id) Stop-ProcessTree $Id }; PnpRunning = { Test-PnpUtilRunning }
     }
 }
 
@@ -792,6 +818,13 @@ $ReaderScript = {
     }
 }
 
+# The restart child uses none of the display API below, so it starts here
+# and skips the compile.
+if ($DisplayRestart) {
+    try { exit (Invoke-DisplayRestart $IddLog { Wait-Monotonic 10000 }) }
+    catch { Write-ExitLog "Error: $($_.Exception.Message)"; exit 1 }
+}
+
 # The display configuration API from user32.dll and CreateFile for the
 # scale port. DPI_GET and DPI_SET use the undocumented device info types
 # -3 and -4, which the Settings app uses for "Scale"; their scale fields
@@ -952,7 +985,6 @@ public static class LanaiDisplay {
 '@
 
 try {
-    if ($DisplayRestart) { exit (Invoke-DisplayRestart $IddLog { Wait-Monotonic 10000 }) }
     $save = $null
     if ($Scale -eq 0) {
         $baseline = Get-OemBaseline @((Get-CimInstance -ClassName Win32_ComputerSystem).OEMStringArray)

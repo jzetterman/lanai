@@ -894,7 +894,7 @@ status_facts() {
       helper_alive "$run" "$name" || missing+=,$name
     done
     [[ -z $missing ]] || echo "LanaiHelpersMissing=${missing#,}"
-    at=$(recovery_pending_age "$EPOCHSECONDS")
+    at=$(recovery_pending_age)
     [[ -z $at ]] || echo "LanaiNoPicture=$at"
     if [[ -n $inv && -f $s/stop-requested ]] && read -r rinv at <"$s/stop-requested" &&
       [[ $rinv == "$inv" && $at =~ ^[0-9]+$ ]]; then

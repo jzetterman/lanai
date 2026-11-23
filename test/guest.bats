@@ -778,7 +778,7 @@ guest_ps() {
         Recommended = - $d.MinRel; Current = - $d.MinRel + $d.CurRel }
     }
     $script:Logs = @()
-    function Write-Log($Message) { $script:Logs += $Message }
+    function Write-Log($Message) { if ($script:FailLog) { throw "the log is locked" }; $script:Logs += $Message }
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:PS1, [ref]$null, [ref]$null)
     # Every top-level function but the ones that need Windows (faked above).
     $fns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -2365,18 +2365,22 @@ IDD_FIX=$BATS_TEST_DIRNAME/fixtures/idd
   assert_output ok
 }
 
-@test "guest restart tick: one child per batch, none within a minute, stopped at 45 s while scale lines go on" {
+@test "guest restart tick: one child per batch, none within a minute or while the last still runs, stopped at 45 s while scale lines go on" {
   command -v pwsh >/dev/null || skip "pwsh is not installed"
   run guest_ps '
     $c = Ctx
     $script:Started = 0
     $script:Child = $null
+    $script:Stops = @()
+    $script:Pnp = $false
     $c.StartRestart = {
       $script:Started++
-      $script:Child = [pscustomobject]@{ HasExited = $false; ExitCode = 0; Killed = 0 } |
-        Add-Member -MemberType ScriptMethod -Name Kill -Value { $this.Killed++; $this.HasExited = $true } -PassThru
+      $script:Child = [pscustomobject]@{ Id = 100 + $script:Started; HasExited = $false; ExitCode = 0 }
       $script:Child
     }
+    # The stop does not end the child here: its pnputil hangs on.
+    $c.StopRestart = { param($Id) $script:Stops += $Id }
+    $c.PnpRunning = { $script:Pnp }
     # Two restart lines in one batch start one child.
     $c.Queue.Enqueue((Q "lanai-display-restart" 1000))
     $c.Queue.Enqueue((Q "lanai-display-restart" 1000))
@@ -2386,24 +2390,45 @@ IDD_FIX=$BATS_TEST_DIRNAME/fixtures/idd
     $c.Queue.Enqueue((Q "lanai-scale 200 6" 2000))
     Invoke-ScaleTick $c 2400
     Assert ([LanaiDisplay]::Sets -ge 1 -and $c.State.Confirmed -eq 4) "scale handled while the child runs"
-    # At 45 s the child is stopped, once.
+    # At 45 s the child and what it started are stopped, once.
     Invoke-ScaleTick $c 46000
-    Assert ($script:Child.Killed -eq 0) "stopped too soon"
+    Assert ($script:Stops.Count -eq 0) "stopped too soon"
+    # The log write at the stop fails, as when it meets the child'"'"'s write.
+    $script:FailLog = $true
     Invoke-ScaleTick $c 46400
-    Assert ($script:Child.Killed -eq 1) "not stopped at 45 s"
-    Assert (@($script:Logs | Where-Object { $_ -like "*ran for 45 s*" }).Count -eq 1) "the stop is logged once"
+    $script:FailLog = $false
+    Invoke-ScaleTick $c 47000
+    Assert ($script:Stops.Count -eq 1 -and $script:Stops[0] -eq 101) "not stopped once at 45 s: $script:Stops"
+    Assert (@($script:Logs | Where-Object { $_ -like "*ran for 45 s*" }).Count -eq 0) "the failed log write is in the log"
     # A request within a minute of the last start does nothing.
     $c.Queue.Enqueue((Q "lanai-display-restart" 50000))
     Invoke-ScaleTick $c 50400
     Assert ($script:Started -eq 1) "a second start within a minute"
     Assert (@($script:Logs | Where-Object { $_ -like "*within a minute*" }).Count -eq 1) "the refusal is logged"
-    # A minute on, a request starts a new child; its error exit is logged.
+    # A minute on, the stopped child that still runs blocks a new one.
     $c.Queue.Enqueue((Q "lanai-display-restart" 61000))
     Invoke-ScaleTick $c 61500
-    Assert ($script:Started -eq 2) "a start after a minute"
-    $script:Child.ExitCode = 3010
+    Assert ($script:Started -eq 1) "a start while the stopped child runs"
+    # Once it has exited it is forgotten, and its forced exit code is not logged.
+    $script:Child.ExitCode = 1
     $script:Child.HasExited = $true
     Invoke-ScaleTick $c 62000
+    Assert ($null -eq $c.Restart) "the exited child is forgotten"
+    Assert (@($script:Logs | Where-Object { $_ -like "*exit code*" }).Count -eq 0) "a stopped child exit code is logged"
+    # A pnputil left behind blocks a new child too.
+    $script:Pnp = $true
+    $c.Queue.Enqueue((Q "lanai-display-restart" 63000))
+    Invoke-ScaleTick $c 63500
+    Assert ($script:Started -eq 1) "a start while pnputil runs"
+    Assert (@($script:Logs | Where-Object { $_ -like "*still runs*" }).Count -eq 2) "the still-runs refusals are logged"
+    $script:Pnp = $false
+    $c.Queue.Enqueue((Q "lanai-display-restart" 64000))
+    Invoke-ScaleTick $c 64500
+    Assert ($script:Started -eq 2) "a start once nothing runs"
+    # Its error exit is logged.
+    $script:Child.ExitCode = 3010
+    $script:Child.HasExited = $true
+    Invoke-ScaleTick $c 65000
     Assert ($null -eq $c.Restart) "the exited child is forgotten"
     Assert (@($script:Logs | Where-Object { $_ -like "*exit code 3010*" }).Count -eq 1) "the exit code is logged"
     # A child that cannot start is logged, and scale handling goes on.
@@ -2411,6 +2436,28 @@ IDD_FIX=$BATS_TEST_DIRNAME/fixtures/idd
     $c.Queue.Enqueue((Q "lanai-display-restart" 130000))
     Invoke-ScaleTick $c 130500
     Assert (@($script:Logs | Where-Object { $_ -like "*did not start: no powershell.exe*" }).Count -eq 1) "the failed start is logged"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest restart stop: the context stops the child tree with taskkill and looks for pnputil by name" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$0" "$@" >"$OUT"\n' >"$BATS_TEST_TMPDIR/fake"
+  chmod +x "$BATS_TEST_TMPDIR/fake"
+  FAKE=$BATS_TEST_TMPDIR/fake OUT=$BATS_TEST_TMPDIR/args run guest_ps '
+    # Join-Path names the system program; here it is a fake that records its arguments.
+    function Join-Path($Path, $Child) { $script:Program = $Child; $env:FAKE }
+    $c = Ctx
+    & $c.StopRestart 42
+    Assert ($script:Program -eq "taskkill.exe") "runs $script:Program"
+    $got = (Get-Content $env:OUT | Select-Object -Skip 1) -join " "
+    Assert ($got -eq "/PID 42 /T /F") "taskkill gets $got"
+    function Get-Process($Name, $ErrorAction) { $script:Asked = $Name; if ($script:P) { [pscustomobject]@{ Id = 7 } } }
+    $script:P = $false
+    Assert (-not (& $c.PnpRunning)) "pnputil runs with none"
+    Assert ($script:Asked -eq "pnputil") "looks for $script:Asked"
+    $script:P = $true
+    Assert (& $c.PnpRunning) "pnputil does not run with one"'
   assert_success
   assert_output ok
 }
@@ -2549,10 +2596,14 @@ IDD_FIX=$BATS_TEST_DIRNAME/fixtures/idd
   assert_output ok
 }
 
-@test "lanai-scale.ps1: the restart child waits 10 s by a monotonic timer and starts from the main entry only" {
+@test "lanai-scale.ps1: the restart child waits 10 s by a monotonic timer and starts before the display API compile" {
   local f=$REPO/guest/lanai-scale.ps1
-  run grep -c "if (\$DisplayRestart) { exit (Invoke-DisplayRestart \$IddLog { Wait-Monotonic 10000 }) }" "$f"
+  run grep -c "try { exit (Invoke-DisplayRestart \$IddLog { Wait-Monotonic 10000 }) }" "$f"
   assert_output 1
+  local child compile
+  child=$(grep -n '^if (\$DisplayRestart) {$' "$f" | cut -d: -f1)
+  compile=$(grep -n '^Add-Type -TypeDefinition' "$f" | cut -d: -f1)
+  [[ -n $child && -n $compile && $child -lt $compile ]] || fail "the child starts at line '$child', the compile is at '$compile'"
   run grep -c 'Stopwatch\]::StartNew()' "$f"
   [[ $output -ge 2 ]] || fail "Wait-Monotonic does not use a Stopwatch"
 }

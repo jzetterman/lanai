@@ -645,6 +645,9 @@ cmd_panel() {
         (if $dailyControls then "Try Open window again." elif $reopen then "Try Reopen the Windows window in Setup."
          else "Check the Windows window log, then shut down and continue setup." end) else empty end,
       if $st.state != "version-mismatch" and ($facts | contains("LanaiDriverOld=")) then "The Windows display driver needs an update. Shut down and continue setup." else empty end,
+      # A display recovery pending a minute or more, as status_map words it.
+      ($facts | capture("(^|\n)LanaiNoPicture=(?<s>[0-9]+)") | .s | tonumber / 60 | floor |
+        "Windows has sent no picture for \(.) minute\(if . == 1 then "" else "s" end). If the Windows window looks frozen, restart Windows to fix it."),
       # The resize warning (req 12). Without the sign-in step, Run setup
       # again is the one step: one message says what it fixes (the mouse
       # after a wake, from an old client; the size, from the missing step or

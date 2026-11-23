@@ -1224,6 +1224,18 @@ assert_plan_agreement() {
   assert_output --partial 'background services stopped'
   assert_output --partial 'window did not open in time'
   assert_output --partial 'display driver needs an update'
+  refute_output --partial 'no picture'
+}
+
+@test "panel: a display recovery pending a minute or more shows the no-picture note, in whole minutes" {
+  # shellcheck disable=SC2120
+  status_facts() { printf '%s\n' "$1" 'LanaiNoPicture=60'; }
+  run cmd_panel
+  assert_equal "$(jq -r .warning <<<"$output")" 'Windows has sent no picture for 1 minute. If the Windows window looks frozen, restart Windows to fix it.'
+  # shellcheck disable=SC2120
+  status_facts() { printf '%s\n' "$1" 'LanaiNoPicture=185'; }
+  run cmd_panel
+  assert_output --partial 'no picture for 3 minutes.'
 }
 
 @test "panel: settings and snapshot read failures stay separate from operation outcomes" {

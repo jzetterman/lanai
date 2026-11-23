@@ -33,7 +33,8 @@ case $1 in
   monitors) cat "$T/monitors.json" ;;
   *) exit 1 ;;
 esac'
-  shim systemctl 'if [[ "$*" == "--user show -p MainPID --value lanai-client.service" ]]; then
+  shim systemctl '[[ ! -e $T/systemctl-fails ]] || exit 1
+if [[ "$*" == "--user show -p MainPID --value lanai-client.service" ]]; then
   cat "$T/client-pid" 2>/dev/null || echo 0
 else
   echo 0
@@ -588,10 +589,14 @@ port() {
 }
 
 # One recovery pass at time <now>, with the client unit running unless
-# <running> is false. QMP answers from $T/chardevs; each send is recorded in
-# $T/sent with its time, and fails when $T/send-fails exists.
+# <running> is false. QMP answers from $T/chardevs, and a new client replaces
+# the log during the QMP call when $T/swap-at-qmp exists; each send is
+# recorded in $T/sent with its time, and fails when $T/send-fails exists.
 recover() {
-  qmp_call() { cat "$T/chardevs"; }
+  qmp_call() {
+    cat "$T/chardevs"
+    [[ ! -e $T/swap-at-qmp ]] || client_gen bbb
+  }
   scale_send() {
     printf '%s %s\n' "$NOW" "$2" >>"$T/sent"
     [[ ! -e $T/send-fails ]]
@@ -690,24 +695,87 @@ state() {
   assert_equal "$(state '.restarts')" "[]"
 }
 
-@test "recovery: a session 61 s after a send is no restart; an unrelated one within 60 s is" {
+@test "recovery: a session after a pass 61 s on is no restart; one read late, or an unrelated one within 60 s, is" {
   client_gen aaa
   port true
   stall
   recover 100
-  # The port closes, so no second send; the session is read 61 s on.
+  # The port closes, so no second send. A pass 61 s on ends the watch.
   port false
-  session
   recover 161
+  session
+  recover 162
   assert_equal "$(state '.restarts')" "[]"
+  # A session soon after a send that a hung feed first reads 61 s on counts.
   port true
   again
   recover 170
   stall
+  recover 200
+  session
+  port false
+  recover 261
+  assert_equal "$(state '.restarts')" "[261]"
+  # An unrelated session within 60 s of a declined send counts too.
+  port true
+  again
+  recover 270
+  stall
   recover 300
   session
   recover 330
-  assert_equal "$(state '.restarts')" "[330]"
+  assert_equal "$(state '.restarts')" "[261,330]"
+}
+
+@test "recovery: restarts a hung feed reads late still spend the run's three" {
+  client_gen aaa
+  local t
+  for t in 100 1000 2000; do
+    port true
+    stall
+    recover "$t"
+    session
+    port false
+    recover $((t + 61))
+    again
+    recover $((t + 62))
+  done
+  assert_equal "$(state '.restarts')" "[161,1061,2061]"
+  port true
+  stall
+  recover 3000
+  recover 3100
+  assert_equal "$(sends)" "100 1000 2000"
+}
+
+@test "recovery: a new client log during a pass's read or before its send gets no send" {
+  client_gen aaa
+  port true
+  stall
+  recover 100
+  assert_equal "$(sends)" 100
+  # The new client replaces the log between the ID read and the line read.
+  eval "$(declare -f recovery_read_log | sed '1s/recovery_read_log/real_read_log/')"
+  recovery_read_log() { client_gen bbb; real_read_log "$@"; }
+  recover 160
+  unset -f recovery_read_log
+  eval "$(declare -f real_read_log | sed '1s/real_read_log/recovery_read_log/')"
+  assert_equal "$(sends)" 100
+  recover 161
+  assert_equal "$(state '[.gen, .pending]')" '["bbb",false]'
+  assert_equal "$(sends)" 100
+  # The new client replaces the log while the pass asks QMP.
+  client_gen aaa
+  stall
+  recover 300
+  assert_equal "$(sends)" "100 300"
+  touch "$T/swap-at-qmp"
+  recover 360
+  rm "$T/swap-at-qmp"
+  assert_equal "$(sends)" "100 300"
+  recover 361
+  assert_equal "$(state '[.gen, .pending]')" '["bbb",false]'
+  assert_equal "$(sends)" "100 300"
 }
 
 @test "recovery: a failed write and a send cut off after its record each count" {
@@ -792,6 +860,32 @@ state() {
   assert_equal "$(state '.pending')" false
 }
 
+@test "recovery: a guest that forges a new recovery each pass gets one send a minute" {
+  # The guest can write lines into client.log through the strings it reports.
+  client_gen aaa
+  port true
+  local t
+  for ((t = 100; t < 230; t += 2)); do
+    again
+    stall
+    recover "$t"
+  done
+  assert_equal "$(sends)" "100 160 220"
+}
+
+@test "recovery: an unknown client state neither ends a recovery nor sends" {
+  port true
+  client_gen aaa
+  stall
+  recover 100
+  recover 160 unknown
+  recover 300 unknown
+  assert_equal "$(sends)" 100
+  assert_equal "$(state '.pending')" true
+  recover 301
+  assert_equal "$(sends)" "100 301"
+}
+
 @test "recovery: a new client ID starts a new generation, also when the new log outgrew the old offset" {
   port true
   client_gen aaa
@@ -863,6 +957,10 @@ state() {
   assert_output ""
   run recovery_pending_age 160
   assert_output 60
+  # With no time given it reads the clock since boot, as lanai status does.
+  boot_seconds() { echo 161; }
+  run recovery_pending_age
+  assert_output 61
   run bash -c 'source "$1/lib/lanai.sh"
     printf "%s\n" ActiveState=active LanaiInstall=present LanaiSetup=done LanaiContainer=none \
       LanaiQmp=running LanaiQga=open LanaiNoPicture=185 | status_map' _ "$REPO"
@@ -883,6 +981,8 @@ state() {
   settings 150 4
   port true
   qmp_call() { cat "$T/chardevs"; }
+  # The pass times the recovery by the clock since boot, never the wall clock.
+  boot_seconds() { echo 5000; }
   client_gen aaa
   stall
   echo 0 >"$T/client-pid"
@@ -897,4 +997,9 @@ state() {
   assert_line "lanai-scale 150 4"
   run grep -c "asks Windows to restart its display driver (send 1 of 3)" "$T/feed.log"
   assert_output 1
+  assert_equal "$(state '.last')" 5000
+  # A failing systemctl is no stopped client: the recovery stays pending.
+  touch "$T/systemctl-fails"
+  step
+  assert_equal "$(state '.pending')" true
 }

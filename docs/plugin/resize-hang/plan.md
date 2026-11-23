@@ -106,8 +106,10 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
    debounce holds back an ask for the older size, and a continuous drag makes no
    ask until it stops. A burst of resizes, such as a monitor wake, makes one ask,
    for the last size.
-2. Two asks are at least 4 s apart (`RESIZE_GAP_US`), whether for a new size or a
-   retry of the same size. The first retry wait grows from 2 s to 4 s, and the
+2. Two asks in a display session are at least 4 s apart (`RESIZE_GAP_US`),
+   whether for a new size or a retry of the same size. A new session starts
+   afresh (requirement 3): it follows a driver or host restart, so the last
+   ask's replug is gone. The first retry wait grows from 2 s to 4 s, and the
    rest of the retry table (5, 10, 20 s) stays.
 3. A window size below the floor, a new session, and the "did not take" give-up
    behave as today.
@@ -162,7 +164,9 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
    one, so an interrupted write leaves the old state whole.
 10. A stall line makes a recovery pending. These end it: a `frames from Windows
     again` line, a new client generation, the client unit not running (the
-    feed checks it at each poll), or the end of the VM.
+    feed checks it at each poll; a `systemctl` that fails or times out leaves
+    the state unknown, which neither ends a recovery nor sends), or the end of
+    the VM.
 11. While a recovery is pending, the feed sends `lanai-display-restart` only when
     QEMU reports the scale port's guest side open (`frontend-open` on `scale0`,
     as setup's step 6 check reads it). So a stall before the scale task starts,
@@ -172,10 +176,15 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
     The channel stays one-way (spec 27), so the feed never learns whether
     Windows restarted its display or declined (requirement 13). It treats each
     send's outcome as unknown and retries within two limits:
-    - Per recovery: at most 3 sends, at least 60 s apart.
+    - Per recovery: at most 3 sends. Any two sends in the VM run are at least
+      60 s apart, also across recoveries, so a guest that forges new
+      recoveries in the client's log gets one line a minute.
     - Per VM run: at most 3 restarts seen. A restart seen is a send that a new
       client session (`Starting session`, upstream's line) followed within
-      60 s. A driver restart ends the client's session, and phase 0 saw the new
+      60 s. The feed judges this when it reads the line: the first pass that
+      ends more than 60 s after the send stops watching for it, after it reads
+      the new lines. So a late pass counts a session it missed rather than
+      lose it. A driver restart ends the client's session, and phase 0 saw the new
       one 2 to 6 s after each restart. A declined send restarts nothing, so it
       costs no restart seen; an unrelated reconnect after a send counts as one,
       which errs toward fewer restarts.
@@ -238,7 +247,12 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
     instance ID as one argument, and matches the hardware ID without regard to
     case. It logs the exit code. Exit code 3010 (reboot needed) and any other
     failure are logged, not retried by the task: the host's next send is the
-    retry. It restarts at most once a minute.
+    retry. It starts at most one child a minute, so two restarts come at least
+    25 s apart (a child restarts once, after its 10 s check, and is stopped at
+    45 s). At the 45 s limit the task stops
+    the child with every process it started (`taskkill /T /F`), and it starts
+    no new child while the last one or any `pnputil.exe` still runs, so a
+    pnputil that cannot be stopped never gets a second one beside it.
 14. An install whose scale task predates the restart handler gets the same
     treatment as an old scale task today: the panel says to run setup again and
     names the fix. Setup records the new task version.
@@ -318,17 +332,24 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
     one. After three in a VM run, a new stall sends nothing. Sends with no
     session after them (a declined check, a failed restart) do not count, so a
     refused size that stalls on every idle minute never spends the run's
-    restarts. A session that comes 61 s after a send does not count; an
-    unrelated session after a declined send does.
+    restarts. A session that comes after a pass more than 60 s after the send
+    does not count; an unrelated session after a declined send does. A session
+    soon after a send that a late pass first reads still counts, so a feed
+    that misses passes cannot get a fourth restart.
+  - A new client that replaces the log while a pass reads it or asks QMP gets
+    no send from that pass.
   - A write that fails, and a feed killed between recording a send and
     writing: each counts as a send. A feed restart while it waits to learn
     whether a session follows keeps the send and its time.
   - `frames again` without a new session ends the recovery and counts no
     restart.
   - `frames again`, a new client generation, or the client unit stopping ends
-    the recovery: nothing more is sent.
+    the recovery: nothing more is sent. A `systemctl` that fails or times out
+    neither ends it nor sends.
+  - A guest that forges a new recovery on each pass gets one send a minute.
   - The status note shows once a recovery has been pending for 60 s, never
-    says "stuck", and clears when the recovery ends.
+    says "stuck", and clears when the recovery ends. The panel shows the same
+    note.
   - Two client starts in the same second, with the new log regrown past the old
     offset before the next poll: the new ID starts a new generation, and the old
     stall line is not acted on. The same holds for a rotated log.
@@ -359,7 +380,9 @@ and its record in the session scratchpad. Phase 1 copies the relevant parts into
     in any case, under another instance suffix, is restarted with its instance
     ID as one argument.
   - A nonzero exit and exit 3010 are logged. A check and restart that run past
-    45 s are stopped, and scale handling goes on meanwhile.
+    45 s are stopped with what they started, and scale handling goes on
+    meanwhile, also when the stop's log line fails. A request while a stopped
+    child or any pnputil still runs starts nothing.
 - Every patch applies exactly, the client builds, and its tests pass
   (`test/client-patches.bats` with `LANAI_TEST_LG_TARBALL`). The bats suite,
   `bin/check` and CI pass.
@@ -524,23 +547,32 @@ Then the spec, README and CLAUDE.md updates.
   last send no session has followed yet. It asks QMP on `qmp-cli.sock`, as
   `lanai status` does, only when a send is due. `lanai status` reports
   `LanaiNoPicture` and the note "Windows has sent no picture for N minutes. If
-  the Windows window looks frozen, restart Windows to fix it."
+  the Windows window looks frozen, restart Windows to fix it." The panel shows
+  the same note. `last` keeps the run's last send for the run-wide gap. All
+  recovery times are seconds since boot (`boot_seconds`), so a wall clock
+  step cannot move them.
 - Guest (`guest/lanai-scale.ps1`): the restart child is the same script with
   `-DisplayRestart`, so setup copies no new file. The child is started with
-  `Start-Process` in the start program's job. Stopping it at 45 s kills the
-  child powershell.exe only; a pnputil it started may run on, and ends with the
-  job at the latest. Both processes write `lanai-scale.log`; the child retries
-  a write that meets the task's.
+  `Start-Process` in the start program's job. At 45 s the task stops it with
+  `taskkill /T /F`, which also stops the pnputil it started, and keeps the
+  child until it has exited. No new child starts while the last one or any
+  `pnputil.exe` runs. The stop comes before its log line, which can fail
+  when it meets the child's write. The child starts before the task compiles
+  its display API, which it does not use, and the task keeps its process
+  handle so its exit code is known. Both processes write `lanai-scale.log`;
+  the child retries a write that meets the task's.
 - Setup and panel (requirement 14): step 6 records `display_restart`
   (`LANAI_DISPLAY_RESTART`, 1), and `display_restart_missing` reads it. Without
   the sign-in step, the freeze is one more item in the Run setup again message
   ("all four" at most). With the step, it is its own Run setup again message
   after any update words.
-- Tests: 16 host cases in `test/scale-feed.bats`, the ID line in
+- Tests: 19 host cases in `test/scale-feed.bats`, the ID line in
   `test/client.bats`, the VM start cleanup in `test/vm.bats`, 8 guest cases on
   the phase 0 driver logs in `test/fixtures/idd/`, the mark in `test/ui.bats`
-  and `test/setup.bats`, and the panel words in `test/panel.bats`. Each rule
-  was removed in turn, and a test failed each time.
+  and `test/setup.bats`, and the panel words and note in `test/panel.bats`. Each rule
+  was removed in turn, and a test failed each time. The tests fake Windows'
+  processes and devices, so the real `Start-Process`, `taskkill`,
+  `Get-PnpDevice` and pnputil behavior is for phase 3 to prove.
 
 ### Phase 3: proof on a copy
 
@@ -579,3 +611,6 @@ John accepted this one on 2026-11-21, after phase 0:
 | design (gpt-6.1-sol, high, follow-up with round 1 findings) | 2 | 4 | Round 1: five resolved, four partly. Four new P2, all confirmed and integrated: a stall survives a new session and ends only on a frame, and the client unit stopping ends a recovery (B7, C10); a unique client ID on the log's second line, since the first line's epoch can repeat and two readers parse that line strictly (C9); every attempt recorded before the write, an atomic state file, and a warning whenever no attempt is left (C9, C11); spec 12 measured from the last raw size change, with a stall exception (D15). Manifest: 21 of 21 matched. |
 | design (gpt-6.1-sol, high, follow-up with round 2 findings) | 3 | 1 | Round 2's four and round 1's partly-resolved items: all resolved except one. One P2, confirmed and integrated: an event with no window size change, such as a resolution picked in Windows, is measured from that event, not from an older window resize (D15), with a module case for it. The author verified the fix directly against `spec.md:300-308` and `0001`'s "late-change" case. Manifest: 22 of 22 matched. The review cap of three cycles is reached; the design gate is closed. |
 | design, part C changes after phase 0 (gpt-6.1-sol, high, blind; a fourth round John approved past the cap) | 4 | 2 | Approve with changes. Two P2, both confirmed against the source and integrated. (1) A missing `Starting session` cannot prove a declined send: upstream's connect loop has no 30 s deadline, and an unrelated reconnect can log one. Each send's outcome is now unknown; sends retry within a per-recovery limit (3, 60 s apart), and only sends a session followed within 60 s count toward the run's 3 restarts, so declines cost nothing. The "stuck" warning became a neutral no-picture note (C9-C11). (2) The driver-log rule detects an unfinished replug, not a hang, and `CMonitorManager.cpp:241-255` shows a departure failure that logs `ReplugMonitor` and stays healthy. Now a departure failure cancels a candidate; the check reads complete lines only and confirms the same candidate twice, 10 s apart by a monotonic timer, not log times; a missing replug means no restart; the risk of a healthy replug slower than 10 s is stated and accepted, with the author's measurement: of 2,119 distinct replugs in the logs, 2,114 finished in 3 s or less and the other five were all hangs, including a 33-minute unfinished replug that was the 2026-11-19 freeze (C13, C18, acceptance). The adapter selector had no finding; case-insensitive matching and one-argument passing were added. Manifest: 28 of 28 matched at start and end. |
+| implementation, phases 1 and 2 (gpt-6.1-sol, high, blind, on a snapshot of 7da5c15 with the patched pinned source) | 1 | 3 | Approve with changes. Three P2, all confirmed against the code and fixed, each with a test that fails when its fix is removed. (1) The 45 s stop killed only the child powershell.exe, so a blocked pnputil ran on and a second could start beside it: the task now stops the child with `taskkill /T /F`, keeps it until it exits, and starts no child while it or any `pnputil.exe` runs (C13). (2) A session counted only when read within 60 s of the send, so a feed that missed passes for a minute lost restarts and could send a fourth: a session now counts whenever it is read while the send is watched, and a pass clears the watch only after it reads the new lines (C11). (3) A new client log between the ID read and the send could get one send meant for the old client: the feed reads the ID again after the QMP call and sends nothing when it changed. Security, client timing, the hang rule, the adapter selector, docs and panel words had no finding. Manifest: 1,459 of 1,459 matched at start and end. |
+| implementation, phases 1 and 2, second provider (claude-opus-5-5, high, blind, on a snapshot of the round 1 fixes with round 1's log row removed) | 2 | 11 | Approve with changes. Three P2 and eight P3; all checked against the code. Fixed, each with a test that fails when its fix is removed: (1) the 45 s stop came after its log line, so a failed write skipped the stop and blocked every later restart; the stop now comes first. (2) The panel never showed the no-picture note that spec 12 and the README promise; it now does. (3) A slow or failed `systemctl` ended a live recovery for good, since the client logs a stall once; that state is now unknown and neither ends a recovery nor sends. (7, P3) A guest that forges client log lines could start a recovery each pass with an immediate send; any two sends in a run are now 60 s apart, and spec 27 names every guest string and effect. Fixed without a new test: (4) the child's exit code could read as empty in Windows PowerShell 5.1; the task keeps its handle (phase 3 checks the log line). (8) The child compiled the unused display API; it now starts before the compile. (11) The gap case comment and the host case count. Wording only: (5) the task limits child starts, so two restarts come at least 25 s apart, now stated; (6) the 4 s gap holds within a display session, as requirement 3 keeps a new session's behavior; README says about half a minute. Not changed: (9) a hang with no ask outstanding gets no stall line, which matches requirement 6; (10) the feed's wall clock (changed in round 3, below). Manifest: 1,458 of 1,458 matched at start and end. |
+| implementation, follow-up on both rounds' fixes (gpt-6.1-sol, high, with both results and the dispositions) | 3 | 3 | Approve with changes. Round 1's findings 2 and 3 and round 2's findings 1-5, 7-9 and 11 resolved; round 1's finding 1 and round 2's finding 6 partly; round 2's finding 10 not resolved. Fixed, each with a test that fails when its fix is removed: (1, P2) round 2's finding 10 was wrongly declined: a forward wall clock step during a recovery cleared the watch before the new session came, so a restart went uncounted and a fourth send could follow. The recovery now times sends, watches, gaps and the note by seconds since boot (`boot_seconds`, `/proc/uptime`), in the feed and in `lanai status`. (2, P3) The guest tests replaced the stop and the pnputil lookup: a new case runs the real helpers and checks `taskkill /PID <id> /T /F` and the lookup by name. The stop of a real blocked pnputil on Windows is for phase 3. (3, P3) Spec 12 now says the 4 s gap holds within a display session. Manifest: 1,461 of 1,461 matched at start and end. This is the third and last review cycle. |

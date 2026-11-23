@@ -580,7 +580,7 @@ diff -Naur lg-pristine/client/tests/resize_test.c lg-working/client/tests/resize
  
    CHECK(t.lines == 5);
    checkLine(0, "Resize: window is 1600x900");
-@@ -666,6 +689,293 @@
+@@ -666,6 +689,292 @@
    checkLine(4, "Resize: asking Windows for 1700x950 (1 of 5)");
  }
  
@@ -693,12 +693,11 @@ diff -Naur lg-pristine/client/tests/resize_test.c lg-working/client/tests/resize
 +  CHECK(t.asks == 2);
 +  checkAsk(1, T0 + SEC(4), 1700, 950);
 +
-+  /* Its retry waits the 4 s gap too, and a third size that settles 0.5 s
-+   * after that retry still waits 4 s from it. */
++  /* Its retry waits the 4 s gap too. A third size posted at that retry
++   * settles at 10 s and still waits for the gap, to 12 s. */
 +  runTo(T0 + SEC(8));
 +  CHECK(t.asks == 3);
 +  checkAsk(2, T0 + SEC(8), 1700, 950);
-+  runTo(T0 + MS(6500));
 +  raw(1800, 1000);
 +  window(1800, 1000);
 +  runTo(T0 + SEC(12));
@@ -874,7 +873,7 @@ diff -Naur lg-pristine/client/tests/resize_test.c lg-working/client/tests/resize
  struct Test
  {
    const char * name;
-@@ -694,6 +1004,16 @@
+@@ -694,6 +1003,16 @@
    { "replaced"   , testReplaced   },
    { "one-side"   , testOneSide    },
    { "log-lines"  , testLogLines   },

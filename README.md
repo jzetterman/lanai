@@ -336,8 +336,8 @@ Windows' display driver can freeze after many quick resizes, for example when a
 monitor wakes from sleep and resizes the window several times. The window then
 keeps its last picture. Lanai notices when Windows sends no picture for 10 seconds,
 and Lanai's scale task in Windows restarts the display driver when the driver's
-own log shows it stuck. The picture comes back within a few seconds, with no
-Windows restart. A still desktop also sends no picture, so the task checks first
+own log shows it stuck. The picture comes back within about half a minute,
+with no Windows restart. A still desktop also sends no picture, so the task checks first
 and leaves a healthy driver alone; its log, `C:\Program Files\Lanai\lanai-scale.log`,
 says what it found. If the picture has not come back after a minute, the panel
 says so. If the window still looks frozen, restart Windows.
