@@ -342,6 +342,15 @@ and leaves a healthy driver alone; its log, `C:\Program Files\Lanai\lanai-scale.
 says what it found. If the picture has not come back after a minute, the panel
 says so. If the window still looks frozen, restart Windows.
 
+The display driver also leaks memory each time Windows changes its resolution,
+and a large leak can make it freeze. Lanai's scale task watches the driver's
+memory and restarts the driver before the leak grows large, after 5 minutes with
+no keyboard or mouse input in Windows, at most once every 30 minutes. The display
+flickers once for a second or two. A video or slideshow you watch without touching
+the keyboard or mouse may see that flicker. A much larger leak, or Windows running
+low on memory, restarts the driver at once, even while you type. The scale task's
+log names each restart and the memory it saw.
+
 Installs set up with an earlier version of Lanai keep working, but Windows may not
 match the window, after the computer wakes from sleep the mouse may reach only
 part of Windows, and the window may freeze after quick resizes. When only the Windows window needs an update, Lanai updates it by

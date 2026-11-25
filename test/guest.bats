@@ -2607,3 +2607,405 @@ IDD_FIX=$BATS_TEST_DIRNAME/fixtures/idd
   run grep -c 'Stopwatch\]::StartNew()' "$f"
   [[ $output -ge 2 ]] || fail "Wait-Monotonic does not use a Stopwatch"
 }
+
+# The leak guard (docs/plugin/resize-hang/plan.md, part E). GuardCtx makes a
+# scale context with an 8 GiB VM's limit, a faked idle time, child and
+# pnputil check; S posts a sample as the collector would.
+GUARD_PS='
+  function GuardCtx {
+    $c = Ctx
+    $c.Guard.Limit = [uint64]1GB
+    $script:Idle = 0
+    $script:Started = @()
+    $script:Pnp = $false
+    $c.IdleMs = { $script:Idle }
+    $c.PnpRunning = { $script:Pnp }
+    $c.StartLeakRestart = {
+      $script:Started += , "leak"
+      [pscustomobject]@{ Id = 200 + $script:Started.Count; HasExited = $false; ExitCode = 0 }
+    }
+    $c.StartRestart = {
+      $script:Started += , "hang"
+      [pscustomobject]@{ Id = 100 + $script:Started.Count; HasExited = $false; ExitCode = 0 }
+    }
+    $c.StopRestart = { param($Id) }
+    $c
+  }
+  function S($C, $MiB, $FreeGiB, $At, $HostId = 7, $HostStart = 1) {
+    $C.Shared.Leak = [pscustomobject]@{ At = [double]$At; Bytes = [uint64]($MiB * 1MB)
+      FreeCommit = [uint64]($FreeGiB * 1GB); HostId = $HostId; HostStart = $HostStart }
+  }
+  function Exits($C, $Code = 0) { $C.Restart.ExitCode = $Code; $C.Restart.HasExited = $true }
+  function Leaks { @($script:Started | Where-Object { $_ -eq "leak" }).Count }
+'
+
+@test "guest leak guard: the limit is 1/8 of memory and at least 1 GiB; idle time survives the tick wrap" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    Assert ((Get-LeakLimit ([uint64]4GB)) -eq [uint64]1GB) "4 GB"
+    Assert ((Get-LeakLimit ([uint64]8GB)) -eq [uint64]1GB) "8 GB"
+    Assert ((Get-LeakLimit ([uint64]16GB)) -eq [uint64]2GB) "16 GB"
+    Assert ((Get-IdleSpan 5000 2000) -eq 3000) "plain"
+    Assert ((Get-IdleSpan 100 4294967200) -eq 196) "across the wrap: $(Get-IdleSpan 100 4294967200)"
+    # Input between the two reads: each read sees a clock 1 ms later. The
+    # last input is read first, so the span is 1 ms, not 49.7 days.
+    $script:T = 10000
+    $clock = { $script:T; $script:T++ }
+    Assert ((Get-IdleMs $clock $clock) -eq 1) "input between the reads: $(Get-IdleMs $clock $clock)"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest leak guard: routine restarts wait for 5 idle minutes and 30 minutes apart; emergencies do not" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps "$GUARD_PS"'
+    # Under the routine limit, neither emergency condition: nothing.
+    $c = GuardCtx; $script:Idle = 3600000
+    S $c 900 10 1000; Step-LeakGuard $c 1000
+    S $c 400 1 2000; Step-LeakGuard $c 2000
+    Assert ((Leaks) -eq 0) "a restart under the limit"
+    # 600 MiB with 3.9 GiB of free commit is an emergency on 8 GiB, under the limit.
+    $c = GuardCtx; $script:Started = @(); $script:Idle = 1000
+    S $c 600 3.9 1000; Step-LeakGuard $c 1000
+    Assert ((Leaks) -eq 1) "no free-commit emergency"
+    Assert (@($script:Logs | Where-Object { $_ -like "*emergency*600 MB*1024 MB*3994 MB*0 minutes*" }).Count -eq 1) "log: $($script:Logs -join " | ")"
+    # Routine: over the limit, input 4 minutes ago waits, 5 minutes restarts.
+    $c = GuardCtx; $script:Started = @(); $script:Logs = @()
+    $script:Idle = 240000; S $c 1100 10 1000; Step-LeakGuard $c 1000
+    Assert ((Leaks) -eq 0) "routine with input 4 minutes ago"
+    $script:Idle = 359999; S $c 1100 10 11000; Step-LeakGuard $c 11000
+    Assert ((Leaks) -eq 1) "no routine restart after 5 idle minutes"
+    Assert (@($script:Logs | Where-Object { $_ -like "*routine*1100 MB*1024 MB*5 minutes*" }).Count -eq 1) "log: $($script:Logs -join " | ")"
+    # It exits and frees (a new host); a second routine within 30 minutes waits.
+    Exits $c; Step-DisplayRestart $c 16000 0
+    S $c 200 10 25000 8; Step-LeakGuard $c 25000
+    S $c 1100 10 1200000 8; Step-LeakGuard $c 1200000
+    Assert ((Leaks) -eq 1) "a routine restart within 30 minutes"
+    S $c 1100 10 1751000 8; Step-LeakGuard $c 1751000
+    Assert ((Leaks) -eq 1) "a routine restart 29 minutes after the last"
+    S $c 1100 10 1811000 8; Step-LeakGuard $c 1811000
+    Assert ((Leaks) -eq 2) "no routine restart after 30 minutes"
+    # Emergency: over twice the limit with input a second ago, 10 minutes on.
+    Exits $c; Step-DisplayRestart $c 1815000 0
+    S $c 200 10 1825000 9; Step-LeakGuard $c 1825000
+    $script:Idle = 1000
+    S $c 2100 10 2411000 9; Step-LeakGuard $c 2411000
+    Assert ((Leaks) -eq 3) "no emergency restart over twice the limit"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest leak guard: held back by the child rules, an emergency starts at the first tick allowed and a routine one waits for a new sample" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps "$GUARD_PS"'
+    # A hang child started 20 s ago holds an emergency back for the minute.
+    $c = GuardCtx; $script:Idle = 1000
+    $c.Queue.Enqueue((Q "lanai-display-restart" 100000)); Invoke-ScaleTick $c 100400
+    Exits $c; Invoke-ScaleTick $c 110000
+    S $c 2100 10 120000; Step-LeakGuard $c 120400
+    Assert ((Leaks) -eq 0) "an emergency within a minute of a hang child"
+    S $c 2100 10 150000; Step-LeakGuard $c 150000
+    Step-LeakGuard $c 160300
+    Assert ((Leaks) -eq 0) "an emergency before the minute"
+    Step-LeakGuard $c 160500
+    Assert ((Leaks) -eq 1) "the emergency did not start at the first tick after the minute"
+    # A routine one held back waits for the next sample.
+    $c = GuardCtx; $script:Started = @(); $script:Idle = 600000
+    $c.Queue.Enqueue((Q "lanai-display-restart" 100000)); Invoke-ScaleTick $c 100400
+    Exits $c; Invoke-ScaleTick $c 110000
+    S $c 1100 10 140000; Step-LeakGuard $c 140000
+    Step-LeakGuard $c 161000
+    Assert ((Leaks) -eq 0) "a routine restart on an old sample"
+    S $c 1100 10 165000; Step-LeakGuard $c 165000
+    Assert ((Leaks) -eq 1) "no routine restart on the next sample"
+    # A hang request while the guard child runs starts nothing.
+    $c.Queue.Enqueue((Q "lanai-display-restart" 230000)); Invoke-ScaleTick $c 230400
+    Assert ($script:Started.Count -eq 2 -and $script:Started[1] -eq "leak") "a hang child beside the guard child: $($script:Started -join ",")"
+    # The guard child is stopped at 45 s like a hang child, with no sample at all.
+    $c = GuardCtx; $script:Started = @(); $script:Stops = @()
+    $c.StopRestart = { param($Id) $script:Stops += $Id }
+    S $c 2100 10 1000; Step-LeakGuard $c 1000
+    $c.Shared.Leak = $null
+    $c.Queue.Enqueue((Q "lanai-scale 200 6" 2000)); Invoke-ScaleTick $c 2400
+    Invoke-ScaleTick $c 47000
+    Assert ($script:Stops.Count -eq 1 -and $c.State.Confirmed -eq 4) "stop $($script:Stops.Count), scale $($c.State.Confirmed)"
+    # Any pnputil running holds an emergency back until it ends.
+    $c = GuardCtx; $script:Started = @(); $script:Pnp = $true
+    S $c 2100 10 1000; Step-LeakGuard $c 1000
+    Assert ((Leaks) -eq 0) "an emergency while pnputil runs"
+    $script:Pnp = $false; Step-LeakGuard $c 2000
+    Assert ((Leaks) -eq 1) "no emergency after pnputil ended"
+    # A guard child that exits at once still holds the next one back for the
+    # minute from its start.
+    Exits $c; Step-DisplayRestart $c 3000 0
+    S $c 2100 10 30000 8; Step-LeakGuard $c 30000
+    S $c 2100 10 61000 8; Step-LeakGuard $c 61000
+    Assert ((Leaks) -eq 1) "a second guard child within the minute"
+    S $c 2100 10 62500 8; Step-LeakGuard $c 62500
+    Assert ((Leaks) -eq 2) "no guard child after the minute"
+    # An emergency starts the 30 minutes a routine restart waits for.
+    $c = GuardCtx; $script:Started = @(); $script:Idle = 600000
+    S $c 2100 10 1000; Step-LeakGuard $c 1000; Exits $c; Step-DisplayRestart $c 2000 0
+    S $c 300 10 9000 8; Step-LeakGuard $c 9000
+    S $c 1100 10 1200000 8; Step-LeakGuard $c 1200000
+    Assert ((Leaks) -eq 1) "a routine restart 20 minutes after an emergency"
+    S $c 1100 10 1802000 8; Step-LeakGuard $c 1802000
+    Assert ((Leaks) -eq 2) "no routine restart 30 minutes after an emergency"
+    # A failed idle read: an emergency still starts and logs; a routine
+    # decision is dropped and logged once, and the task goes on.
+    $c = GuardCtx; $script:Started = @(); $script:Logs = @()
+    $c.IdleMs = { throw "GetLastInputInfo failed" }
+    S $c 2100 10 1000; Step-LeakGuard $c 1000
+    Assert ((Leaks) -eq 1 -and @($script:Logs | Where-Object { $_ -like "*emergency*input time could not be read*" }).Count -eq 1) "emergency with no idle time: $($script:Logs -join " | ")"
+    $c = GuardCtx; $script:Started = @(); $script:Logs = @()
+    $c.IdleMs = { throw "GetLastInputInfo failed" }
+    S $c 1100 10 1000; Step-LeakGuard $c 1000
+    S $c 1100 10 11000; Step-LeakGuard $c 11000
+    Assert ((Leaks) -eq 0 -and @($script:Logs | Where-Object { $_ -like "*leak guard failed*" }).Count -eq 1) "routine with no idle time: $($script:Logs -join " | ")"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest leak guard: freed means a new host or a drop under half or 512 MiB; otherwise, or after 3 failed children, it stops" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps "$GUARD_PS"'
+    function Off($C) { $C.Guard.Off }
+    # Round 3: 600 MiB trigger, a new host already at 591 MiB: freed.
+    $c = GuardCtx; $script:Idle = 1000
+    S $c 600 3.9 1000; Step-LeakGuard $c 1000
+    Exits $c; Step-DisplayRestart $c 5000 0
+    S $c 591 3.9 9000 8; Step-LeakGuard $c 9000
+    Assert (-not (Off $c)) "a new host read as not freed"
+    # The same process ID with a new start time is a new host too.
+    $c = GuardCtx
+    S $c 600 3.9 1000; Step-LeakGuard $c 1000
+    Exits $c; Step-DisplayRestart $c 5000 0
+    S $c 591 3.9 9000 7 2; Step-LeakGuard $c 9000
+    Assert (-not (Off $c)) "a reused process ID read as not freed"
+    # The same host, 600 to 250 and 600 to 400: freed.
+    foreach ($after in 250, 400) {
+      $c = GuardCtx
+      S $c 600 3.9 1000; Step-LeakGuard $c 1000
+      Exits $c; Step-DisplayRestart $c 5000 0
+      S $c $after 10 9000; Step-LeakGuard $c 9000
+      Assert (-not (Off $c)) "600 to $after read as not freed"
+    }
+    # A sample from before the exit does not decide.
+    $c = GuardCtx
+    S $c 1100 3.9 1000; Step-LeakGuard $c 1000
+    S $c 1000 3.9 4000; Exits $c; Step-DisplayRestart $c 5000 0; Step-LeakGuard $c 5000
+    Assert (-not (Off $c)) "an old sample decided"
+    # The same host, 1100 to 1000: not freed. The guard stops, logs once, and
+    # a later emergency restarts nothing.
+    $script:Started = @(); $script:Logs = @()
+    S $c 1000 3.9 9000; Step-LeakGuard $c 9000
+    Assert (Off $c) "1100 to 1000 read as freed"
+    S $c 2500 1 200000; Step-LeakGuard $c 200000; Step-LeakGuard $c 210000
+    Assert ((Leaks) -eq 0) "a restart after the guard stopped"
+    Assert (@($script:Logs | Where-Object { $_ -like "*did not free*" }).Count -eq 1) "log: $($script:Logs -join " | ")"
+    # Three failed children in a row (exit 2, exit 3010, the 45 s stop) stop it.
+    $c = GuardCtx; $script:Started = @(); $script:Logs = @()
+    $t = 1000
+    foreach ($end in "2", "3010", "stop") {
+      S $c 2500 10 $t; Step-LeakGuard $c $t
+      if ($end -eq "stop") { Step-DisplayRestart $c ($t + 46000) 0; Exits $c 0 } else { Exits $c ([int]$end) }
+      Step-DisplayRestart $c ($t + 47000) 0
+      $t += 61000
+    }
+    Assert ((Leaks) -eq 3 -and (Off $c)) "three failures: $(Leaks) children, off $(Off $c)"
+    # A freed restart between failures resets the count; no sample within
+    # 60 s of an exit counts as a failure.
+    $c = GuardCtx; $script:Started = @()
+    S $c 2500 10 1000; Step-LeakGuard $c 1000; Exits $c 2; Step-DisplayRestart $c 2000 0
+    S $c 2500 10 62000; Step-LeakGuard $c 62000; Exits $c 2; Step-DisplayRestart $c 63000 0
+    S $c 2500 10 123000; Step-LeakGuard $c 123000; Exits $c; Step-DisplayRestart $c 124000 0
+    S $c 300 10 130000 8; Step-LeakGuard $c 130000
+    S $c 2500 10 190000 8; Step-LeakGuard $c 190000; Exits $c 2; Step-DisplayRestart $c 191000 0
+    Assert (-not (Off $c)) "the count did not reset after a freed restart"
+    S $c 2500 10 251000 8; Step-LeakGuard $c 251000; Exits $c 2; Step-DisplayRestart $c 252000 0
+    Assert (-not (Off $c)) "off after two failures"
+    S $c 2500 10 312000 8; Step-LeakGuard $c 312000; Exits $c; Step-DisplayRestart $c 313000 0
+    $c.Shared.Leak = $null; Step-LeakGuard $c 374000
+    Assert ((Off $c)) "no sample within 60 s did not count as the third failure"
+    # A sample over 30 s old does not decide, though taken after the exit.
+    $c = GuardCtx
+    S $c 2500 10 1000; Step-LeakGuard $c 1000; Exits $c; Step-DisplayRestart $c 5000 0
+    S $c 300 10 6000 8; Step-LeakGuard $c 40000
+    Assert ($null -ne $c.Guard.Verify) "a stale sample decided"
+    Step-LeakGuard $c 66000
+    Assert ($c.Guard.Failures -eq 1) "no usable sample in 60 s: failures $($c.Guard.Failures)"
+    # Only a sample taken within 60 s of the exit decides: one taken later,
+    # even from a new host, is a failure; one taken in time but seen a
+    # little later still decides.
+    $c = GuardCtx; $script:Logs = @()
+    S $c 2500 10 1000; Step-LeakGuard $c 1000; Exits $c; Step-DisplayRestart $c 5000 0
+    $c.Shared.Leak = $null; Step-LeakGuard $c 65000
+    S $c 300 10 65250 8; Step-LeakGuard $c 65250
+    Assert ($c.Guard.Failures -eq 1) "a late sample decided: failures $($c.Guard.Failures)"
+    Assert (@($script:Logs | Where-Object { $_ -like "*freed its memory*" }).Count -eq 0) "log: $($script:Logs -join " | ")"
+    $c = GuardCtx; $script:Logs = @()
+    S $c 2500 10 1000; Step-LeakGuard $c 1000; Exits $c; Step-DisplayRestart $c 5000 0
+    S $c 300 10 64000 8; Step-LeakGuard $c 66000
+    Assert ($c.Guard.Failures -eq 0 -and @($script:Logs | Where-Object { $_ -like "*freed its memory*" }).Count -eq 1) "a sample in time, seen late, did not decide: $($script:Logs -join " | ")"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest leak guard: stale samples are not used, and 5 minutes with none is logged once" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps "$GUARD_PS"'
+    $c = GuardCtx; $script:Idle = 1000
+    Step-LeakGuard $c 0
+    S $c 2500 10 1000; Step-LeakGuard $c 32000
+    Assert ((Leaks) -eq 0) "a 31 s old sample was used"
+    Step-LeakGuard $c 299000
+    Assert (@($script:Logs | Where-Object { $_ -like "*memory*no reading*" }).Count -eq 0) "logged before 5 minutes"
+    Step-LeakGuard $c 301000; Step-LeakGuard $c 400000
+    Assert (@($script:Logs | Where-Object { $_ -like "*memory*no reading*" }).Count -eq 1) "log: $($script:Logs -join " | ")"
+    S $c 500 10 401000; Step-LeakGuard $c 401000
+    Step-LeakGuard $c 702000
+    Assert (@($script:Logs | Where-Object { $_ -like "*memory*no reading*" }).Count -eq 2) "not logged again after a usable sample"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest leak sample: one System32 host with System32's LGIdd.dll, its own rows only, the same host after the query" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    # A host runs <Dir>\WUDFHost.exe; a module given by name loads from
+    # System32\drivers\UMDF, one given by full path from there.
+    function Mod($Path) { [pscustomobject]@{ ModuleName = $Path.Substring($Path.LastIndexOf([char]92) + 1); FileName = $Path } }
+    function WudfHost($Id, $Mods, $Start = 1, $Dir = "C:\Windows\System32", $Owner = "S-1-5-19") {
+      [pscustomobject]@{ Id = $Id; Start = [long]$Start; Path = "$Dir\WUDFHost.exe"; Owner = $Owner
+        Modules = @($Mods | ForEach-Object { if ($_.Contains([string][char]92)) { Mod $_ } else { Mod "C:\Windows\System32\drivers\UMDF\$_" } }) }
+    }
+    $Sys = "C:\WINDOWS\system32"
+    function GpuRow($Name, $MiB) { [pscustomobject]@{ Name = $Name; TotalCommitted = [uint64]($MiB * 1MB) } }
+    Assert ((Get-LgRowFilter 12) -eq "Name LIKE $([char]39)pid[_]12[_]%$([char]39)") "filter: $(Get-LgRowFilter 12)"
+    $script:Hosts = @((WudfHost 12 @("WUDFx02000.dll", "LGIdd.dll")), (WudfHost 30 @("LGInput.dll")))
+    $script:Rows = @((GpuRow "pid_12_luid_0x0_0x6064_phys_0" 300), (GpuRow "pid_12_luid_0x0_0x7000_phys_0" 50),
+      (GpuRow "pid_123_luid_0x0_0x6064_phys_0" 999), (GpuRow "pid_1204_luid_0x0_0x6064_phys_0" 999))
+    $script:Start = 1
+    function Get-WudfHosts { $script:Hosts }
+    function Get-LgGpuRows($Id) { $script:AskedId = $Id; $script:Rows }
+    function Get-HostStart($Id) { $script:Start }
+    function Get-FreeCommit { [uint64]5GB }
+    function Get-HostModules($P) { $P.Modules }
+    $s = Read-LeakSample 777 $Sys
+    Assert ($null -ne $s -and $s.Bytes -eq [uint64]350MB -and $s.HostId -eq 12 -and $s.At -eq 777 -and $s.FreeCommit -eq [uint64]5GB) "sample: $($s | Out-String)"
+    Assert ($script:AskedId -eq 12) "asked rows for $script:AskedId"
+    # Any case of the module name.
+    $script:Hosts = @((WudfHost 12 @("lgidd.DLL")))
+    Assert ($null -ne (Read-LeakSample 1 $Sys)) "lower case module"
+    # None or two hosts: no sample.
+    $script:Hosts = @((WudfHost 30 @("LGInput.dll")))
+    Assert ($null -eq (Read-LeakSample 1 $Sys)) "no host"
+    $script:Hosts = @((WudfHost 12 @("LGIdd.dll")), (WudfHost 13 @("LGIdd.dll")))
+    Assert ($null -eq (Read-LeakSample 1 $Sys)) "two hosts"
+    # No rows for the host: no sample, not zero.
+    $script:Hosts = @((WudfHost 12 @("LGIdd.dll")))
+    $script:Rows = @((GpuRow "pid_123_luid_0x0_0x6064_phys_0" 999))
+    Assert ($null -eq (Read-LeakSample 1 $Sys)) "no rows"
+    # The host changed during the query: no sample.
+    $script:Rows = @((GpuRow "pid_12_luid_0x0_0x6064_phys_0" 300))
+    $script:Start = 2
+    Assert ($null -eq (Read-LeakSample 1 $Sys)) "the host changed"
+    $script:Start = $null
+    Assert ($null -eq (Read-LeakSample 1 $Sys)) "the host is gone"
+    $script:Start = 1
+    # Only System32 counts. A look-alike WUDFHost.exe with an LGIdd.dll, both
+    # from a user folder, beside the real host: the real host is sampled and
+    # the look-alike modules are never read.
+    function Get-HostModules($P) { if ($P.Id -eq 40) { throw "read a look-alike" }; $P.Modules }
+    $script:Hosts = @((WudfHost 12 @("LGIdd.dll")), (WudfHost 40 @("C:\Users\u\LGIdd.dll") 1 "C:\Users\u"))
+    $s = Read-LeakSample 1 $Sys
+    Assert ($null -ne $s -and $s.HostId -eq 12) "a look-alike host: $($s | Out-String)"
+    # A user can run the real System32\WUDFHost.exe and load an LGIdd.dll
+    # from a System32 folder users can write: only a host a service account
+    # runs counts, and the user process is not read.
+    $script:Hosts = @((WudfHost 12 @("LGIdd.dll")), (WudfHost 40 @("C:\Windows\System32\spool\drivers\color\LGIdd.dll") 1 "C:\Windows\System32" "S-1-5-21-1-2-3-1001"))
+    $s = Read-LeakSample 1 $Sys
+    Assert ($null -ne $s -and $s.HostId -eq 12) "a user-run host: $($s | Out-String)"
+    # LocalSystem and NetworkService run hosts too; no known owner does not count.
+    foreach ($o in "S-1-5-18", "S-1-5-20") {
+      $script:Hosts = @((WudfHost 12 @("LGIdd.dll") 1 "C:\Windows\System32" $o))
+      Assert ($null -ne (Read-LeakSample 1 $Sys)) "owner $o"
+    }
+    $script:Hosts = @((WudfHost 12 @("LGIdd.dll") 1 "C:\Windows\System32" $null))
+    Assert ($null -eq (Read-LeakSample 1 $Sys)) "no owner"
+    function Get-HostModules($P) { $P.Modules }
+    # The real host with LGIdd.dll only from outside System32, or a path that
+    # climbs out of it: no sample.
+    $script:Hosts = @((WudfHost 12 @("C:\Users\u\LGIdd.dll")))
+    Assert ($null -eq (Read-LeakSample 1 $Sys)) "a driver from a user folder"
+    $script:Hosts = @((WudfHost 12 @("C:\Windows\System32\..\..\Users\u\LGIdd.dll")))
+    Assert ($null -eq (Read-LeakSample 1 $Sys)) "a driver path with .."
+    # With no System32 folder known, nothing counts.
+    $script:Hosts = @((WudfHost 12 @("LGIdd.dll")))
+    Assert ($null -eq (Read-LeakSample 1 "")) "no System32 folder"
+    # A module read that fails for one process, or a failed query: no sample.
+    function Get-HostModules($P) { if ($P.Id -eq 30) { throw "Access is denied" }; $P.Modules }
+    $script:Hosts = @((WudfHost 12 @("LGIdd.dll")), (WudfHost 30 @("x.dll")))
+    Assert ($null -eq (Read-LeakSample 1 $Sys)) "a failed module read"
+    function Get-HostModules($P) { $P.Modules }
+    function Get-LgGpuRows($Id) { throw "Invalid class" }
+    Assert ($null -eq (Read-LeakSample 1 $Sys)) "a failed query"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest leak collector: the runspace gets the functions it calls" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $ps = [PowerShell]::Create()
+    $ps.AddScript("param(`$f) . ([scriptblock]::Create(`$f)); foreach (`$n in `"Read-LeakSample`", `"Select-LgHost`", `"Measure-LgRows`", `"Get-LgRowFilter`", `"Get-WudfHosts`", `"Get-HostModules`", `"Get-LgGpuRows`", `"Get-HostStart`", `"Get-FreeCommit`", `"Test-InFolder`") { [bool](Get-Command `$n -ErrorAction SilentlyContinue) }").AddArgument((Get-CollectorFunctions)) | Out-Null
+    $out = @($ps.Invoke())
+    Assert ($ps.HadErrors -eq $false -and $out.Count -eq 10 -and @($out | Where-Object { -not $_ }).Count -eq 0) "runspace: $($out -join "|") $($ps.Streams.Error)"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest leak child: restarts the selected adapter with no driver log check, and logs" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $script:Calls = @()
+    $script:Code = 0
+    function Test-DisplayHang { throw "the leak child read the driver log" }
+    function Get-LgDevices { @([pscustomobject]@{ InstanceId = "ROOT\DISPLAY\0000"; HardwareID = @("Root\LGIdd") }) }
+    function Invoke-PnpUtil($InstanceId) { $script:Calls += , $InstanceId; return $script:Code }
+    Assert ((Invoke-LeakRestart) -eq 0) "exit"
+    Assert ($script:Calls.Count -eq 1 -and $script:Calls[0] -eq "ROOT\DISPLAY\0000") "one call with the ID"
+    Assert (@($script:Logs | Where-Object { $_ -like "*memory*ROOT\DISPLAY\0000*" }).Count -eq 1) "log: $($script:Logs -join " | ")"
+    Assert ($script:Logs -contains "The display adapter restarted (pnputil exit 0).") "exit 0 logged"
+    $script:Code = 3010
+    Assert ((Invoke-LeakRestart) -eq 3010) "3010"
+    function Get-LgDevices { @() }
+    Assert ((Invoke-LeakRestart) -eq 2) "no adapter"'
+  assert_success
+  assert_output ok
+}
+
+@test "guest exit: the exit line is retried when the log is busy" {
+  command -v pwsh >/dev/null || skip "pwsh is not installed"
+  run guest_ps '
+    $script:Tries = 0
+    function Write-Log($Message) { $script:Tries++; if ($script:Tries -lt 3) { throw "the log is locked" }; $script:Logs += $Message }
+    Write-ExitLog "Error: out of memory" | Out-Null
+    Assert ($script:Logs -contains "Error: out of memory" -and $script:Tries -eq 3) "tries $script:Tries"'
+  assert_success
+  assert_output ok
+}
+
+@test "lanai-scale.ps1: the leak child starts before the display API compile, and the collector runs beside the reader" {
+  local f=$REPO/guest/lanai-scale.ps1
+  run grep -c "try { exit (Invoke-LeakRestart) }" "$f"
+  assert_output 1
+  local child compile
+  child=$(grep -n '^if (\$LeakRestart) {$' "$f" | cut -d: -f1)
+  compile=$(grep -n '^Add-Type -TypeDefinition' "$f" | cut -d: -f1)
+  [[ -n $child && -n $compile && $child -lt $compile ]] || fail "the leak child starts at line '$child', the compile is at '$compile'"
+  run grep -c 'AddScript(\$CollectorScript)' "$f"
+  assert_output 1
+  run grep -c 'OperationTimeoutSec 20' "$f"
+  assert_output 1
+}

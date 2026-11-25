@@ -84,7 +84,13 @@ except its measured sessions; the Lanai plugin is being built (docs/plugin/).
   other path that ends a replug without one of those lines; the log keeps its path
   (`%ProgramData%\Looking Glass (IDD)\looking-glass-idd.txt`) and starts a new file
   at each driver start; and the adapter keeps the hardware ID `Root\LGIdd`
-  (docs/plugin/resize-hang/plan.md, requirement 13).
+  (docs/plugin/resize-hang/plan.md, requirement 13). It also rechecks what the
+  leak guard reads (part E, requirement 19): the driver runs as `LGIdd.dll`,
+  loaded from inside System32, in System32's `WUDFHost.exe` under a service
+  account, its GPU memory shows in
+  `Win32_PerfRawData_GPUPerformanceCounters_GPUProcessMemory` rows named
+  `pid_<id>_...`, and whether the new IDD still leaks (each Win+Ctrl+Shift+B grows
+  that memory).
 - The spike (`spike/`) never writes to the live `omarchy-windows-vm` disk; it works on a
   reflink copy. Lanai boots the live disk only after its adoption checks pass
   (docs/plugin/spec.md, requirements 1-5).

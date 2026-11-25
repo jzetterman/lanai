@@ -362,6 +362,19 @@ Neither needs GPU acceleration.
       window looks frozen, a restart of Windows fixes it. A setup whose scale task
       predates the restart gets no recovery, and the panel says Run setup again fixes
       it.
+    - Leak guard ([resize-hang/plan.md](resize-hang/plan.md), part E). The display
+      driver leaks about one old swap chain's buffers at each monitor replug, until
+      it restarts. The scale task reads the driver's GPU memory and Windows' free
+      commit every 10 seconds. Over 1/8 of the VM's memory (at least 1 GiB) it
+      restarts the Looking Glass display adapter once Windows has had no keyboard or
+      mouse input for 5 minutes, at most once in 30 minutes; over twice that, or over
+      512 MiB with under 4 GiB of commit free, it restarts at once. A restart that
+      does not free the memory, or three failed ones in a row, stop the guard until
+      the scale task starts again. Each restart flickers the display for 1 to 2
+      seconds and is logged with its numbers. A pin change checks that the new driver
+      still runs as `LGIdd.dll` from System32 in System32's `WUDFHost.exe`, under a
+      service account, with its GPU memory rows, and
+      whether it still leaks.
     - Lanai never asks for a size under 640 wide or 480 high, the smallest the display
       driver takes (an ask that small moved Windows to 1920x1080 in the test, John's
       call, 2026-10-12). Windows keeps its last size and the client scales the picture
@@ -494,7 +507,10 @@ or 6008).
     a message whose save number differs from the one before it is a scale save. The
     scale task acts on the restart line only by restarting the Looking Glass display
     adapter, and only after the driver's own log shows the hang (requirement 12's
-    recovery bullet). Lanai sends that line only from the client's own stall lines in
+    recovery bullet). The task also restarts that adapter on its own when the
+    driver's memory passes the leak guard's limit (requirement 12's leak guard
+    bullet); no message from Lanai and nothing the guest writes to the client's log
+    can start a guard restart. Lanai sends that line only from the client's own stall lines in
     its log. A guest can write text into that log through the strings it reports
     to the client (its version, CPU model and OS name). With it, the guest can at
     most make Lanai send it the restart line once a minute, end or start a
@@ -700,5 +716,6 @@ the repository public, tagging a release, or submitting to the marketplace.
 | spec | John | 2026-10-17 | Setup-checks amendment: accepted the gate at stage b's cap, with round 3's edits integrated and not reviewed again |
 | spec | John | 2026-10-18 | Setup checks, from the diff gate: a Windows restart during setup's final checks resets no time limit (one limit from the check boot or the Continue, then the scale task's from when the other checks passed); and since the setup drive is not attached at that point, a setup.cmd stop is answered by repeating the guest install, not by following setup.cmd first |
 | spec | John | 2026-10-25 | Pointer scale amendment, from `client-restart-scale/plan.md` (its requirement 4; reviewed in that plan's gate, which John accepted): after the computer wakes from sleep, the Looking Glass host in Windows restarts and the client reset the pointer scale to 1.0, so on a display at scale 2 the mouse reached only the top-left quarter of Windows (`proofs.md`, "Pointer scale after a host restart"). Requirement 12 now lets the patches keep the pointer scale across a host restart, and both upgrade messages for an old client name the mouse fix |
+| spec | John | 2026-11-23 | Leak guard amendment, from `resize-hang/plan.md` (part E, its requirements 15, 16 and 18; three design review rounds, and John chose the guard as decision 4): requirement 12 gets a leak guard bullet, and requirement 27 names the guard restart as the task's own action, which nothing from the host or the client's log can start. |
 | spec | John | 2026-11-21 | Resize hang amendment, from `resize-hang/plan.md` (its requirement 15; the design had four review rounds, the fourth approved by John past the cap, and John accepted decision 3): requirement 12's asks wait for the window to hold its size for 2 s and keep 4 s apart, with retries after 4, 5, 10 and 20 s; a resize is matched within 7 s of its last size change; the patches may also count frames, notice a stall and log it; a new recovery bullet; and requirement 27's channel may carry the fixed restart line, which the scale task acts on only after the driver's log shows the hang. The implementation review is pending. |
 | spec | John | 2026-10-27 | Automatic client update amendment, from `client-auto-update/spec.md` (its requirement 8; reviewed in that spec's gate, which John accepted): an old client is updated by Lanai itself, with no click. Two spec text changes and one README change: requirement 12's old-client bullet says Lanai runs the build step by itself, the panel says the window is updating while it runs, the close-and-reopen words show only while a window that opened before the install is open (and `lanai build-client` still says them), and the step is named only once Lanai's own tries end; row 12b's "Upgrade:" clause says the same; the README's upgrade paragraph follows |

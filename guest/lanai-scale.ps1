@@ -38,6 +38,18 @@
   driver refuses on a still desktop also sends no frame, and its log shows
   no unfinished replug.
 
+  The task also guards against the driver's memory leak (Lanai,
+  docs/plugin/resize-hang/plan.md, part E): each monitor replug leaves about
+  one old swap chain's buffers in the driver's host process until the driver
+  restarts. A collector runspace reads the driver's GPU memory and Windows'
+  free commit every 10 s. Over 1/8 of the VM's memory (at least 1 GiB), the
+  task restarts the adapter once Windows has had no keyboard or mouse input
+  for 5 minutes, at most once in 30 minutes; over twice that, or over 512 MiB
+  with under 4 GiB of commit free, at once. It starts this script with
+  -LeakRestart, under the same child rules. A restart that does not free the
+  memory, or three failed ones in a row, stop the guard until the task
+  starts again.
+
   The scale task runs C:\Program Files\Lanai\lanai-start.exe, a windowless
   program setup builds from lanai-start.cs. It starts this script in a
   hidden powershell.exe, in a job that ends the script when the program
@@ -50,11 +62,15 @@
   Check the driver's log for the hang and, when it shows one, restart the
   Looking Glass display adapter, then exit. The scale task starts this.
 
+.PARAMETER LeakRestart
+  Restart the Looking Glass display adapter to free the driver's leaked
+  memory, with no log check, then exit. The scale task starts this.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File lanai-scale.ps1
   powershell -ExecutionPolicy Bypass -File lanai-scale.ps1 -Scale 250
 #>
-param([int]$Scale = 0, [switch]$DisplayRestart)
+param([int]$Scale = 0, [switch]$DisplayRestart, [switch]$LeakRestart)
 
 $ErrorActionPreference = 'Stop'
 
@@ -94,12 +110,17 @@ function Write-Log([string]$Message) {
 # Log <Message> on the way out, unless the log's last line already carries
 # it: the sign-in trigger starts the task every 5 minutes, and a start that
 # ends the same way as the one before must not grow the log. An unreadable
-# log counts as a different last line.
+# log counts as a different last line. A write that meets another writer
+# (the task or a restart child) is tried again, 5 times in all: phase 3 lost
+# a restart child's error line while Windows was out of memory.
 function Write-ExitLog([string]$Message) {
     $last = $null
     try { $last = Get-Content -LiteralPath $LogFile -Tail 1 -ErrorAction Stop } catch { }
     if ("$last" -cmatch '^\S+ (.*)$' -and $Matches[1] -ceq $Message) { Write-Output $Message; return }
-    Write-Log $Message
+    for ($i = 0; $i -lt 5; $i++) {
+        try { Write-Log $Message; return } catch { Start-Sleep -Milliseconds 100 }
+    }
+    Write-Output $Message
 }
 
 # Name step <i> of $Steps, as "150%", or "unknown" when <i> is outside the
@@ -329,12 +350,25 @@ function Invoke-DisplayRestart([string]$Path, [scriptblock]$Pause) {
         Write-RestartLog "Display hang not confirmed ($why); no restart."
         return 0
     }
+    return Restart-LgAdapter 'Display hang confirmed'
+}
+
+# The leak child (-LeakRestart): restart the one Looking Glass display
+# adapter to free the driver's leaked memory, with no log check. Returns as
+# Invoke-DisplayRestart does.
+function Invoke-LeakRestart {
+    return Restart-LgAdapter 'The display driver holds too much memory'
+}
+
+# Restart the one Looking Glass display adapter, logging <Why> first.
+# Returns pnputil's exit code, or 2 when no single adapter matches.
+function Restart-LgAdapter([string]$Why) {
     $sel = Select-LgAdapter @(Get-LgDevices)
     if ($null -eq $sel.InstanceId) {
-        Write-RestartLog "Display hang confirmed, but Lanai $($sel.Reason); no restart."
+        Write-RestartLog "$Why, but Lanai $($sel.Reason); no restart."
         return 2
     }
-    Write-RestartLog "Display hang confirmed; restarting the Looking Glass display adapter $($sel.InstanceId)."
+    Write-RestartLog "$Why; restarting the Looking Glass display adapter $($sel.InstanceId)."
     $code = Invoke-PnpUtil $sel.InstanceId
     if ($code -eq 0) { Write-RestartLog 'The display adapter restarted (pnputil exit 0).' }
     elseif ($code -eq 3010) { Write-RestartLog 'pnputil exit 3010: Windows needs a restart to finish restarting the display adapter.' }
@@ -342,14 +376,15 @@ function Invoke-DisplayRestart([string]$Path, [scriptblock]$Pause) {
     return $code
 }
 
-# Start the restart child: this script with -DisplayRestart, in a hidden
-# powershell.exe by its absolute path, in Lanai's folder as the task. It runs in the start program's job, so it ends with the task.
+# Start a restart child: this script with <Switch> (-DisplayRestart or
+# -LeakRestart), in a hidden powershell.exe by its absolute path, in Lanai's
+# folder as the task. It runs in the start program's job, so it ends with the task.
 # Reading Handle at once keeps the process open, so ExitCode is still known
 # after the child exits.
-function Start-DisplayRestart {
+function Start-DisplayRestart([string]$Switch = '-DisplayRestart') {
     $ps = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
     $p = Start-Process -FilePath $ps -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru `
-        -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-DisplayRestart')
+        -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", $Switch)
     $null = $p.Handle
     return $p
 }
@@ -376,9 +411,15 @@ function Step-DisplayRestart($Ctx, [double]$Now, [int]$Requests) {
     try {
         if ($null -ne $Ctx.Restart) {
             if ($Ctx.Restart.HasExited) {
-                if (-not $Ctx.RestartStopped -and $Ctx.Restart.ExitCode -ne 0) { Write-Log "The display restart ended with exit code $($Ctx.Restart.ExitCode)." }
+                $code = $Ctx.Restart.ExitCode
+                $failed = $Ctx.RestartStopped -or $code -ne 0
+                $leak = $Ctx.RestartKind -eq 'leak'
+                $stopped = $Ctx.RestartStopped
                 $Ctx.Restart = $null
+                $Ctx.RestartKind = $null
                 $Ctx.RestartStopped = $false
+                if ($leak) { Complete-LeakChild $Ctx $Now $failed }
+                if (-not $stopped -and $code -ne 0) { Write-Log "The display restart ended with exit code $code." }
             }
             elseif (-not $Ctx.RestartStopped -and $Now - $Ctx.RestartAt -ge 45000) {
                 # Stop first: the log write can fail, as the child writes the same log.
@@ -397,12 +438,245 @@ function Step-DisplayRestart($Ctx, [double]$Now, [int]$Requests) {
             return
         }
         $Ctx.RestartAt = $Now
+        $Ctx.RestartKind = 'hang'
         Write-Log 'Lanai sees no picture from Windows and asks to restart the display; checking the driver log.'
         $Ctx.Restart = & $Ctx.StartRestart
     }
     catch {
         Write-ErrorOnce $Ctx "The display restart did not start: $($_.Exception.Message)"
     }
+}
+
+# --- The leak guard (docs/plugin/resize-hang/plan.md, part E) ---
+
+# The limit for a VM with <Ram> bytes of memory: 1/8 of it, at least 1 GiB.
+function Get-LeakLimit([uint64]$Ram) {
+    $l = [uint64][math]::Floor($Ram / 8)
+    if ($l -lt [uint64]1GB) { $l = [uint64]1GB }
+    return $l
+}
+
+# Milliseconds from tick <Last> to tick <Now>, both 32-bit tick counts, so
+# the wrap after 49.7 days does not break it.
+function Get-IdleSpan([uint32]$Now, [uint32]$Last) {
+    return [uint32](([long]$Now - [long]$Last + 4294967296) % 4294967296)
+}
+
+# Milliseconds since the last keyboard or mouse input in this session. The
+# last input is read first: input between the two reads then makes the span
+# short, not 49.7 days. The readers are parameters for the tests.
+function Get-IdleMs($LastInput = { [LanaiGuard]::LastInput() }, $Ticks = { [LanaiGuard]::Ticks() }) {
+    $last = & $LastInput
+    $now = & $Ticks
+    return Get-IdleSpan $now $last
+}
+
+# The guard's state: the limit (set at start from the VM's memory), whether
+# it stopped, the last guard restart's start (task clock, ms), failed guard
+# children in a row, the restart awaiting its freed check, the last sample a
+# routine decision used, and the no-sample log state.
+function New-LeakGuard {
+    return @{
+        Limit = [uint64]1GB; Off = $false; LastAt = $null; Failures = 0; Verify = $null
+        SeenAt = $null; LastUsable = $null; NoSampleLogged = $false
+    }
+}
+
+# Stop the guard until the scale script starts again, logging <Why> once.
+function Stop-LeakGuard($Guard, [string]$Why) {
+    $Guard.Off = $true
+    try { Write-Log "$Why The leak guard stops until the scale task starts again." } catch { }
+}
+
+# Count a guard child that restarted nothing; three in a row stop the guard.
+function Add-LeakFailure($Guard) {
+    $Guard.Failures++
+    if ($Guard.Failures -ge 3) { Stop-LeakGuard $Guard 'Three display driver restarts for memory failed in a row.' }
+}
+
+# The supervision's report on a guard child at <Now>: <Failed> when it was
+# stopped at 45 s or exited nonzero, else its freed check starts.
+function Complete-LeakChild($Ctx, [double]$Now, [bool]$Failed) {
+    $g = $Ctx.Guard
+    if ($Failed) { Add-LeakFailure $g; return }
+    $g.Verify = @{ ExitAt = $Now; Trigger = $g.Trigger; HostId = $g.TriggerHost; HostStart = $g.TriggerStart }
+}
+
+# One tick of the guard at <Now> (ms), on the collector's latest sample
+# ($Ctx.Shared.Leak; used only under 30 s old). First a restart's freed
+# check: the first usable sample taken after the child exited decides, and
+# it must be taken within 60 s of the exit. Freed is a new host process, or a measure under
+# half the trigger or under 512 MiB, whichever is larger. Then the decision:
+# an emergency (over twice the limit, or over 512 MiB with under 4 GiB of
+# commit free) at any tick the child rules allow; a routine restart (over the
+# limit, 5 minutes with no input, 30 minutes after the last guard restart)
+# only on a sample it has not judged before. Never throws.
+function Step-LeakGuard($Ctx, [double]$Now) {
+    $g = $Ctx.Guard
+    if ($g.Off) { return }
+    try {
+        $s = $Ctx.Shared.Leak
+        $usable = $null -ne $s -and $Now - $s.At -le 30000
+        if ($null -eq $g.LastUsable) { $g.LastUsable = $Now }
+        if ($usable) { $g.LastUsable = $Now; $g.NoSampleLogged = $false }
+        elseif (-not $g.NoSampleLogged -and $Now - $g.LastUsable -ge 300000) {
+            $g.NoSampleLogged = $true
+            try { Write-Log "The display driver's memory has had no reading for 5 minutes; the leak guard waits for one." } catch { }
+        }
+        if ($null -ne $g.Verify) {
+            if ($usable -and $s.At -gt $g.Verify.ExitAt -and $s.At -le $g.Verify.ExitAt + 60000) {
+                $v = $g.Verify
+                $g.Verify = $null
+                $g.SeenAt = $s.At
+                $floor = [math]::Max([double]$v.Trigger / 2, [double]512MB)
+                if ($s.HostId -ne $v.HostId -or $s.HostStart -ne $v.HostStart -or [double]$s.Bytes -lt $floor) {
+                    $g.Failures = 0
+                    try { Write-Log "The display driver restart freed its memory: it holds $([int]($s.Bytes / 1MB)) MB." } catch { }
+                }
+                else {
+                    Stop-LeakGuard $g "The display driver restart did not free its memory: it holds $([int]($s.Bytes / 1MB)) MB, against $([int]($v.Trigger / 1MB)) MB before."
+                }
+                return
+            }
+            if ($Now - $g.Verify.ExitAt -le 60000) { return }
+            $g.Verify = $null
+            Add-LeakFailure $g
+            if ($g.Off) { return }
+        }
+        if (-not $usable) { return }
+        $kind = $null
+        $idle = $null
+        if ($s.Bytes -gt 2 * $g.Limit -or ($s.Bytes -gt [uint64]512MB -and $s.FreeCommit -lt [uint64]4GB)) { $kind = 'emergency' }
+        elseif ($s.Bytes -gt $g.Limit -and $s.At -ne $g.SeenAt) {
+            $g.SeenAt = $s.At
+            $idle = & $Ctx.IdleMs
+            if ($idle -ge 300000 -and ($null -eq $g.LastAt -or $Now - $g.LastAt -ge 1800000)) { $kind = 'routine' }
+        }
+        if ($null -eq $kind) { return }
+        # The child rules, shared with the hang restart (Step-DisplayRestart).
+        if ($null -ne $Ctx.Restart -or ($null -ne $Ctx.RestartAt -and $Now - $Ctx.RestartAt -lt 60000) -or (& $Ctx.PnpRunning)) { return }
+        # An emergency ignores input, so a failed idle read only changes its log line.
+        if ($null -eq $idle) { try { $idle = & $Ctx.IdleMs } catch { } }
+        $quiet = if ($null -eq $idle) { 'the input time could not be read' } else { "no input came for $([int][math]::Floor($idle / 60000)) minutes" }
+        $Ctx.RestartAt = $Now
+        $Ctx.RestartKind = 'leak'
+        $g.LastAt = $Now
+        $g.Trigger = $s.Bytes
+        $g.TriggerHost = $s.HostId
+        $g.TriggerStart = $s.HostStart
+        try {
+            Write-Log ("Restarting the display driver to free its memory ({0}): it holds {1} MB (limit {2} MB), Windows has {3} MB of commit free, and {4}." -f `
+                    $kind, [int]($s.Bytes / 1MB), [int]($g.Limit / 1MB), [int]($s.FreeCommit / 1MB), $quiet)
+        } catch { }
+        $Ctx.Restart = & $Ctx.StartLeakRestart
+    }
+    catch {
+        Write-ErrorOnce $Ctx "The leak guard failed: $($_.Exception.Message)"
+    }
+}
+
+# --- The collector's reads (run in the collector runspace) ---
+
+# The WQL filter for process <Id>'s GPU memory rows. _ alone matches any
+# character in WQL, so each is escaped: pid_12_ must not take pid_123_.
+function Get-LgRowFilter([int]$Id) {
+    return "Name LIKE 'pid[_]$Id[_]%'"
+}
+
+# The processes named WUDFHost, each with its ID, start time, program path
+# and owner (an account SID). Any user can start a program by that name, or
+# the real one; Select-LgHost checks the owner and the path. A process that
+# ends during the read is skipped.
+function Get-WudfHosts {
+    return @(Get-Process -Name WUDFHost -IncludeUserName -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $owner = $null
+                if ($_.UserName) { $owner = ([Security.Principal.NTAccount]$_.UserName).Translate([Security.Principal.SecurityIdentifier]).Value }
+                [pscustomobject]@{ Id = $_.Id; Start = $_.StartTime.ToFileTimeUtc(); Path = $_.Path; Owner = $owner; Process = $_ }
+            }
+            catch { }
+        })
+}
+
+# Whether <Path> is a file inside folder <Folder> (any case), with no ".."
+# step that could climb out of it.
+function Test-InFolder([string]$Path, [string]$Folder) {
+    if ([string]::IsNullOrEmpty($Path) -or [string]::IsNullOrEmpty($Folder) -or $Path.Contains('..')) { return $false }
+    return $Path.StartsWith($Folder.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
+# The modules host <P> has loaded. Reading them needs the task's admin rights.
+function Get-HostModules($P) {
+    return @($P.Process.Modules)
+}
+
+# Process <Id>'s rows of the GPU memory counters, by WMI's names, which stay
+# the same in every Windows language.
+function Get-LgGpuRows([int]$Id) {
+    return @(Get-CimInstance -ClassName Win32_PerfRawData_GPUPerformanceCounters_GPUProcessMemory `
+            -Filter (Get-LgRowFilter $Id) -OperationTimeoutSec 20 -ErrorAction Stop)
+}
+
+# Process <Id>'s start time now, or $null when it is gone.
+function Get-HostStart([int]$Id) {
+    try { return (Get-Process -Id $Id -ErrorAction Stop).StartTime.ToFileTimeUtc() } catch { return $null }
+}
+
+# Windows' free commit in bytes.
+function Get-FreeCommit {
+    return [LanaiGuard]::FreeCommit()
+}
+
+# The one host in <Hosts> that a service account (LocalSystem, LocalService
+# or NetworkService, which no user can run as) runs from
+# <System32>\WUDFHost.exe, with LGIdd.dll (any case) loaded from inside
+# <System32>, or $null for none or several. A program a user runs, even the
+# real WUDFHost.exe with a DLL of that name, is skipped before its modules
+# are read, so it cannot hide the real host. A module read that fails throws.
+function Select-LgHost([object[]]$Hosts, [string]$System32) {
+    if ([string]::IsNullOrEmpty($System32)) { return $null }
+    $exe = $System32.TrimEnd('\') + '\WUDFHost.exe'
+    $found = @($Hosts | Where-Object { $_.Owner -in @('S-1-5-18', 'S-1-5-19', 'S-1-5-20') -and [string]$_.Path -ieq $exe } | Where-Object {
+            @(Get-HostModules $_ | Where-Object { $_.ModuleName -ieq 'LGIdd.dll' -and (Test-InFolder ([string]$_.FileName) $System32) }).Count -gt 0
+        })
+    if ($found.Count -eq 1) { return $found[0] }
+    return $null
+}
+
+# The sum of TotalCommitted over <Rows> named for process <Id>, or $null
+# when there are none: no rows is no measure, not zero.
+function Measure-LgRows([object[]]$Rows, [int]$Id) {
+    $mine = @($Rows | Where-Object { $null -ne $_ -and ([string]$_.Name).StartsWith("pid_$($Id)_") })
+    if ($mine.Count -eq 0) { return $null }
+    $sum = [uint64]0
+    foreach ($r in $mine) { $sum += [uint64]$r.TotalCommitted }
+    return $sum
+}
+
+# One sample taken at <At> (task clock, ms): the driver's GPU memory, its
+# host's ID and start time, and Windows' free commit. $null unless exactly
+# one host has the driver (Select-LgHost, with Windows' System32 folder), it
+# has rows, and the same process (ID and start time) still runs after the
+# query; any failed read is $null too.
+function Read-LeakSample([double]$At, [string]$System32 = [Environment]::GetFolderPath('System')) {
+    try {
+        $h = Select-LgHost @(Get-WudfHosts) $System32
+        if ($null -eq $h) { return $null }
+        $bytes = Measure-LgRows @(Get-LgGpuRows $h.Id) $h.Id
+        if ($null -eq $bytes) { return $null }
+        $start = Get-HostStart $h.Id
+        if ($null -eq $start -or $start -ne $h.Start) { return $null }
+        return [pscustomobject]@{ At = $At; Bytes = [uint64]$bytes; FreeCommit = [uint64](Get-FreeCommit); HostId = $h.Id; HostStart = $h.Start }
+    }
+    catch { return $null }
+}
+
+# The text of the functions the collector runspace calls.
+function Get-CollectorFunctions {
+    return (@('Read-LeakSample', 'Select-LgHost', 'Measure-LgRows', 'Get-LgRowFilter', 'Get-WudfHosts',
+            'Get-HostModules', 'Get-LgGpuRows', 'Get-HostStart', 'Get-FreeCommit', 'Test-InFolder') | ForEach-Object {
+            "function $_ {`n$((Get-Item "function:$_").ScriptBlock)`n}"
+        }) -join "`n"
 }
 
 # The task's state at start: Want (a step index) and LastSave from the OEM
@@ -597,16 +871,21 @@ function Get-DisplayObservation {
 #   Restart      the restart child until it has exited, or $null
 #   RestartStopped  whether Restart was stopped at 45 s
 #   RestartAt    when the last child started (ms), or $null
+#   RestartKind  'hang' or 'leak' for the running child, or $null
 #   StartRestart starts a restart child (Start-DisplayRestart); tests swap it,
 #                StopRestart (Stop-ProcessTree) and PnpRunning (Test-PnpUtilRunning)
+#   Guard        the leak guard's state (New-LeakGuard); IdleMs gives the
+#                idle time and StartLeakRestart starts a -LeakRestart child,
+#                both swapped by tests
 function New-ScaleContext($State, $Queue, $Shared) {
     return @{
         State = $State; Queue = $Queue; Shared = $Shared
         Lines = New-Object 'System.Collections.Generic.List[object]'
         NextObserve = 0; LastError = ''; LoggedPortError = ''; LoggedSet = ''; LoggedCap = ''
         RangeLogged = $false; PortOpened = $false; MalformedLogged = $false
-        Restart = $null; RestartStopped = $false; RestartAt = $null; StartRestart = { Start-DisplayRestart }
+        Restart = $null; RestartStopped = $false; RestartAt = $null; RestartKind = $null; StartRestart = { Start-DisplayRestart }
         StopRestart = { param($Id) Stop-ProcessTree $Id }; PnpRunning = { Test-PnpUtilRunning }
+        Guard = (New-LeakGuard); IdleMs = { Get-IdleMs }; StartLeakRestart = { Start-DisplayRestart '-LeakRestart' }
     }
 }
 
@@ -662,6 +941,7 @@ function Invoke-ScaleTick($Ctx, [double]$Now) {
     $drained = Get-DrainedLine $Ctx.Lines.ToArray() $Now
     $line = $null
     Step-DisplayRestart $Ctx $Now $drained.Restart
+    Step-LeakGuard $Ctx $Now
     if ($drained.Kind -ne 'wait') {
         $Ctx.Lines.Clear()
         if ($drained.Malformed -gt 0 -and -not $Ctx.MalformedLogged) {
@@ -818,10 +1098,28 @@ $ReaderScript = {
     }
 }
 
-# The restart child uses none of the display API below, so it starts here
-# and skips the compile.
+# The collector runspace's loop: a sample of the driver's memory every 10 s
+# (Read-LeakSample), stamped on the task's clock, into $Shared.Leak for the
+# main loop. A failed read posts nothing; the main loop's 30 s age limit
+# drops what grows old.
+$CollectorScript = {
+    param($Shared, $Clock, $Functions)
+    . ([scriptblock]::Create($Functions))
+    while ($true) {
+        $s = Read-LeakSample $Clock.Elapsed.TotalMilliseconds
+        if ($null -ne $s) { $Shared.Leak = $s }
+        Start-Sleep -Seconds 10
+    }
+}
+
+# The restart children use none of the display API below, so they start
+# here and skip the compile.
 if ($DisplayRestart) {
     try { exit (Invoke-DisplayRestart $IddLog { Wait-Monotonic 10000 }) }
+    catch { Write-ExitLog "Error: $($_.Exception.Message)"; exit 1 }
+}
+if ($LeakRestart) {
+    try { exit (Invoke-LeakRestart) }
     catch { Write-ExitLog "Error: $($_.Exception.Message)"; exit 1 }
 }
 
@@ -846,6 +1144,49 @@ public static class LanaiPort {
         SafeFileHandle h = CreateFile(name, 0x80000000, 0, IntPtr.Zero, 3, 0, IntPtr.Zero);
         error = h.IsInvalid ? Marshal.GetLastWin32Error() : 0;
         return h;
+    }
+}
+
+// Memory and input for the leak guard: total memory and free commit from
+// GlobalMemoryStatusEx, and the tick count and the session's last input
+// tick for the idle time.
+public static class LanaiGuard {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MemoryStatusEx {
+        public uint dwLength; public uint dwMemoryLoad;
+        public ulong ullTotalPhys; public ulong ullAvailPhys;
+        public ulong ullTotalPageFile; public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual; public ulong ullAvailVirtual; public ulong ullAvailExtendedVirtual;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LastInputInfo { public uint cbSize; public uint dwTime; }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GlobalMemoryStatusEx(ref MemoryStatusEx m);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetLastInputInfo(ref LastInputInfo i);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetTickCount();
+
+    private static MemoryStatusEx Status() {
+        MemoryStatusEx m = new MemoryStatusEx();
+        m.dwLength = (uint)Marshal.SizeOf(typeof(MemoryStatusEx));
+        if (!GlobalMemoryStatusEx(ref m)) throw new Exception("GlobalMemoryStatusEx failed: " + Marshal.GetLastWin32Error());
+        return m;
+    }
+
+    public static ulong TotalPhys() { return Status().ullTotalPhys; }
+    public static ulong FreeCommit() { return Status().ullAvailPageFile; }
+    public static uint Ticks() { return GetTickCount(); }
+
+    public static uint LastInput() {
+        LastInputInfo i = new LastInputInfo();
+        i.cbSize = (uint)Marshal.SizeOf(typeof(LastInputInfo));
+        if (!GetLastInputInfo(ref i)) throw new Exception("GetLastInputInfo failed");
+        return i.dwTime;
     }
 }
 
@@ -1001,11 +1342,15 @@ try {
 
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
-    $shared = [hashtable]::Synchronized(@{ OpenedAt = $null; PortError = '' })
+    $shared = [hashtable]::Synchronized(@{ OpenedAt = $null; PortError = ''; Leak = $null })
     $reader = [PowerShell]::Create()
     $reader.AddScript($ReaderScript).AddArgument($queue).AddArgument($shared).AddArgument($clock).AddArgument($PortName).AddArgument((Get-ReaderFunctions)) | Out-Null
     $reader.BeginInvoke() | Out-Null
     $ctx = New-ScaleContext (New-ScaleState $want $save 0) $queue $shared
+    $ctx.Guard.Limit = Get-LeakLimit ([LanaiGuard]::TotalPhys())
+    $collector = [PowerShell]::Create()
+    $collector.AddScript($CollectorScript).AddArgument($shared).AddArgument($clock).AddArgument((Get-CollectorFunctions)) | Out-Null
+    $collector.BeginInvoke() | Out-Null
     while ($true) {
         Invoke-ScaleTick $ctx $clock.Elapsed.TotalMilliseconds
         Start-Sleep -Milliseconds 250
