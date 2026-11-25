@@ -18,6 +18,10 @@
 #             earlier step in PowerShell. A separate key, so a Lanai from
 #             before the step still reads scale_task right; a finished
 #             setup without the current mark has an older form or none
+#   display_restart  LANAI_DISPLAY_RESTART once step 6 passed: the scale
+#             task restarts the display driver on the feed's restart line
+#             (docs/plugin/resize-hang/plan.md, requirement 14). A setup
+#             without the mark has a task that ignores the line
 #   round     true from a setup boot's start until step 7; while it is
 #             open, a done setup (a pin bump, or a rerun) does not read as
 #             finished, though lanai start still works (spec 8)
@@ -31,6 +35,11 @@
 # an install must pick up, in guest/lanai-start.cs or
 # guest/lanai-scale.ps1, needs its own mark and its own panel words.
 LANAI_SIGNIN_STEP=2
+
+# The display restart's mark (display_restart above), which step 6 records
+# and display_restart_missing (lib/ui.sh) checks. Bump it for a change to
+# the restart handler in guest/lanai-scale.ps1 that an install must pick up.
+LANAI_DISPLAY_RESTART=1
 
 # --- setup.json ---
 
@@ -713,9 +722,10 @@ step6_scale() {
   step6_checks_note "$run" '{"scale":{"state":"done"}}' || return 1
   # The scale task's port is open, so Windows has the live task:
   # scale_task 2, with the start program's sign-in step: signin_step
-  # LANAI_SIGNIN_STEP. A record without them means the old task, or a task
-  # without the current step (spec 12).
-  if ! setup_patch "{\"done\": true, \"step5\": null, \"round\": null, \"scale_task\": 2, \"signin_step\": $LANAI_SIGNIN_STEP}"; then
+  # LANAI_SIGNIN_STEP, and the display restart: display_restart
+  # LANAI_DISPLAY_RESTART. A record without them means the old task, or a
+  # task without the current step or restart (spec 12).
+  if ! setup_patch "{\"done\": true, \"step5\": null, \"round\": null, \"scale_task\": 2, \"signin_step\": $LANAI_SIGNIN_STEP, \"display_restart\": $LANAI_DISPLAY_RESTART}"; then
     setup_reply false 6 "Lanai cannot record its setup state." "run setup again"
     return 1
   fi

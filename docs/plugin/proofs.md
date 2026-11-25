@@ -1657,6 +1657,92 @@ edit started one more update (11:54:22 to 11:54:39, outcome `ok`). The folder
 went back to `main` at 11:55:03, and `main`'s view showed no warning and no
 update button. John reports every check as expected.
 
+## Windows freeze after quick resizes, phase 0 (2026-11-21, EST)
+
+The window froze on its last picture after quick resizes, such as a monitor
+waking from sleep. Phase 0 of docs/plugin/resize-hang/plan.md forced the hang
+on a copy and recovered it with a driver restart, before any code. The evidence
+is in `~/lanai-proofs/resize-hang-phase0/`.
+
+- The copy: `~/lanai-proofs/resize-hang-copy`, a `lanai-copy` of the live disk,
+  run next to the live VM with 8 GB, the live VM's scale port and SMBIOS line,
+  and its network link cut. Lanai's B7-826-236efcb1 client drove a window on a
+  hidden workspace; frames arrive there as on screen.
+- Windows 11 Pro 25H2, build 26200.9168. The adapter is `ROOT\DISPLAY\0000`,
+  "Looking Glass Indirect Display Device", hardware ID `Root\LGIdd`, driver
+  1.27.7.771.
+- Baseline on a healthy driver: `pnputil /restart-device` exited 0 in 404 ms,
+  and a frame at the window's size came within 1 s.
+- Hangs came at bursts 85, 300 and 304. Burst 300 came after a clean run of
+  274, cut short when the harness stopped the copy's QEMU.
+
+  | Hang | Driver state | pnputil | First frame at the window's size |
+  | --- | --- | --- | --- |
+  | 1 | New monitor, modes committed, no swap chain (as on 2026-11-19) | exit 0, 1.6 s | about 2 s after the restart began |
+  | 2 | `ReplugMonitor`, then nothing (as on 2026-11-21) | exit 0, 5.9 s | about 6 s |
+  | 3 | As hang 2 | exit 0, 2.0 s | about 2 s |
+
+  Each time the desktop came back at the window's size, the Windows key opened
+  and closed Start, and the next three bursts all took. In hang 3 the client
+  had already logged "did not take"; the new session asked again by itself.
+  Hang 3's last replug came in the same second as the one before it.
+- Still desktop: with all windows minimized, Windows sent one frame in 20 s
+  (the taskbar clock's minute). The driver refused 5200x2900 ("Refusing
+  resolution 5200x2900: configured frame capacity must be at least ... MiB")
+  and sent the refusal to its helper pipe, not to the client. After the
+  client's fifth ask, no frame came for 38 s. So a refused size looks like a
+  hang from the host.
+- The driver log tells the two apart. In every hang log (hangs 1-3 and the
+  live 2026-11-21 freeze), the last `ReplugMonitor` has no `Swap chain device
+  set` after it. In the refusal log, it has one. Phase 0's and John's driver
+  logs hold 2,119 distinct replugs. 2,114 finished in 3 s or less. The other 5
+  were all hangs: hangs 1-3 and the live freezes of 2026-11-19 (a replug left
+  unfinished for 33 minutes) and 2026-11-21.
+
+## Windows freeze after quick resizes, phase 3 (2026-11-23, EST)
+
+Lanai's own code, aimed at phase 0's copy, recovered forced hangs with no
+help. The full results are in docs/plugin/resize-hang/plan.md ("Phase 3
+result, step 1"). The evidence is in `~/lanai-proofs/resize-hang-phase3/`.
+
+- The test build (settle and gap off, stall detector on) hung at bursts 315,
+  633 and 939. Each time the client logged its stall line, the feed asked,
+  the scale task confirmed the hang and restarted the driver, and a frame at
+  the window's size came 78, 18 and 21 s after the miss. Hang 1 took a second
+  send: the first child exited with code 1. Each time the Windows key opened
+  Start and a mouse move advanced the pointer queue.
+- The run found the display driver's leak: about one old swap chain kept per
+  replug or graphics reset, which ran Windows out of commit before hangs 1-3
+  here and phase 0's hangs 2 and 3.
+
+## Windows freeze after quick resizes, phase 5 (2026-11-23 to 24, EST)
+
+The leak guard on the same copy (8 GB, limit 1 GiB), with a debug line for
+each sample. The full results are in docs/plugin/resize-hang/plan.md
+("Phase 5 result"). The evidence is in `~/lanai-proofs/resize-hang-phase3/p5/`.
+
+- The collector matched a separate read exactly and followed each new host
+  process.
+- Input every 4 minutes held a routine restart back for 15 minutes. With no
+  input, the routine restart came 5 minutes 6 s after the last key and freed
+  1,079 MB, with the window hidden.
+- The routine gate passed on 2026-11-24: after a routine restart with the
+  window hidden, and another with the monitor off, the picture, the Windows
+  key and the mouse worked when the window came back. One restart child took
+  41 s to reach pnputil, 4 s inside its 45 s stop; the cause is not known.
+- Emergency: no restart under 2 GiB with mouse moves; the first sample over
+  it restarted the driver in the same second.
+- Low commit, with 3,637 MB of commit left free by a test process: 30
+  emergency restarts in 30 minutes, each freed, free commit never under
+  1,899 MB, no hang.
+- Soak, 2 hours with the production build: 1,276 of 1,276 bursts took, one
+  ask each, commit peaked 1,375 MB over its start, and 24 guard restarts all
+  came as emergencies, each within the routine rule's 30-minute gap.
+- After an 800 MB page file change, the copy's next restart hung at the
+  boot logo, cause not proven. A VGA device added to watch the boot kept
+  every boot hanging while Windows' hypervisor was on. Without VGA, the copy
+  boots with the hypervisor on.
+
 ## After the proofs
 
 Keep `$S/lanai-proof` until every result is recorded. It shares its blocks with

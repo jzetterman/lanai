@@ -312,7 +312,7 @@ panel_restore() {
 cmd_panel() {
   local client_running=false setup_boot=false checks_boot=false basic_window=false stop_requested=false stop_inv stop_at
   local token='' at=0 facts status_details status plan records settings snapshots logs s run inv progress problem_line results='{}' group doc words note active
-  local client_old=false signin_missing=false task button auto client_case click_pending=false window_stale=false
+  local client_old=false signin_missing=false restart_missing=false task button auto client_case click_pending=false window_stale=false
   local seen=false
   local snapshot_paths='[]' items='[]' name restore log_rows path display label seconds
   local check_since=null checks_stopped=false since vm_status
@@ -375,6 +375,9 @@ cmd_panel() {
   # old task. An unfinished plan (req 8's driver update included) already
   # names its own step.
   if jq -e '.finished' <<<"$plan" >/dev/null && signin_step_missing; then signin_missing=true; fi
+  # A finished install whose scale task lacks the display restart: a frozen
+  # window gets no automatic recovery until setup runs again.
+  if jq -e '.finished' <<<"$plan" >/dev/null && display_restart_missing; then restart_missing=true; fi
   task=$(scale_task_kind)
   # An open Windows window that started before an update installed the
   # current client: it says to close and reopen it.
@@ -502,6 +505,7 @@ cmd_panel() {
     --argjson client "$client_running" --argjson setupBoot "$setup_boot" --argjson checksBoot "$checks_boot" \
     --argjson stopRequested "$stop_requested" --argjson basicWindow "$basic_window" \
     --argjson clientOld "$client_old" --argjson signinMissing "$signin_missing" --arg task "$task" \
+    --argjson restartMissing "$restart_missing" \
     --argjson auto "$auto" --argjson pending "$click_pending" --argjson seen "$seen" --argjson windowStale "$window_stale" \
     --arg wWait "$LANAI_AUTO_WAIT" --arg wRun "$LANAI_AUTO_RUN" --arg wReopen "$LANAI_AUTO_REOPEN" \
     --arg token "$token" --argjson at "$at" --argjson now "$EPOCHSECONDS" --arg facts "$status_details" --arg problem_line "$problem_line" \
@@ -641,10 +645,15 @@ cmd_panel() {
         (if $dailyControls then "Try Open window again." elif $reopen then "Try Reopen the Windows window in Setup."
          else "Check the Windows window log, then shut down and continue setup." end) else empty end,
       if $st.state != "version-mismatch" and ($facts | contains("LanaiDriverOld=")) then "The Windows display driver needs an update. Shut down and continue setup." else empty end,
+      # A display recovery pending a minute or more, as status_map words it.
+      ($facts | capture("(^|\n)LanaiNoPicture=(?<s>[0-9]+)") | .s | tonumber / 60 | floor |
+        "Windows has sent no picture for \(.) minute\(if . == 1 then "" else "s" end). If the Windows window looks frozen, restart Windows to fix it."),
       # The resize warning (req 12). Without the sign-in step, Run setup
       # again is the one step: one message says what it fixes (the mouse
       # after a wake, from an old client; the size, from the missing step or
-      # an old client; scale saves, with the old task) and the lock. With
+      # an old client; scale saves, with the old task; a window that freezes
+      # after quick resizes, from an old client or a task without the
+      # display restart) and the lock. With
       # the step, Lanai updates an old client by itself: $wRun while it
       # runs (or launches, or a hand update runs), $wWait while a job holds
       # it back, and the words of the update button once its tries end. After
@@ -653,15 +662,23 @@ cmd_panel() {
         ([if $clientOld then "After the computer wakes from sleep, the mouse may reach only part of Windows.",
             "Windows may start at the wrong size and stay there until you resize the window, and it may change to the wrong size while it runs."
           else "After Windows starts, it may stay at its old size until you resize the window." end,
-          if $task == "old" then "Scale saves apply only the next time Windows starts." else empty end]) as $fixes |
-        ($fixes + ["To fix " + ({"1":"this","2":"both","3":"all three"}[$fixes | length | tostring]) + ", " +
+          if $task == "old" then "Scale saves apply only the next time Windows starts." else empty end,
+          if $clientOld or $restartMissing then "The Windows window may freeze after quick resizes, such as when the monitor wakes." else empty end]) as $fixes |
+        ($fixes + ["To fix " + ({"1":"this","2":"both","3":"all three","4":"all four"}[$fixes | length | tostring]) + ", " +
           (if $off then "click Run setup again in More actions." else "shut Windows down and click Run setup again in More actions." end),
           "Running setup again also turns the Windows lock off again."] | join(" "))
       elif $auto.updating then $wRun
       elif $auto.wait then $wWait
       elif $auto.shown then
-        "After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size. To fix both, click Update the Windows window in More actions. Updating changes nothing in Windows."
+        "After the computer wakes from sleep, the mouse may reach only part of Windows. Windows may also start at, or change to, the wrong size, and the window may freeze after quick resizes. To fix all three, click Update the Windows window in More actions. Updating changes nothing in Windows."
       elif $windowStale then $wReopen
+      else empty end,
+      # With the sign-in step but a task without the display restart, Run
+      # setup again is the step for that one fix.
+      if $restartMissing and ($signinMissing | not) then
+        "If the Windows window freezes after quick resizes, Lanai cannot bring the picture back by itself. To fix this, " +
+          (if $off then "click Run setup again in More actions." else "shut Windows down and click Run setup again in More actions." end) +
+          " Running setup again also turns the Windows lock off again."
       else empty end
     ] | join(" ")) |
     # Presentation follows the existing decisions and never widens an offer.

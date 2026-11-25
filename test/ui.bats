@@ -126,6 +126,26 @@ setup_finished() {
   assert_failure
 }
 
+@test "display restart: missing only for finished setup with no round running and not the current mark" {
+  run display_restart_missing
+  assert_failure
+  setup_finished 2 "$LANAI_SIGNIN_STEP"
+  run display_restart_missing
+  assert_success
+  jq --argjson r "$((LANAI_DISPLAY_RESTART + 1))" '.display_restart=$r' "$(state_dir)/setup.json" >"$T/setup" &&
+    mv "$T/setup" "$(state_dir)/setup.json"
+  run display_restart_missing
+  assert_success
+  jq --argjson r "$LANAI_DISPLAY_RESTART" '.display_restart=$r' "$(state_dir)/setup.json" >"$T/setup" &&
+    mv "$T/setup" "$(state_dir)/setup.json"
+  run display_restart_missing
+  assert_failure
+  # A setup round may be replacing the task: not missing until it records.
+  jq '.display_restart=null | .round=true' "$(state_dir)/setup.json" >"$T/setup" && mv "$T/setup" "$(state_dir)/setup.json"
+  run display_restart_missing
+  assert_failure
+}
+
 @test "settings reply: structured fields say what was saved, whether Windows runs, and which task" {
   lanai_run settings 8 4 150
   assert_equal "$(jq -c '{scale_saved,running,scale_task_kind}' <<<"$JSON")" '{"scale_saved":true,"running":false,"scale_task_kind":"none"}'

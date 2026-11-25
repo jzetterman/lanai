@@ -311,9 +311,12 @@ two costs:
   window size during capture, such as Scroll Lock+F or a monitor or scale change,
   also moves it there.
 
-Windows' resolution follows the Windows window. When the window opens, resizes,
-tiles, goes fullscreen or moves to a monitor with another scale, Windows matches it
-within 5 seconds. This also holds after Windows' display driver restarts. Windows
+Windows' resolution follows the Windows window. When the window opens, Windows
+matches it within 5 seconds. When it resizes, tiles, goes fullscreen or moves to a
+monitor with another scale, Windows matches it within 7 seconds of the last size
+change: Lanai waits until the window keeps one size for 2 seconds, so a drag or a
+burst of resizes makes one change in Windows. This also holds after Windows'
+display driver restarts. Windows
 cannot change its desktop size before you sign in. So when Windows starts or
 restarts, it matches the window within 15 seconds of your sign-in: when the
 Windows user who ran setup signs in, Lanai's scale task sets the size. Its log is
@@ -329,9 +332,28 @@ monitor. Lanai asks a few times, so the screen may flicker or Windows may show a
 notice, and then stops. In both cases Windows keeps its last size and the picture
 is scaled to fit the window. Resize the window or leave fullscreen to fix it.
 
+Windows' display driver can freeze after many quick resizes, for example when a
+monitor wakes from sleep and resizes the window several times. The window then
+keeps its last picture. Lanai notices when Windows sends no picture for 10 seconds,
+and Lanai's scale task in Windows restarts the display driver when the driver's
+own log shows it stuck. The picture comes back within about half a minute,
+with no Windows restart. A still desktop also sends no picture, so the task checks first
+and leaves a healthy driver alone; its log, `C:\Program Files\Lanai\lanai-scale.log`,
+says what it found. If the picture has not come back after a minute, the panel
+says so. If the window still looks frozen, restart Windows.
+
+The display driver also leaks memory each time Windows changes its resolution,
+and a large leak can make it freeze. Lanai's scale task watches the driver's
+memory and restarts the driver before the leak grows large, after 5 minutes with
+no keyboard or mouse input in Windows, at most once every 30 minutes. The display
+flickers once for a second or two. A video or slideshow you watch without touching
+the keyboard or mouse may see that flicker. A much larger leak, or Windows running
+low on memory, restarts the driver at once, even while you type. The scale task's
+log names each restart and the memory it saw.
+
 Installs set up with an earlier version of Lanai keep working, but Windows may not
-match the window, and after the computer wakes from sleep, the mouse may reach only
-part of Windows. When only the Windows window needs an update, Lanai updates it by
+match the window, after the computer wakes from sleep the mouse may reach only
+part of Windows, and the window may freeze after quick resizes. When only the Windows window needs an update, Lanai updates it by
 itself, with no click, after `omarchy plugin update`, a shell restart or a sign-in.
 The first plugin update to this version starts it only at the next shell restart
 (`omarchy-restart-shell`) or sign-in; until then the panel names **Update the
@@ -346,7 +368,9 @@ Windows window** in More actions. When a log holds the reason, the panel also na
 that log: the Windows window build log or the Jobs log. When the scale task in
 Windows was set up without the sign-in step, Windows may stay at its old size after
 it starts, until you resize the window. Lanai then does not update the window by
-itself, and the panel names **Run setup again**. It updates the Windows window too,
+itself, and the panel names **Run setup again**. A scale task set up before the
+freeze recovery cannot restart the display driver either; the panel names **Run
+setup again** for that too. It updates the Windows window too,
 turns the Windows lock off again, and restarts Windows as setup always does. If
 setup cannot update the window, the panel points to the same build log.
 

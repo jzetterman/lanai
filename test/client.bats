@@ -439,11 +439,24 @@ spice:host=$RUN/spice.sock
 spice:port=0
 win:setGuestRes=yes
 wayland:warpSupport=no"
-  # A fresh log: Lanai's start line, then the client's own output.
+  # A fresh log: Lanai's start line, the client ID line, then the client's
+  # own output.
   run cat "$RUN/client.log"
   assert_line --index 0 --regexp '^lanai: client started at [0-9]+$'
-  assert_line --index 1 --partial "Looking Glass (B7-826-236efcb1)"
+  assert_line --index 1 --regexp '^lanai: client id [0-9a-f-]{36}$'
+  assert_line --index 2 --partial "Looking Glass (B7-826-236efcb1)"
   refute_output --partial "an old client"
+  local first_id start
+  first_id=$(sed -n 2p "$RUN/client.log")
+
+  # Each start writes a new ID, and the start line still reads as before.
+  run timeout 20 "$REPO/bin/lanai-client-exec" "$T/fake-client"
+  assert_success
+  [[ $(sed -n 2p "$RUN/client.log") != "$first_id" ]] || fail "the ID did not change"
+  start=$(log_client_start "$RUN/client.log")
+  ((start > 0 && start <= EPOCHSECONDS)) || fail "start is $start"
+  run version_check "$RUN/client.log"
+  assert_output unknown
 }
 
 @test "lanai-client-exec: on a one-client socket, a try without a status leaks nothing" {

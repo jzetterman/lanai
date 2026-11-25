@@ -1,0 +1,892 @@
+Subject: client: let the window settle before asking, and report stalls
+
+Each window-size ask makes the Looking Glass IDD replug its monitor. A
+burst of replugs, such as a monitor waking from sleep or a drag resize,
+can hang the IDD: Windows stops sending frames and the window freezes on
+its last picture, until the display adapter restarts.
+
+The module now asks less often, and says when frames stop:
+
+- An ask waits until the window's raw size, before the client's 500 ms
+  message debounce, has held for 2 s (RESIZE_SETTLE_US). A burst of
+  sizes makes one ask, for the last size, and a drag makes no ask until
+  it stops. resize_raw records each raw size; a post older than the last
+  change is ignored.
+- Two asks are at least 4 s apart (RESIZE_GAP_US), for a new size or a
+  retry. The first retry wait grows from 2 s to 4 s; 5, 10 and 20 s stay.
+- resize_seen records every frame, not only format changes. With no
+  frame for 10 s (RESIZE_STALL_US) while an ask is outstanding, counted
+  from the later of the sequence's first ask and the last frame, or since
+  a display session started, it logs
+  "Resize: no frame from Windows for 10 s (asked for WxH)" or
+  "(new session)", once. The stall lasts across sessions until a frame
+  arrives, which logs "Resize: frames from Windows again". A still
+  desktop also sends no frames, so a stall line can be a refused size
+  and not a hang; whoever reads it must check before acting.
+- Building with -DRESIZE_NO_SETTLE drops the settle and the gap and
+  keeps the stall detector, for tests that force the hang.
+- resize_test.c: cases whose timing changes on purpose say so, and new
+  cases cover the settle, the gap and the stall.
+
+No message is added and no message's format changes.
+
+From Lanai, https://github.com/jzetterman/lanai
+Copyright (C) 2026 John Zetterman
+SPDX-License-Identifier: GPL-2.0-or-later
+
+diff -Naur lg-pristine/client/src/resize.c lg-working/client/src/resize.c
+--- lg-pristine/client/src/resize.c	2026-11-21 21:06:14.889998837 -0500
++++ lg-working/client/src/resize.c	2026-11-21 21:06:14.891729989 -0500
+@@ -28,10 +28,10 @@
+ #define RESIZE_CONTINUE_US RESIZE_SEC(60)
+ #define RESIZE_GIVEUP_US   RESIZE_SEC(5)
+ 
+-/* the wait after ask 1, 2, 3 and 4 */
++/* the wait after ask 1, 2, 3 and 4; the first is RESIZE_GAP_US's 4 s */
+ static const uint64_t resizeWait[RESIZE_MAX_ASKS - 1] =
+ {
+-  RESIZE_SEC(2), RESIZE_SEC(5), RESIZE_SEC(10), RESIZE_SEC(20)
++  RESIZE_SEC(4), RESIZE_SEC(5), RESIZE_SEC(10), RESIZE_SEC(20)
+ };
+ 
+ __attribute__((format(printf, 2, 3)))
+@@ -68,14 +68,42 @@
+ 
+ void resize_session(ResizeState * this)
+ {
+-  this->haveFrame = false;
+-  this->guestW    = 0;
+-  this->guestH    = 0;
+-  this->haveAsk   = false;
+-  this->lastAsk   = 0;
++  this->haveFrame      = false;
++  this->guestW         = 0;
++  this->guestH         = 0;
++  this->haveAsk        = false;
++  this->lastAsk        = 0;
++  this->sessionFrame   = false;
++  this->sessionPending = true;
++  this->haveSessionAt  = false;
+   newSequence(this);
+ }
+ 
++void resize_raw(ResizeState * this, unsigned width, unsigned height,
++    uint64_t at)
++{
++  if (this->haveRaw &&
++      (at < this->rawAt || (width == this->rawW && height == this->rawH)))
++    return;
++
++  this->haveRaw = true;
++  this->rawW    = width;
++  this->rawH    = height;
++  this->rawAt   = at;
++}
++
++void resize_seen(ResizeState * this, uint64_t now)
++{
++  this->haveLastFrame = true;
++  this->lastFrame     = now;
++  this->sessionFrame  = true;
++  if (this->stalled)
++  {
++    this->stalled = false;
++    resizeLog(this, "Resize: frames from Windows again");
++  }
++}
++
+ void resize_window(ResizeState * this, unsigned width, unsigned height)
+ {
+   if (width == this->windowW && height == this->windowH)
+@@ -95,6 +123,8 @@
+ void resize_frame(ResizeState * this, unsigned width, unsigned height,
+     unsigned changes, uint64_t now)
+ {
++  resize_seen(this, now);
++
+   if (!this->haveFrame)
+   {
+     this->haveFrame = true;
+@@ -120,8 +150,48 @@
+   newSequence(this);
+ }
+ 
++/* Log a stall once: no frame for RESIZE_STALL_US since the session started,
++ * or while an ask is outstanding. */
++static void checkStall(ResizeState * this, uint64_t now)
++{
++  if (this->sessionPending)
++  {
++    this->sessionPending = false;
++    this->haveSessionAt  = true;
++    this->sessionAt      = now;
++  }
++
++  if (this->stalled)
++    return;
++
++  if (!this->sessionFrame && this->haveSessionAt &&
++      now >= this->sessionAt + RESIZE_STALL_US)
++  {
++    this->stalled = true;
++    resizeLog(this, "Resize: no frame from Windows for 10 s (new session)");
++    return;
++  }
++
++  if (!this->haveFrame || this->asks == 0 ||
++      (this->guestW == this->windowW && this->guestH == this->windowH))
++    return;
++
++  uint64_t from = this->firstAsk;
++  if (this->haveLastFrame && this->lastFrame > from)
++    from = this->lastFrame;
++
++  if (now >= from + RESIZE_STALL_US)
++  {
++    this->stalled = true;
++    resizeLog(this, "Resize: no frame from Windows for 10 s (asked for %ux%u)",
++        this->windowW, this->windowH);
++  }
++}
++
+ void resize_update(ResizeState * this, uint64_t now, bool responding)
+ {
++  checkStall(this, now);
++
+   if (!this->haveFrame || !this->windowW || !this->windowH)
+     return;
+ 
+@@ -148,9 +218,18 @@
+   if (this->asks > 0 && now < this->lastAsk + resizeWait[this->asks - 1])
+     return;
+ 
++  /* the window must hold its size, and asks keep their distance */
++  if (this->haveRaw && now < this->rawAt + RESIZE_SETTLE_US)
++    return;
++
++  if (this->haveAsk && now < this->lastAsk + RESIZE_GAP_US)
++    return;
++
+   if (!this->send(this->opaque, this->windowW, this->windowH))
+     return;
+ 
++  if (this->asks == 0)
++    this->firstAsk = now;
+   ++this->asks;
+   this->haveAsk = true;
+   this->lastAsk = now;
+diff -Naur lg-pristine/client/src/resize.h lg-working/client/src/resize.h
+--- lg-pristine/client/src/resize.h	2026-11-21 21:06:14.891998834 -0500
++++ lg-working/client/src/resize.h	2026-11-21 21:06:14.893831241 -0500
+@@ -21,16 +21,28 @@
+ #ifndef _H_LG_RESIZE_
+ #define _H_LG_RESIZE_
+ 
+-/* Decides when to ask the guest for the window's size. Pure: the caller owns
+- * the clock, the transport and the log, and passes the time in microseconds.
+- * Every call must come from one thread.
++/* Decides when to ask the guest for the window's size, and notices when the
++ * guest stops sending frames. Pure: the caller owns the clock, the transport
++ * and the log, and passes the time in microseconds. Every call must come from
++ * one thread.
+  *
+  * A trigger (a new window size, a new display session's first frame, or a
+  * change of the guest's size) that finds the guest at another size asks at
+- * once, then again after waits of 2, 5, 10 and 20 seconds, each counted from
++ * once, then again after waits of 4, 5, 10 and 20 seconds, each counted from
+  * the previous ask, while the guest still differs, then stops. A change of the
+  * guest's size within 60 seconds of the last ask continues that sequence. No
+- * ask is made for a window under 640x480, the smallest mode the IDD takes. */
++ * ask is made for a window under 640x480, the smallest mode the IDD takes.
++ *
++ * Each ask makes the IDD replug its monitor, and replugs in quick succession
++ * can hang it. So an ask waits until the window's raw size (before the
++ * client's 500 ms message debounce) has held for RESIZE_SETTLE_US, and two
++ * asks in a session are at least RESIZE_GAP_US apart.
++ *
++ * A stall is no frame for RESIZE_STALL_US while an ask is outstanding (counted
++ * from the later of the sequence's first ask and the last frame), or since a
++ * display session started. It logs "Resize: no frame from Windows for 10 s"
++ * once, and lasts, across sessions, until a frame arrives, which logs
++ * "Resize: frames from Windows again". Lanai's host reads both lines. */
+ 
+ #include <stdbool.h>
+ #include <stdint.h>
+@@ -39,6 +51,17 @@
+ #define RESIZE_MIN_HEIGHT 480U
+ #define RESIZE_MAX_ASKS   5U
+ 
++/* Building with -DRESIZE_NO_SETTLE drops the settle and the gap and keeps the
++ * stall detector. It is for tests that force the IDD hang; never ship it. */
++#ifdef RESIZE_NO_SETTLE
++#define RESIZE_SETTLE_US UINT64_C(0)
++#define RESIZE_GAP_US    UINT64_C(0)
++#else
++#define RESIZE_SETTLE_US UINT64_C(2000000)
++#define RESIZE_GAP_US    UINT64_C(4000000)
++#endif
++#define RESIZE_STALL_US  UINT64_C(10000000)
++
+ /* Ask the guest for width x height. Returns true when the ask went out. */
+ typedef bool (*ResizeSendFn)(void * opaque, unsigned width, unsigned height);
+ 
+@@ -54,6 +77,11 @@
+   /* the window's size in guest pixels, kept across sessions, 0 until known */
+   unsigned windowW, windowH;
+ 
++  /* the last raw size posted, before the debounce, and when it changed */
++  bool     haveRaw;
++  unsigned rawW, rawH;
++  uint64_t rawAt;
++
+   /* the guest's size, valid once a frame was seen this session */
+   bool     haveFrame;
+   unsigned guestW, guestH;
+@@ -62,21 +90,45 @@
+   unsigned asks;
+   bool     haveAsk;
+   uint64_t lastAsk;
++  uint64_t firstAsk;
+   bool     gaveUp;
++
++  /* frames: the last one in any session, and whether this session saw one */
++  bool     haveLastFrame;
++  uint64_t lastFrame;
++  bool     sessionFrame;
++
++  /* the session's start, set by the first update after resize_session */
++  bool     sessionPending;
++  bool     haveSessionAt;
++  uint64_t sessionAt;
++
++  /* a stall was logged and no frame has come since */
++  bool     stalled;
+ }
+ ResizeState;
+ 
+ void resize_init(ResizeState * this, ResizeSendFn send, ResizeLogFn log,
+     void * opaque);
+ 
+-/* A new display session: forget the guest's size and the last ask. */
++/* A new display session: forget the guest's size and the last ask. A stall
++ * stays until a frame arrives. */
+ void resize_session(ResizeState * this);
+ 
+-/* The window's size changed. */
++/* The window's size changed (after the client's message debounce). */
+ void resize_window(ResizeState * this, unsigned width, unsigned height);
+ 
++/* The window's raw size was posted at `at`, before the debounce. Only a change
++ * of size restarts the settle, and a post older than the last change is
++ * ignored (the debounce can hand an older post back after a newer one). */
++void resize_raw(ResizeState * this, unsigned width, unsigned height,
++    uint64_t at);
++
++/* A frame arrived, of any kind. */
++void resize_seen(ResizeState * this, uint64_t now);
++
+ /* A frame was accepted at width x height after `changes` format changes since
+- * the previous call. */
++ * the previous call. It counts as a frame seen, too. */
+ void resize_frame(ResizeState * this, unsigned width, unsigned height,
+     unsigned changes, uint64_t now);
+ 
+diff -Naur lg-pristine/client/tests/resize_test.c lg-working/client/tests/resize_test.c
+--- lg-pristine/client/tests/resize_test.c	2026-11-21 21:06:14.893998830 -0500
++++ lg-working/client/tests/resize_test.c	2026-11-21 21:06:14.895849207 -0500
+@@ -160,6 +160,16 @@
+   return count;
+ }
+ 
++/* The index of the last log line that contains `text`; fails when none. */
++static unsigned lastLine(const char * text)
++{
++  for (unsigned i = t.lines; i > 0; --i)
++    if (strstr(t.line[i - 1].text, text))
++      return i - 1;
++  fprintf(stderr, "no line contains \"%s\"\n", text);
++  exit(EXIT_FAILURE);
++}
++
+ static void checkLine(unsigned no, const char * text)
+ {
+   CHECK(no < t.lines);
+@@ -215,18 +225,19 @@
+   start();
+   window(1600, 900);
+   frame(1920, 1080);
+-  runTo(T0 + SEC(42) + SEC(600));
++  runTo(T0 + SEC(44) + SEC(600));
+ 
++  /* 0004: the waits are 4, 5, 10 and 20 s. */
+   CHECK(t.asks == 5);
+   checkAsk(0, T0          , 1600, 900);
+-  checkAsk(1, T0 + SEC( 2), 1600, 900);
+-  checkAsk(2, T0 + SEC( 7), 1600, 900);
+-  checkAsk(3, T0 + SEC(17), 1600, 900);
+-  checkAsk(4, T0 + SEC(37), 1600, 900);
++  checkAsk(1, T0 + SEC( 4), 1600, 900);
++  checkAsk(2, T0 + SEC( 9), 1600, 900);
++  checkAsk(3, T0 + SEC(19), 1600, 900);
++  checkAsk(4, T0 + SEC(39), 1600, 900);
+ 
+   CHECK(countLines("did not take") == 1);
+   checkLine(t.lines - 1, "Resize: Windows did not take 1600x900");
+-  CHECK(t.line[t.lines - 1].at == T0 + SEC(42));
++  CHECK(t.line[t.lines - 1].at == T0 + SEC(44));
+ }
+ 
+ static void testMatchStops(void)
+@@ -248,7 +259,8 @@
+ {
+   /* After a boot, Windows answers the first ask with a size of its own
+    * (the smallest built-in mode that fits its old desktop). That continues
+-   * the sequence, ask 2 goes out 2 s after ask 1, and Windows takes it. */
++   * the sequence, ask 2 goes out 4 s after ask 1 (0004: was 2 s), and
++   * Windows takes it. */
+   start();
+   window(1600, 900);
+   frame(1920, 1080);
+@@ -256,12 +268,12 @@
+   CHECK(t.asks == 1);
+ 
+   frame(1400, 1050);
+-  runTo(T0 + SEC(2));
++  runTo(T0 + SEC(4));
+   CHECK(t.asks == 2);
+-  checkAsk(1, T0 + SEC(2), 1600, 900);
++  checkAsk(1, T0 + SEC(4), 1600, 900);
+   checkLine(t.lines - 1, "Resize: asking Windows for 1600x900 (2 of 5)");
+ 
+-  runTo(T0 + SEC(3));
++  runTo(T0 + SEC(5));
+   frame(1600, 900);
+   runTo(T0 + SEC(300));
+   CHECK(t.asks == 2);
+@@ -300,12 +312,13 @@
+   const uint64_t sent = t.now;
+   runTo(sent + SEC(10));
+   CHECK(t.asks == 3);
++  /* 0004: the first wait is 4 s. */
+   checkAsk(0, sent, 1600, 900);
+-  checkAsk(1, sent + SEC(2), 1600, 900);
+-  checkAsk(2, sent + SEC(7), 1600, 900);
+-  checkLine(t.lines - 3, "Resize: asking Windows for 1600x900 (1 of 5)");
++  checkAsk(1, sent + SEC(4), 1600, 900);
++  checkAsk(2, sent + SEC(9), 1600, 900);
++  CHECK(countLines("(1 of 5)") == 1);
+ 
+-  /* Not responding when the next ask is due (at 17 s) holds it; it goes out
++  /* Not responding when the next ask is due (at 19 s) holds it; it goes out
+    * once the guest responds, and the wait after it counts from then. */
+   t.responding = false;
+   runTo(sent + SEC(22));
+@@ -350,14 +363,14 @@
+   CHECK(countLines("asking") == 0);
+ 
+   /* The failures did not count: the first ask that goes out is 1 of 5, and
+-   * the next waits 2 s from it. */
++   * the next waits 4 s from it (0004: was 2 s). */
+   t.sendFails = false;
+   t.now += POLL_US;
+   const uint64_t sent = t.now;
+-  runTo(sent + SEC(2));
++  runTo(sent + SEC(4));
+   CHECK(t.asks == 2);
+   checkAsk(0, sent, 1600, 900);
+-  checkAsk(1, sent + SEC(2), 1600, 900);
++  checkAsk(1, sent + SEC(4), 1600, 900);
+   checkLine(t.lines - 2, "Resize: asking Windows for 1600x900 (1 of 5)");
+   checkLine(t.lines - 1, "Resize: asking Windows for 1600x900 (2 of 5)");
+ }
+@@ -370,12 +383,13 @@
+   runTo(T0 + SEC(10));
+   CHECK(t.asks == 3);
+ 
+-  /* A new window size starts over: at once, 1 of 5, then 2 s later. */
++  /* A new window size starts over with 1 of 5. 0004: no sooner than 4 s
++   * after the previous ask (at 9 s), then 4 s later. */
+   window(1700, 950);
+-  runTo(T0 + SEC(12));
++  runTo(T0 + SEC(17));
+   CHECK(t.asks == 5);
+-  checkAsk(3, T0 + SEC(10), 1700, 950);
+-  checkAsk(4, T0 + SEC(12), 1700, 950);
++  checkAsk(3, T0 + SEC(13), 1700, 950);
++  checkAsk(4, T0 + SEC(17), 1700, 950);
+   checkLine(t.lines - 2, "Resize: asking Windows for 1700x950 (1 of 5)");
+   checkLine(t.lines - 1, "Resize: asking Windows for 1700x950 (2 of 5)");
+ }
+@@ -439,10 +453,11 @@
+   t.now += MS(30);
+   const uint64_t first = t.now;
+   frame(1024, 768);
+-  runTo(first + SEC(2));
++  runTo(first + SEC(4));
+   CHECK(t.asks == 7);
++  /* 0004: the gap does not span sessions; the first wait is 4 s. */
+   checkAsk(5, first, 1600, 900);
+-  checkAsk(6, first + SEC(2), 1600, 900);
++  checkAsk(6, first + SEC(4), 1600, 900);
+   checkLine(t.lines - 2, "Resize: asking Windows for 1600x900 (1 of 5)");
+ }
+ 
+@@ -461,7 +476,8 @@
+     { 1280,  720 }, { 1024, 768 }, { 1920, 1080 },
+     { 1280, 1024 }, { 1366, 768 }, { 1280,  800 },
+   };
+-  static const unsigned askAt[] = { 0, 2, 7, 17, 37 };
++  /* 0004: the waits are 4, 5, 10 and 20 s. */
++  static const unsigned askAt[] = { 0, 4, 9, 19, 39 };
+   const uint64_t t1 = T0 + SEC(100);
+ 
+   for (unsigned i = 0; i < 6; ++i)
+@@ -479,15 +495,17 @@
+       runTo(t1 + SEC(askAt[i]));
+   }
+ 
+-  runTo(t1 + SEC(37) + SEC(600));
++  runTo(t1 + SEC(39) + SEC(600));
+   CHECK(t.asks == 5);
+   for (unsigned i = 0; i < 5; ++i)
+     checkAsk(i, t1 + SEC(askAt[i]), 1600, 900);
+ 
+-  /* The sixth pick stays: "did not take" once, 5 s after the fifth ask. */
++  /* The sixth pick stays: "did not take" once, 5 s after the fifth ask. A
++   * still desktop then sends no frame, so a stall line may follow. */
+   CHECK(countLines("did not take") == 1);
+-  checkLine(t.lines - 1, "Resize: Windows did not take 1600x900");
+-  CHECK(t.line[t.lines - 1].at == t1 + SEC(42));
++  const unsigned gave = lastLine("did not take");
++  checkLine(gave, "Resize: Windows did not take 1600x900");
++  CHECK(t.line[gave].at == t1 + SEC(44));
+ }
+ 
+ static void testLatePicks(void)
+@@ -499,15 +517,15 @@
+   CHECK(t.sendCalls == 0);
+ 
+   /* Windows takes each ask 1 s after it, and each later pick lands 1 s after
+-   * its wait (2, 5, 10, 20 s) ends, as picks made by hand do: its ask goes
+-   * out at once, with the next number. The sixth pick lands 3 s after the
+-   * fifth ask. */
++   * its wait (4, 5, 10, 20 s; 0004: the first was 2 s) ends, as picks made by
++   * hand do: its ask goes out at once, with the next number. The sixth pick
++   * lands 3 s after the fifth ask. */
+   static const unsigned picks[][2] =
+   {
+     { 1280,  720 }, { 1024, 768 }, { 1920, 1080 },
+     { 1280, 1024 }, { 1366, 768 }, { 1280,  800 },
+   };
+-  static const unsigned pickAt[] = { 0, 3, 9, 20, 41, 44 };
++  static const unsigned pickAt[] = { 0, 5, 11, 22, 43, 46 };
+   const uint64_t t1 = T0 + SEC(100);
+ 
+   for (unsigned i = 0; i < 6; ++i)
+@@ -522,7 +540,7 @@
+     poll();
+   }
+ 
+-  runTo(t1 + SEC(41) + SEC(600));
++  runTo(t1 + SEC(43) + SEC(600));
+   CHECK(t.asks == 5);
+   for (unsigned i = 0; i < 5; ++i)
+   {
+@@ -535,8 +553,9 @@
+ 
+   /* The sixth pick stays: "did not take" once, 5 s after the fifth ask. */
+   CHECK(countLines("did not take") == 1);
+-  checkLine(t.lines - 1, "Resize: Windows did not take 1600x900");
+-  CHECK(t.line[t.lines - 1].at == t1 + SEC(46));
++  const unsigned gave = lastLine("did not take");
++  checkLine(gave, "Resize: Windows did not take 1600x900");
++  CHECK(t.line[gave].at == t1 + SEC(48));
+ }
+ 
+ static void testLateChange(void)
+@@ -548,39 +567,40 @@
+   CHECK(t.asks == 2);
+   frame(1600, 900);
+ 
+-  /* Windows leaves the size more than 60 s after the last ask: a new
+-   * sequence, 1 of 5, at once. */
+-  runTo(T0 + SEC(2) + SEC(61));
++  /* Windows leaves the size more than 60 s after the last ask (at 4 s; 0004:
++   * was 2 s): a new sequence, 1 of 5, at once. */
++  runTo(T0 + SEC(4) + SEC(61));
+   frame(1024, 768);
+   poll();
+   CHECK(t.asks == 3);
+-  checkAsk(2, T0 + SEC(63), 1600, 900);
++  checkAsk(2, T0 + SEC(65), 1600, 900);
+   checkLine(t.lines - 1, "Resize: asking Windows for 1600x900 (1 of 5)");
+ 
+   /* A change exactly 60 s after the last ask still continues the exhausted
+    * sequence: no ask. */
+-  runTo(T0 + SEC(63) + SEC(42));
++  runTo(T0 + SEC(65) + SEC(44));
+   CHECK(t.asks == 7);
+   CHECK(countLines("did not take") == 1);
+-  runTo(T0 + SEC(63) + SEC(37) + SEC(60));
++  runTo(T0 + SEC(65) + SEC(39) + SEC(60));
+   frame(1366, 768);
+   poll();
+   CHECK(t.asks == 7);
+ 
+   /* One 61 s after it starts over. */
+-  runTo(T0 + SEC(63) + SEC(37) + SEC(61));
++  runTo(T0 + SEC(65) + SEC(39) + SEC(61));
+   frame(1280, 720);
+   poll();
+   CHECK(t.asks == 8);
+   checkLine(t.lines - 1, "Resize: asking Windows for 1600x900 (1 of 5)");
+ 
+   /* The new sequence ends with its own "did not take". */
+-  const uint64_t third = T0 + SEC(161);
+-  runTo(third + SEC(42) + SEC(600));
++  const uint64_t third = T0 + SEC(165);
++  runTo(third + SEC(44) + SEC(600));
+   CHECK(t.asks == 12);
+   CHECK(countLines("did not take") == 2);
+-  checkLine(t.lines - 1, "Resize: Windows did not take 1600x900");
+-  CHECK(t.line[t.lines - 1].at == third + SEC(42));
++  const unsigned gave = lastLine("did not take");
++  checkLine(gave, "Resize: Windows did not take 1600x900");
++  CHECK(t.line[gave].at == third + SEC(44));
+ }
+ 
+ static void testSameSize(void)
+@@ -613,9 +633,11 @@
+   CHECK(t.asks == 3);
+ 
+   /* A new window size replaces the sequence before its fifth ask, and
+-   * Windows takes the new size. */
++   * Windows takes the new size. 0004: its ask waits for the gap, 4 s after
++   * the ask at 9 s. */
+   window(1700, 950);
+-  poll();
++  runTo(T0 + SEC(13));
++  CHECK(t.asks == 4);
+   t.now += SEC(1);
+   frame(1700, 950);
+   runTo(T0 + SEC(600));
+@@ -656,7 +678,8 @@
+   runTo(T0 + SEC(5));
+   window(1600, 900);
+   window(1700, 950);
+-  poll();
++  /* 0004: the new size's ask waits for the gap, 4 s after the ask at 4 s. */
++  runTo(T0 + SEC(8));
+ 
+   CHECK(t.lines == 5);
+   checkLine(0, "Resize: window is 1600x900");
+@@ -666,6 +689,292 @@
+   checkLine(4, "Resize: asking Windows for 1700x950 (1 of 5)");
+ }
+ 
++/* 0004 cases: the settle, the gap and the stall detector. */
++
++/* A raw window size posted now, before the client's debounce. */
++static void raw(unsigned width, unsigned height)
++{
++  resize_raw(&t.rs, width, height, t.now);
++}
++
++/* The window moves to a new size now: the raw post, then the debounced size
++ * 500 ms later, as message.c hands it on. */
++static void resized(unsigned width, unsigned height)
++{
++  raw(width, height);
++  runTo(t.now + MS(500));
++  window(width, height);
++}
++
++/* A frame that changes nothing. */
++static void seen(void)
++{
++  resize_seen(&t.rs, t.now);
++}
++
++/* No two asks are closer than 4 s. */
++static void checkGaps(void)
++{
++  for (unsigned i = 1; i < t.asks; ++i)
++    CHECK(t.ask[i].at >= t.ask[i - 1].at + SEC(4));
++}
++
++/* A guest at 1920x1080 in a window that matches it, from T0. */
++static void matched(void)
++{
++  start();
++  frame(1920, 1080);
++  raw(1920, 1080);
++  window(1920, 1080);
++  poll();
++  CHECK(t.asks == 0);
++}
++
++static void testBurst(void)
++{
++  /* Three sizes 0.7 s apart, as a monitor wake makes: one ask, for the last
++   * size, 2 s after its raw post. */
++  matched();
++  runTo(T0 + SEC(10));
++  const uint64_t t1 = t.now;
++  resized(1600, 900);
++  runTo(t1 + MS(700));
++  resized(1700, 950);
++  runTo(t1 + MS(1400));
++  resized(1800, 1000);
++
++  runTo(t1 + MS(3400) - POLL_US);
++  CHECK(t.asks == 0);
++  runTo(t1 + MS(3400));
++  CHECK(t.asks == 1);
++  checkAsk(0, t1 + MS(3400), 1800, 1000);
++
++  /* Nothing more until the first retry, 4 s later. */
++  runTo(t1 + MS(7400) - POLL_US);
++  CHECK(t.asks == 1);
++}
++
++static void testDrag(void)
++{
++  /* A raw change every 0.3 s for 10 s, with the module told of each size:
++   * no ask until 2 s after the drag stops. */
++  matched();
++  runTo(T0 + SEC(10));
++  const uint64_t t1 = t.now;
++  unsigned width = 1600;
++  for (uint64_t at = t1; at <= t1 + SEC(10); at += MS(300), width += 8)
++  {
++    runTo(at);
++    raw(width, 900);
++    window(width, 900);
++  }
++  const uint64_t last = t.now;
++  const unsigned lastW = width - 8;
++
++  runTo(last + SEC(2) - POLL_US);
++  CHECK(t.asks == 0);
++  runTo(last + SEC(2));
++  CHECK(t.asks == 1);
++  checkAsk(0, last + SEC(2), lastW, 900);
++}
++
++static void testGap(void)
++{
++  /* With no raw change on record, the first ask goes out at once. */
++  start();
++  frame(1920, 1080);
++  window(1600, 900);
++  poll();
++  CHECK(t.asks == 1);
++  checkAsk(0, T0, 1600, 900);
++
++  /* A new size 1 s later settles at 3 s, but the gap holds it to 4 s. */
++  runTo(T0 + SEC(1));
++  raw(1700, 950);
++  window(1700, 950);
++  runTo(T0 + SEC(4) - POLL_US);
++  CHECK(t.asks == 1);
++  runTo(T0 + SEC(4));
++  CHECK(t.asks == 2);
++  checkAsk(1, T0 + SEC(4), 1700, 950);
++
++  /* Its retry waits the 4 s gap too. A third size posted at that retry
++   * settles at 10 s and still waits for the gap, to 12 s. */
++  runTo(T0 + SEC(8));
++  CHECK(t.asks == 3);
++  checkAsk(2, T0 + SEC(8), 1700, 950);
++  raw(1800, 1000);
++  window(1800, 1000);
++  runTo(T0 + SEC(12));
++  CHECK(t.asks == 4);
++  checkAsk(3, T0 + SEC(12), 1800, 1000);
++
++  runTo(T0 + SEC(120));
++  checkGaps();
++}
++
++static void testWindowsChange(void)
++{
++  /* The window holds one size for 100 s, then Windows changes resolution:
++   * the settle is met, so the ask goes out at once. */
++  start();
++  raw(1600, 900);
++  window(1600, 900);
++  frame(1600, 900);
++  runTo(T0 + SEC(100));
++  frame(1024, 768);
++  poll();
++  CHECK(t.asks == 1);
++  checkAsk(0, T0 + SEC(100), 1600, 900);
++
++  /* Windows takes it 1 s later and leaves it again 1 s after that: the next
++   * ask goes out 4 s after the last one, no later (0004: was 2 s). */
++  runTo(T0 + SEC(101));
++  frame(1600, 900);
++  runTo(T0 + SEC(102));
++  frame(1024, 768);
++  runTo(T0 + SEC(104) - POLL_US);
++  CHECK(t.asks == 1);
++  runTo(T0 + SEC(104));
++  CHECK(t.asks == 2);
++  checkAsk(1, T0 + SEC(104), 1600, 900);
++}
++
++static void testStall(void)
++{
++  /* An ask, one frame 1 s later, then silence: one stall line, 10 s after
++   * that frame. The retries at 4 and 9 s do not move it. */
++  start();
++  frame(1920, 1080);
++  window(1600, 900);
++  poll();
++  CHECK(t.asks == 1);
++  runTo(T0 + SEC(1));
++  seen();
++
++  runTo(T0 + SEC(11) - POLL_US);
++  CHECK(t.asks == 3);
++  CHECK(countLines("no frame from Windows") == 0);
++  runTo(T0 + SEC(11));
++  CHECK(countLines("no frame from Windows") == 1);
++  const unsigned line = lastLine("no frame from Windows");
++  checkLine(line,
++      "Resize: no frame from Windows for 10 s (asked for 1600x900)");
++  CHECK(t.line[line].at == T0 + SEC(11));
++
++  /* Once per stall. */
++  runTo(T0 + SEC(120));
++  CHECK(countLines("no frame from Windows") == 1);
++}
++
++static void testStallFrom(void)
++{
++  /* The deadline counts from the first ask when the last frame is older. */
++  start();
++  frame(1920, 1080);
++  runTo(T0 + SEC(30));
++  window(1600, 900);
++  poll();
++  runTo(T0 + SEC(40) - POLL_US);
++  CHECK(countLines("no frame from Windows") == 0);
++  runTo(T0 + SEC(40));
++  CHECK(countLines("no frame from Windows") == 1);
++
++  /* A matched window has no ask outstanding: no stall however long. */
++  matched();
++  runTo(T0 + SEC(120));
++  CHECK(countLines("no frame from Windows") == 0);
++}
++
++static void testFramesAgain(void)
++{
++  /* A frame of any size before each deadline: no stall line. */
++  start();
++  frame(1920, 1080);
++  window(1600, 900);
++  poll();
++  for (unsigned i = 1; i <= 6; ++i)
++  {
++    runTo(T0 + MS(9900) * i);
++    if (i % 2)
++      seen();
++    else
++      frame(1920, 1080);
++  }
++  const uint64_t last = t.now;
++  CHECK(countLines("no frame from Windows") == 0);
++
++  /* Then silence: the stall, and the next frame ends it. */
++  runTo(last + SEC(10));
++  CHECK(countLines("no frame from Windows") == 1);
++  CHECK(t.line[lastLine("no frame from Windows")].at == last + SEC(10));
++  runTo(last + SEC(15));
++  seen();
++  CHECK(countLines("frames from Windows again") == 1);
++  checkLine(t.lines - 1, "Resize: frames from Windows again");
++}
++
++static void testSessionStall(void)
++{
++  /* A new session with no frame for 10 s. */
++  start();
++  window(1600, 900);
++  runTo(T0 + SEC(10) - POLL_US);
++  CHECK(countLines("no frame from Windows") == 0);
++  runTo(T0 + SEC(10));
++  CHECK(countLines("no frame from Windows") == 1);
++  checkLine(t.lines - 1,
++      "Resize: no frame from Windows for 10 s (new session)");
++
++  /* A session whose first frame comes in time logs nothing. */
++  start();
++  runTo(T0 + SEC(9));
++  frame(1600, 900);
++  runTo(T0 + SEC(60));
++  CHECK(countLines("no frame from Windows") == 0);
++}
++
++static void testStallSession(void)
++{
++  /* A stall, then a new session (a driver restart), then a frame: one stall
++   * line and one "frames again", with no second stall for the session. */
++  start();
++  frame(1920, 1080);
++  window(1600, 900);
++  runTo(T0 + SEC(10));
++  CHECK(countLines("no frame from Windows") == 1);
++
++  runTo(T0 + SEC(15));
++  resize_session(&t.rs);
++  runTo(T0 + SEC(40));
++  CHECK(countLines("no frame from Windows") == 1);
++  CHECK(countLines("frames from Windows again") == 0);
++
++  frame(1600, 900);
++  CHECK(countLines("frames from Windows again") == 1);
++  runTo(T0 + SEC(120));
++  CHECK(countLines("no frame from Windows") == 1);
++  CHECK(countLines("frames from Windows again") == 1);
++}
++
++static void testRawOrder(void)
++{
++  /* The debounce can hand an older post back after a newer one: it does not
++   * move the settle back, nor change the size it waits on. */
++  matched();
++  runTo(T0 + SEC(10));
++  const uint64_t t1 = t.now;
++  resize_raw(&t.rs, 1600, 900, t1);
++  resize_raw(&t.rs, 1700, 950, t1 + SEC(1));
++  resize_raw(&t.rs, 1600, 900, t1);
++  window(1700, 950);
++  runTo(t1 + SEC(3) - POLL_US);
++  CHECK(t.asks == 0);
++  runTo(t1 + SEC(3));
++  CHECK(t.asks == 1);
++  checkAsk(0, t1 + SEC(3), 1700, 950);
++}
++
+ struct Test
+ {
+   const char * name;
+@@ -694,6 +1003,16 @@
+   { "replaced"   , testReplaced   },
+   { "one-side"   , testOneSide    },
+   { "log-lines"  , testLogLines   },
++  { "burst"         , testBurst         },
++  { "drag"          , testDrag          },
++  { "gap"           , testGap           },
++  { "windows-change", testWindowsChange },
++  { "stall"         , testStall         },
++  { "stall-from"    , testStallFrom     },
++  { "frames-again"  , testFramesAgain   },
++  { "session-stall" , testSessionStall  },
++  { "stall-session" , testStallSession  },
++  { "raw-order"     , testRawOrder      },
+ };
+ 
+ int main(int argc, char ** argv)

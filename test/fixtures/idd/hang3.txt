@@ -1,0 +1,120 @@
+[2026-11-22 00:50:43Z] [I]                       CD3D12Device::Init:140  | Using transport memory as a D3D12 heap
+[2026-11-22 00:50:43Z] [I]                 CD3D12CommandQueue::Init:483  | Created CD3D12CommandQueue(Copy) with 2 slots
+[2026-11-22 00:50:43Z] [I]                       CD3D12Device::Init:153  | Created CD3D12Device
+[2026-11-22 00:50:43Z] [I]  CSwapChainProcessor::InitializePipeline:172  | Software render adapter: post-processing disabled
+[2026-11-22 00:50:43Z] [T]               CFrameBufferResource::Init:120  | Creating transport buffer for 0000027A4E350000
+[2026-11-22 00:50:43Z] [I]                         CFrameGraph::Log:454  | Frame graph g=1495 mode=sw 3000x1700
+[2026-11-22 00:50:43Z] [I]                     CFrameGraph::LogNode:385  | `- src bgra8/srgb
+[2026-11-22 00:50:43Z] [I]                     CFrameGraph::LogNode:390  |    `- native bgra8
+[2026-11-22 00:50:43Z] [I]                     CFrameGraph::LogNode:438  |       `- LGMP:1 d3d12
+[2026-11-22 00:50:43Z] [T]               CFrameBufferResource::Init:120  | Creating transport buffer for 0000027A4BA80000
+[2026-11-22 00:50:43Z] [I]                     CSettings::LoadModes:45   | ExtraMode: 1920x1200@60*
+[2026-11-22 00:50:43Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4800@60.0000
+[2026-11-22 00:50:43Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4320@60.0000
+[2026-11-22 00:50:43Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 6016x3384@60.0000
+[2026-11-22 00:50:43Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3600@60.0000
+[2026-11-22 00:50:43Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3240@60.0000
+[2026-11-22 00:50:43Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5120x2800@60.0000
+[2026-11-22 00:50:43Z] [T]                  CMonitorManager::Replug:241  | ReplugMonitor
+[2026-11-22 00:50:43Z] [I]            LGIddMonitorUnassignSwapChain:548  | Swap chain unassigned from monitor FFFFFD7F9C7B80D8
+[2026-11-22 00:50:43Z] [I]                  CMonitorManager::Create:31   | Creating monitor on connector 0
+[2026-11-22 00:50:43Z] [I]                  CMonitorManager::Create:52   | Using 256-byte monitor EDID
+[2026-11-22 00:50:43Z] [I]                  CMonitorManager::Create:83   | Monitor object created (FFFFFD7F9C7B7C58)
+[2026-11-22 00:50:43Z] [I]                  CMonitorManager::Create:110  | Monitor arrival reported successfully
+[2026-11-22 00:50:43Z] [I]                 LGIddAdapterCommitModes2:448  | Display modes committed through IddCx 1.10
+[2026-11-22 00:50:43Z] [I]                 LGIddAdapterCommitModes2:448  | Display modes committed through IddCx 1.10
+[2026-11-22 00:50:43Z] [I]                 LGIddAdapterCommitModes2:448  | Display modes committed through IddCx 1.10
+[2026-11-22 00:50:44Z] [I]              LGIddMonitorAssignSwapChain:540  | Swap chain assigned to monitor FFFFFD7F9C7B7C58
+[2026-11-22 00:50:44Z] [I]                       CD3D11Device::Init:66   | Feature Level: 0xb100
+[2026-11-22 00:50:44Z] [I] CSwapChainProcessor::SwapChainThreadCore:312  | Swap chain device set
+[2026-11-22 00:50:44Z] [I] CSwapChainProcessor::SwapChainThreadCore:316  | Using IddCxSetRealtimeGPUPriority
+[2026-11-22 00:50:44Z] [I]                       CD3D12Device::Init:140  | Using transport memory as a D3D12 heap
+[2026-11-22 00:50:44Z] [I]                 CD3D12CommandQueue::Init:483  | Created CD3D12CommandQueue(Copy) with 2 slots
+[2026-11-22 00:50:44Z] [I]                       CD3D12Device::Init:153  | Created CD3D12Device
+[2026-11-22 00:50:44Z] [I]  CSwapChainProcessor::InitializePipeline:172  | Software render adapter: post-processing disabled
+[2026-11-22 00:50:44Z] [I]              LGIddMonitorAssignSwapChain:540  | Swap chain assigned to monitor FFFFFD7F9C7B7C58
+[2026-11-22 00:50:44Z] [I]                       CD3D11Device::Init:66   | Feature Level: 0xb100
+[2026-11-22 00:50:44Z] [E] CSwapChainProcessor::SwapChainThreadCore:309  | IddCxSwapChainSetDevice Failed (0x887A0026 (2289696806): The keyed mutex was abandoned.)
+[2026-11-22 00:50:44Z] [I]                 LGIddAdapterCommitModes2:448  | Display modes committed through IddCx 1.10
+[2026-11-22 00:50:44Z] [I]                     CSettings::LoadModes:45   | ExtraMode: 3200x1800@60*
+[2026-11-22 00:50:44Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4800@60.0000
+[2026-11-22 00:50:44Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4320@60.0000
+[2026-11-22 00:50:44Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 6016x3384@60.0000
+[2026-11-22 00:50:44Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3600@60.0000
+[2026-11-22 00:50:44Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3240@60.0000
+[2026-11-22 00:50:44Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5120x2800@60.0000
+[2026-11-22 00:50:45Z] [I]                 LGIddAdapterCommitModes2:448  | Display modes committed through IddCx 1.10
+[2026-11-22 00:50:45Z] [I]                 LGIddAdapterCommitModes2:448  | Display modes committed through IddCx 1.10
+[2026-11-22 00:50:45Z] [I]              LGIddMonitorAssignSwapChain:540  | Swap chain assigned to monitor FFFFFD7F9C7B7C58
+[2026-11-22 00:50:45Z] [I]                       CD3D11Device::Init:66   | Feature Level: 0xb100
+[2026-11-22 00:50:45Z] [I] CSwapChainProcessor::SwapChainThreadCore:312  | Swap chain device set
+[2026-11-22 00:50:45Z] [I] CSwapChainProcessor::SwapChainThreadCore:316  | Using IddCxSetRealtimeGPUPriority
+[2026-11-22 00:50:45Z] [I]            LGIddMonitorUnassignSwapChain:548  | Swap chain unassigned from monitor FFFFFD7F9C7B7C58
+[2026-11-22 00:50:45Z] [I]                       CD3D12Device::Init:140  | Using transport memory as a D3D12 heap
+[2026-11-22 00:50:45Z] [I]                 CD3D12CommandQueue::Init:483  | Created CD3D12CommandQueue(Copy) with 2 slots
+[2026-11-22 00:50:45Z] [I]                       CD3D12Device::Init:153  | Created CD3D12Device
+[2026-11-22 00:50:45Z] [I]              LGIddMonitorAssignSwapChain:540  | Swap chain assigned to monitor FFFFFD7F9C7B7C58
+[2026-11-22 00:50:45Z] [I]                       CD3D11Device::Init:66   | Feature Level: 0xb100
+[2026-11-22 00:50:45Z] [I] CSwapChainProcessor::SwapChainThreadCore:312  | Swap chain device set
+[2026-11-22 00:50:45Z] [I] CSwapChainProcessor::SwapChainThreadCore:316  | Using IddCxSetRealtimeGPUPriority
+[2026-11-22 00:50:45Z] [I]                       CD3D12Device::Init:140  | Using transport memory as a D3D12 heap
+[2026-11-22 00:50:45Z] [I]                 CD3D12CommandQueue::Init:483  | Created CD3D12CommandQueue(Copy) with 2 slots
+[2026-11-22 00:50:45Z] [I]                       CD3D12Device::Init:153  | Created CD3D12Device
+[2026-11-22 00:50:45Z] [I]  CSwapChainProcessor::InitializePipeline:172  | Software render adapter: post-processing disabled
+[2026-11-22 00:50:45Z] [T]               CFrameBufferResource::Init:120  | Creating transport buffer for 0000027A4E350000
+[2026-11-22 00:50:45Z] [I]                         CFrameGraph::Log:454  | Frame graph g=1496 mode=sw 1920x1200
+[2026-11-22 00:50:45Z] [I]                     CFrameGraph::LogNode:385  | `- src bgra8/srgb
+[2026-11-22 00:50:45Z] [I]                     CFrameGraph::LogNode:390  |    `- native bgra8
+[2026-11-22 00:50:45Z] [I]                     CFrameGraph::LogNode:438  |       `- LGMP:1 d3d12
+[2026-11-22 00:50:45Z] [T]                  CMonitorManager::Replug:241  | ReplugMonitor
+[2026-11-22 00:50:45Z] [I]            LGIddMonitorUnassignSwapChain:548  | Swap chain unassigned from monitor FFFFFD7F9C7B7C58
+[2026-11-22 00:50:45Z] [I]                  CMonitorManager::Create:31   | Creating monitor on connector 0
+[2026-11-22 00:50:45Z] [I]                  CMonitorManager::Create:52   | Using 256-byte monitor EDID
+[2026-11-22 00:50:45Z] [I]                  CMonitorManager::Create:83   | Monitor object created (FFFFFD7F9C7B8318)
+[2026-11-22 00:50:45Z] [I]                  CMonitorManager::Create:110  | Monitor arrival reported successfully
+[2026-11-22 00:50:45Z] [I]                 LGIddAdapterCommitModes2:448  | Display modes committed through IddCx 1.10
+[2026-11-22 00:50:45Z] [I]                 LGIddAdapterCommitModes2:448  | Display modes committed through IddCx 1.10
+[2026-11-22 00:50:45Z] [I]              LGIddMonitorAssignSwapChain:540  | Swap chain assigned to monitor FFFFFD7F9C7B8318
+[2026-11-22 00:50:45Z] [I]                       CD3D11Device::Init:66   | Feature Level: 0xb100
+[2026-11-22 00:50:45Z] [I] CSwapChainProcessor::SwapChainThreadCore:312  | Swap chain device set
+[2026-11-22 00:50:45Z] [I] CSwapChainProcessor::SwapChainThreadCore:316  | Using IddCxSetRealtimeGPUPriority
+[2026-11-22 00:50:45Z] [I]                       CD3D12Device::Init:140  | Using transport memory as a D3D12 heap
+[2026-11-22 00:50:45Z] [I]                 CD3D12CommandQueue::Init:483  | Created CD3D12CommandQueue(Copy) with 2 slots
+[2026-11-22 00:50:45Z] [I]                       CD3D12Device::Init:153  | Created CD3D12Device
+[2026-11-22 00:50:45Z] [I]  CSwapChainProcessor::InitializePipeline:172  | Software render adapter: post-processing disabled
+[2026-11-22 00:50:45Z] [T]               CFrameBufferResource::Init:120  | Creating transport buffer for 0000027A4BA80000
+[2026-11-22 00:50:45Z] [I]                         CFrameGraph::Log:454  | Frame graph g=1497 mode=sw 1920x1200
+[2026-11-22 00:50:45Z] [I]                     CFrameGraph::LogNode:385  | `- src bgra8/srgb
+[2026-11-22 00:50:45Z] [I]                     CFrameGraph::LogNode:390  |    `- native bgra8
+[2026-11-22 00:50:45Z] [I]                     CFrameGraph::LogNode:438  |       `- LGMP:1 d3d12
+[2026-11-22 00:50:45Z] [I]                 LGIddAdapterCommitModes2:448  | Display modes committed through IddCx 1.10
+[2026-11-22 00:50:45Z] [T]               CFrameBufferResource::Init:120  | Creating transport buffer for 0000027A4E350000
+[2026-11-22 00:50:45Z] [I]                     CSettings::LoadModes:45   | ExtraMode: 2200x1600@60*
+[2026-11-22 00:50:45Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4800@60.0000
+[2026-11-22 00:50:45Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4320@60.0000
+[2026-11-22 00:50:45Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 6016x3384@60.0000
+[2026-11-22 00:50:45Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3600@60.0000
+[2026-11-22 00:50:45Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3240@60.0000
+[2026-11-22 00:50:45Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5120x2800@60.0000
+[2026-11-22 00:50:45Z] [T]                  CMonitorManager::Replug:241  | ReplugMonitor
+[2026-11-22 00:50:47Z] [I]                     CSettings::LoadModes:45   | ExtraMode: 2200x1600@60*
+[2026-11-22 00:50:47Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4800@60.0000
+[2026-11-22 00:50:47Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4320@60.0000
+[2026-11-22 00:50:47Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 6016x3384@60.0000
+[2026-11-22 00:50:47Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3600@60.0000
+[2026-11-22 00:50:47Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3240@60.0000
+[2026-11-22 00:50:47Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5120x2800@60.0000
+[2026-11-22 00:50:52Z] [I]                     CSettings::LoadModes:45   | ExtraMode: 2200x1600@60*
+[2026-11-22 00:50:52Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4800@60.0000
+[2026-11-22 00:50:52Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4320@60.0000
+[2026-11-22 00:50:52Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 6016x3384@60.0000
+[2026-11-22 00:50:52Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3600@60.0000
+[2026-11-22 00:50:52Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3240@60.0000
+[2026-11-22 00:50:52Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5120x2800@60.0000
+[2026-11-22 00:51:02Z] [I]                     CSettings::LoadModes:45   | ExtraMode: 2200x1600@60*
+[2026-11-22 00:51:02Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4800@60.0000
+[2026-11-22 00:51:02Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 7680x4320@60.0000
+[2026-11-22 00:51:02Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 6016x3384@60.0000
+[2026-11-22 00:51:02Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3600@60.0000
+[2026-11-22 00:51:02Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5760x3240@60.0000
+[2026-11-22 00:51:02Z] [W]         CDisplayConfiguration::LoadModes:89   | Filtering unsupported configured mode 5120x2800@60.0000

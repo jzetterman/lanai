@@ -1,12 +1,14 @@
 #!/usr/bin/env bats
 # Tests for Lanai's Looking Glass client patches (patches/looking-glass/).
-# Everywhere: the patch headers and COPYING, and patch 0001 (new files only)
-# applied to an empty folder, its resize module built with cc and every
-# resize case run. Locally, when LANAI_TEST_LG_TARBALL names the pinned
-# source tarball: every patch applied exactly to the real source, the
-# client itself built (it compiles main.c, which patches 0002 and 0003
-# change), and the client tests that cover the changes built and run (needs
-# the client's build dependencies and GoogleTest).
+# Everywhere: the patch headers and COPYING, and patches 0001 (new files
+# only) and 0004 (changes to those files only) applied to an empty folder,
+# their resize module built with cc and every resize case run, then built
+# with -DRESIZE_NO_SETTLE and the stall cases run. Locally, when
+# LANAI_TEST_LG_TARBALL names the pinned source tarball: every patch applied
+# exactly to the real source, the client itself built (it compiles main.c,
+# which patches 0002, 0003 and 0005 change), and the client tests that cover
+# the changes built and run (needs the client's build dependencies and
+# GoogleTest).
 # shellcheck disable=SC2030,SC2031,SC2034
 
 load helpers
@@ -25,7 +27,7 @@ COPYING_SHA=8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
 @test "patches: each header carries its license and no line patch reads as a diff; COPYING is the GPL-2.0 text" {
   local p header
   run patches_list
-  assert_output $'0001-client-resize-module.patch\n0002-client-resize-hooks.patch\n0003-client-restart-scale.patch'
+  assert_output $'0001-client-resize-module.patch\n0002-client-resize-hooks.patch\n0003-client-restart-scale.patch\n0004-client-resize-settle.patch\n0005-client-resize-feed.patch'
   # The header is the text before the first diff line. Its SPDX line comes
   # last, so a header line that patch would read as a diff cuts it off.
   for p in "$PATCHES"/[0-9][0-9][0-9][0-9]-*.patch; do
@@ -40,11 +42,12 @@ COPYING_SHA=8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
   assert_equal "$(sha256sum "$PATCHES/COPYING" | cut -d' ' -f1)" "$COPYING_SHA"
 }
 
-@test "patch 0001: applies to an empty folder, and every resize case passes" {
+@test "patches 0001 and 0004: apply to an empty folder, and every resize case passes" {
   local c
   local -a cases=()
   mkdir -p "$T/patches" "$T/src"
-  cp "$PATCHES/0001-client-resize-module.patch" "$T/patches/"
+  cp "$PATCHES/0001-client-resize-module.patch" \
+    "$PATCHES/0004-client-resize-settle.patch" "$T/patches/"
   LANAI_PATCHES=$T/patches
   run patches_apply "$T/src" "$T/apply.log"
   assert_success
@@ -61,6 +64,18 @@ COPYING_SHA=8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
     [[ $status == 0 ]] || fail "resize case $c failed: $output"
   done
   run "$T/resize-tests" no-such-case
+  assert_failure
+
+  # The build that phase 3 uses to force the hang drops the settle and the
+  # gap, and keeps the stall detector.
+  cc -std=gnu11 -Wall -Wextra -Werror -DRESIZE_NO_SETTLE \
+    -I"$T/src/client/src" "$T/src/client/src/resize.c" \
+    "$T/src/client/tests/resize_test.c" -o "$T/resize-tests-no-settle"
+  for c in stall stall-from frames-again session-stall stall-session; do
+    run "$T/resize-tests-no-settle" "$c"
+    [[ $status == 0 ]] || fail "no-settle stall case $c failed: $output"
+  done
+  run "$T/resize-tests-no-settle" burst
   assert_failure
 }
 
@@ -83,7 +98,7 @@ COPYING_SHA=8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643
     -DWESTON_EXECUTABLE=/usr/bin/true >"$T/cmake.log" 2>&1 ||
     fail "cmake could not configure: $(tail -20 "$T/cmake.log")"
   # The client too, with build_client's -DENABLE_X11=no: only it compiles
-  # main.c, which patches 0002 and 0003 change.
+  # main.c, which patches 0002, 0003 and 0005 change.
   cmake --build "$T/build" -j "$(nproc)" \
     --target looking-glass-client resize-tests config-message-tests mouse-tests >"$T/build.log" 2>&1 ||
     fail "the client or its tests did not build: $(grep -m5 -E 'error' "$T/build.log")"

@@ -25,8 +25,11 @@ LANAI_PATCHES=${LANAI_PATCHES:-$LANAI_LIB/../patches/looking-glass}
 
 # The first line lanai-client-exec writes to client.log, before the client's
 # own output: the client's start time, which version_check needs to time
-# the IDD wait. And the line it writes instead when QEMU never answered.
+# the IDD wait. The second: a new ID for each start, so the scale feed's
+# display recovery tells one client's log from the next (lib/vm.sh). And
+# the line it writes instead when QEMU never answered.
 LANAI_CLIENT_START="lanai: client started at"
+LANAI_CLIENT_ID="lanai: client id"
 LANAI_CLIENT_TIMEOUT="lanai: QEMU did not answer on qmp-cli.sock within"
 
 # The host packages Lanai needs (spec 7): QEMU and its modules, the helpers,
@@ -406,12 +409,12 @@ client_log_keep() {
 # lanai-client-exec <client>, the ExecStart of lanai-client.service: wait
 # for QEMU (client_wait on qmp-cli.sock, up to LANAI_CLIENT_WAIT seconds),
 # check $RUN, keep the old log, then start client.log afresh with the start
-# line and exec the client, its output appended to the log. QEMU creates the
+# line and the ID line, and exec the client, its output appended to the log. QEMU creates the
 # shared memory before it answers any command, so the client never opens a
 # stale ivshmem. On a timeout the message goes to the journal and, as the
 # log's only line, to client.log, where lanai status reads it.
 client_exec() {
-  local client=$1 run log problem msg
+  local client=$1 run log problem msg id
   local -a args
   run=$(run_dir) || return 1
   log=$run/client.log
@@ -437,7 +440,8 @@ client_exec() {
   }
   mapfile -t args < <(client_args "$run")
   client_log_keep "$run"
-  printf '%s %s\n' "$LANAI_CLIENT_START" "$EPOCHSECONDS" >"$log"
+  id=$(</proc/sys/kernel/random/uuid)
+  printf '%s %s\n%s %s\n' "$LANAI_CLIENT_START" "$EPOCHSECONDS" "$LANAI_CLIENT_ID" "$id" >"$log"
   # Appending puts the client's writes at the new end after lanai-vm-exec
   # keeps a copy and empties client.log at the next VM start.
   exec "$client" "${args[@]}" >>"$log" 2>&1
